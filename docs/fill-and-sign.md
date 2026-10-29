@@ -16,17 +16,28 @@ anyone can copy it. For a signature that does, see [Digital signatures](signatur
 3. Add the date, your initials or a tick the same way: pick it in the Fill and sign pane on the right, then click
    on the page.
 4. Move or resize anything that isn't quite right: click it with the read tool and drag it or its handles.
-5. Press **Finish signing…** in the notice above the pages, then save.
+5. Press **Finish signing…** at the foot of the pane (or in the notice above the pages), then save.
+
+The result: your signature and the rest drawn into the pages, as they looked when you finished. Until you finish
+they are items you can still move or delete, and the pane says how many there are.
+
+**The Fill and sign pane**, on the right while the tool is on, follows those steps from top to bottom: how many
+items are put down and what kind of signature this is (a picture, not digital); **Signature** and **Initials**,
+each with your saved ones and one button to make another (**Create signature…**, **Create initials…**); **Text and
+marks**: the date, your name, text of your own, and a tick, cross or dot; the ink; and **Finish signing…**, the
+main button once something is down (greyed until then; hover over it to see why).
+
+<img src="images/fill-and-sign.png" width="835" alt="Fill and sign: a typed signature, the date and a tick put down on a report, the notice above the page saying they can still be moved or removed, with Finish signing…, and the Fill and sign pane at the right: 3 items, movable; two saved signatures and saved initials, each with a bin button, and Create signature… and Create initials…; the date, your name and text; and the tick picked under Marks">
 
 **Fill and sign ▾**, the small arrow beside the Fill and sign button, opens a menu of everything it can put down:
-Signature and Initials, each listing the saved ones and Create…, then Date, Your name, Text, Tick, Cross and Dot.
-Picking one turns the tool on with it; the button itself turns the tool on with the item picked last.
+Signature and Initials, each listing the saved ones and Create…, then Date, Your name, Text, Tick, Cross and Dot,
+and **Finish signing…** at the end. Picking one turns the tool on with it; the button itself turns the tool on with
+the item picked last.
 
 ## Make your signature
 
-**Create signature…**, in **Forms and sign > Fill and sign ▾ > Signature**, the Fill and sign pane (or **New…**
-beside Signatures in the pane), ☰ > Tools or the command palette (Ctrl+K), opens a window with three ways to make
-one (Create initials… likewise):
+**Create signature…**, in the Fill and sign pane, **Forms and sign > Fill and sign ▾ > Signature**, ☰ > Tools or
+the command palette (Ctrl+K), opens a window with three ways to make one (Create initials… likewise):
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what
@@ -45,18 +56,18 @@ one (Create initials… likewise):
   picture file isn't changed, and a saved signature keeps the part chosen. CMYK JPEGs (from some print workflows)
   work as other pictures do.
 
-![The Create signature window on its Type tab: a name typed and shown in the four handwriting styles, the first one picked, the ink colour (Black or Blue), Save for next time ticked, and the Use signature and Cancel buttons](images/create-signature.png)
+<img src="images/create-signature.png" width="530" alt="The Create signature window on its Type tab: a name typed and shown in the four handwriting styles, the first one picked, the ink colour (Black or Blue), Save for next time ticked, and the Use signature and Cancel buttons">
 
 The window also has the ink colour (the same choice as the pane's). **Use signature** puts it in the list. Esc
 closes the window only while nothing is drawn, typed (beyond the name it starts with) or chosen; picking another
 tool closes it.
 
-**Initials** are made the same way, with **New…** beside Initials; typing starts with your name's initials.
+**Initials** are made the same way, with **Create initials…**; typing starts with your name's initials.
 
 ## Saved signatures
 
-Each new signature or set of initials goes first in its list in the pane, up to five of each. Right-click one to
-take it off the list.
+Each new signature or set of initials goes first in its list in the pane, up to five of each. The bin button beside
+one (or a right-click on it) takes it off the list.
 
 **Save for next time** (on by default) keeps it in the list when LimarePDF starts again. Unticked, it stays in the
 list until LimarePDF closes, marked "until LimarePDF closes", and is then gone. Saved signatures are stored
@@ -94,7 +105,8 @@ read tool (or Ctrl+click it with another tool) to select it. The Comments view l
 "Initials", "Tick" and so on.
 
 While there are such items, a notice above the pages says how many and has a **Finish signing…** button; the Fill
-and sign pane has the same button, and so does ☰ > Document. Finish signing draws them into the pages as they look,
+and sign pane has the same button, and so do Fill and sign ▾ and ☰ > Document. Finish signing draws them into the
+pages as they look,
 after asking, so they can no longer be moved or removed as comments. Undo brings them back until you close the
 document. Other comments and stamps are left alone.
 

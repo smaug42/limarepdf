@@ -120,15 +120,34 @@ Some things to know:
 
 ## See every comment, and reply
 
-The **Comments** view lists the document's annotations page by page, with replies indented under the comment they
-answer: click its icon on the left or **Review > Comments**, or choose ☰ > View > Comments. Each row shows the
-author and the first line of the comment; hover over it for the type, date and the whole comment.
+The **Comments** view shows the document's annotations as cards under the name of their page, with replies
+indented under the comment they answer: click its icon on the left or **Review > Comments**, or choose ☰ > View >
+Comments. Each card shows who made it, what it is and when, and the first lines of its comment; a highlight or
+other text markup with no comment shows the words it marks. Hover over a card for the whole comment.
 
-- Click a row to go to the annotation and select it.
-- Right-click a row to delete it, along with any replies. Undo brings it back.
-- **Reply:** right-click a row and choose Reply…, or select an annotation and use the Reply box at the bottom of the
-  inspector. The inspector lists the replies it already has. Replies are saved as standard reply comments, which
-  aren't shown on the page or printed, and carry your name.
+<img src="images/comments.png" width="1000" alt="The Comments view at the left, with cards under the name of their page: Alex Kim's highlight is selected, with its Reply button and Sam Lee's reply indented under it, and a card further down says Draft reply; the highlighted words are selected on the page, and the inspector at the right shows the highlight's colour, opacity and comment box, Sam Lee's reply, and the Reply box with Add reply">
+
+- **Click a card** to select its annotation and show it on the page. Selecting an annotation on the page selects its
+  card too, and brings it into view.
+- **Previous and Next:** **Review > Previous** and **Review > Next** (or ☰ > View > Previous comment, Next comment)
+  select the comment before or after the one selected, in the order the Comments view shows them, and show it on
+  the page. With nothing selected, Next starts from the page you are reading.
+- **Search** with the box at the top: the cards whose comment, replies or marked words hold what you type stay.
+- **Filter ▾** shows only some types (Note, Highlight and so on), some authors, or the page you are reading. **Clear
+  filters** shows them all again. The count above the cards says how many show, such as "4 of 12 comments". The
+  filter and the search belong to the document's tab, and nothing about them is saved in the file.
+- **With the keyboard:** click a card, or Tab to the list, then Up and Down go to the card before or after, Home
+  and End to the first and last, each selected and shown on the page. Enter puts you in the reply box, Delete deletes
+  the comment, and Esc goes back to the page, leaving the comment selected.
+- Right-click a card to delete it, along with any replies. Undo brings it back.
+
+**Reply:** the selected card's **Reply** button (or Reply… on its right-click menu, or Enter in the list) puts you in
+the Reply box at the bottom of the inspector, which lists the replies the comment already has. **Add reply** or
+Ctrl+Enter adds it. A reply you leave unfinished, by selecting another comment or another document, stays with its
+comment as a draft, as in Word and Google Docs: its card says **Draft reply**, and it is back in the box when you
+select that comment again. Saving, printing and the other commands that change or use the document add every draft
+first, and closing asks about them, as for any text still being typed; Undo and Redo leave drafts as they are.
+Replies are saved as standard reply comments, which aren't shown on the page or printed, and carry your name.
 
 ## Your name on comments
 

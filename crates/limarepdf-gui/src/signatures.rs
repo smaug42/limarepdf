@@ -1,7 +1,7 @@
 //! Digital signatures in the app: checking a signed document in the background when it
 //! opens (and again after it is saved), the banner, the Signatures side tab, the Details
 //! window, and trusting signers and certificate authorities. The checking itself is
-//! limarepdf-core's [`limarepdf_core::verify_signatures`]; see docs/signatures.md.
+//! limarepdf-core's [`limarepdf_core::verify_signatures`]; see docs/signatures-in-depth.md.
 //!
 //! Everything shown here that comes from the file (names, reasons, field names) is
 //! cleaned for display first.

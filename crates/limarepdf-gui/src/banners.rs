@@ -174,15 +174,16 @@ pub fn leftover_copy(file: &std::path::Path) -> Banner {
 pub fn redactions(marks: usize) -> Banner {
     Banner::plain(
         Kind::Redactions,
-        format!(
-            "{} marked for redaction (outlined in red) but not yet applied: nothing under them \
-             has been removed.",
-            if marks == 1 {
-                "An area is".to_string()
-            } else {
-                format!("{marks} areas are")
-            }
-        ),
+        if marks == 1 {
+            "An area is marked for redaction (outlined in red) but not yet applied: nothing \
+             under it has been removed."
+                .to_string()
+        } else {
+            format!(
+                "{marks} areas are marked for redaction (outlined in red) but not yet applied: \
+                 nothing under them has been removed."
+            )
+        },
     )
 }
 

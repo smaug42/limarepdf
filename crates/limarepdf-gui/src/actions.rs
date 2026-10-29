@@ -49,6 +49,8 @@ pub enum Act {
     SelectAllText,
     /// Select every object on the page in front, with the arrow.
     SelectAllObjects,
+    /// Select every page, in Organise.
+    SelectAllPages,
     /// Print the selected words, as cropped pages or as plain text.
     PrintSelection,
     /// Save the selected words as a PDF (cropped pages or plain text) or a text file.
@@ -104,8 +106,13 @@ pub enum Act {
     Find,
     ZoomIn,
     ZoomOut,
+    /// Zoom to this percentage: the status bar's slider. Not in [`ACTIONS`].
+    ZoomTo(u32),
     FitWidth,
     Actual,
+    /// Show the document's pages as a grid to select, move, turn and remove them, or
+    /// the pages again (NEW-14).
+    Organise,
     NextPage,
     PrevPage,
     FirstPage,
@@ -122,6 +129,10 @@ pub enum Act {
     /// Show the side panel's Bookmarks view.
     Bookmarks,
     Comments,
+    /// Select the comment before or after the selected one, as the Comments view lists
+    /// them, and show its mark (Word's Review > Previous and Next).
+    PrevComment,
+    NextComment,
     /// Show the side panel's Signatures tab.
     Signatures,
     /// The details of the active document's nth digital signature. Opened from the
@@ -181,6 +192,11 @@ pub enum Act {
     Extract,
     Blank,
     InsertImages,
+    /// Insert the pages of other PDFs where the insertion bar is in Organise, else after
+    /// the selected pages or the current page.
+    InsertPdf,
+    /// Move the selected pages, as Word moves paragraphs with Alt+Shift and an arrow.
+    MovePages(PageMove),
     Scans,
     Ocr,
     Merge,
@@ -192,6 +208,18 @@ pub enum Act {
     Props,
     Security,
     About,
+}
+
+/// Where [`Act::MovePages`] moves the selected pages: a place earlier or later, a row up or
+/// down (in Organise's grid; in the thumbnails a row is a page), or to the start or end.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PageMove {
+    Earlier,
+    Later,
+    Up,
+    Down,
+    Start,
+    End,
 }
 
 impl Act {
@@ -237,6 +265,8 @@ impl Act {
             | Act::Extract
             | Act::Blank
             | Act::InsertImages
+            | Act::InsertPdf
+            | Act::MovePages(_)
             | Act::Merge => true,
             Act::Open
             | Act::OpenRecent(_)
@@ -251,6 +281,7 @@ impl Act {
             | Act::Paste
             | Act::SelectAllText
             | Act::SelectAllObjects
+            | Act::SelectAllPages
             | Act::MarkColor { .. }
             | Act::CommentName
             | Act::CopyObjectText
@@ -261,8 +292,10 @@ impl Act {
             | Act::Find
             | Act::ZoomIn
             | Act::ZoomOut
+            | Act::ZoomTo(_)
             | Act::FitWidth
             | Act::Actual
+            | Act::Organise
             | Act::NextPage
             | Act::PrevPage
             | Act::FirstPage
@@ -275,6 +308,8 @@ impl Act {
             | Act::SearchView
             | Act::Bookmarks
             | Act::Comments
+            | Act::PrevComment
+            | Act::NextComment
             | Act::Signatures
             | Act::SignatureDetails(_)
             | Act::SignedVersion(_)
@@ -376,8 +411,12 @@ pub struct Ctx {
     pub obj_lines: bool,
     /// Every selected object is a line of page text, visible or not.
     pub obj_only_text: bool,
-    /// Pages are selected in the thumbnails.
+    /// Pages are selected in the thumbnails or Organise's grid.
     pub pages: bool,
+    /// The active tab shows its pages as Organise's grid (NEW-14).
+    pub organise: bool,
+    /// Pages are cut, waiting to be pasted.
+    pub cut: bool,
     pub tool: Option<Tool>,
     /// The Annotate button's tool, the one last used.
     pub annot_tool: Option<Tool>,
@@ -418,6 +457,12 @@ pub struct Ctx {
     pub annot_locked: bool,
     /// The selected annotation can be moved with the current tool.
     pub annot_moves: bool,
+    /// Fill and sign items are on the pages, not yet finished.
+    pub signing: bool,
+    /// Areas are marked for redaction, not yet applied.
+    pub marked: bool,
+    /// The crop is being set: the pages shown whole with their crop box (Crop).
+    pub cropping: bool,
     /// The markup colours last chosen; see [`Act::MarkColor`].
     pub highlight: usize,
     pub line: usize,
@@ -476,16 +521,27 @@ fn words_idle(c: &Ctx) -> bool {
 fn copyable(c: &Ctx) -> bool {
     c.typing || c.words || lines_among(c)
 }
-/// Something to cut: what is selected in the text being typed, words, or lines of page
-/// text with nothing else selected, whose text Cut copies.
+/// Something to cut: what is selected in the text being typed, words, lines of page text
+/// with nothing else selected, whose text Cut copies, or pages, to paste elsewhere.
 fn cuttable(c: &Ctx) -> bool {
-    c.typing || ((c.words || (c.object && c.obj_only_text)) && !c.busy)
+    c.typing || ((c.words || (c.object && c.obj_only_text) || c.pages) && !c.busy)
 }
-fn typing(c: &Ctx) -> bool {
-    c.typing
+/// Somewhere to paste: the text being typed, or pages cut to put elsewhere.
+fn pasteable(c: &Ctx) -> bool {
+    c.typing || (c.cut && !c.busy)
+}
+/// Pages selected, to move.
+fn pages_selected(c: &Ctx) -> bool {
+    c.pages && !c.busy
 }
 fn doc_idle(c: &Ctx) -> bool {
     c.doc && !c.busy
+}
+fn signing(c: &Ctx) -> bool {
+    doc_idle(c) && c.signing
+}
+fn marked(c: &Ctx) -> bool {
+    doc_idle(c) && c.marked
 }
 fn object(c: &Ctx) -> bool {
     c.object
@@ -515,7 +571,11 @@ fn styleable(c: &Ctx) -> bool {
     (c.words || (c.object && c.obj_lines)) && !c.busy
 }
 fn arrow_tool(c: &Ctx) -> bool {
-    c.doc && c.tool == Some(Tool::Select)
+    c.doc && c.tool == Some(Tool::Select) && !c.organise
+}
+/// Organise's grid shows the pages (NEW-14).
+fn organising(c: &Ctx) -> bool {
+    c.doc && c.organise
 }
 fn deletable(c: &Ctx) -> bool {
     c.object || c.pages || (c.annot && !c.annot_locked) || (c.words && !c.busy)
@@ -525,7 +585,7 @@ fn image_object(c: &Ctx) -> bool {
 }
 /// The tools that select words: the read tool, and the Text tool with a drag.
 fn text_tool(c: &Ctx) -> bool {
-    matches!(c.tool, Some(Tool::Read | Tool::Text))
+    matches!(c.tool, Some(Tool::Read | Tool::Text)) && !c.organise
 }
 fn any_tool(c: &Ctx) -> bool {
     c.doc && c.tool.is_some()
@@ -535,6 +595,7 @@ const C: Modifiers = Modifiers::COMMAND;
 const CS: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const N: Modifiers = Modifiers::NONE;
 const S: Modifiers = Modifiers::SHIFT;
+const AS: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
 const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(m, key)
 }
@@ -686,7 +747,8 @@ pub static ACTIONS: &[Action] = &[
         enabled: cuttable,
         sep: true,
         hint: "Copy what is selected in the text being typed, else the selected words or \
-               lines of text, and take it out. Undo brings it back.",
+               lines of text, and take it out. Undo brings it back. Pages selected are cut \
+               to paste elsewhere in the document.",
         ..BASE
     },
     Action {
@@ -705,8 +767,11 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Paste",
         icon: icon::CLIPBOARD_TEXT,
-        enabled: typing,
-        hint: "Paste into the text being typed, at its caret (Ctrl+V there does the same).",
+        // Shown, not matched: the system sends the key as a paste (App::type_over).
+        keys: &[k(C, Key::V)],
+        enabled: pasteable,
+        hint: "Paste into the text being typed, at its caret. Pages cut go where the \
+               insertion bar is in Organise, else after the selected pages.",
         ..BASE
     },
     Action {
@@ -727,6 +792,15 @@ pub static ACTIONS: &[Action] = &[
         enabled: arrow_tool,
         hint: "Every picture, shape and line of text on the page, to move, restyle or \
                delete together.",
+        ..BASE
+    },
+    Action {
+        act: Act::SelectAllPages,
+        group: Group::Edit,
+        label: "Select all pages",
+        icon: icon::SELECTION_ALL,
+        keys: &[k(C, Key::A)],
+        enabled: organising,
         ..BASE
     },
     Action {
@@ -1043,6 +1117,17 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Organise,
+        group: Group::View,
+        label: "Organise pages",
+        icon: icon::SQUARES_FOUR,
+        sep: true,
+        checked: Some(|c| c.organise),
+        hint: "Every page as a card, to select, move, turn, take out and delete pages; again \
+               for the pages as they read.",
+        ..BASE
+    },
+    Action {
         act: Act::NextPage,
         group: Group::View,
         label: "Next page",
@@ -1161,6 +1246,24 @@ pub static ACTIONS: &[Action] = &[
         label: "Comments",
         icon: icon::CHAT_TEXT,
         hint: "List the document's comments, notes and markup in the navigation panel.",
+        ..BASE
+    },
+    Action {
+        act: Act::PrevComment,
+        group: Group::View,
+        label: "Previous comment",
+        icon: icon::CARET_UP,
+        hint: "Select the comment before this one, as the Comments view lists them, and \
+               show it on the page.",
+        ..BASE
+    },
+    Action {
+        act: Act::NextComment,
+        group: Group::View,
+        label: "Next comment",
+        icon: icon::CARET_DOWN,
+        hint: "Select the comment after this one, as the Comments view lists them, and \
+               show it on the page.",
         ..BASE
     },
     Action {
@@ -1592,7 +1695,8 @@ pub static ACTIONS: &[Action] = &[
         sep: true,
         label: "Insert blank page",
         icon: icon::FILE_PLUS,
-        hint: "After the selected pages, or the current page, at its size.",
+        hint: "Where the insertion bar is in Organise, else after the selected pages or the \
+               current page, at the size of the page before it.",
         ..BASE
     },
     Action {
@@ -1600,7 +1704,80 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Pages,
         label: "Insert images…",
         icon: icon::IMAGES,
-        hint: "After the selected pages, or the current page.",
+        hint: "Where the insertion bar is in Organise, else after the selected pages or the \
+               current page.",
+        ..BASE
+    },
+    Action {
+        act: Act::InsertPdf,
+        group: Group::Pages,
+        label: "Insert PDF pages…",
+        icon: icon::FILE_PDF,
+        hint: "The pages of other PDFs, where the insertion bar is in Organise, else after \
+               the selected pages or the current page.",
+        // Files are read in the background, as for Append PDFs.
+        enabled: idle,
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Earlier),
+        group: Group::Pages,
+        label: "Earlier",
+        keys: &[k(AS, Key::ArrowLeft)],
+        enabled: pages_selected,
+        hint: "The selected pages, one place earlier.",
+        submenu: "Move pages",
+        sep: true,
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Later),
+        group: Group::Pages,
+        label: "Later",
+        keys: &[k(AS, Key::ArrowRight)],
+        enabled: pages_selected,
+        hint: "The selected pages, one place later.",
+        submenu: "Move pages",
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Up),
+        group: Group::Pages,
+        label: "Up a row",
+        keys: &[k(AS, Key::ArrowUp)],
+        enabled: pages_selected,
+        hint: "The selected pages, a row up in Organise; one place earlier in the thumbnails.",
+        submenu: "Move pages",
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Down),
+        group: Group::Pages,
+        label: "Down a row",
+        keys: &[k(AS, Key::ArrowDown)],
+        enabled: pages_selected,
+        hint: "The selected pages, a row down in Organise; one place later in the thumbnails.",
+        submenu: "Move pages",
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Start),
+        group: Group::Pages,
+        label: "To the start",
+        keys: &[k(AS, Key::Home)],
+        enabled: pages_selected,
+        hint: "The selected pages, before the first page.",
+        submenu: "Move pages",
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::End),
+        group: Group::Pages,
+        label: "To the end",
+        keys: &[k(AS, Key::End)],
+        enabled: pages_selected,
+        hint: "The selected pages, after the last page.",
+        submenu: "Move pages",
         ..BASE
     },
     Action {
@@ -1693,7 +1870,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Apply redactions…",
         icon: icon::EYE_SLASH,
-        enabled: doc_idle,
+        enabled: marked,
         hint: "Remove the text, pictures and drawings under the redaction marks for good, \
                and paint the areas black.",
         ..BASE
@@ -1703,9 +1880,9 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Finish signing…",
         icon: icon::SIGNATURE,
-        enabled: doc_idle,
-        hint: "Draw the signatures, dates, ticks and other items put down with the Sign \
-               tool into the pages, so they can no longer be moved or removed as items.",
+        enabled: signing,
+        hint: "Draw the signatures, dates, ticks and other items put down with Fill and \
+               sign into the pages, so they can no longer be moved or removed as items.",
         ..BASE
     },
     Action {
@@ -1859,11 +2036,28 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
         }
         Selection::Objects { .. } => &[&[Act::ReplaceImage], &[Act::DeleteObject]],
         Selection::None | Selection::Pages(_) => &[
+            &[Act::Cut, Act::Paste],
             &[Act::RotR, Act::RotL, Act::Crop],
-            &[Act::Blank, Act::InsertImages, Act::Extract, Act::Delete],
+            &MOVES,
+            &[
+                Act::Blank,
+                Act::InsertImages,
+                Act::InsertPdf,
+                Act::Extract,
+                Act::Delete,
+            ],
         ],
     }
 }
+
+/// The page moves in the band's Move menu and the pages' right-click menu: the row moves
+/// are keys (and the Pages menu's), since a row is the grid's.
+pub const MOVES: [Act; 4] = [
+    Act::MovePages(PageMove::Earlier),
+    Act::MovePages(PageMove::Later),
+    Act::MovePages(PageMove::Start),
+    Act::MovePages(PageMove::End),
+];
 
 /// Fill a right-click menu: only the commands that are available now.
 pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<Act>) {
@@ -1881,6 +2075,15 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
             ui.separator();
         }
         first = false;
+        // The moves as one submenu, as in the Pages menu.
+        if group == &MOVES {
+            ui.menu_button("Move pages", |ui| {
+                for a in &items {
+                    menu_item(ui, a, c, acts);
+                }
+            });
+            continue;
+        }
         for a in &items {
             menu_item(ui, a, c, acts);
         }
@@ -1903,7 +2106,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 16] = [
+    let fixes: [Fix; 23] = [
         (
             |d| d.busy = false,
             "Waits until the task under way finishes.",
@@ -1912,11 +2115,15 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         (|d| d.file = true, "Save the document as a file first."),
         (|d| d.can_undo = true, "Nothing to undo."),
         (|d| d.can_redo = true, "Nothing to redo."),
+        // In Organise's grid, where nothing is typed or selected but pages, these first.
+        (|d| d.cut |= d.organise, "Cut pages first."),
+        (|d| d.pages |= d.organise, "Select pages first."),
         (|d| d.words = true, "Select some text first."),
         (
             |d| d.typing = true,
             "Click in text being typed, or where new text goes, first.",
         ),
+        (|d| d.pages = true, "Select pages first."),
         (
             |d| {
                 (d.object, d.obj_kind) = (true, Some(ObjKind::Text));
@@ -1933,6 +2140,8 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
             |d| (d.object_moves, d.annot_moves) = (true, true),
             "Select something the tool in use can move first.",
         ),
+        (|d| d.signing = true, crate::signing::NOTHING_PLACED),
+        (|d| d.marked = true, "Mark something for redaction first."),
         (|d| d.form = true, "This document has no form fields."),
         (|d| d.field = true, "Click in a form field first."),
         (
@@ -1941,6 +2150,8 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         ),
         (|d| d.tool = Some(Tool::Read), "Choose the Read tool first."),
         (|d| d.layout = Layout::Facing, "Shown only in facing pages."),
+        (|d| d.organise = true, "Choose Organise pages first."),
+        (|d| d.organise = false, "Go back to the page view first."),
     ];
     let helps = |fix: fn(&mut Ctx)| {
         let mut d = *c;
@@ -2169,18 +2380,26 @@ mod tests {
         let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
         let both = |a: &Action, b: &Action| {
             tools.iter().any(|&t| {
-                let c = Ctx {
-                    doc: true,
-                    tool: Some(t),
-                    ..Ctx::default()
-                };
-                (a.enabled)(&c) && (b.enabled)(&c)
+                [false, true].into_iter().any(|organise| {
+                    let c = Ctx {
+                        doc: true,
+                        tool: Some(t),
+                        organise,
+                        ..Ctx::default()
+                    };
+                    (a.enabled)(&c) && (b.enabled)(&c)
+                })
             })
         };
+        let select_all = [
+            Act::SelectAllText,
+            Act::SelectAllObjects,
+            Act::SelectAllPages,
+        ];
         let all = shortcuts();
         for (i, (a, k)) in all.iter().enumerate() {
             for (b, j) in &all[i + 1..] {
-                let apart = a.act == Act::SelectAllText && b.act == Act::SelectAllObjects;
+                let apart = select_all.contains(&a.act) && select_all.contains(&b.act);
                 assert!(
                     k != j || apart,
                     "{:?} and {:?} share a shortcut",

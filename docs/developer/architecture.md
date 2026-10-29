@@ -12,7 +12,9 @@ It uses:
 
 - [`lopdf`](https://crates.io/crates/lopdf) for the document structure and encryption;
 - [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](../rendering.md)), and
-  [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed;
+  [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed
+  (`crates/limarepdf-core/src/installed_fonts.rs`, the lookup order in
+  [Fonts that aren't embedded](../rendering.md#fonts-that-arent-embedded));
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
   dialogs. eframe's default features are off and the ones used listed (the workspace's `Cargo.toml`), so a new
   default isn't taken unseen (0.37's `system_fonts` isn't, and `NativeOptions::system_font_fallback` is off with
@@ -89,6 +91,20 @@ A document's pages are its page tree's entries whose object is a `/Type /Page` d
 entry whose object is missing or isn't a typed dictionary, as a blank stand-in page; hayro passes over a missing one,
 so taking lopdf's list would shift page numbers between editing and drawing, and a tree with no real page would
 no longer be repaired.
+
+The page colour modes (View > Page colours; [Rendering](../rendering.md#page-colour-modes)) are worked out on the
+drawn page, pixel by pixel, in `crates/limarepdf-core/src/page_colours.rs` (`PageColours::pixel`, `recolour`). Only
+`Renderer::render_in` and `render_region_in`, which draw pages and tiles for display, call it, so printing, exports
+and `limarepdf-cli render` keep the page's own colours. Dark shifts the three channels by the same amount, so the
+largest and smallest swap places around 255, which inverts lightness and keeps hue and chroma; High contrast takes
+the weakest channel as the amount of ink (so yellow counts as much as black) and stretches it, pale tints going
+black and anything stronger white; Sepia maps white to warm paper and black to dark brown. To leave pictures alone,
+`page_colours::picture_boxes` runs the page through hayro's interpreter a second time with a device (`Boxes`) that
+draws nothing and notes the box of each raster image, clipped to the clip in force (the crop box first), and
+`recolour` skips those boxes. So a turned picture keeps the colours of everything inside its upright bounding box,
+text or lines drawn over a picture keep their own colours there, and stencil masks (one-colour shapes painted in the
+fill colour, such as some logos and Type 3 glyphs) are drawing, not pictures, and are recoloured. With Recolour
+pictures too on (`keep_pictures` false), no boxes are kept.
 
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
@@ -262,7 +278,8 @@ what it will be added with.
 
 Greyed commands say why (`actions::why_not`). A command's `enabled` is a function of `actions::Ctx`, so `why_not`
 gives a copy of the context each thing a command may wait for, in the order people meet them (a `Fix` each: busy,
-saving, a file, undo, redo, words, typing, a line, a picture, an object, a movable one, a form, a field, the Select
+saving, a file, undo, redo, words, typing, a line, a picture, an object, a movable one, items put down with Fill
+and sign, redaction marks, a form, a field, the Select
 tool, the Read tool, facing pages), and returns the reason of the first that alone enables the command, else of
 the one that does with all those before it, else `NOT_NOW` ("Not available just now."); without a document, "Open
 a document first." `actions::greyed_tip` (the tooltip, then the reason) is the disabled hover text of the band's
@@ -323,7 +340,16 @@ returns it, as it was, and the caller stops. It runs in `Tab::edit`, `Tab::edit_
 after it) and before a job's result replaces the document (typing since the job started discards the result).
 `Tab::keep_typing` adds the forms and runs in `App::act` for every command `Act::uses_document` names (an
 exhaustive match: a new command must be classed), so a command's question (`App::asked`) is about the document
-with the typing in it. A form field that loses the keyboard to a dialog keeps its typing and takes the keyboard
+with the typing in it. Replies are drafts kept per comment (batch 42's Q1, as Word and Google Docs keep them):
+`Editor::drafts` maps a comment's id to its page and text, the inspector's reply box (its own id per comment, so
+its typing undo is the comment's) edits the selected comment's entry, an empty one is dropped, and nothing moves
+when the selection changes. `Typed::Reply` keeps one draft a call, and `Tab::keep_pieces` loops it, so every draft
+is its own undo step and one that fails is put back alone. Undo and Redo keep `Typed::BUT_DRAFTS` (`App::act`
+through `Tab::keep_typing_but_drafts`, and `Tab::undo`/`redo`): a draft added first would be what Undo took back.
+After every change and Undo or Redo, `Tab::place_drafts` finds each draft's comment with core's
+`Pdf::annotation_pages` (one walk of the page tree, by the pages that list them): a draft follows its comment's
+page, and one whose comment is gone has no page, so it is neither pending nor kept, until Redo brings the comment
+back. Reload replaces the whole tab, and is refused while `pending` (DA02), drafts included. A form field that loses the keyboard to a dialog keeps its typing and takes the keyboard
 back when the dialog closes (`Edit::Text`'s `back`); one whose own change is refused as it is left gets its typing
 back the same way (`FormUi::kept`). Panel Apply buttons that redraw only some pages or nothing don't commit first:
 they lose nothing, and their forms join their own undo steps.
@@ -454,6 +480,38 @@ first mapped length) against the codespace's, it fails a code that also starts a
 PB-03): a longer code the CMap maps (poppler reads that) or a longer codespace range (pdf.js reads by those). Not
 caught: a longer mapping that starts with the same bytes but doesn't match the string's next ones (poppler then
 reads a longer unmapped code), as hayro-cmap can't list mappings; a CMap like that breaks its own codespace.
+
+Redaction marks move and resize as other comments do (PF-37, batch 42): `editor::movable` lets a mark through
+although it has areas (`Annot::quads`; other text markup stays on its text), and `resizable` gives handles only to a
+mark of one area, as a mark's areas over several lines follow their text. A press anywhere in a selected mark's box
+grabs it (`in_mark_box`, in `grabs` for the read tool and `start_arrange` for the arrow), between its lines too,
+as its outline shows. The move is `Action::MoveAnnot` through core's `move_annotation`, which maps `QuadPoints` with
+the box; for a mark of one area that is resized, `inset_quad` puts the area back `PAD` (1 point) inside the new box,
+corner by corner, so stretching doesn't widen the gap (the outline, drawn from the areas, is what Apply removes:
+`redact.rs` reads the same quads). Arrow keys go through `Editor::nudge` as for other comments. Apply redactions…
+and Finish signing… are enabled by `Ctx::marked` and `Ctx::signing`, from `Editor::redact_marks` and `sign_items`,
+which `Tab::refresh_marks_banner` counts once per revision; `why_not` gives their reasons (`signing::NOTHING_PLACED`
+is shared with the pane's greyed button).
+
+The Comments view (ENH-40, batch 42) is `tab/comments.rs`. `Tab::read_comments` reads `Pdf::annotations` once per
+revision (letting go of a selected comment no longer there); `Tab::shown_order` is `thread_order` filtered by
+thread (the comment decides type, author and page; the search looks in the whole thread and in the words a
+markup without a comment marks, read with `page_words` per page and kept in `Review::marked` for the revision),
+cached in `Review::order` against `Shown` (revision, filter, the page read for This page, the lowercased query).
+`Tab::review` (`Review`) holds the filter and search per tab, never written. `Tab::cards` lays the rows out as
+search results do: heights from fixed parts (padding, the author line, the kind and date line, a Draft reply line,
+the selected card's Reply button) and the comment's first lines, counted once per width with `glyph_width` (one
+line when it fits, else `LINES`), so the tops are known without laying out text; `show_viewport` draws only the
+rows in view, page headings by `Tab::page_name`'s rule. A selection that differs from `Review::shown` (a click on
+the page, Previous/Next, the keys) sets `seek`, which scrolls the list only as far as the card needs, against last
+frame's `Review::view`. The list is one Tab stop (`Tab::comments_id`, in `holds_keys`, so Delete and Esc reach
+the commands as in the thumbnails); `Tab::list_keys` hands its keys to `Tab::comment_keys`: Up/Down/Home/End
+select a card (`take_keyboard` cancels egui's arrow focus move), Enter sets `Editor::reply_focus`, Esc surrenders
+the keyboard leaving the selection. A card's mark is shown by `Tab::show_mark`: `reveal` on the page being read,
+else `go_to` with `goto_y`. `Act::PrevComment`/`NextComment` call `Tab::step_comment`, which steps by the
+selected comment's place in the whole `thread_order` to the next card shown (so a comment the filter hides still
+has a place), from nothing selected by the page being read, and returns what to say at the ends (`Tab::info`).
+The inspector's heading names the comment's page by label through `Editor::annot_page`, lent by the app.
 Character and drawing-part coverage is the share of the box under the marks' union (`share_under`, Q14): each
 mark clipped to the box (`part_1d`; a flat box is all in or all out by its middle), the union's area summed in
 vertical slabs between the marks' edges. It was the sum of each mark's share, capped at 1, which counted a part
@@ -506,6 +564,17 @@ style's hover fill. Certify with digital ID's "Others may" is a list, not three 
 high as Sign does (PB-10, `digital::tests::sign_and_certify_fit_800_points_high` compares the space above their
 buttons).
 
+The Fill and sign pane (`SignPane::ui`, ENH-09, batch 42) is the task top to bottom: `inspector::facts` (Placed,
+from `Editor::sign_items`; Signature, a picture, not digital), then `group`s that never fold (a thin line and the
+section's name): Signature and Initials, each with its saved previews and one Create button whether or not any are
+saved, Text and marks, the ink, and Finish signing (`theme::primary_button` once something is down). A saved
+preview's row is its picture sized to the room its remove button leaves, the picture button's padding counted: a
+row wider than the panel widens it every frame. The marks (`MARKS`, `mark_glyph`) are Phosphor glyphs, the tick and
+cross from the outline font (the filled ones are cut out of a square), the dot from the filled one; Inter has no ✔
+or ✖, which egui drew as boxes. The Keep tool active pin is drawn by `inspector_head` (`Editor::keeps_pin`, a
+placing tool with no comment selected, and `keep_button`), first of the heading's buttons, so F6 to the inspector
+reaches it first.
+
 A picture's paper is made transparent by `clear_paper` (BUG-21): `paper_shade` finds the paper's shade in blocks of
 about a 24th of the picture (each block's 90th percentile, a block much darker than its neighbours taking theirs),
 blended between block centres, so shadows and uneven light are paper; `ink_alpha` keeps what is darker than that by
@@ -528,9 +597,13 @@ Dates people see (Fill and sign's Today, the date under a signature, a stamp's n
 footers' `{date}`) come from `overlay::local_today` and `today_iso`, the computer's calendar date through chrono's
 `Local`, asked for each time rather than kept, so an app left open overnight writes the new day. Times written for
 other programs stay in UTC (`overlay::utc_now`: an annotation's `/M`); a digital signature's `/M` is local time
-with its offset. `tests/local_dates.rs` reruns itself with `TZ` set to UTC+14 and UTC−11 (POSIX TZ strings, no
-time zone files needed), 25 hours apart, so at any moment at least one is on a different date from UTC; Unix
-only, as Windows ignores `TZ`.
+with its offset. A date read back for people to see (`Annot::modified`, shown on the comment cards, in the
+inspector and by `annot list`) goes through `annots::pdf_date`: one that says its time zone (`Z`, `+hh'mm'`,
+`-hh'mm'`) is parsed by `sig_verify::parse_pdf_date` and shown in chrono's `Local`, so LimarePDF's own UTC times
+read as the computer's clock; one without a zone, whose clock is unknown, is shown as written (batch 42; before,
+every date was shown as written). `tests/local_dates.rs` reruns itself with `TZ` set to UTC+14 and UTC−11 (POSIX
+TZ strings, no time zone files needed), 25 hours apart, so at any moment at least one is on a different date from
+UTC (`comment_dates_are_shown_in_local_time` checks fixed comment dates there); Unix only, as Windows ignores `TZ`.
 
 Annotation drawings LimarePDF makes are built in `annot_ap.rs`. A line's endings (`line_end`) are painted with a
 pen of their own: on a dashed line it sets an empty dash pattern (`[] 0 d`) before the ending, as `Pen::paint`
@@ -732,7 +805,7 @@ signature object (where that section says it is), patches the byte range, makes 
 by hand, so the pre-release `cms` crate isn't needed) and fills it in, and checks the result with
 `verify_signatures` before returning it. When the edits would make an earlier signature report a change it
 doesn't allow, it returns a `DisallowedChanges` error naming each signer and change, so the app can ask before
-signing again with `accept_disallowed`. See [Digital signatures](../signatures.md).
+signing again with `accept_disallowed`. See [Digital signatures in depth](../signatures-in-depth.md#what-signing-does).
 
 Saving a signed document (`sig_save.rs`, `append_edits`) uses the same writer without a signature: nothing is
 appended when no object changed; otherwise every signature is checked before and after, each must check as it did
@@ -877,8 +950,83 @@ go, keeps the panel's width (`Settings::keep_width`, saved when it changed); a p
 (Watermark's controls) keeps the width given, and the inspector's strip, dragged closed, keeps nothing.
 `panels::edge_keys` and `edge_shown` take that id. The panel sets its minimum width to its available width, since
 egui narrows a panel to its contents, such as one short line wrapped ("This document has no comments or markup.").
-The status bar says what is selected or the tool in use (`Editor::heading` while the editor owns the panel), and its
-zoom is `zoom_menu`.
+The status bar says what is selected or the tool in use (`Editor::heading` while the editor owns the panel), then
+(batch 41) `view_buttons` (Page view and Organise pages, `Act::Organise`) and `zoom_bar`: − (`icon::MINUS`), a
+logarithmic `Slider` (10–1000 %, the grid's 8–60 % while organising, `SliderClamping::Never` so a zoom past its ends
+isn't changed by being drawn; hidden under `SLIDER_ROOM`, 900 points), + and `zoom_menu`, which says the zoom alone
+("96%", Fit width ticked in its menu) in a box as wide as "1000%", right-aligned: the row is laid out from the right,
+so a label that changed width (it said "Fit width · 96%" until zooming turned fitting off) moved every button left
+of it (the user's find, `the_status_bar_zoom_stays_put_when_zooming`). The box is an `allocate_ui_with_layout`
+round the menu button, whose hover frame stays the text's. With the label's width fixed the status bar's `dialogs::reading_order`
+no longer redoes the frames of a fit zoom changing as a panel folds (`request_discard`), so the inspector's fold
+takes its own seven frames; `the_inspectors_heading_leaves_a_line_edit_open` settles twice for it.
+
+**Organise** (NEW-14, batch 41, `tab/organise.rs`) shows a tab's pages as a grid of cards in place of the pages
+while `Tab::organise` holds its state (`Tab::set_organise`; `Ctx::organise`; `App::act` sends the page view's own
+commands, `of_the_page`, back to it at the first selected page: tools, Fit width, the layouts, the Pages view and
+Crop, whose box is dragged on the pages). `Tab::show_grid` lays the cards out from the left
+(`Cards`: a card is the document's median page size, `typical_size`, times `Tab::grid_zoom`, which is
+`Settings::organise_zoom` lent and kept by `App::keep_grid_zoom`), draws and asks for pictures only for the rows in
+view and one more (`AHEAD`), lets go of those beyond two (`KEEP`), and registers every card's and checkbox's
+interaction before skipping the ones out of view (a click egui is following on a widget left out of a pass is
+dropped). The background is the grid's one Tab stop (`Tab::grid_id`, a list box "Page grid", `Sense::click_and_drag`)
+with a focus lock filter for the arrows and Esc; the cards (`Sense::CLICK | Sense::DRAG`, named "Page N", selected
+state) and checkboxes take clicks only, and a click on either gives the grid the keyboard. The keys are
+`Tab::list_keys`, called from `App::shortcuts` before the commands' keys when the grid has the keyboard or nothing
+has (or the thumbnails' list has it): `list_key` takes one press with exactly the modifiers asked for (never Alt) of
+the arrows, Home, End, Page Up and Down (a screen is `Organise::screen` rows, a row `Organise::cols`), Space
+(with Ctrl/Cmd too) and Enter; `key_to` selects the card reached alone, from `Tab::anchor` (Shift), or nothing
+(Ctrl/Cmd), and `Organise::focus` is the card the keys are at, ringed once `keyed`. `take_keyboard` requests the
+grid's focus and cancels egui's own arrow-key focus move, which egui decided from the press at the start of the frame
+when nothing had the keyboard and would apply at its end, taking the keyboard straight on from the grid. While the
+grid or the list holds the keyboard (`Tab::holds_keys`), `App::shortcuts` and `App::type_over` treat it as nothing
+holding it, so Delete, Esc, Ctrl+X and Ctrl+V and the Alt+Shift moves work there; the commands' plain keys now need
+Alt to match exactly (egui's `matches_logically` ignores an extra Alt, so Alt+Shift+Left was also Nudge's Left).
+
+Moving pages: a card's `drag_started` selects it alone unless it is selected and sets `Organise::dragging`; each
+frame `Cards::gap` finds the gap nearest the pointer (over a card, the side of its half; past a row's end, after its
+last card) as the place to land (`Organise::drop`), drawn as a bar (`Cards::bar`) with `moving_label` ("Move N
+pages", shared with the thumbnails' `drag_feedback`) and `edge_scroll`; the pointer let go over the grid moves the
+pages there with `Tab::move_selected_pages`, outside it (or after Esc, `Tab::escape_pages`) nothing. `Act::MovePages`
+(`PageMove`: Earlier, Later, Up and Down a row, Start, End; Alt+Shift with an arrow, Home or End) is
+`Tab::move_pages`: a place or a row by `shifted_order`, each selected page as far as it goes without passing the
+ends or another selected page, so pages apart stay apart; to the start or end by `moved_order`, together. Both go
+through `Tab::reorder_pages` (one `Tab::arrange` step); the selection follows its pages by object id
+(`follow_pages`), and `show_placed` brings the first into view (the card while organising, else `go_to`). Cut with
+pages selected (grid or thumbnails) keeps their objects in `Tab::cut` and puts "Pages 2, 3 of name" on the system
+clipboard: egui-winit sends Ctrl+V as a paste only when the clipboard holds text or an image, and the page names
+make sure it does. Paste (`Act::Paste`, never matched as a key: the paste arrives through `App::type_over`, which
+gives it to the pages cut while organising, with pages selected, or with nothing selected or typed, as the band's
+Paste does) is `Tab::paste_pages`, a move to
+`Tab::insert_at`; with nowhere else for them it says so. `Ctx::cut` enables Paste; `why_not` tries "Cut pages first."
+and "Select pages first." before the page view's reasons while organising. A click on the background between cards
+puts the insertion bar there (`Organise::bar`, the place and whether it is drawn after the card before it) and lets
+go of the selection, as a slide sorter; `Tab::insert_at` is the bar, else after the selected pages, else after the
+current page, for Insert blank page (at the page before's size), Insert images…, Paste and Insert PDF pages…
+(`Act::InsertPdf`: `App::insert_files` reads the files in the background as Append PDFs does, `Appending::to` a
+`PagesGo` naming the page after which they go by its object, so a change meanwhile doesn't misplace them, through the
+form-fields question too; core's `Pdf::insert_pages`, which `append` now calls at the end). `Tab::placed` selects
+the pages added while organising. `follow_pages` drops cut pages that went, follows the keys' place and the
+thumbnails' by object, and clears the bar; `escape_pages` takes back, in turn, a drag (cards or thumbnails), a cut,
+the bar and, organising, the selection.
+
+Pictures: `Tab::arrange` keeps every other page's picture and thumbnail by object (`pictures_by_page`,
+`put_pictures`) and marks its undo step `Step::arranged` with the pages it turned; `Tab::restore` keeps them the same
+way when it goes back or forth over such a step, so Undo and Redo of page moves, additions and removals draw again
+only the pages turned. The side panel's thumbnails (`show_thumbs`) are one Tab stop too (`Tab::list_id`, "Page
+thumbnails", `Sense::FOCUSABLE` over the panel, the thumbnails `Sense::CLICK | Sense::DRAG`), with `list_keys` in a
+column (`Tab::thumb_focus`, `thumb_screen` thumbnails to a screen, `thumb_seek` to scroll one into view); a key that
+selects goes to its page.
+
+Long documents (batch 41's 10,000-page check): `Tab::new` and every `Tab::refresh` read the page sizes (and, while
+the crop is set, the whole pages' sizes and the crop margins) from core's lists made in one walk of the page tree,
+`Pdf::page_sizes`, `full_page_sizes` and `all_crop_margins`. A loop asking `page_size(i)` or `crop_margins(i)` page
+by page walks the tree once a page (PB-29): that stopped the window for about 33 s on 10,000 pages, on opening and
+after each page change (`a_long_document_is_read_again_in_one_pass`). The way back from the grid: `set_organise`
+puts the page that was at the top of the page view back there by its object (`Tab::rezoom`), and a zoom change
+before the page view is drawn keeps that place (`Tab::zoom_to` leaves a `rezoom` waiting as it is): Fit width works
+its zoom out again in that first frame when the widest page changed while organising, and `Tab::view` is by place,
+from before the pages moved.
 
 The inspector (batch 39's second stage: PF-40, with ENH-38 and ENH-41) shows the editor's section for a selection
 or a tool that adds content (`Editor::owns_panel`), else `inspector::show`, which draws the task open alone, else
@@ -886,7 +1034,12 @@ the selected pages, else the document. A task is a `Section` for which `Section:
 `Properties`, a section of the document's inspector), headed by `Section::title`, and kept in `Forms::task` until
 closed. `Forms::choose` makes a task the one open, in place of another, or closes it for Properties, and sets
 `reveal`; `show` does the same with a section revealed, and a `Forms::close` naming the task closes it (Esc on Crop, `Act::Escape` while
-`Tab::crop_view`, or `Tab::set_crop_view` when typing on the page can't be kept). Each section's controls are one
+`Tab::crop_view`, or `Tab::set_crop_view` when typing on the page can't be kept). Setting the crop ends as a word
+processor's picture crop does, all through `Tab::end_crop` (batch 42): Esc, Enter with nothing focused and no
+question open (`App::ui`, after `shortcuts`), Crop again (`Act::Crop` while `crop_view`; the band shows it pressed
+from `Ctx::cropping`), a click on a page that isn't a drag of the crop box's edges (`crop_page_ui` senses clicks
+and drags), and a click on the page view's canvas beside the pages (sensing clicks only while cropping); the status
+bar says "Cropping N pages" from `Tab::cropping`. Each section's controls are one
 function, `tool_ui`, used for the task alone and inside the selected pages' Page properties, where Crop and Page
 labels are each a section of their own (a second `Sections`, whose open list joins the outer one, so the pages show
 the crop box while either Crop is open); `split_ui` is Split's. The facts are `document_facts` (pages; paper;
@@ -1076,7 +1229,7 @@ An edit that fails leaves the document unchanged.
 
 ## Signature crates
 
-Checking and digital IDs use these pure-Rust crates (moved from [Digital signatures](../signatures.md#security-notes)),
+Checking and digital IDs use these pure-Rust crates (moved from [Digital signatures in depth](../signatures-in-depth.md#security-notes)),
 from the RustCrypto project unless noted, pinned to exact versions where they are pre-releases:
 
 | Crate | Version | Status | Used for |
@@ -1095,4 +1248,4 @@ from the RustCrypto project unless noted, pinned to exact versions where they ar
 
 "Pre-release" means their programming interface may still change, not that they are untested; they come from the
 same project and review as the stable crates. LimarePDF's own reader and writer handle the signature data (see
-[Digital signatures](../signatures.md#security-notes)), so the pre-release `cms` crate isn't used.
+[Digital signatures in depth](../signatures-in-depth.md#security-notes)), so the pre-release `cms` crate isn't used.

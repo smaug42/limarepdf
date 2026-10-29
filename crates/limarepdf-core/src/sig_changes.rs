@@ -1,5 +1,5 @@
 //! What changed in a signed document after each signature, and whether the signer allowed
-//! it: Acrobat's allowed-changes analysis. See docs/signatures.md.
+//! it: Acrobat's allowed-changes analysis. See docs/signatures-in-depth.md.
 //!
 //! A change made after signing is appended to the file as a new revision. For each
 //! signature, the revisions after it are read with LimarePDF's own strict reader of

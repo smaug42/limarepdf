@@ -11,8 +11,10 @@ Commands that change a document take the input file first and write the result t
 never changed: an `-o` that names the input, by any path or link to it, is refused with nothing written (on
 Windows a hard link to the input isn't recognised, and gets a file of its own instead). The result is written
 whole or not at all: it goes to a new file that is then put in place in one step, so a name that is a hard link
-to another file gets a file of its own, and the other file keeps its bytes. Add `--password` to open a protected input. A damaged input is repaired to read it, as in the app,
-and a note on stderr says so; some of its content may be missing ([details](rendering.md#damaged-files)). An input
+to another file gets a file of its own, and the other file keeps its bytes. Add `--password` to open a protected
+input. Every command but `encrypt` writes its output without a password, so protect it again with
+`limarepdf-cli encrypt` if it needs one ([Properties and security](#properties-and-security)). A damaged input is
+repaired to read it, as in the app, and a note on stderr says so; some of its content may be missing ([details](rendering.md#damaged-files)). An input
 other PDF apps may show differently gets a note on stderr too
 ([details](rendering.md#files-other-apps-may-show-differently)).
 
@@ -21,7 +23,7 @@ don't allow the changes, the command writes nothing unless `--accept-disallowed`
 report the changes). When the changes can't be added that way (a password set, an encrypted or damaged file,
 redaction), it writes nothing unless `--break-signatures` is given, which writes the whole file and breaks them.
 `limarepdf-cli sanitise` takes `--break-signatures` too. See
-[Saving a signed document](signatures.md#saving-a-signed-document).
+[Saving a signed document](signatures-in-depth.md#saving-a-signed-document-in-detail).
 
 Page lists take numbers and ranges, counted from 1: `1-3,7`, `5-` (5 to the end) or `all`.
 
@@ -225,11 +227,11 @@ See [Removing hidden information](redaction.md#removing-hidden-information).
 Exit status 0 means every signature checked as valid (or there are none) and nothing changed after any of them
 that its signer didn't allow; 1 means at least one is broken, can't be checked or has changes that aren't allowed,
 or the file can't be opened. A signer nobody vouches for doesn't change the exit status unless `--require-trusted`
-is given. See [Digital signatures](signatures.md) for what each result means.
+is given. See [What each result means](signatures-in-depth.md#what-each-result-means).
 
 The trust list is `trust.txt` in LimarePDF's settings folder (`~/.config/limarepdf/` on Linux), shared with the app; every
 `limarepdf-cli trust` command takes `--trust-file FILE` to work on another one. Trust settings affect LimarePDF only. See
-[Trusting signers](signatures.md#trusting-signers).
+[Trusting signers in depth](signatures-in-depth.md#trusting-signers-in-detail).
 
 ### Digital IDs
 
@@ -247,7 +249,7 @@ Commands that need a password ask for it without showing it; for scripts, `--pas
 on the command line itself. IDs are kept in the `ids` folder of LimarePDF's settings folder; every `limarepdf-cli id` command takes
 `--id-folder FOLDER` to work on another one. An ID is chosen by its number in `limarepdf-cli id list`, its name (the file
 name, such as `jane-doe`), the name in its certificate, or its SHA-256 fingerprint. See
-[Digital IDs](signatures.md#digital-ids).
+[Digital IDs in depth](signatures-in-depth.md#digital-ids-in-detail).
 
 ### Signing
 
@@ -265,7 +267,7 @@ name, such as `jane-doe`), the name in its certificate, or its SHA-256 fingerpri
 `limarepdf-cli id`. The signature is added after the file's existing bytes, so earlier signatures stay valid, and the signed
 copy is checked before it is written; the ID used becomes the default. It refuses expired IDs, encrypted documents,
 and what the document's certification or an earlier signer's lock doesn't allow, saying why. See
-[Signing](signatures.md#signing).
+[Signing in depth](signatures-in-depth.md#signing-in-detail).
 
 ## Properties and security
 

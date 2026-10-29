@@ -228,12 +228,6 @@ const EXPORT_COMMENTS: Planned = Planned {
     item: "PF-05",
     what: "Save the comments as a summary or for another app.",
 };
-const ORGANISE: Planned = Planned {
-    label: "Organise",
-    icon: icon::SQUARES_FOUR,
-    item: "NEW-14",
-    what: "Arrange, move and choose pages in a grid of the whole document.",
-};
 const CREATE_FIELDS: Planned = Planned {
     label: "Create fields",
     icon: icon::LIST_PLUS,
@@ -286,6 +280,7 @@ static EDIT: &[Group] = &[
                     Act::Tool(Tool::Select),
                     Act::SelectAllText,
                     Act::SelectAllObjects,
+                    Act::SelectAllPages,
                 ],
             ),
         ],
@@ -330,6 +325,9 @@ static REVIEW: &[Group] = &[
                 icon::CHAT_TEXT,
                 &[Act::CommentName],
             ),
+            // As Word's Review band has them, beside the comments.
+            b(Act::PrevComment, "Previous", icon::CARET_UP),
+            b(Act::NextComment, "Next", icon::CARET_DOWN),
         ],
     ),
     group(
@@ -386,10 +384,11 @@ static PAGES: &[Group] = &[
             menu(
                 "Insert pages",
                 icon::FILE_PLUS,
-                &[Act::Blank, Act::InsertImages, Act::Merge],
+                &[Act::Blank, Act::InsertImages, Act::InsertPdf, Act::Merge],
             ),
+            menu("Move", icon::ARROWS_OUT_CARDINAL, &actions::MOVES),
             b(Act::Split, "Split", icon::SCISSORS),
-            Item::Planned(&ORGANISE),
+            b(Act::Organise, "Organise", icon::SQUARES_FOUR),
         ],
     ),
     group(
@@ -855,7 +854,7 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
                 button(ui, &sign, acts);
                 if let Some(m) = parts.sign {
                     caret(ui, "Fill and sign choices", |ui| {
-                        crate::signing::menu_ui(ui, m, acts);
+                        crate::signing::menu_ui(ui, m, c, acts);
                     });
                 } else {
                     let create = [
@@ -890,6 +889,8 @@ fn is_on(act: Act, c: &Ctx) -> bool {
         Act::Tool(t) => c.tool == Some(t) && t != Tool::Read,
         // Edit text is the Text tool, with nothing selected.
         Act::EditObjectText => c.tool == Some(Tool::Text),
+        // Crop while the crop is being set; a click on it again ends that, as in Word.
+        Act::Crop => c.cropping,
         _ => actions::get(act).checked.is_some_and(|on| on(c)),
     }
 }
@@ -1063,6 +1064,7 @@ pub fn all_planned() -> Vec<&'static Planned> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::PageMove;
 
     /// A band of 5 groups where each folded one saves 40 points: 400 with none folded.
     fn need(folded: usize) -> f32 {
@@ -1171,11 +1173,17 @@ mod tests {
             (Act::Tool(Tool::Image), 1),
             (Act::Tool(Tool::Note), 1),
             (Act::Comments, 1),
+            (Act::PrevComment, 1),
+            (Act::NextComment, 1),
             (Act::RotR, 1),
             (Act::RotL, 2),
             (Act::Extract, 1),
             (Act::Delete, 1),
             (Act::InsertImages, 2),
+            (Act::InsertPdf, 2),
+            (Act::Organise, 1),
+            (Act::MovePages(PageMove::Earlier), 2),
+            (Act::MovePages(PageMove::End), 2),
             (Act::Tool(Tool::Sign), 1),
             (Act::SignDigital, 2),
             (Act::Find, 0),
@@ -1232,6 +1240,7 @@ mod tests {
                         | Act::Escape
                         | Act::Nudge(..)
                         | Act::Extend(_)
+                        | Act::MovePages(PageMove::Up | PageMove::Down)
                         | Act::NextPage
                         | Act::PrevPage
                         | Act::FirstPage

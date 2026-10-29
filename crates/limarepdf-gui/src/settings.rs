@@ -159,6 +159,10 @@ pub const STAMP_WORDINGS: usize = 5;
 pub const WINDOW_DEFAULT: [f32; 2] = [1200.0, 850.0];
 pub const WINDOW_MIN: [f32; 2] = [640.0, 420.0];
 pub const WINDOW_MAX: [f32; 2] = [3840.0, 2160.0];
+/// The zoom Organise's cards start at, and the smallest and largest (NEW-14).
+pub const ORGANISE_ZOOM: f32 = 0.2;
+pub const ORGANISE_MIN: f32 = 0.08;
+pub const ORGANISE_MAX: f32 = 0.6;
 /// The panel widths kept, in points: from the narrowest a panel goes
 /// ([`crate::panels::NARROWEST`]) to half the widest window.
 const PANEL_WIDTHS: std::ops::RangeInclusive<f32> = crate::panels::NARROWEST..=WINDOW_MAX[0] / 2.0;
@@ -224,6 +228,8 @@ pub struct Settings {
     pub show_planned: bool,
     /// The band's commands on one row, as icons (their names on hover); off unless chosen.
     pub compact_commands: bool,
+    /// The zoom Organise shows the pages at, as cards (NEW-14).
+    pub organise_zoom: f32,
     pub accent: Accent,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
@@ -293,6 +299,7 @@ impl Settings {
             page_labels: true,
             show_planned: true,
             compact_commands: false,
+            organise_zoom: ORGANISE_ZOOM,
             accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
             window_maximized: false,
@@ -367,6 +374,12 @@ impl Settings {
                 "page_names" => s.page_labels = value != "numbers",
                 "planned_features" => s.show_planned = value != "hidden",
                 "commands" => s.compact_commands = value == "compact",
+                "organise_size" => {
+                    if let Ok(percent) = value.parse::<f32>() {
+                        let zoom = percent / 100.0;
+                        s.organise_zoom = zoom.clamp(ORGANISE_MIN, ORGANISE_MAX);
+                    }
+                }
                 "accent_colour" => {
                     s.accent = match value {
                         "limarepdf" => Accent::LimarePdf,
@@ -511,6 +524,7 @@ impl Settings {
             Accent::LimarePdf => "limarepdf",
         };
         text += &format!("commands = {commands}\naccent_colour = {accent}\n");
+        text += &format!("organise_size = {:.0}\n", self.organise_zoom * 100.0);
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
             self.window[0], self.window[1], self.window_maximized
@@ -713,6 +727,25 @@ mod tests {
         let s = Settings::from_file(Some(f));
         assert!(!s.compact_commands);
         assert_eq!(s.accent, Accent::Desktop);
+    }
+
+    /// NEW-14: the size of Organise's cards is kept, within its range; nonsense gives the
+    /// default.
+    #[test]
+    fn the_organise_size_is_remembered() {
+        let f = file("organise");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.organise_zoom, ORGANISE_ZOOM);
+        s.organise_zoom = 0.31;
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.organise_zoom, 0.31);
+        std::fs::write(&f, "organise_size = 900\n").unwrap();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.organise_zoom, ORGANISE_MAX);
+        std::fs::write(&f, "organise_size = walrus\n").unwrap();
+        let s = Settings::from_file(Some(f));
+        assert_eq!(s.organise_zoom, ORGANISE_ZOOM);
     }
 
     #[test]

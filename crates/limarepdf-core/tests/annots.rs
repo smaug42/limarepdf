@@ -303,7 +303,10 @@ fn lists_comments_and_markup_but_not_links_widgets_or_popups() {
     assert_eq!(a[0].kind, AnnotKind::Note);
     assert_eq!(a[0].contents, "Check this");
     assert_eq!(a[0].author, "Sam");
-    assert_eq!(a[0].modified, "2024-03-05 14:22");
+    // In this computer's time zone (tests/local_dates.rs tries others).
+    let utc = "2024-03-05T14:22:33Z".parse::<chrono::DateTime<chrono::Utc>>();
+    let local = utc.unwrap().with_timezone(&chrono::Local);
+    assert_eq!(a[0].modified, local.format("%Y-%m-%d %H:%M").to_string());
     assert_eq!(a[0].color, Some([1.0, 0.0, 0.0]));
     // Displayed coordinates run down from the top of the 200 pt page.
     assert_eq!(a[0].bbox, [10.0, 10.0, 30.0, 30.0]);
@@ -771,6 +774,67 @@ fn moving_and_resizing_take_the_geometry_along() {
     );
 }
 
+/// PF-37: a redaction mark's areas move with it; a mark of one area stretched keeps its
+/// area a point inside its box, however far, so the outline and what Apply removes are
+/// where the box shows; one too small for the gap keeps an area at its middle.
+#[test]
+fn redaction_marks_move_and_stretch_with_their_areas() {
+    let mut p = page();
+    let one = p
+        .add_redaction_mark(0, &[[50.0, 50.0, 100.0, 70.0]], "")
+        .unwrap();
+    let two = p
+        .add_redaction_mark(
+            0,
+            &[[50.0, 120.0, 150.0, 135.0], [50.0, 140.0, 90.0, 155.0]],
+            "",
+        )
+        .unwrap();
+    let marks = |p: &Pdf| {
+        p.annotations()
+            .into_iter()
+            .filter(|a| a.kind == AnnotKind::Redact)
+    };
+    let at = |p: &Pdf, id| marks(p).find(|a| a.id == id).unwrap();
+    // Three times as wide and twice as tall: the area a point inside, not three.
+    let b = at(&p, one).bbox;
+    let to = [
+        b[0],
+        b[1],
+        b[0] + (b[2] - b[0]) * 3.0,
+        b[1] + (b[3] - b[1]) * 2.0,
+    ];
+    p.move_annotation(0, one, to).unwrap();
+    let a = at(&p, one);
+    let inside = [to[0] + 1.0, to[1] + 1.0, to[2] - 1.0, to[3] - 1.0];
+    for (q, w) in a.quads[0].iter().zip(inside) {
+        assert!((q - w).abs() < 0.01, "{:?} not {inside:?}", a.quads[0]);
+    }
+    // Two areas move together, each as far.
+    let before = at(&p, two);
+    let b = before.bbox;
+    p.move_annotation(0, two, [b[0] + 30.0, b[1] - 40.0, b[2] + 30.0, b[3] - 40.0])
+        .unwrap();
+    let after = at(&p, two);
+    for (q, w) in after.quads.iter().zip(&before.quads) {
+        let moved = [w[0] + 30.0, w[1] - 40.0, w[2] + 30.0, w[3] - 40.0];
+        for (a, b) in q.iter().zip(moved) {
+            assert!((a - b).abs() < 0.01, "{q:?} not {moved:?}");
+        }
+    }
+    // Squeezed to a point and a half across: its area at the middle, not past its edges.
+    p.move_annotation(0, one, [10.0, 10.0, 11.5, 30.0]).unwrap();
+    let q = at(&p, one).quads[0];
+    assert!(
+        (q[0] - 10.75).abs() < 0.01 && (q[2] - 10.75).abs() < 0.01,
+        "{q:?}"
+    );
+    assert!(
+        (q[1] - 11.0).abs() < 0.01 && (q[3] - 29.0).abs() < 0.01,
+        "{q:?}"
+    );
+}
+
 #[test]
 fn shapes_and_lines_are_annotations_that_can_be_restyled() {
     let mut p = page();
@@ -1052,6 +1116,23 @@ fn replies_are_listed_but_not_drawn() {
     assert!(p.add_reply(note, "  ", "").is_err());
     // Deleting what it answers takes the reply too.
     assert_eq!(p.remove_annotations(|a| a.id == note).unwrap(), 2);
+}
+
+/// Batch 42 (ENH-40): the pages comments are on, found by the pages listing them: draft
+/// replies follow their comments when pages move, and know when one is gone.
+#[test]
+fn annotations_are_found_by_the_pages_listing_them() {
+    let mut p = page();
+    p.insert_blank(1, 300.0, 200.0).unwrap();
+    let yellow = [1.0, 0.85, 0.2];
+    let first = p.add_note(0, (50.0, 50.0), yellow, "One", "Sam").unwrap();
+    let second = p.add_note(1, (50.0, 50.0), yellow, "Two", "Sam").unwrap();
+    let pages = |p: &Pdf| p.annotation_pages(&[second, first, (999, 0)]);
+    assert_eq!(pages(&p), [Some(1), Some(0), None]);
+    p.reorder(&[1, 0]).unwrap();
+    assert_eq!(pages(&p), [Some(0), Some(1), None]);
+    p.remove_annotations(|a| a.id == first).unwrap();
+    assert_eq!(pages(&p), [Some(0), None, None]);
 }
 
 fn png(w: u32, h: u32, c: [u8; 4]) -> Vec<u8> {

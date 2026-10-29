@@ -305,6 +305,24 @@ impl Pdf {
             .collect()
     }
 
+    /// The pages (zero-based) annotations `ids` are on, by the pages that list them: `None`
+    /// for one no page lists. One walk of the page tree, however many are asked.
+    pub fn annotation_pages(&self, ids: &[(u32, u16)]) -> Vec<Option<usize>> {
+        let mut out = vec![None; ids.len()];
+        for (i, page) in self.page_ids().into_iter().enumerate() {
+            if out.iter().all(Option::is_some) {
+                break;
+            }
+            let refs = self.all_annot_refs(page);
+            for (k, id) in ids.iter().enumerate() {
+                if out[k].is_none() && refs.contains(id) {
+                    out[k] = Some(i);
+                }
+            }
+        }
+        out
+    }
+
     /// Give annotations written into a page's `/Annots` directly, which the format doesn't
     /// allow, objects of their own, so that removing information finds them like any other.
     /// How they look and what they hold is unchanged.
@@ -691,15 +709,20 @@ fn rgb(c: &[f32]) -> [f32; 3] {
     }
 }
 
-/// A PDF date (`D:YYYYMMDDHHmmSS…`) as `YYYY-MM-DD HH:MM`; the time is left out when
-/// the date has none.
+/// A PDF date (`D:YYYYMMDDHHmmSS…`) as `YYYY-MM-DD HH:MM`: in this computer's time zone
+/// when the date says its own (LimarePDF writes UTC's), else as written; the time is left
+/// out when the date has none.
 fn pdf_date(s: &str) -> Option<String> {
     let s = s.strip_prefix("D:").unwrap_or(s);
-    let digits: String = s
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .take(12)
-        .collect();
+    let all = s.chars().take_while(char::is_ascii_digit).count();
+    let zoned = matches!(s[all..].chars().next(), Some('Z' | '+' | '-'));
+    if all >= 12 && zoned {
+        if let Some(t) = crate::sig_verify::parse_pdf_date(s) {
+            let local = t.with_timezone(&chrono::Local);
+            return Some(local.format("%Y-%m-%d %H:%M").to_string());
+        }
+    }
+    let digits: String = s.chars().take(all.min(12)).collect();
     if digits.len() < 8 {
         return None;
     }
@@ -716,8 +739,9 @@ mod tests {
 
     #[test]
     fn dates() {
+        // Dates with a time zone are shown in this computer's: tests/local_dates.rs.
         assert_eq!(
-            pdf_date("D:20240305142233+01'00'").as_deref(),
+            pdf_date("D:20240305142233").as_deref(),
             Some("2024-03-05 14:22")
         );
         assert_eq!(pdf_date("20240305").as_deref(), Some("2024-03-05"));

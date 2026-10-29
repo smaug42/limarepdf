@@ -39,7 +39,7 @@ How a release is made, for maintainers.
 
 4. CI runs again for the tag. Its `release` job starts only once the `audit` job and every build have passed, so a
    new advisory published since the pull request stops the release: fix it (an update, or an `--ignore` with its
-   reason in `ci.yml` and `docs/signatures.md` when it doesn't apply), then delete the tag
+   reason in `ci.yml` and `docs/signatures-in-depth.md` when it doesn't apply), then delete the tag
    (`git push --delete origin vX.Y.Z`, `git tag -d vX.Y.Z`) and tag the fixed `main` again. It checks that the tag
    matches `Cargo.toml`, takes the release notes
    from the matching `CHANGELOG.md` section, ends them with a link comparing the tag with the previous version tag,

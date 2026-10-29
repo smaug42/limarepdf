@@ -1,6 +1,6 @@
 //! Checking the digital signatures in a PDF: finding them, the byte-range rules that stop
 //! a signature being moved, wrapped or borrowed, and the CMS checks in
-//! [`crate::cms_check`]. See docs/signatures.md.
+//! [`crate::cms_check`]. See docs/signatures-in-depth.md.
 //!
 //! Everything about a signature (its byte range, reason, certification) is read from the
 //! version of the document it signed, never from later additions, and the signature

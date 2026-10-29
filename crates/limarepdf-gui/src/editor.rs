@@ -19,7 +19,7 @@ use limarepdf_core::{
     PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace,
     TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -146,7 +146,7 @@ pub enum Typed {
     Field,
     /// The selected comment's changes in the inspector.
     Comment,
-    /// A reply to it.
+    /// A reply to a comment: every draft reply, one at a time (see [`Editor::draft`]).
     Reply,
     /// The look of words selected with the read tool, or of lines among several objects
     /// selected with the arrow, changed in the inspector.
@@ -166,6 +166,36 @@ impl Typed {
         Typed::Words,
         Typed::Objects,
     ];
+
+    /// What Undo and Redo keep first: all but draft replies, which stay drafts, as Word and
+    /// Google Docs keep them. Added first, Undo would take one back instead of the change
+    /// before.
+    pub const BUT_DRAFTS: [Typed; 7] = [
+        Typed::Text,
+        Typed::Writing,
+        Typed::Object,
+        Typed::Field,
+        Typed::Comment,
+        Typed::Words,
+        Typed::Objects,
+    ];
+}
+
+/// A reply typed to a comment and not yet added: kept with its comment until it is, as
+/// Word and Google Docs keep a draft (batch 42's Q1).
+#[derive(Clone, Debug)]
+struct Draft {
+    /// The comment's page, or `None` while the comment isn't in the document (Undo took it
+    /// away; Redo brings both back).
+    page: Option<usize>,
+    text: String,
+}
+
+impl Draft {
+    /// It can be added as a reply: there is something to add, and its comment to add it to.
+    fn ready(&self) -> bool {
+        self.page.is_some() && !self.text.trim().is_empty()
+    }
 }
 
 /// What [`Editor::keep`] took from the editor to keep, to put back if keeping it fails.
@@ -178,7 +208,8 @@ enum Kept {
     /// The value the field had before.
     Field(String),
     Comment,
-    Reply(String),
+    /// The draft and the comment it answers.
+    Reply((u32, u16), Draft),
     Words(Box<Chosen>),
     Objects(Box<Group>),
 }
@@ -372,16 +403,24 @@ impl AnnotEdit {
     }
 }
 
-/// Whether the annotation can be moved with the arrow tool: not locked, and not text
-/// markup, which stays on its text.
+/// Whether the annotation can be moved: not locked, and not text markup, which stays on
+/// its text. A redaction mark moves, all its areas together (PF-37).
 pub fn movable(a: &Annot) -> bool {
-    !a.locked() && a.quads.is_empty()
+    !a.locked() && (a.quads.is_empty() || a.kind == AnnotKind::Redact)
 }
 
-/// Whether it can also be resized by its box: a note's icon keeps its size, and a line
-/// has handles on its ends instead.
+/// Whether it can also be resized by its box: a note's icon keeps its size, a line has
+/// handles on its ends instead, and a redaction mark's areas over several lines follow
+/// their text.
 pub fn resizable(a: &Annot) -> bool {
-    movable(a) && !matches!(a.kind, AnnotKind::Note | AnnotKind::Line)
+    movable(a) && !matches!(a.kind, AnnotKind::Note | AnnotKind::Line) && a.quads.len() <= 1
+}
+
+/// Whether `p` (page points) is in a redaction mark's box, which its outline shows when it
+/// is selected: a press there moves it, between the lines it marks too.
+fn in_mark_box(a: &Annot, p: Pos2) -> bool {
+    let b = a.bbox;
+    a.kind == AnnotKind::Redact && p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]
 }
 
 #[derive(Clone, Copy)]
@@ -1359,8 +1398,11 @@ pub struct Editor {
     pub ink: Option<(usize, (u32, u16))>,
     /// When (`egui` time) the pen's last stroke ended.
     ink_at: f64,
-    /// A reply being typed in the inspector.
-    reply: String,
+    /// The replies typed and not yet added, by the comment they answer: the inspector's
+    /// reply box shows the selected comment's.
+    drafts: BTreeMap<(u32, u16), Draft>,
+    /// What the selected comment's page is called (its label), lent by the app.
+    pub annot_page: Option<String>,
     pub stamp: StampPick,
     /// Text stamps get a line with the author's name and the date (from the settings).
     pub stamp_name_date: bool,
@@ -1464,7 +1506,8 @@ impl Default for Editor {
             pen_stroke: None,
             ink: None,
             ink_at: f64::NEG_INFINITY,
-            reply: String::new(),
+            drafts: BTreeMap::new(),
+            annot_page: None,
             stamp: StampPick::Text(StampKind::Approved),
             stamp_name_date: true,
             stamp_pictures: Vec::new(),
@@ -1820,9 +1863,12 @@ impl Editor {
                 (acts.pop()?, Kept::Field(original))
             }
             Typed::Comment => (self.annot_changes()?, Kept::Comment),
+            // One draft at a time: one that can't be added is put back alone.
             Typed::Reply => {
-                let a = self.reply_to()?;
-                (a, Kept::Reply(std::mem::take(&mut self.reply)))
+                let id = *self.drafts.iter().find(|(_, d)| d.ready())?.0;
+                let d = self.drafts.remove(&id)?;
+                let a = Action::Reply(d.page?, id, d.text.clone());
+                (a, Kept::Reply(id, d))
             }
             Typed::Words => {
                 let c = self.chosen.take_if(|c| c.changed())?;
@@ -1849,7 +1895,9 @@ impl Editor {
             }
             Kept::Field(original) => self.form.uncommit(original),
             Kept::Comment => {}
-            Kept::Reply(r) => self.reply = r,
+            Kept::Reply(id, d) => {
+                self.drafts.insert(id, d);
+            }
             Kept::Words(c) => self.chosen = Some(*c),
             Kept::Objects(g) => self.group = Some(*g),
         }
@@ -1875,7 +1923,7 @@ impl Editor {
 
     /// Whether something typed isn't in the document yet: new text, a note or text box
     /// being typed on the page, a form field being typed in, the selected comment's
-    /// changes in the inspector, a reply to it not yet added, or the selected words' or
+    /// changes in the inspector, a draft reply to a comment, or the selected words' or
     /// objects' look changed in the inspector. Saving keeps it first, and closing asks, as
     /// for unsaved changes.
     pub fn pending(&self) -> bool {
@@ -1883,7 +1931,7 @@ impl Editor {
             || self.writing.as_ref().is_some_and(Writing::changed)
             || self.form.typing()
             || self.annot_changes().is_some()
-            || self.reply_to().is_some()
+            || self.drafts.values().any(Draft::ready)
             || self.insp_change().is_some()
             || self.chosen.as_ref().is_some_and(Chosen::changed)
             || self.group.as_ref().is_some_and(|g| g.change().is_some())
@@ -2350,11 +2398,24 @@ impl Editor {
         edit.hovered()
     }
 
-    /// The reply typed to the selected comment, as the change that adds it.
-    fn reply_to(&self) -> Option<Action> {
-        let a = self.selected_annot()?;
-        let typed = !self.reply.trim().is_empty();
-        typed.then(|| Action::Reply(a.page, a.id, self.reply.clone()))
+    /// The reply typed to comment `id` and not yet added, if any: a draft, or what the reply
+    /// box holds for the selected comment.
+    pub fn draft(&self, id: (u32, u16)) -> Option<&str> {
+        let d = self.drafts.get(&id)?;
+        (!d.text.trim().is_empty()).then_some(d.text.as_str())
+    }
+
+    /// The comments with draft replies.
+    pub fn drafted(&self) -> Vec<(u32, u16)> {
+        self.drafts.keys().copied().collect()
+    }
+
+    /// Where the drafts' comments are now, after a change to the document: `pages` gives
+    /// each of [`Self::drafted`]'s page, or `None` for one no longer in it.
+    pub fn place_drafts(&mut self, pages: &[Option<usize>]) {
+        for (d, &p) in self.drafts.values_mut().zip(pages) {
+            d.page = p;
+        }
     }
 
     /// The note or text box being typed on `page` (drawn at `r`, `k` pixels per point):
@@ -3339,8 +3400,10 @@ impl Editor {
         // With the read tool, a press on the selected item (or its handles) moves it.
         let grabs = |ed: &mut Self, p: Pos2| {
             let on_handle = sized_box.is_some_and(|b| ed.handle_hit(b, p, htol).is_some());
-            let on_annot = sel_annot
-                .is_some_and(|(id, _, _)| ed.annot_at(pdf, page, p).is_some_and(|a| a.id == id));
+            let on_annot = sel_annot.is_some_and(|(id, _, _)| {
+                ed.annot_at(pdf, page, p).is_some_and(|a| a.id == id)
+                    || ed.selected_annot().is_some_and(|a| in_mark_box(a, p))
+            });
             let on_object = ed.arrangeable() && on_held(p);
             on_handle || on_annot || on_object || rotate_hit(p) || end_hit(p).is_some()
         };
@@ -3399,6 +3462,8 @@ impl Editor {
                     Some(_) => ed.start_move(page, p),
                     None => ed.start_marquee(page, p, true),
                 }
+            } else if let Some(a) = selected.as_ref().filter(|a| in_mark_box(a, p)) {
+                ed.drag = Some(annot_drag(a, Mode::Move, p));
             } else if let Some(a) = ed.annot_at(pdf, page, p).cloned() {
                 ed.selection = Selection::Annot { page, id: a.id };
                 if movable(&a) {
@@ -4640,35 +4705,36 @@ impl Editor {
 
     /// The pin at the top of a placing tool's options: on, the tool stays active after
     /// putting something down, until Esc or another tool.
-    fn keep_ui(&mut self, ui: &mut egui::Ui) {
+    /// Whether the inspector's heading has the Keep tool active pin: a tool that puts
+    /// things down is in use and its options are shown (no comment selected).
+    pub fn keeps_pin(&self) -> bool {
+        Tool::PLACING.contains(&self.tool) && self.selection.annot().is_none()
+    }
+
+    /// The Keep tool active pin, in the inspector's heading row beside its other buttons
+    /// (ENH-09: no row of its own between the heading and the tool's options).
+    pub fn keep_button(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
-        if !Tool::PLACING.contains(&tool) {
-            return;
-        }
         let on = self.keep.contains(&tool);
-        // One row, the pin at its right.
-        let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
-        let right = egui::Layout::right_to_left(egui::Align::Center);
-        ui.allocate_ui_with_layout(row, right, |ui| {
-            let r = ui
-                .add(egui::Button::new(theme::icon(icon::PUSH_PIN).size(16.0)).selected(on))
-                .on_hover_text(if on {
-                    "Keep tool active: on. It stays after putting something down, until Esc \
-                     or another tool."
-                } else {
-                    "Keep tool active"
-                });
-            r.widget_info(|| {
-                egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Keep tool active")
-            });
-            if r.clicked() {
-                if on {
-                    self.keep.retain(|t| *t != tool);
-                } else {
-                    self.keep.push(tool);
-                }
-            }
+        let pin = egui::Button::new(theme::icon(icon::PUSH_PIN))
+            .selected(on)
+            .frame_when_inactive(false);
+        let r = ui.add(pin).on_hover_text(if on {
+            "Keep tool active: on. It stays after putting something down, until Esc or \
+             another tool."
+        } else {
+            "Keep tool active"
         });
+        r.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Keep tool active")
+        });
+        if r.clicked() {
+            if on {
+                self.keep.retain(|t| *t != tool);
+            } else {
+                self.keep.push(tool);
+            }
+        }
     }
 
     // ------------------------------------------------------------ inspector
@@ -5065,9 +5131,6 @@ impl Editor {
         };
         let now = AnnotEdit::of(&a);
         if self.annot_insp.as_ref().is_none_or(|(id, _)| *id != a.id) {
-            if self.annot_insp.is_some() {
-                self.reply.clear();
-            }
             self.annot_insp = Some((a.id, now.clone()));
         }
         let replies: Vec<Annot> = self
@@ -5082,7 +5145,8 @@ impl Editor {
             return;
         };
         // What it is heads the panel (`Editor::heading`).
-        let mut about = vec![format!("Page {}", a.page + 1)];
+        let page = (self.annot_page.clone()).unwrap_or_else(|| (a.page + 1).to_string());
+        let mut about = vec![format!("Page {page}")];
         about.extend(
             [&a.author, &a.modified]
                 .into_iter()
@@ -5226,8 +5290,19 @@ impl Editor {
             ui.label(limarepdf_core::display_text(&r.contents, 2000));
             ui.add_space(4.0);
         }
+        // The comment's own draft, kept when another is selected (Q1); Ctrl+Enter adds it,
+        // as the button does. Asked before the box takes the key as a line break.
+        let id = self.scope.with(("reply", a.id));
+        let ctrl_enter = ui.ctx().memory(|m| m.has_focus(id))
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
+        let draft = self.drafts.entry(a.id).or_insert(Draft {
+            page: Some(a.page),
+            text: String::new(),
+        });
+        draft.page = Some(a.page);
         let out = ui.add(
-            egui::TextEdit::multiline(&mut self.reply)
+            egui::TextEdit::multiline(&mut draft.text)
+                .id(id)
                 .hint_text("Reply")
                 .desired_rows(2)
                 .desired_width(f32::INFINITY),
@@ -5237,15 +5312,18 @@ impl Editor {
             out.request_focus();
             self.reply_focus = false;
         }
-        let ready = !self.reply.trim().is_empty();
+        let ready = !draft.text.trim().is_empty();
         let add = ui.add_enabled(
             ready,
             egui::Button::new((theme::icon(icon::ARROW_BEND_UP_LEFT), "Add reply")),
         );
         dialogs::set_name(&add, "Add reply");
-        if add.clicked() {
-            let text = std::mem::take(&mut self.reply);
+        if ready && (add.clicked() || ctrl_enter) {
+            let text = std::mem::take(&mut draft.text);
             self.actions.push(Action::Reply(a.page, a.id, text));
+        }
+        if self.drafts.get(&a.id).is_some_and(|d| d.text.is_empty()) {
+            self.drafts.remove(&a.id);
         }
     }
 
@@ -5340,7 +5418,9 @@ impl Editor {
                 ui.label("Name");
                 let r = ui
                     .add(egui::TextEdit::singleline(&mut self.author).hint_text("No name"))
-                    .on_hover_text("Also signs your comments (Edit > Your name for comments)");
+                    .on_hover_text(
+                        "Also signs your comments (Review > Comments > Your name for comments)",
+                    );
                 dialogs::set_name(&r, "Your name");
             });
         });
@@ -5419,7 +5499,6 @@ impl Editor {
                 format!("Editing is unavailable on this page: {e}"),
             );
         }
-        self.keep_ui(ui);
         // A tool's options and the selected object's properties are headed by the panel's
         // heading (`Editor::heading`); the object's again below a tool's options.
         match self.tool {
@@ -5965,7 +6044,11 @@ mod tests {
         }
         assert!(ed.pending());
         ed.annot_insp = Some((id, AnnotEdit::of(&a)));
-        ed.reply = "Walrus reply".into();
+        let draft = |text: &str| Draft {
+            page: Some(0),
+            text: text.into(),
+        };
+        ed.drafts.insert(id, draft("Walrus reply"));
         assert!(ed.pending());
         if let Some((_, e)) = ed.annot_insp.as_mut() {
             e.contents = "Walrus comment".into();
@@ -5976,12 +6059,16 @@ mod tests {
             [Action::SetAnnot(0, i, e), Action::Reply(0, j, r)]
                 if *i == id && e.contents == "Walrus comment" && *j == id && r == "Walrus reply"
         ));
-        assert!(ed.reply.is_empty());
-        // A reply with nothing selected to answer isn't one.
+        assert!(ed.draft(id).is_none());
+        // A draft is its comment's, selected or not; one whose comment is gone (Undo took
+        // it away) can't be added, so isn't pending.
         ed.actions.clear();
-        ed.reply = "Walrus reply".into();
+        ed.drafts.insert(id, draft("Walrus reply"));
         ed.selection = Selection::None;
+        assert!(ed.pending());
+        ed.place_drafts(&[None]);
         assert!(!ed.pending());
+        assert_eq!(ed.draft(id), Some("Walrus reply"), "the draft went");
     }
 
     fn word(x: f32, y: f32, line: usize) -> PageWord {

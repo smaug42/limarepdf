@@ -20,13 +20,14 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 
 ## Find your way around
 
-![The LimarePDF window with a report open, numbered: 1 the commands under the document's tab, 2 the page thumbnails at the left, 3 the pages in the middle, 4 the inspector at the right, 5 the bottom bar](images/window-tour.png)
+<img src="images/window-tour.png" width="1000" alt="The LimarePDF window with a report open, numbered: 1 the commands under the document's tab, 2 the page thumbnails at the left, 3 the pages in the middle, 4 the inspector at the right, 5 the bottom bar">
 
 1. **The commands**, under the document's tab. At the left, the File menu ☰, which holds every command, then
    Open, Save, Undo and Redo; at the right, Print. In between are the names **Edit**, **Insert**, **Review**,
    **Pages**, **Forms and sign**, **Protect** and **View**: click one to show its buttons below. Edit has copying,
    the font and finding text; Insert adds text, pictures, headers and watermarks; Review has comments and markup;
-   Pages rotates, removes, adds and splits pages; Forms and sign fills forms and signs; Protect redacts and sets
+   Pages rotates, removes, adds and splits pages, and Organise shows them all as cards to put in order; Forms and
+   sign fills forms and signs; Protect redacts and sets
    passwords; View has zoom, page layout and how the app looks. Hover over a button to see what it does; a greyed
    one says why it can't be used just now. Greyed buttons marked **Planned** show features still to come.
 2. **The left side** shows the page thumbnails, and a strip of icons for Pages, Search results, Bookmarks, Comments
@@ -34,8 +35,10 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 3. **The middle** shows the pages. Scroll with the mouse wheel or touchpad. Ctrl+scroll, Ctrl+= and Ctrl+- zoom,
    and Ctrl+0 fits the pages to the window's width again.
 4. **The right side** is the inspector, which shows the options for whatever you have selected.
-5. **The bottom bar** shows what is selected and messages, and at the right the page you are on and the zoom,
-   which opens a menu of zoom and page layout (one column, two pages side by side, or one page at a time).
+5. **The bottom bar** shows what is selected and messages, and at the right the page you are on, **Page view**
+   and **Organise pages** (the pages as they read, or all of them as cards), then − and + with a zoom slider
+   between them, and the zoom, which opens a menu of zoom and page layout (one column, two pages side by side, or
+   one page at a time).
 
 Notices above the pages tell you about the document when it opens: that it is a form, a scan without text,
 digitally signed, damaged and repaired, and so on. Each has a button for what to do about it, and × to dismiss it.
@@ -59,14 +62,14 @@ Documents open with the read tool, the text cursor. It does most things:
 Tools such as **Insert > Watermark**, **Pages > Crop** and **Protect > Passwords** open in the inspector on their
 own. The × at the top of the inspector closes the tool.
 
-![A text box selected on the page, with its handles and a small toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box](images/inspector.png)
+<img src="images/inspector.png" width="500" alt="A text box selected on the page, with its handles and a small toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box">
 
 Right-click anything for a short menu of what you can do with it.
 
 The other tools put something new on the page: pick one in the commands (Insert > Text or Image, Review > Note,
 Text box or Draw, Protect > Mark redaction, Forms and sign > Fill and sign), then click or drag on the page. After
-putting one thing down, a tool goes back to the read tool (the pin in its options keeps it on). Esc always
-returns to the read tool.
+putting one thing down, a tool goes back to the read tool (the pin in the inspector's heading, beside the tool's
+name, keeps it on). Esc always returns to the read tool.
 
 ## Find any command
 
@@ -121,8 +124,18 @@ Every command lists its options with `limarepdf-cli <command> --help`; the
 
 ## Where to go next
 
-See [everything LimarePDF can do](features.md) next, then go to the task you need in the
-[user guide](README.md#everyday-tasks).
+The tasks most people need next:
+
+- [Find words, zoom and copy text](reading-and-finding.md)
+- [Add highlights, notes and other comments](comments-and-markup.md)
+- [Change the text on a page](content-editing.md#edit-a-line-of-text)
+- [Fill in a form](forms.md)
+- [Put your signature on a document](fill-and-sign.md)
+- [Put pages in order, turn or delete them](organising-pages.md)
+- [Save your work](gui.md#saving), and [get it back after a crash](gui.md#recovery-copies)
+
+Every other task is on the [user guide's home page](README.md#everyday-tasks), and [Features](features.md), next,
+sums up everything LimarePDF can do.
 
 ---
 

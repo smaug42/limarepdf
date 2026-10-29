@@ -72,6 +72,9 @@ the document. See [Redaction](redaction.md#removing-hidden-information).
 **Icon strip.** The icons at the window's left edge: Pages, Search results, Bookmarks, Comments and Digital
 signatures. Each opens that view in the side panel beside it; clicking the view shown again folds the panel away.
 
+**Insertion bar.** In Organise, the line a click between two cards puts there: pages inserted or pasted go where it
+is. See [Add pages](organising-pages.md#add-pages-and-merge-documents).
+
 **Inspector.** The panel on the right of the window, which shows the options for what is selected, or for the
 whole document when nothing is. Tools such as Watermark and Crop open in it on their own, with a × to close them.
 
@@ -81,6 +84,10 @@ whole document when nothing is. Tools such as Watermark and Crop open in it on t
 adds the recognised text as an invisible layer over the picture.
 
 **Open password.** A password needed to open a document. Also called a user password.
+
+**Organise.** The document's pages as a grid of cards, shown in place of the pages, to select, move, turn, add and
+delete pages: Pages > Organise, or Organise pages in the status bar. See
+[Organising pages](organising-pages.md#see-every-page-at-once).
 
 **Page labels.** The page numbers a viewer shows, such as i, ii, 1, 2 or A-1. They don't change what is printed on
 the pages.

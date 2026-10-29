@@ -1449,3 +1449,155 @@ fn cross_check_a_redacted_public_pdf_with_poppler_and_ghostscript() {
         }
     }
 }
+
+/// The quarter rule (`CHAR_SHARE`), either side of it: a character goes when at least a
+/// quarter of its box (its glyph's width, from 0.21 of the size below the baseline to 0.79
+/// above) is under the marks, by area. At 60 points, A has its right 30 % under a mark and
+/// goes, B its right 20 % and stays; C has its bottom 30 % under one and goes, D its
+/// bottom 20 % and stays. The check afterwards agrees, and B and D stay where they were.
+#[test]
+fn a_character_goes_when_a_quarter_of_it_is_under_the_marks() {
+    let mut p = make(&[
+        "BT /F1 60 Tf 20 100 Td (A) Tj ET BT /F1 60 Tf 90 100 Td (B) Tj ET \
+         BT /F1 60 Tf 160 100 Td (C) Tj ET BT /F1 60 Tf 230 100 Td (D) Tj ET",
+    ]);
+    let at = |p: &Pdf, s: &str| {
+        let b = p.find_text_boxes(0, s).unwrap();
+        assert_eq!(b.len(), 1, "{s}: {b:?}");
+        b[0]
+    };
+    let [a, b, c, d] = ["A", "B", "C", "D"].map(|s| at(&p, s));
+    // The reading's box is the redaction's: the glyph's width, the size high.
+    for (s, x) in [("A", a), ("B", b), ("C", c), ("D", d)] {
+        assert!((x[3] - x[1] - 60.0).abs() < 0.1, "{s}: {x:?}");
+        assert!(x[3] > 100.0 && x[1] < 100.0, "{s}: {x:?}");
+    }
+    // A share of the box from its right edge, all its height and past it.
+    let right = |x: [f32; 4], share: f32| {
+        let w = x[2] - x[0];
+        [x[2] - share * w, x[1] - 5.0, x[2] + 5.0, x[3] + 5.0]
+    };
+    // A share of the box from its bottom, all its width and past it.
+    let bottom = |x: [f32; 4], share: f32| {
+        let h = x[3] - x[1];
+        [x[0] - 5.0, x[3] - share * h, x[2] + 5.0, x[3] + 5.0]
+    };
+    let marks = [
+        (0, right(a, 0.3)),
+        (0, right(b, 0.2)),
+        (0, bottom(c, 0.3)),
+        (0, bottom(d, 0.2)),
+    ];
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert_eq!(rep.pages[0].chars, 2, "{:?}", rep.pages[0]);
+    assert_eq!(p.page_text(0).replace([' ', '\n'], ""), "BD");
+    assert!(near(at(&p, "B"), b) && near(at(&p, "D"), d));
+}
+
+/// Appends `objects` (number, body) to `out`, then a cross-reference section for them
+/// and a trailer saying `size` objects, linked to the section at `prev` when there is one;
+/// returns where the section starts.
+fn revision(
+    out: &mut Vec<u8>,
+    objects: &[(usize, String)],
+    size: usize,
+    prev: Option<usize>,
+) -> usize {
+    let mut at: Vec<(usize, usize)> = Vec::new();
+    for (n, body) in objects {
+        at.push((*n, out.len()));
+        out.extend_from_slice(format!("{n} 0 obj\n{body}\nendobj\n").as_bytes());
+    }
+    at.sort();
+    let xref = out.len();
+    let mut table = String::from("xref\n0 1\n0000000000 65535 f \n");
+    for (n, offset) in at {
+        table.push_str(&format!("{n} 1\n{offset:010} 00000 n \n"));
+    }
+    let prev = prev.map(|p| format!(" /Prev {p}")).unwrap_or_default();
+    table.push_str(&format!(
+        "trailer\n<< /Size {size} /Root 1 0 R{prev} >>\nstartxref\n{xref}\n%%EOF\n"
+    ));
+    out.extend_from_slice(table.as_bytes());
+    xref
+}
+
+/// A 300 by 200 pt page saved in two revisions, as an app that saves by appending leaves
+/// it. In the first, the page draws "Keep QUOKKASECRET Keep" (object 4) and the draft line
+/// "Draft QUOKKASECRET note" (object 6). The second, appended after it, has object 4 again
+/// (the same line, and a blue square) and the page drawing it and "Footer kept" (object 7)
+/// in place of the draft, which stays in the file with nothing using it.
+fn two_revisions() -> Vec<u8> {
+    let stream = |s: &str| format!("<< /Length {} >>\nstream\n{s}\nendstream", s.len());
+    let page = |contents: &str| {
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents [{contents}] \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+        )
+    };
+    let line = "BT /F1 20 Tf 30 100 Td (Keep QUOKKASECRET Keep) Tj ET";
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let first: [(usize, String); 6] = [
+        (1, "<< /Type /Catalog /Pages 2 0 R >>".to_string()),
+        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string()),
+        (3, page("4 0 R 6 0 R")),
+        (4, stream(line)),
+        (
+            5,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_string(),
+        ),
+        (
+            6,
+            stream("BT /F1 12 Tf 30 150 Td (Draft QUOKKASECRET note) Tj ET"),
+        ),
+    ];
+    let xref = revision(&mut out, &first, 7, None);
+    let second: [(usize, String); 3] = [
+        (4, stream(&format!("{line}\n0 0 1 rg 30 20 40 20 re f"))),
+        (3, page("4 0 R 7 0 R")),
+        (7, stream("BT /F1 12 Tf 30 50 Td (Footer kept) Tj ET")),
+    ];
+    revision(&mut out, &second, 8, Some(xref));
+    out
+}
+
+/// Journey B on a file saved by appending a revision: the marked text is also in the
+/// earlier revision, in the page content it replaced and in a draft that nothing uses any
+/// more. Opened (the latest revision read, not repaired), marked over the text and the
+/// marks applied, the saved file holds no copy of the text in any form: not in its bytes as
+/// written, nor in any stream decoded, used or not; what wasn't marked stays.
+#[test]
+fn an_earlier_revision_of_the_file_leaves_nothing_in_the_redacted_output() {
+    let bytes = two_revisions();
+    let copies = bytes.windows(12).filter(|w| w == b"QUOKKASECRET").count();
+    assert_eq!(copies, 3, "the text in both revisions");
+    let mut p = Pdf::from_bytes(&bytes, None).unwrap();
+    assert!(!p.repaired(), "read by scanning, not by its revisions");
+    let text = p.page_text(0);
+    assert!(text.contains("Keep QUOKKASECRET Keep"), "{text:?}");
+    assert!(
+        text.contains("Footer kept") && !text.contains("Draft"),
+        "not the latest revision: {text:?}"
+    );
+    // The draft is read with the rest, though nothing uses it.
+    assert!(p.doc.objects.contains_key(&(6, 0)), "the draft wasn't read");
+    let boxes: Vec<[f32; 4]> = (p.find_redaction_marks("quokkasecret").unwrap().into_iter())
+        .map(|m| m.1)
+        .collect();
+    assert_eq!(boxes.len(), 1, "{boxes:?}");
+    p.add_redaction_mark(0, &boxes, "").unwrap();
+    let rep = p.apply_redactions().unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert_eq!(rep.pages[0].chars, 12, "{:?}", rep.pages[0]);
+    assert!(p.redaction_marks().is_empty());
+
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["QUOKKASECRET", "QUOKKA", "SECRET", "Draft"]);
+    saved.assert_kept(&["Keep", "Footer kept"]);
+    let back = Pdf::from_bytes(&saved.bytes, None).unwrap();
+    let text = back.page_text(0);
+    let kept = text.contains("Keep") && text.contains("Footer kept");
+    assert!(kept && !text.contains("QUOKKA"), "{text:?}");
+}

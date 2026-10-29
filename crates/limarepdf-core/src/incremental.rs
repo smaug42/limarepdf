@@ -1,7 +1,7 @@
 //! The appended-revision writer: saves edits as a revision appended to the file as it was
 //! opened. Every earlier byte stays as it was, so earlier signatures still cover exactly
 //! what their signers signed, and checkers can list what changed since. Signing uses it;
-//! see docs/signatures.md.
+//! see docs/signatures-in-depth.md.
 //!
 //! Each object of the edited document is compared with the opened file, and only those
 //! that differ are written. Losing an edit is the risk, so the result is read back twice

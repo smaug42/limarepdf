@@ -475,10 +475,20 @@ impl Pdf {
             self.check_box_drawable(id)?;
         }
         let d = self.doc.get_dictionary(id)?;
+        let mark = d
+            .get(b"Subtype")
+            .and_then(|o| o.as_name())
+            .is_ok_and(|s| s == b"Redact");
         let mut changed: Vec<(&[u8], Object)> = vec![(b"Rect", nums(&new).into())];
         for key in [&b"L"[..], b"Vertices", b"QuadPoints", b"CL"] {
             if let Some(v) = self.numbers(d.get(key).ok()) {
-                changed.push((key, nums(&map_points(map, &v)).into()));
+                let mut v = map_points(map, &v);
+                // A redaction mark's one area stays `PAD` inside its box, as it was made,
+                // however far it is stretched (PF-37).
+                if mark && key == b"QuadPoints" && v.len() == 8 && resized {
+                    inset_quad(&mut v, new);
+                }
+                changed.push((key, nums(&v).into()));
             }
         }
         let ink = d
@@ -801,6 +811,28 @@ fn map_points(m: mx::M, v: &[f32]) -> Vec<f32> {
             [x, y]
         })
         .collect()
+}
+
+/// Put a quadrilateral's four corners (`q`, eight numbers) `PAD` inside the box `r`
+/// (x0, y0, x1, y1, ordered), each corner to the side it is nearer, so their order stays
+/// as it was whatever way the page turns. A box too small for the gap puts them in its
+/// middle.
+fn inset_quad(q: &mut [f32], r: [f32; 4]) {
+    let side = |lo: f32, hi: f32| {
+        let mid = (lo + hi) / 2.0;
+        match hi - lo > 2.0 * PAD {
+            true => (lo + PAD, hi - PAD),
+            false => (mid, mid),
+        }
+    };
+    let (x0, x1) = side(r[0], r[2]);
+    let (y0, y1) = side(r[1], r[3]);
+    let b = mx::aabb(q.as_chunks::<2>().0.iter().map(|&[x, y]| (x, y)));
+    let (cx, cy) = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+    for p in q.as_chunks_mut::<2>().0 {
+        p[0] = if p[0] <= cx { x0 } else { x1 };
+        p[1] = if p[1] <= cy { y0 } else { y1 };
+    }
 }
 
 /// The time now as a PDF date in UTC.

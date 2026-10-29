@@ -201,6 +201,64 @@ script now points the desktop's bus at a socket that isn't there: unsetting `DBU
 fall back to `$XDG_RUNTIME_DIR/bus` and read the desktop's accent, so the guide's earlier screenshots showed this
 desktop's blue; all five were retaken in LimarePDF's teal.
 
+Batch 41's Organise workspace (NEW-14) was built test-first: `crates/limarepdf-gui/src/app/tests/organise.rs`
+drives the grid through the window as people use it (a file module of app.rs's tests, its helpers `grid_tab`,
+`order`, `chosen`, `click_as`, `key_as`, `gap_before`, `drag_to`, `let_go` and others), with `tab/organise.rs`'s
+unit tests for the layout's gaps and the moves' orders. Stage 1: the routes in and out, clicks, Shift and Ctrl,
+the checkboxes, a sweep across the background, Ctrl+A and Esc, page commands on the selection, pictures kept by
+the page, the way back to the page being read, typing kept and tools going back, only the cards in view drawn on a
+1,500-page document, the grid's own zoom, the status bar's − slider +, the Pages view folding away, names, and two
+quick clicks each counting (the last failed on the code before: a click egui was following on a card left out of a
+pass laid out twice was dropped). Stage 2 (the user's "go" plan with its answers in build plan 7): dragging one
+card, and selected cards together, to the bar (with `grid_drop` while dragging), Esc and a drop outside
+cancelling, the keys from card to card (arrows, Shift, Ctrl, Space, Home, End, Page Down, Enter; the first run
+found egui taking the keyboard on from the grid after an arrow pressed with nothing focused, fixed by
+`take_keyboard`), Delete, Tab reaching "Page grid" and keeping the arrows and Esc, Alt+Shift moves with one Undo
+each, the Move commands in the band, menu and right-click menu, Cut and Paste (the clipboard's text, Esc's order,
+a paste with nowhere to go), Paste's reasons and its key in each system's style (PB-36, failing before with the
+hint's "Ctrl+V"), the insertion bar for Insert blank page and Paste, Insert PDF pages after the selection, at the
+bar and after the form-fields question, the thumbnails' one stop and keys, pictures kept through Undo and Redo of
+moves, names with pages cut and the bar showing, Alt+Shift+Left not nudging an object, and (found by the docs
+pass reading the code, each failing with its fix taken out) the paste keys with nothing selected putting cut
+pages after the current page and Crop going back to the page view. The whole suite: 1318 passed, 39 ignored,
+headless. The status bar's zoom
+staying put (`the_status_bar_zoom_stays_put_when_zooming`, the user's find while stage 2 was built) failed on the
+code before: Zoom in moved 56 points when Fit width left the label. Two earlier tests changed with it: Tab's order
+reaches the thumbnails' list, not the first thumbnail; `the_inspectors_heading_leaves_a_line_edit_open` waits out
+the inspector's fold (architecture.md). The user tried stage 2 on a Linux release build, 2026-10-28: "Tested and
+it all looks OK. Everything works as expected." The acceptance row's steps, Windows and macOS: not run, deferred to
+the RC cycle.
+
+Stage 3, the acceptance. **A 10,000-page document** (made up: letter pages, each with its number, a few lines
+and a coloured bar; the page tree in nodes of 100; a bookmark every 100 pages), driven in the release build under
+Xvfb with the timing log (`LIMAREPDF_TIMING`; each input to the frame built after it). The build before stopped
+the window for 32.6 s once the file was read (102 ms), and again after every page change: the tab read each
+page's size with a walk of the page tree (a stack sampled in a debug build: `sizes_of`, `page_size`,
+`page_id_at`, `page_ids`; core's one-walk `page_sizes`, added in batch 22, was never used by the tab).
+`a_long_document_is_read_again_in_one_pass` failed on the code before (32.3 s to read the tab again, against
+15.8 ms to list 2,000 pages once; a copy of the tree with its own target dir) and passes (about 8 listings).
+After: the file read in about 0.1 s; Organise, End, Ctrl+A, Home, Shift+End and Esc 14 to 36 ms to their frame;
+zoom steps down to 8 % (nine cards a row) and scrolling there a few ms a frame; a move to the end 346 ms, Delete
+419 ms, Undo 173 and 320 ms, Redo 316 ms (5 to 11 ms on 300 pages; PB-37). Core's own parts on that file (a
+throwaway timing crate): the page list 3 ms, the sizes 15 ms, the document's copies 21 and 31 ms, a reorder 68
+ms, deleting one page 156 ms, turning one 80 ms. **Captures beside the mockup's Organise state** (the mockup
+rendered in headless Chromium with its state set to Organise pages, two of three pages selected; the app with
+`report-plain.pdf`, pages 1 and 2 selected by a click and Shift+click): light and dark at 1280×800 and
+1000×660, 1000×560 (the commands go to icons by themselves) and 1.5× at 1000×660 points. The heading with its
+count, the cards' colours (sampled, both themes the mockup's: selected #dff0ec with a #176a67 edge, others
+#ffffff with #d7e0e5, the canvas #e9eef1; dark #234840 and #7acac0, #242f37 and #40505a, #141c22), the checkbox
+and name under each picture, the Selected pages inspector and the page list folded away match; nothing is
+clipped. Found: a checkbox not ticked had no edge (about 1.1:1 against its card, where the mockup's shows); it is
+edged in the muted colour now (`the_cards_checkboxes_show_when_not_ticked`, failing before: no stroke). Left as
+they are, recorded: cards sized by the page at the grid's zoom and laid from the left, a slide sorter's, where
+the mockup's three tiles stretch across the row; the inspector's page buttons; the status bar's view buttons and
+zoom (Q1) where the mockup has page and zoom text; no Planned chip (built); fonts and sample content. The guide's
+`organise.png` was taken again for the checkboxes; the other screenshots show nothing stage 3 changed. **D7**
+(below) got its own test, which found the way back from the grid going to the page view's old place when the
+zoom changed on the way (Fit width, with a turned page now the widest): fixed
+(`leaving_organise_returns_to_the_page_being_read_at_a_new_zoom`, failing before: place 3, not 2). The whole
+suite: 1322 passed, 39 ignored, headless.
+
 D6's routes (build plan 6.4, ENH-37), from the normal workspace with Edit's band showing, in band or menu
 openings, kept by `band.rs`'s `common_actions_are_two_openings_away_at_most`:
 
@@ -211,7 +269,9 @@ openings, kept by `band.rs`'s `common_actions_are_two_openings_away_at_most`:
 | Insert text, Insert image | Insert > Text, Image | 1 |
 | A comment; the comments | Review > Note, Comments (also the strip's Comments, 0) | 1 |
 | Rotate, Extract, Delete pages | Pages > Rotate, Extract, Delete | 1 |
-| Rotate counter-clockwise, Insert images | Pages > Rotate ▾, Insert pages ▾ | 2 |
+| Rotate counter-clockwise, Insert images, Insert PDF pages | Pages > Rotate ▾, Insert pages ▾ | 2 |
+| Organise pages | Pages > Organise (also the status bar's Organise pages, 0) | 1 |
+| Move pages earlier, later, to the start or end | Pages > Move ▾ (also Alt+Shift with an arrow, Home or End) | 2 |
 | Fill and sign | Forms and sign > Fill and sign | 1 |
 | Sign with a digital ID | Forms and sign > Digital signature ▾ | 2 |
 
@@ -235,6 +295,126 @@ drive it through the window (scripted behaviour, not unaided users' success):
 D1's extensions (the line's own font kept for ENH-31's verified cases, underline and strike-through, paragraphs)
 and D8's paragraph scope wait for their items (ENH-31, NEW-07, NEW-01); the human runs of both flows are deferred
 to the RC cycle.
+
+D7's flow (build plan 6.4; batch 41, NEW-14), each step with the app tests in `app/tests/organise.rs` that drive
+it (scripted behaviour, not unaided users' success):
+
+| Flow and step | Tests |
+| --- | --- |
+| D7: a range of pages selected in Organise (click, Shift+click, Ctrl+click, checkboxes, a sweep, the keys) | `clicks_and_checkboxes_select_pages_in_the_grid`, `a_drag_across_the_background_selects_the_cards_it_touches`, `the_keys_go_from_card_to_card_selecting_them`, `organised_pages_save_and_reopen_as_the_grid_showed` |
+| D7: reordered (dragged, Alt+Shift moves, Cut and Paste) | `dragging_a_card_moves_its_page_where_it_is_let_go`, `dragging_a_selected_card_moves_every_page_selected`, `alt_shift_and_an_arrow_move_the_pages_selected`, `cut_and_paste_move_pages`, `pages_cut_are_pasted_at_the_insertion_bar` |
+| D7: turned and extracted | `page_commands_act_on_the_pages_selected_in_the_grid`, `organised_pages_save_and_reopen_as_the_grid_showed` |
+| D7: back at the page being read, wherever it went (or the one in its place) | `leaving_organise_returns_to_the_page_being_read`, `leaving_organise_returns_to_the_page_being_read_at_a_new_zoom`, `organised_pages_save_and_reopen_as_the_grid_showed` |
+| D7: saved and opened again: the order and turns, the page labels and bookmarks with their pages | `organised_pages_save_and_reopen_as_the_grid_showed` |
+| D7: Undo and Redo agree (one step a change, the pages' pictures kept) | `organised_pages_save_and_reopen_as_the_grid_showed`, `alt_shift_and_an_arrow_move_the_pages_selected`, `delete_takes_out_the_pages_selected_with_the_keys`, `pictures_are_kept_through_undo_and_redo_of_moves` |
+| D7's extensions: a large grid drawn by the rows in view; keyboard selection | `a_long_document_draws_only_the_cards_in_view` (1,500 pages), `a_long_document_is_read_again_in_one_pass` (2,000), the 10,000-page run above; `the_keys_go_from_card_to_card_selecting_them`, `tab_reaches_the_grid_and_its_keys_stay_there` |
+
+Labels move with their pages (core's `set_page_order`, as before batch 41), so a page keeps its label wherever it
+goes. The human run of D7 is the acceptance row's (deferred to the RC cycle).
+
+Batch 42's first stage (ENH-09, PF-37) was built test-first: a test agent wrote `app/tests/sign.rs` and
+`app/tests/redact_marks.rs` from the plan's spec while the code was written, and ran them first on a copy of the
+code before (bbfeca6, `target/oldcheck-b42`): 14 failed there on their assertions (one Create button per group,
+the remove buttons, no missing glyphs, the pin in the heading row, Finish signing in the menu and greyed with its
+reason, the question's wording; a mark moved by a drag, resized by its handles, moved whole over several lines,
+moved by the keys and saved where moved, the one-mark banner, Apply redactions… greyed with its reason), and two
+passed as guards (D2's flow below, a locked mark staying put). `no_character_in_fill_and_sign_lacks_a_glyph` draws
+the window and checks every character of every text drawn has a glyph in its font (it named ✔ and ✖ on the old
+code). Core's `redaction_marks_move_and_stretch_with_their_areas` (annots.rs) failed on the old code too: a
+stretched mark's area was 2 to 3 points inside its box, not 1. One existing test changed:
+`f6_leaves_typing_open_on_the_page_and_comes_back_to_it`, as F6 to the inspector reaches the pin first when a tool
+that puts things down is on. Captures of the release build (light, 1280 × 800) showed the pane with saved
+signatures widening the inspector, and the tests on the new code found three bugs in it before it was reported:
+the pin couldn't be turned on (`inspector_body` lent the settings' tools over the click the heading had just
+taken; the heading now lends and saves them itself), the preview's row was still 8 points too wide (the remove
+button was 30 points, not the 24 counted, and the picture's outline 2 points a side;
+`saved_signatures_leave_the_inspector_its_width` records the width every frame as signatures are added, at the
+default width and at a remembered 150), and the Your name tooltip's ▾ had no glyph (none of the interface's fonts
+has it; the glyph test shows that tooltip too). `the_pin_shows_for_placing_tools_but_not_for_a_comment` covers the
+Stamp tool and a comment selected. The whole suite: 1341 passed, 39 ignored, headless. After stage 1, the user's
+try found Crop gave no sign the crop was done or how to finish: `cropping_ends_as_a_word_processor_crop_does`
+(failing on the code before at the band's Crop not pressed) checks the pressed button, the status bar, and that
+Crop again, a click on the page, a click beside the pages and Enter each end it while a drag of an edge doesn't.
+
+Batch 42's second stage (ENH-40, review) started from a failing test: a reply typed in the inspector and left for
+another comment was cleared (`a_reply_typed_stays_with_its_comment_when_another_is_selected`, failing on 902bb1c at
+"the draft was lost"). A test agent then wrote the rest of `app/tests/review.rs` (22 tests) from the plan's spec
+while the code was written; they use the new commands and the drafts' API, so they don't build on the code
+before, and stand as the feature's checks. On the new code they found one bug before it was reported: every card
+was a Tab stop of its own (egui 0.37's `Sense::click()` includes focusable; the cards now sense clicks only, the
+list being the one stop). Core's `annotations_are_found_by_the_pages_listing_them` covers the drafts' page lookup
+(moved pages, a comment gone). `editor.rs`'s `comment_changes_and_replies_not_yet_kept_are_pending` now checks a
+draft with nothing selected is pending and one whose comment is gone isn't. The band's
+`common_actions_are_two_openings_away_at_most` holds Previous and Next comment one opening away. Long lists:
+`only_the_cards_in_view_are_drawn` (3,000 notes: under 100 card nodes, the last drawn once selected).
+
+ENH-40's flow (the review journey), each step with its test:
+
+| Flow and step | Tests |
+| --- | --- |
+| Open the Comments view: cards under their pages' labels, kind, author, date and words, a markup's marked words | `cards_name_their_page_by_its_label_and_say_kind_author_and_comment`, `a_markup_card_without_a_comment_says_the_words_it_marks`, `a_document_without_comments_says_so` |
+| A card selects its mark, a mark its card, scrolled to; long lists drawn by the cards in view | `a_card_and_its_mark_select_each_other`, `only_the_cards_in_view_are_drawn` |
+| Narrow the list: Filter by type, author and page, Clear filters, search; per tab, never saved | `the_filter_shows_comments_by_type_author_and_page`, `the_search_box_finds_comments_replies_and_marked_words`, `filters_and_search_are_the_tabs_own_and_never_saved`, `a_comment_the_filter_hides_can_still_be_selected_on_the_page` |
+| Go through the comments: the list's keys, Previous and Next (band, ☰, palette) | `the_comment_list_takes_the_keys_as_the_thumbnails_do`, `previous_and_next_comment_go_through_the_cards`, `previous_and_next_comment_say_when_none_is_past_the_page`, `previous_and_next_comment_are_in_the_band_the_menu_and_the_command_search` |
+| Reply: the card's Reply, Ctrl+Enter, under its comment, saved and reopened | `the_reply_button_and_ctrl_enter_add_a_reply_under_its_comment`, `saved_replies_show_under_their_comments_when_opened_again` |
+| Drafts kept per comment, per tab; added by Save and page commands; asked about on close and Reload; left by Undo and Redo | `a_reply_typed_stays_with_its_comment_when_another_is_selected`, `a_draft_shows_on_its_card_and_stays_with_its_tab`, `save_adds_every_draft_and_closing_with_one_asks`, `a_page_command_adds_the_drafts_first`, `reload_with_a_draft_asks_first`, `undo_and_redo_leave_drafts_as_drafts` |
+| Deleted comments lose their cards; Undo brings them back | `deleted_comments_take_their_cards_away` |
+
+Batch 42's third stage recorded the form and redaction journeys the same way, each step with its test. A survey
+of the tests found seven steps with none, and a test agent wrote them (`app/tests/forms.rs`, two more in
+`app/tests/redact_marks.rs`, two in core's `tests/redact.rs` and the command line's `tests/redact.rs`):
+`save_keeps_a_field_still_being_typed_in` (Ctrl+S and Save as with the keyboard still in a field: the files hold
+the typing, the field stays open), `a_mixed_form_is_filled_saved_and_stays_fillable` (12 fields of every kind
+filled by clicks, typing and Tab, saved, closed and opened again: every value as filled, the form and its 14
+widgets still there, typing and ticking working again), `selected_words_are_marked_for_redaction`,
+`one_undo_takes_back_applied_redactions`, `a_character_goes_when_a_quarter_of_it_is_under_the_marks` (at 60
+points, 30 % of a letter's width or height under a mark removes it, 20 % keeps it),
+`an_earlier_revision_of_the_file_leaves_nothing_in_the_redacted_output` (a file of two revisions, the word in
+the current content, its older version and a stream nothing uses: none of it in the saved bytes or any decoded
+stream), and the command line's `redact_removes_the_text_under_the_area_and_keeps_the_rest` (`--area` and
+`--text`, the input never replaced) and `marks_made_with_mark_only_are_applied_later`. They guard what was
+already built: all passed on the code as it was, so nothing was fixed. Shift+Tab through fields is checked only
+by `fields.rs`'s unit test, and saved field values only by LimarePDF's own reading (another reader's view of a
+filled, unflattened form is the acceptance rows' hand check).
+
+The same stage took the guide's screenshots again at scale 2 (`WINIT_X11_SCALE_FACTOR=2`, a 1000 × 660-point
+window, light theme, LimarePDF's teal, made-up documents; shown at half size with `<img width>`, so each is the
+size it was), the six there before and four new ones: `fill-and-sign.png`, `comments.png`, `forms.png` and
+`redaction.png` (the scripts are `target/dialog-shots/docshots.sh`'s scale-2 version). Each was looked at for a
+wrong state, a stray tooltip, a missing glyph or a control cut off; `limarepdf.png` is the scale-1 one doubled,
+pixel for pixel. The run found that comments' dates were shown as written, so LimarePDF's own, in UTC, were hours
+off the computer's clock: `comment_dates_are_shown_in_local_time` (`tests/local_dates.rs`, a note's date in UTC,
+an hour ahead, without a zone and a date alone, in UTC+14 and UTC−11) failed first, at "2026-10-29 03:33" for
+"17:33"; core's `lists_comments_and_markup_but_not_links_widgets_or_popups` now expects the computer's time. The run's other
+findings are in the backlog (PB-39 to PB-42).
+
+D2's flow (build plan 6.4): fields filled in one flow (BUG-03, BUG-04, BUG-10), and a photographed or flat form
+finished in Fill and sign (batch 42, ENH-09), each step with its test:
+
+| Flow and step | Tests |
+| --- | --- |
+| D2: click and type in text fields; tick boxes, choose radio buttons, pick from lists | `clicks_tick_boxes_choose_radios_and_open_text_and_lists`, `a_multi_select_list_applies_as_clicked_and_closes_without_done` (`fields.rs`); core's `sets_text_and_draws_it_inside_the_field`, `ticks_checkboxes_and_chooses_radio_buttons`, `chooses_from_lists` |
+| D2: Tab goes through the fields in order | `tab_goes_through_fillable_fields_in_page_order`, `a_mixed_form_is_filled_saved_and_stays_fillable` |
+| D2: Save, Save as and Print with typing still in a field | `save_keeps_a_field_still_being_typed_in`, `print_right_after_typing_prints_the_typed_value`, `printing_asks_first_when_fields_would_print_empty`, core's `form_values_are_sent_drawn_in` |
+| D2: a 12-field mixed form saved with no blank values and still fillable when opened again; drawn into the pages only when that is chosen | `a_mixed_form_is_filled_saved_and_stays_fillable`; core's `draws_the_fields_where_they_were_and_removes_the_form`, `flattens_some_pages_and_keeps_the_rest_fillable`, `appended_forms_drawn_onto_their_pages_keep_their_answers` |
+| D2: Undo in a field takes back its typing only; fields of the same name in two documents kept apart | `undo_in_a_form_field_stays_in_the_field`, `a_field_shown_twice_starts_each_box_with_nothing_to_undo`, `same_named_fields_in_two_documents_keep_their_typing_apart` |
+| D2: Fill and sign from the band; one way to make a signature or initials; saved ones taken off the list | `fill_and_sign_offers_one_way_to_create_each`, `a_saved_signature_has_a_visible_remove_button` |
+| D2: signature, date and tick put down with clicks, the tool kept on; one moved with the read tool | `a_flat_form_is_signed_finished_saved_and_reopened` |
+| D2: finished from the pane (greyed, saying why, until something is down), the question naming Fill and sign; drawn into the page; one Undo and Redo | `a_greyed_finish_signing_says_why`, `the_finish_signing_question_names_fill_and_sign`, `finish_signing_is_in_the_fill_and_sign_menu`, `a_flat_form_is_signed_finished_saved_and_reopened` |
+| D2: saved and opened again: no fill-and-sign annotations left, the date in the page's text | `a_flat_form_is_signed_finished_saved_and_reopened` |
+
+The redaction journey (mark, check, then apply on purpose), each step with its test:
+
+| Flow and step | Tests |
+| --- | --- |
+| Mark an area, the words selected, or every search result | core's `marks_survive_saving_and_are_not_flattened`, `selected_words_are_marked_for_redaction`, `mark_all_for_redaction_marks_every_match_even_before_the_search_ends` |
+| Check: marks moved and resized, Apply where they now are (PF-37); the banner; Apply redactions… greyed, saying why, with no marks | `a_redaction_mark_moves_with_a_drag`, `a_one_area_mark_resizes_by_its_handles`, `a_mark_over_several_lines_moves_whole_without_handles`, `the_arrow_keys_move_a_selected_mark`, `a_moved_mark_is_saved_where_it_was_moved`, `a_locked_mark_stays_put`, `the_banner_for_one_mark_says_it`, `apply_redactions_is_greyed_with_no_marks` |
+| Apply after the question; one Undo takes it back, Redo applies it again | `a_redaction_mark_moves_with_a_drag`, `one_undo_takes_back_applied_redactions`, `redoing_a_removal_withdraws_the_copy_made_after_undoing_it` (`app/recover.rs`) |
+| What goes: text (a character a quarter under the marks), drawings, comments and links, pictures blacked out there | core's `removes_the_marked_characters_and_keeps_the_rest_in_place`, `a_character_goes_when_a_quarter_of_it_is_under_the_marks`, `removes_drawings_under_a_mark_and_clips_those_crossing_it`, `removes_annotations_touching_a_mark`, `blacks_out_the_covered_part_of_a_picture`, `redacting_removes_every_annotation_touching_a_mark` |
+| Saved: nothing of it anywhere in the file, an earlier revision's copy included; the recovery copy replaced at once | core's `the_saved_output_holds_nothing_of_the_marked_text_or_what_touches_it`, `an_earlier_revision_of_the_file_leaves_nothing_in_the_redacted_output`; `the_copy_after_removing_content_has_none_of_it`, `removing_content_withdraws_the_copy_and_writes_a_new_one_at_once` (`app/recover.rs`); opt-in, with poppler and Ghostscript: `cross_check_redacted_output_with_poppler_and_ghostscript`, `cross_check_a_redacted_public_pdf_with_poppler_and_ghostscript` |
+| The same from the command line (`limarepdf-cli redact`: an area, a search, marks only, applied later) | `redact_removes_the_text_under_the_area_and_keeps_the_rest`, `marks_made_with_mark_only_are_applied_later` |
+
+The human runs of D2 and of the redaction journey are the acceptance rows' (deferred to the RC cycle).
 
 Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
@@ -496,7 +676,7 @@ signatures by such keys, a different digest or mask, a salt shorter, equal and l
 limits given as defaults or left out, limits that can't be read, and a signature whose own RSA-PSS parameters
 are empty (the defaults: valid), left out or NULL (both refused: RFC 4055 requires them; 2026-10-24, BUG-27).
 On a 16th, a limit to an undefined trailer
-field, LimarePDF is stricter (see [Limitations](../signatures.md#limitations)).
+field, LimarePDF is stricter (see [Limitations](../signatures-in-depth.md#limitations)).
 
 Where LimarePDF and `pdfsig` differ, LimarePDF follows the PDF rules: it refuses byte ranges with gaps or uncovered parts that
 `pdfsig` accepts, refuses two signers in one signature, and accepts signers named by key identifier, which `pdfsig`
@@ -524,7 +704,7 @@ PBMAC1 integrity checks, unencrypted parts, P-256 and P-384 keys, non-ASCII and 
 authority), and Windows' BER encoding, made from those files. OpenSSL reads the files LimarePDF writes, both its own and
 exported ones, takes out the same certificate and a key that signs a PDF LimarePDF then checks as valid and, once
 trusted, trusted. `openssl x509` shows the extensions described under
-[making a digital ID](../signatures.md#making-a-digital-id).
+[making a digital ID](../signatures-in-depth.md#making-a-digital-id).
 
 LimarePDF's own signatures were checked with `pdfsig` and OpenSSL (`openssl cms -verify` over the signed bytes): RSA-3072,
 P-256, P-384 and a CA-issued ID with its chain, a second and third signature on a signed file, a certification, and
@@ -646,6 +826,9 @@ before this table had a Status column, and wasn't run again on the date given.
 | Typing that keeps its place: Undo buttons, notes with the inspector, Esc, tabs, the floating bar (ENH-39's first stage with ENH-13, ENH-20 and ENH-32, batch 40) | The app's batch 40 tests and `tab.rs`'s `the_floating_bar_is_placed_clear_of_the_text` (Automated tests above), each failing on the code before | Edit a line, type, click Undo and Redo in the commands row: the typing goes back and forth, the caret stays, the buttons grey at the ends. Double-click a note, type, change its colour in the inspector: it stays open, the keyboard back in it, and Ctrl+Z still undoes the typing. Type in a line, click into the size box, type, press Esc: back in the line. Type in a line, go to another tab and back, type on. Edit lines in a paragraph, in table columns, at a page's top, bottom and sides, zoomed out and in and in a narrow window: the floating bar by the line, never over it or the caret; its B and I change the selected words and leave the line open. Click a line with the Text tool: Edit > Font shows the line | Pass, 2026-10-28, Linux release build, by the user's own checks rather than this row's full list: their first try found the bar at the view's top by a column heading with text all round it (fixed in b0924ed), then "All good. Tested." Windows and macOS: not run, deferred to the RC cycle |
 | Everyday gestures: type over, delete and cut words, Edit text from words, Shift keys, clicks off text, Ctrl+A with the Text tool, the inspector's heading; thin shapes (ENH-39's second stage, batch 40) | The app's batch 40 second-stage tests and `actions.rs`'s `selections_offer_cut_and_edit_text_where_they_apply` (Automated tests above), each failing on the code before | Select words in one line with the read tool and type: they are replaced in the line, which stays open; Ctrl+V over others. Select across lines and type: the note, nothing typed. Delete, then Undo; Ctrl+X, then paste elsewhere; the band's Cut. Select words, Edit text: their line opens with them selected. Shift+arrows, Shift+Home and Shift+End from a word near a page's end: the selection grows across the page, the view following, the page not jumping. Double-click and triple-click in a margin: nothing selected. Text tool, Ctrl+A. Edit a line, then click the inspector's heading, collapse it, open its pop-out: the line stays open. Select a hairline shape with the arrow and quit: no question about changes | Pass, 2026-10-28, Linux release build, by the user's own checks rather than this row's full list: their try found the thin-shape quit question (fixed in 1523c52), then "tested and works". Windows and macOS: not run, deferred to the RC cycle |
 | Feedback and look: a new text box with the inspector, unsaved at the first key, a line's scope and fonts, the outline and its warnings, greyed commands' reasons, what is in use, stamps previewed as added (ENH-39's third stage, ENH-22, ENH-23, batch 40) | The app's batch 40 third-stage tests, `page_text.rs`'s, `actions.rs`'s `greyed_commands_say_why` and ENH-23's in `tab/previews.rs` (Automated tests above) | Insert a text box, type, change its size, background and border in the inspector: it stays open, at the size picked, and is added so. Type one key in a line: the tab says Unsaved and the title has its mark. Edit a line in an embedded font: "Editing one line" in the status bar, PDF font and Source font in the inspector; type a character the font lacks, then select all and type: Partly preserved, then Nearest standard. Edit a line on an accent-coloured page: the outline shows. Type on past a line into a column beside it, and past the page's right edge: the caution outline and its tag. Hover greyed Undo, Copy, Bold in a family without bold, a menu's greyed item: each says why. Ctrl+B in a family without bold: the note at the caret. Type Hebrew: the script note. Ctrl+V with nothing selected: where to click. ☰ > Tools: the tool in use marked; the Text tool: Edit text pressed. Click into a form field with words selected: Form field, the words let go. Open Watermark, set Behind the content: once a slider is let go, the pages and thumbnails show it behind the text; drag the opacity: drawn over meanwhile. With a screen reader, hear a greyed button's reason and the overflow tag | The user committed it (15e6e4e) after the report and asked for its records, reporting no find; this row's list not run as such. Windows and macOS: not run, deferred to the RC cycle |
+| Organise pages: the grid, its keys, dragging, Move, Cut and Paste, the insertion bar, Insert PDF pages; the thumbnails' keys; the status bar's zoom; long documents (NEW-14, PB-36, batch 41; D7) | `app/tests/organise.rs` and `tab/organise.rs`'s unit tests, `the_status_bar_zoom_stays_put_when_zooming`, core's `insert_pages_puts_them_where_asked` and `page_sizes_and_margins_are_each_pages` (Automated tests above; D7's flow) | Open a 12-page document with page labels and bookmarks, Organise it: select with clicks, Shift, Ctrl and a sweep; drag two cards elsewhere, then Undo; use only the keys (arrows, Shift, Ctrl and Space, Home, End, Page Down, Enter, Delete, Alt+Shift moves); cut two pages, click between cards, paste; Insert PDF pages there; turn a page and extract two; leave Organise and find the page you were reading; zoom with + and − and see the bar stay still; save, reopen and check the order, labels and bookmarks. Open a document of several thousand pages: it opens without a pause, and the grid scrolls, selects and zooms smoothly | Not run: deferred to the RC cycle |
+| Review that connects comments to the page (ENH-40, batch 42's second stage) | `app/tests/review.rs` (ENH-40's flow above) | Open a document another reviewer commented on (notes, highlights, replies, two authors): in the Comments view, click cards and marks both ways, filter by an author and a type, search a word, go through with Review > Next and the list's arrow keys, reply with Ctrl+Enter, leave a reply half typed for another comment and come back to it, then save and check the replies in another reader | Not run: deferred to the RC cycle |
+| Fill and sign as a few clear tasks; redaction marks moved and resized (ENH-09, PF-37, batch 42's first stage; D2) | `app/tests/sign.rs` and `app/tests/redact_marks.rs`, core's `redaction_marks_move_and_stretch_with_their_areas` (D2's flow above) | Photograph or scan a paper form with no fields and open it: Forms and sign > Fill and sign; create a signature, put it, the date and a tick down, move one, then Finish signing from the pane; save, reopen in another reader and check the marks are part of the page. Remove a saved signature with its bin button. Mark text over two lines and an area for redaction, drag both, resize the area by a handle and with the arrow keys, apply, and check with another reader that only the text under the moved marks is gone | Not run: deferred to the RC cycle |
 | Signature pictures: keyboard, command line, CMYK (PB-21, PB-19) | The core's `cmyk_jpegs_are_read` (failed on the old code) and `cmyk_jpegs_become_pages_and_are_added_and_replace_pictures` (passed on the old code: the guide's "not supported" was out of date, so only the guide changed), the app's `the_arrow_keys_choose_the_part_used`, and the command line's `sign_picture.rs` | Create signature, Image, with a CMYK JPEG photo of a signature on a sheet: the paper cleared, the part chosen with the arrow keys and Shift; `limarepdf-cli sign --image sheet.jpg --crop` with the signature's pixels from an image viewer | Not run: deferred to the RC cycle |
 | Text another program wrote in UTF-8 (PB-18) | The core's `unmarked_utf8_is_read_where_text_is_only_shown` (failed on the old code) | Open a file whose title and bookmarks a tool wrote in UTF-8 without a byte order mark (`qpdf --qdf`, then the title's bytes edited): they read as written in LimarePDF, Document properties and the Bookmarks view | Not run: deferred to the RC cycle |
 | Windows printing that the spooler doesn't take (PB-17) | The core's `a_job_is_waited_for_while_it_gets_on` (the waiter on Linux: a job beating is waited for, one that stops is let go within the wait and runs on, one that panics is said); Windows clippy and PR CI | On Windows, print to a paused printer or one whose network is unplugged: after two minutes the message saying it may still print; Append PDFs runs meanwhile | Not run: deferred to the RC cycle |
@@ -680,7 +863,7 @@ This is how the dropped form fields were found.
 
 From the digital signatures design. Each row is done in the order given, on Windows. "Reader" rows need only the free
 Acrobat Reader; "Acrobat" rows need Acrobat Pro or Standard. Results go into [Digital signatures](#digital-signatures)
-above, summed up in the user page's [Compatibility](../signatures.md#compatibility); a failure is fixed or written
+above, summed up in the user page's [Compatibility](../signatures-in-depth.md#compatibility); a failure is fixed or written
 down as a limit.
 
 | Check | Needs | Result |
@@ -717,7 +900,7 @@ happened in everyday use but no result was written down.
 | HiDPI screen (scale 2) | Not run | Not run | Not run |
 | Screen reader (Orca, Narrator, VoiceOver): the bars, panels, each dialog, filling in a form, F6 between the window's regions and the panels' edges; what is said and where the keyboard goes | Not run (names checked by the app's tests only) | Not run | Not run |
 | Dialogs: open each, Tab through it, Esc; in a narrow and a short window | Screenshots under a virtual X server (2026-10-22), not clicked through on a desktop | Not run | Not run |
-| Window size remembered: resize, close, reopen; maximize, close, reopen, restore | KDE Wayland (2026-10-19): size and maximized kept; restoring a window that started maximized puts it at the top-left (KDE's placement) | Not run | Not run |
+| Window size remembered: resize, close, reopen; maximise, close, reopen, restore | KDE Wayland (2026-10-19): size and maximised kept; restoring a window that started maximised puts it at the top-left (KDE's placement) | Not run | Not run |
 | Name and icon in the taskbar, dock and Open with | Not recorded | Icon checked by hand (0.5) | Not run |
 | A damaged file and a file that fails to draw: message, no crash | Not recorded | Not run | Not run |
 | A page whose drawing asks for gigabytes at once (PDFBox 2363, below): drawn, or a message, without closing | Drawn (2026-10-20; the 7.6 GB asked for is never used, so Linux doesn't need it) | Not run | Not run |

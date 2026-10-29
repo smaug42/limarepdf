@@ -6,10 +6,10 @@
 //! Like the other settings they stay on this computer, unencrypted, and failing to read
 //! or write them is not an error.
 
-use crate::actions::Act;
+use crate::actions::{Act, Ctx};
 use crate::dialogs::{self, Btn, Shell};
 use crate::page_text;
-use crate::theme;
+use crate::{icon, theme};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use limarepdf_core::{
     typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, Stamp, StampPlace,
@@ -1004,10 +1004,32 @@ pub struct SignMenu {
     initials: Vec<Option<TextureHandle>>,
 }
 
+/// The marks, each with its glyph from the icon font (Inter has no ✔ or ✖, which egui
+/// drew as boxes).
+const MARKS: [(Mark, &str); 3] = [
+    (Mark::Tick, icon::CHECK),
+    (Mark::Cross, icon::X),
+    (Mark::Dot, icon::CIRCLE),
+];
+
+/// A mark's glyph: the tick and cross as drawn lines (Phosphor's filled ones are cut out of
+/// a square, as a ticked box), the dot filled and small, as a dot is beside a tick.
+fn mark_glyph(m: Mark, glyph: &str) -> egui::RichText {
+    match m {
+        Mark::Dot => egui::RichText::new(glyph)
+            .family(theme::icons_fill())
+            .size(9.0),
+        _ => theme::icon(glyph).size(16.0),
+    }
+}
+
+/// Said when Finish signing can't be used: nothing put down yet.
+pub const NOTHING_PLACED: &str = "Put a signature, the date or a mark on the page first.";
+
 /// The Fill and sign button's menu: Signature and Initials, each with the saved ones and
-/// Create, then the date, your name, text and the marks. A choice turns the Fill and sign
-/// tool on with it.
-pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
+/// Create, then the date, your name, text and the marks, and Finish signing. A choice
+/// turns the Fill and sign tool on with it.
+pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, c: &Ctx, acts: &mut Vec<Act>) {
     for (role, label, create) in [
         (SignRole::Signature, "Signature", "Create signature…"),
         (SignRole::Initials, "Initials", "Create initials…"),
@@ -1053,14 +1075,24 @@ pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
         }
     }
     ui.separator();
-    for (m, glyph) in [(Mark::Tick, "✔"), (Mark::Cross, "✖"), (Mark::Dot, "●")] {
-        let r = ui.button(format!("{glyph}  {}", capital(m.label())));
-        dialogs::set_name(&r, &capital(m.label()));
+    for (m, glyph) in MARKS {
+        let name = capital(m.label());
+        let r = ui.button((mark_glyph(m, glyph), name.as_str()));
+        dialogs::set_name(&r, &name);
         if r.clicked() {
             acts.push(Act::SignWith(SignPick::Mark(m)));
             ui.close();
         }
     }
+    ui.separator();
+    crate::actions::menu_item(ui, crate::actions::get(Act::FinishSigning), c, acts);
+}
+
+/// A group of the pane: a thin line, then its name, as the inspector's sections have them,
+/// but never folded: each is part of the task.
+fn group(ui: &mut egui::Ui, title: &str) {
+    ui.add(egui::Separator::default().spacing(10.0));
+    ui.label(crate::inspector::section_name(title));
 }
 
 /// What the pane asks of the app.
@@ -1105,7 +1137,10 @@ impl SignPane {
         self.create = Some((Create::new(role, author), place));
     }
 
-    /// The pane, its text box's id made from the tab's `scope`.
+    /// The pane, its text box's id made from the tab's `scope` (ENH-09): what is put down
+    /// and what it is; the signatures and the initials, each kind's saved ones and one
+    /// button to make another; the date, name, text and marks, and the ink; then Finish
+    /// signing, the main button once something is put down.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -1115,66 +1150,69 @@ impl SignPane {
         items: usize,
     ) -> PaneOut {
         let mut out = PaneOut::default();
+        let placed = match items {
+            0 => "Nothing yet".to_string(),
+            1 => "1 item, movable".to_string(),
+            n => format!("{n} items, movable"),
+        };
+        let what = ("Signature", "Picture, not digital".to_string());
+        crate::inspector::facts(ui, "sign-facts", &[("Placed", placed), what]);
         for role in [SignRole::Signature, SignRole::Initials] {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(match role {
-                    SignRole::Signature => "Signatures",
-                    SignRole::Initials => "Initials",
-                });
-                if ui
-                    .small_button("New…")
-                    .on_hover_text("Draw, type or choose a picture")
-                    .clicked()
-                {
-                    self.start_create(role, author, None);
-                }
-            });
-            if kit.list(role).is_empty() {
-                let what = match role {
-                    SignRole::Signature => "Create signature…",
-                    SignRole::Initials => "Create initials…",
-                };
-                if ui.button(what).clicked() {
-                    self.start_create(role, author, None);
-                }
-            }
+            let (title, create) = match role {
+                SignRole::Signature => ("Signature", "Create signature…"),
+                SignRole::Initials => ("Initials", "Create initials…"),
+            };
+            group(ui, title);
             let mut remove = None;
             for (i, e) in kit.list(role).iter().enumerate() {
                 let picked = self.pick == SignPick::Saved(role, i);
-                // Not saved for next time: tagged beside it, so it's clear it will go.
-                let r = ui
-                    .horizontal(|ui| {
-                        let r = match self.previews.get(ui.ctx(), &e.saved, role, kit.color) {
-                            Some(tex) => {
-                                let size = Previews::size(&tex, PREVIEW);
-                                let img = egui::Image::new((tex.id(), size));
-                                let r = paper_button(ui, img, Some(picked));
-                                // Named as in the toolbar's list.
-                                let name = match role {
-                                    SignRole::Signature => "Signature",
-                                    SignRole::Initials => "Initials",
-                                };
-                                dialogs::set_name(&r, &format!("{name} {}", i + 1));
-                                r
-                            }
-                            None => ui.selectable_label(picked, "Picture not found"),
-                        };
-                        if !e.keep {
-                            ui.label(egui::RichText::new("until LimarePDF closes").small().weak());
+                ui.horizontal(|ui| {
+                    // The picture in the room its remove button leaves, its own button's
+                    // padding and 2-point outline too: a row wider than the panel would
+                    // widen it every frame.
+                    let button = egui::vec2(24.0, 24.0);
+                    let s = ui.spacing();
+                    let around = button.x + s.item_spacing.x + 2.0 * s.button_padding.x + 4.0;
+                    let room = ui.available_width() - around;
+                    let room = egui::vec2(room.clamp(60.0, PREVIEW.x), PREVIEW.y);
+                    let r = match self.previews.get(ui.ctx(), &e.saved, role, kit.color) {
+                        Some(tex) => {
+                            let img = egui::Image::new((tex.id(), Previews::size(&tex, room)));
+                            paper_button(ui, img, Some(picked))
                         }
-                        r
-                    })
-                    .inner;
-                if r.clicked() {
-                    self.pick = SignPick::Saved(role, i);
-                }
-                r.context_menu(|ui| {
-                    if ui.button("Remove from the list").clicked() {
+                        None => ui.selectable_label(picked, "Picture not found"),
+                    };
+                    // Named as in the Fill and sign button's menu.
+                    dialogs::set_name(&r, &format!("{title} {}", i + 1));
+                    if r.clicked() {
+                        self.pick = SignPick::Saved(role, i);
+                    }
+                    r.context_menu(|ui| {
+                        if ui.button("Remove from the list").clicked() {
+                            remove = Some(i);
+                            ui.close();
+                        }
+                    });
+                    let x = egui::Button::new(theme::icon(icon::TRASH))
+                        .frame_when_inactive(false)
+                        .min_size(button);
+                    // Padded little enough that it is `button` wide, as the room left for
+                    // the picture counts it.
+                    let x = ui.scope(|ui| {
+                        ui.spacing_mut().button_padding = egui::vec2(4.0, 4.0);
+                        ui.add(x)
+                    });
+                    let x = x.inner.on_hover_text("Remove from the list");
+                    let name = format!("Remove {} {}", title.to_lowercase(), i + 1);
+                    dialogs::set_name(&x, &name);
+                    if x.clicked() {
                         remove = Some(i);
-                        ui.close();
                     }
                 });
+                // Not saved for next time: said under it, so it's clear it will go.
+                if !e.keep {
+                    ui.label(egui::RichText::new("until LimarePDF closes").small().weak());
+                }
             }
             if let Some(i) = remove {
                 kit.remove(role, i);
@@ -1184,8 +1222,15 @@ impl SignPane {
                     }
                 }
             }
+            // One way to make one, whether or not any are saved.
+            let r = ui
+                .button(create)
+                .on_hover_text("Draw, type or choose a picture");
+            if r.clicked() {
+                self.start_create(role, author, None);
+            }
         }
-        ui.add_space(6.0);
+        group(ui, "Text and marks");
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Date, "Date");
             let r = egui::ComboBox::from_id_salt("sign-date")
@@ -1201,7 +1246,9 @@ impl SignPane {
             ui.selectable_value(&mut self.pick, SignPick::Name, "Name");
             let r = ui
                 .add(egui::TextEdit::singleline(author).hint_text("Your name"))
-                .on_hover_text("Also signs your comments (Edit > Your name for comments)");
+                .on_hover_text(
+                    "Also signs your comments (Review > Comments > Your name for comments)",
+                );
             dialogs::set_name(&r, "Your name");
         });
         ui.horizontal(|ui| {
@@ -1229,26 +1276,25 @@ impl SignPane {
         });
         ui.horizontal(|ui| {
             ui.label("Marks");
-            for (m, glyph) in [(Mark::Tick, "✔"), (Mark::Cross, "✖"), (Mark::Dot, "●")] {
-                let r = ui.selectable_value(&mut self.pick, SignPick::Mark(m), glyph);
+            for (m, glyph) in MARKS {
+                let pick = SignPick::Mark(m);
+                let r = ui.selectable_value(&mut self.pick, pick, mark_glyph(m, glyph));
                 dialogs::set_name(&r, &capital(m.label()));
-                r.on_hover_text(m.label());
+                r.on_hover_text(capital(m.label()));
             }
         });
         ink_ui(ui, &mut kit.color);
-        ui.add_space(6.0);
-        ui.weak("A picture, not a digital signature.");
-        ui.add_space(6.0);
-        ui.label(match items {
-            0 => "Nothing placed yet.".to_string(),
-            1 => "1 item can still be moved.".to_string(),
-            n => format!("{n} items can still be moved."),
-        });
-        if ui
-            .add_enabled(items > 0, egui::Button::new("Finish signing…"))
-            .on_hover_text("Draw the placed items into the pages for good")
-            .clicked()
-        {
+        ui.add(egui::Separator::default().spacing(10.0));
+        // The main button once something is down; greyed, it says why.
+        let finish = match items {
+            0 => egui::Button::new("Finish signing…"),
+            _ => theme::primary_button("Finish signing…"),
+        };
+        let r = ui
+            .add_enabled(items > 0, finish)
+            .on_hover_text("Draw the items put down into the pages for good")
+            .on_disabled_hover_text(NOTHING_PLACED);
+        if r.clicked() {
             out.finish = true;
         }
         out

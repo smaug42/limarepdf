@@ -135,7 +135,7 @@ pub fn halo(c: Color32) -> Color32 {
 
 /// The contrast ratio of two colours, 1 to 21, as the Web Content Accessibility Guidelines
 /// reckon it (4.5 for ordinary text).
-fn contrast(a: Color32, b: Color32) -> f32 {
+pub(crate) fn contrast(a: Color32, b: Color32) -> f32 {
     let lum = |c: Color32| {
         let lin = |v: u8| {
             let v = f32::from(v) / 255.0;

@@ -1,6 +1,6 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{annot_tip, Action, Editor, Match, StampPick, Tool, Typed};
+use crate::editor::{Action, Editor, Match, StampPick, Tool, Typed};
 use crate::icon;
 use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
@@ -26,8 +26,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod comments;
+mod organise;
 mod previews;
 mod proofs;
+pub use comments::Review;
+use organise::Organise;
 use previews::{CropDrag, Picture};
 use proofs::Proofs;
 
@@ -95,6 +99,17 @@ struct Step {
     removal: bool,
     /// The stamp the inspector's form was linked to in this state, if any.
     stamp: Option<Stamped>,
+    /// The change between this step and the state it was taken from only moved, added,
+    /// removed or turned pages ([`Tab::arrange`]): these pages (their objects) were turned.
+    /// Going back or forth keeps the other pages' pictures.
+    arranged: Option<Vec<(u32, u16)>>,
+}
+
+/// Pages' pictures and thumbnails kept by the pages' objects, through a change that moves
+/// pages ([`Tab::arrange`]).
+struct Pictures {
+    pictures: HashMap<(u32, u16), (u32, TextureHandle)>,
+    thumbs: HashMap<(u32, u16), TextureHandle>,
 }
 
 /// A watermark or headers and footers just added, which the inspector's form keeps
@@ -255,6 +270,23 @@ pub struct Tab {
     /// The colour around the line being edited, found for that box in those colours.
     line_cover: Option<(Sample, Colours, Color32)>,
     pub sizes: Vec<(f32, f32)>,
+    /// Each page's object, in page order: who a page is, wherever it moves, for the
+    /// selection and the pictures to follow it (NEW-14).
+    ids: Vec<(u32, u16)>,
+    /// Organise's grid, while it shows in place of the pages (NEW-14).
+    organise: Option<Organise>,
+    /// The pages cut, by their objects, in page order: shown faded until pasted, which
+    /// moves them (NEW-14).
+    cut: Vec<(u32, u16)>,
+    /// The thumbnail the keyboard is at, and whether to ring it (the keys were used).
+    thumb_focus: usize,
+    thumb_keyed: bool,
+    /// How many thumbnails were in view last drawn: Page Up and Page Down's step.
+    thumb_screen: usize,
+    /// Bring this thumbnail into view when next drawn (the keys moved to it).
+    thumb_seek: Option<usize>,
+    /// The zoom of Organise's cards (the app's setting, lent).
+    pub grid_zoom: f32,
     pages: HashMap<usize, (u32, TextureHandle)>,
     /// At high zoom, the parts of the pages in view drawn at full size, over `pages`. The
     /// flag is cleared when a tile goes out of date; it is still shown until the new one
@@ -385,6 +417,8 @@ pub struct Tab {
     /// The annotations, read when the Comments tab is first shown and again after the
     /// document changes: the revision they were read at, and the list.
     comments: Option<(u64, Vec<Annot>)>,
+    /// The Comments view's filter, search and place (ENH-40).
+    pub review: Review,
     /// Single-page layout: whether the view was at the page's top and bottom at the end
     /// of the last frame, so the next wheel step past it turns the page.
     edge: (bool, bool),
@@ -436,9 +470,17 @@ impl Tab {
             pdf.refresh_appearances();
         }
         let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
-        let sizes = sizes_of(&pdf);
+        let sizes = pdf.page_sizes();
         let labels = pdf.page_labels();
         Ok(Self {
+            ids: pdf.page_ids(),
+            organise: None,
+            cut: Vec::new(),
+            thumb_focus: 0,
+            thumb_keyed: false,
+            thumb_screen: 1,
+            thumb_seek: None,
+            grid_zoom: crate::settings::ORGANISE_ZOOM,
             labels,
             banners,
             banners_at: None,
@@ -514,6 +556,7 @@ impl Tab {
             outline_rename: None,
             outline_focus: false,
             comments: None,
+            review: Review::default(),
             edge: (false, false),
             flipped: 0.0,
             layout: Layout::default(),
@@ -642,27 +685,50 @@ impl Tab {
         self.keep_page_typing(ctx) && self.keep_forms(ctx)
     }
 
+    /// [`Tab::keep_typing`] before Undo or Redo: draft replies stay drafts
+    /// ([`Typed::BUT_DRAFTS`]).
+    pub fn keep_typing_but_drafts(&mut self, ctx: &egui::Context) -> bool {
+        self.keep_pieces(ctx, &Typed::BUT_DRAFTS) && self.keep_forms(ctx)
+    }
+
     /// Put what is being typed on the pages into the document, as clicking away would,
     /// before a change that uses, draws again or replaces the document (BUG-01): one edit
     /// for each, which Undo takes back. Typing that can't be kept stays as it is, with the
     /// reason shown, and false says the change mustn't go ahead.
     pub fn keep_page_typing(&mut self, ctx: &egui::Context) -> bool {
+        self.keep_pieces(ctx, &Typed::ALL)
+    }
+
+    /// [`Tab::keep_page_typing`] for `pieces`; every draft reply is one edit of its own.
+    fn keep_pieces(&mut self, ctx: &egui::Context, pieces: &[Typed]) -> bool {
         // Changes queued before go in first, as they would at the end of the frame.
         self.apply_actions(ctx);
         let earlier = self.error.take();
-        for piece in Typed::ALL {
-            let Some(held) = self.ed.keep(piece) else {
-                continue;
-            };
-            self.apply_actions(ctx);
-            if self.error.is_some() {
-                self.ed.put_back(held);
-                return false;
+        for &piece in pieces {
+            while let Some(held) = self.ed.keep(piece) {
+                self.apply_actions(ctx);
+                if self.error.is_some() {
+                    self.ed.put_back(held);
+                    return false;
+                }
+                self.ed.done(held);
+                if piece != Typed::Reply {
+                    break;
+                }
             }
-            self.ed.done(held);
         }
         self.error = earlier;
         true
+    }
+
+    /// The draft replies follow their comments after a change to the document: to the
+    /// page each is on now, or set aside while it isn't in the document.
+    fn place_drafts(&mut self) {
+        let ids = self.ed.drafted();
+        if !ids.is_empty() {
+            let pages = self.pdf.annotation_pages(&ids);
+            self.ed.place_drafts(&pages);
+        }
     }
 
     pub fn state(&self) -> State {
@@ -892,6 +958,7 @@ impl Tab {
         }
         self.revision += 1;
         self.scrubbed |= scrub;
+        self.place_drafts();
         true
     }
 
@@ -929,12 +996,10 @@ impl Tab {
 
     /// The page sizes the view lays out: whole pages while the crop is being set.
     fn shown_sizes(&self) -> Vec<(f32, f32)> {
-        if self.crop_view.is_none() {
-            return sizes_of(&self.pdf);
+        match self.crop_view {
+            None => self.pdf.page_sizes(),
+            Some(_) => self.pdf.full_page_sizes(),
         }
-        (0..self.pdf.page_count())
-            .map(|i| self.pdf.full_page_size(i).unwrap_or((612.0, 792.0)))
-            .collect()
     }
 
     /// After a change that doesn't show on the pages: read again what the tab keeps from the
@@ -942,9 +1007,7 @@ impl Tab {
     fn reread(&mut self) {
         self.labels = self.pdf.page_labels();
         if let Some(m) = self.crop_view.as_mut() {
-            *m = (0..self.pdf.page_count())
-                .map(|i| self.pdf.crop_margins(i).unwrap_or_default())
-                .collect();
+            *m = self.pdf.all_crop_margins();
         }
     }
 
@@ -967,6 +1030,19 @@ impl Tab {
     /// Whether the pages are shown whole for setting the crop.
     pub fn crop_view(&self) -> bool {
         self.crop_view.is_some()
+    }
+
+    /// While the crop is being set, how many pages it is set for (the Crop tool's Pages).
+    pub fn cropping(&self) -> Option<usize> {
+        self.crop_view.as_ref()?;
+        let range = &self.forms.crop.pages;
+        Some(limarepdf_core::parse_page_range(range, self.page_count()).map_or(0, |p| p.len()))
+    }
+
+    /// Stop setting the crop: the Crop section closes and the pages are shown cropped, as
+    /// Esc, Enter, a click away from the crop box or Crop again do.
+    pub fn end_crop(&mut self) {
+        self.forms.close = Some(crate::inspector::Section::Crop);
     }
 
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
@@ -1496,6 +1572,7 @@ impl Tab {
             scrubbed: self.scrubbed,
             removal,
             stamp,
+            arranged: None,
         });
         // Redo is emptied here, so the undo steps are all the budget covers.
         self.redo.clear();
@@ -1534,9 +1611,9 @@ impl Tab {
     }
 
     /// Undo the last change. What is being typed on the pages is kept first, as its own
-    /// change, so that is what Undo takes back.
+    /// change, so that is what Undo takes back; draft replies stay drafts.
     pub fn undo(&mut self, ctx: &egui::Context) {
-        if !self.keep_page_typing(ctx) {
+        if !self.keep_pieces(ctx, &Typed::BUT_DRAFTS) {
             return;
         }
         if let Some(step) = self.undo.pop() {
@@ -1551,9 +1628,9 @@ impl Tab {
 
     /// Redo the last undone change. The app withdraws the recovery copies first when
     /// [`Tab::redo_removes`]. What is being typed on the pages is kept first, as for any
-    /// change, which leaves nothing to redo.
+    /// change, which leaves nothing to redo; draft replies stay drafts.
     pub fn redo(&mut self, ctx: &egui::Context) {
-        if !self.keep_page_typing(ctx) {
+        if !self.keep_pieces(ctx, &Typed::BUT_DRAFTS) {
             return;
         }
         if let Some(step) = self.redo.pop() {
@@ -1588,8 +1665,14 @@ impl Tab {
         }
         self.dirty = true;
         if pdf.is_some() {
+            // Pages only moved, came or went: the others keep their pictures.
+            let kept = step.arranged.as_deref().map(|t| self.pictures_by_page(t));
             self.revision += 1;
             self.refresh(ctx);
+            if let Some(kept) = kept {
+                self.put_pictures(kept);
+            }
+            self.place_drafts();
         }
         Some(Step {
             pdf,
@@ -1597,6 +1680,7 @@ impl Tab {
             scrubbed,
             removal: step.removal,
             stamp,
+            arranged: step.arranged,
         })
     }
 
@@ -1619,12 +1703,96 @@ impl Tab {
                 self.ed.selection.clear_object();
                 self.ed.adding = None;
                 self.search_changed(None);
-                let n = self.page_count();
-                self.ed.selection.retain_pages(n);
-                self.current = self.current.min(n.saturating_sub(1));
-                self.goto = Some(self.current);
+                let old = std::mem::replace(&mut self.ids, self.pdf.page_ids());
+                self.follow_pages(&old);
             }
             Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// After the pages changed (`old`, their objects before): the pages selected stay
+    /// selected wherever they went, those deleted no longer; while organising, the page
+    /// being read is followed too, or the one in its place when it went. The page view
+    /// goes back to the page being read.
+    fn follow_pages(&mut self, old: &[(u32, u16)]) {
+        let n = self.page_count();
+        let now: HashMap<(u32, u16), usize> = self
+            .ids
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| (id, i))
+            .collect();
+        let moved = |p: usize| old.get(p).and_then(|id| now.get(id)).copied();
+        // A document read anew, whose pages are other objects: by their numbers.
+        let same = old.iter().any(|id| now.contains_key(id));
+        if let (true, Some(s)) = (same, self.ed.selection.pages()) {
+            let set = s.iter().filter_map(|&p| moved(p)).collect();
+            self.ed.selection = Selection::pages_from(set);
+        }
+        self.ed.selection.retain_pages(n);
+        // Pages cut and deleted since are no longer to paste.
+        self.cut.retain(|id| now.contains_key(id));
+        let last = n.saturating_sub(1);
+        self.thumb_focus = moved(self.thumb_focus)
+            .unwrap_or(self.thumb_focus)
+            .min(last);
+        if let Some(o) = self.organise.as_mut() {
+            o.focus = moved(o.focus).unwrap_or(o.focus).min(last);
+            o.bar = None;
+            self.current = moved(self.current).unwrap_or(self.current).min(last);
+            self.anchor = moved(self.anchor).unwrap_or(self.anchor).min(last);
+        } else {
+            self.current = self.current.min(last);
+            self.goto = Some(self.current);
+        }
+    }
+
+    /// Like [`Tab::edit`], for a change that moves, adds, removes or turns pages: the
+    /// pictures of the pages it leaves as they were (all but `changed`, before the change)
+    /// are kept, wherever the pages went, rather than drawn again.
+    pub fn arrange(
+        &mut self,
+        ctx: &egui::Context,
+        changed: &[usize],
+        f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
+    ) -> bool {
+        let turned: Vec<(u32, u16)> = (changed.iter())
+            .filter_map(|&i| self.ids.get(i).copied())
+            .collect();
+        let kept = self.pictures_by_page(&turned);
+        let done = self.edit(ctx, f);
+        if done {
+            self.put_pictures(kept);
+            // Undo and Redo keep them too.
+            if let Some(step) = self.undo.last_mut() {
+                step.arranged = Some(turned);
+            }
+        }
+        done
+    }
+
+    /// The pages' pictures and thumbnails, by the pages' objects, but those of `except`.
+    fn pictures_by_page(&self, except: &[(u32, u16)]) -> Pictures {
+        let id = |i: &usize| self.ids.get(*i).copied().filter(|id| !except.contains(id));
+        let pictures = (self.pages.iter())
+            .filter_map(|(i, p)| Some((id(i)?, p.clone())))
+            .collect();
+        let thumbs = (self.thumbs.iter())
+            .filter_map(|(i, t)| Some((id(i)?, t.clone())))
+            .collect();
+        Pictures { pictures, thumbs }
+    }
+
+    /// The pictures kept by [`Tab::pictures_by_page`] back on their pages, wherever they
+    /// went.
+    fn put_pictures(&mut self, kept: Pictures) {
+        for (i, id) in self.ids.iter().enumerate() {
+            if let Some(p) = kept.pictures.get(id) {
+                self.pages.insert(i, p.clone());
+            }
+            if let Some(t) = kept.thumbs.get(id) {
+                self.thumbs.insert(i, t.clone());
+            }
         }
     }
 
@@ -1809,106 +1977,6 @@ impl Tab {
                 self.outline_sel = Some(i);
                 self.outline_rename = Some((i, title));
                 self.outline_focus = true;
-            }
-        }
-    }
-
-    /// The Comments side tab: the annotations by page, replies under what they answer.
-    /// Clicking one goes to it and outlines it; right-click to delete it.
-    pub fn show_comments(&mut self, ui: &mut egui::Ui) {
-        let rev = self.revision;
-        if self.comments.as_ref().is_none_or(|(r, _)| *r != rev) {
-            let list = self.pdf.annotations();
-            let gone = |(_, id)| !list.iter().any(|a| a.id == id);
-            if self.ed.selection.annot().is_some_and(gone) {
-                self.ed.selection.clear_annot();
-            }
-            self.comments = Some((rev, list));
-        }
-        let chosen_id = self.ed.selection.annot().map(|(_, id)| id);
-        let Some((_, list)) = &self.comments else {
-            return;
-        };
-        if list.is_empty() {
-            ui.weak("This document has no comments or markup.");
-            return;
-        }
-        let mut chosen = None;
-        let mut delete = None;
-        let mut reply = false;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let mut page = usize::MAX;
-                for (i, depth) in thread_order(list) {
-                    let a = &list[i];
-                    if a.page != page {
-                        page = a.page;
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(format!("Page {}", page + 1))
-                                .small()
-                                .strong(),
-                        );
-                    }
-                    let first = a
-                        .contents
-                        .lines()
-                        .map(|l| limarepdf_core::display_line(l, 200))
-                        .find(|l| !l.is_empty());
-                    let who = limarepdf_core::display_line(&a.author, 80);
-                    let text = match (who.as_str(), first) {
-                        ("", None) => a.label(),
-                        ("", Some(t)) => format!("{}: {t}", a.label()),
-                        (w, None) => format!("{} · {w}", a.label()),
-                        (w, Some(t)) => format!("{w}: {t}"),
-                    };
-                    let mut text = egui::RichText::new(text);
-                    if a.hidden() {
-                        text = text.weak();
-                    }
-                    let tip = annot_tip(a);
-                    ui.horizontal(|ui| {
-                        ui.add_space(depth as f32 * 12.0);
-                        let row =
-                            egui::Button::selectable(chosen_id == Some(a.id), text).truncate();
-                        let r = ui.add(row).on_hover_text(tip);
-                        if r.clicked() {
-                            chosen = Some(i);
-                        }
-                        r.context_menu(|ui| {
-                            let answer = icon::ARROW_BEND_UP_LEFT;
-                            if theme::glyph_button(ui, answer, "Reply…").clicked() {
-                                chosen = Some(i);
-                                reply = true;
-                            }
-                            let label = if list.iter().any(|b| b.reply_to == Some(a.id)) {
-                                "Delete, with its replies"
-                            } else {
-                                "Delete"
-                            };
-                            let del = ui
-                                .add_enabled(!a.locked(), egui::Button::new(label))
-                                .on_disabled_hover_text("It is locked in this document.");
-                            if del.clicked() {
-                                delete = Some(a.id);
-                            }
-                        });
-                    });
-                }
-            });
-        if let Some(i) = chosen {
-            let a = &list[i];
-            let (id, page, top) = (a.id, a.page, a.bbox[1]);
-            self.ed.selection = Selection::Annot { page, id };
-            self.ed.reply_focus = reply;
-            self.go_to(page);
-            self.goto_y = Some(top);
-        }
-        if let Some(id) = delete {
-            let ctx = ui.ctx().clone();
-            if self.edit(&ctx, |p| p.remove_annotations(|a| a.id == id).map(|_| ())) {
-                self.notice = Some("Deleted the comment".into());
             }
         }
     }
@@ -2614,14 +2682,16 @@ impl Tab {
         self.zoom_to(z);
     }
 
-    /// Change the zoom, keeping the same place in the document at the top of the view.
+    /// Change the zoom, keeping the same place in the document at the top of the view: the
+    /// place still to be put there if there is one (as on the way back from Organise, where
+    /// the view's own is from before the pages moved).
     fn zoom_to(&mut self, z: f32) {
         let z = z.clamp(0.1, MAX_ZOOM);
         if (z - self.zoom).abs() < 1e-4 {
             return;
         }
         self.zoom = z;
-        self.rezoom = Some(self.view);
+        self.rezoom.get_or_insert(self.view);
     }
 
     /// The command state for this tab's part: document, undo, selection and tool.
@@ -2648,6 +2718,8 @@ impl Tab {
         c.obj_only_text = (!held.is_empty())
             && (held.iter()).all(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText));
         c.pages = self.ed.selection.pages().is_some();
+        c.organise = self.organising();
+        c.cut = !self.cut.is_empty();
         c.tool = Some(self.ed.tool);
         c.annot_tool = Some(self.ed.annot_tool);
         c.fit = self.fit;
@@ -2660,6 +2732,9 @@ impl Tab {
         c.annot_locked = annot.is_some_and(|a| a.locked());
         c.annot_moves = self.ed.annot_moves();
         c.object_moves = self.ed.object_moves();
+        c.signing = self.ed.sign_items > 0;
+        c.marked = self.ed.redact_marks > 0;
+        c.cropping = self.crop_view();
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
     }
@@ -2992,7 +3067,21 @@ impl Tab {
         let mut probe = shown;
         let out = area.show_viewport(ui, |ui, vp| {
             let avail_w = ui.available_width().max(content_w);
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, total_h), Sense::hover());
+            // While the crop is set, a click beside the pages ends it, as a click away from
+            // a picture ends Word's crop: a click target for the pointer, not a Tab stop
+            // (Enter ends it from the keyboard).
+            let sense = match self.crop_view {
+                Some(_) => Sense::CLICK,
+                None => Sense::hover(),
+            };
+            let (rect, canvas) = ui.allocate_exact_size(Vec2::new(avail_w, total_h), sense);
+            if self.crop_view.is_some() {
+                let name = "Beside the pages: a click ends cropping";
+                canvas.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, name));
+            }
+            if canvas.clicked() {
+                self.end_crop();
+            }
             let painter = ui.painter().clone();
             let spine = rect.min.x + avail_w / 2.0;
             let first = row_top.partition_point(|&t| t < vp.min.y).saturating_sub(1);
@@ -3191,6 +3280,29 @@ impl Tab {
         let mut rects: Vec<Rect> = Vec::with_capacity(self.sizes.len());
         let (mut dropped, mut target) = (false, None);
         let proof = self.proof_shown(&ctx);
+        // The list is one stop for Tab, which takes the arrows and Esc for the pages; the
+        // thumbnails take clicks only.
+        let list = self.list_id();
+        let stop = ui.interact(ui.available_rect_before_wrap(), list, Sense::FOCUSABLE);
+        stop.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::ListBox, true, "Page thumbnails")
+        });
+        if stop.has_focus() {
+            let keep = egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+                tab: false,
+            };
+            ctx.memory_mut(|m| m.set_focus_lock_filter(list, keep));
+        }
+        if stop.gained_focus() && !ctx.input(|i| i.pointer.any_pressed()) {
+            self.thumb_keyed = true;
+        }
+        let ring = stop.has_focus() && self.thumb_keyed;
+        let cut = self.cut_pages();
+        let seek = self.thumb_seek.take();
+        let mut in_view = 0;
         egui::ScrollArea::vertical()
             .id_salt(("thumbs", self.id))
             .auto_shrink([false, false])
@@ -3203,12 +3315,15 @@ impl Tab {
                     let th = tw * h / w.max(1.0);
                     let (rect, resp) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), th + 30.0),
-                        Sense::click_and_drag(),
+                        Sense::CLICK | Sense::DRAG,
                     );
                     ui.add_space(8.0);
                     let name = format!("Page {}", self.page_name(i));
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
                     rects.push(rect);
+                    if seek == Some(i) {
+                        resp.scroll_to_me(None);
+                    }
                     // Dragging a thumbnail moves it, or the selected pages if it is one
                     // of them.
                     if resp.drag_started() {
@@ -3225,6 +3340,12 @@ impl Tab {
                     if !ui.is_rect_visible(rect) {
                         continue;
                     }
+                    in_view += 1;
+                    // A page cut is faint until it is pasted.
+                    let faint = |c: Color32| match cut.contains(&i) {
+                        true => c.gamma_multiply(0.35),
+                        false => c,
+                    };
                     let img = Rect::from_center_size(
                         Pos2::new(rect.center().x, rect.min.y + 8.0 + th / 2.0),
                         Vec2::new(tw, th),
@@ -3241,8 +3362,13 @@ impl Tab {
                     p.rect_filled(rect, 5.0, fill);
                     let card = egui::Stroke::new(1.0, edge);
                     p.rect_stroke(rect, 5.0, card, egui::StrokeKind::Inside);
-                    p.rect_filled(img, 0.0, paper);
-                    let outline = egui::Stroke::new(1.0, theme::border(dark));
+                    // The thumbnail the keyboard is at.
+                    if ring && i == self.thumb_focus {
+                        let ring = egui::Stroke::new(2.0, theme::accent(dark));
+                        p.rect_stroke(rect.shrink(1.0), 5.0, ring, egui::StrokeKind::Inside);
+                    }
+                    p.rect_filled(img, 0.0, faint(paper));
+                    let outline = egui::Stroke::new(1.0, faint(theme::border(dark)));
                     p.rect_stroke(img, 0.0, outline, egui::StrokeKind::Outside);
                     match self.thumbs.get(&i) {
                         Some(t) => {
@@ -3250,7 +3376,7 @@ impl Tab {
                                 t.id(),
                                 img,
                                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                Color32::WHITE,
+                                faint(Color32::WHITE),
                             );
                         }
                         None if self.failed.contains_key(&i) => {
@@ -3309,6 +3435,12 @@ impl Tab {
             // Released outside any thumbnail's response: cancel.
             self.thumb_drag = None;
         }
+        self.thumb_screen = in_view.max(1);
+        // A click or drag on a thumbnail gives the list the keyboard, there.
+        if let Some(i) = click.map(|(i, _)| i).or(self.thumb_drag) {
+            (self.thumb_focus, self.thumb_keyed) = (i, false);
+            ctx.memory_mut(|m| m.request_focus(list));
+        }
         if let Some((i, m)) = click {
             // Shift adds a range from the last click, Ctrl/Cmd toggles one page; either
             // way a selected object or words give way to the pages.
@@ -3343,20 +3475,8 @@ impl Tab {
         let Some(moving) = self.ed.selection.pages().cloned() else {
             return;
         };
-        let n = self.page_count();
-        let order = moved_order(n, &moving, to);
-        if order.iter().copied().eq(0..n) {
-            return;
-        }
-        let at = (0..to).filter(|p| !moving.contains(p)).count();
-        let before = self.revision;
-        self.edit(ctx, |p| p.reorder(&order));
-        if self.revision != before {
-            let placed: BTreeSet<usize> = (at..at + moving.len()).collect();
-            self.ed.selection = Selection::pages_from(placed);
-            self.anchor = at;
-            self.go_to(at);
-        }
+        let order = moved_order(self.page_count(), &moving, to);
+        self.reorder_pages(ctx, &order);
     }
 }
 
@@ -3492,12 +3612,6 @@ fn failed_page(painter: &egui::Painter, r: Rect, why: &str) {
     }
 }
 
-fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {
-    (0..pdf.page_count())
-        .map(|i| pdf.page_size(i).unwrap_or((612.0, 792.0)))
-        .collect()
-}
-
 /// The page order after moving `moving` to just before `to`: for each new position,
 /// the old page index.
 fn moved_order(n: usize, moving: &BTreeSet<usize>, to: usize) -> Vec<usize> {
@@ -3604,6 +3718,12 @@ fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, 
     } else if p.y > view.bottom() - 32.0 {
         ui.scroll_with_delta(Vec2::new(0.0, -8.0));
     }
+    moving_label(ui, p, n);
+}
+
+/// While pages are dragged: "Move N pages" by the pointer, at `p`.
+fn moving_label(ui: &egui::Ui, p: Pos2, n: usize) {
+    let accent = ui.visuals().selection.stroke.color;
     let text = if n == 1 {
         "Move 1 page".to_string()
     } else {
@@ -3672,6 +3792,7 @@ mod tests {
             scrubbed: false,
             removal,
             stamp: None,
+            arranged: None,
         }
     }
 

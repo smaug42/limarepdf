@@ -2,7 +2,9 @@
 
 # Password protection
 
-Protect a document with a password, open a protected one, or take the protection off.
+Protect a document with a password, open a protected one, save it, or take the protection off. LimarePDF doesn't
+keep a document's passwords: saving a protected document you opened removes its protection, unless you set it
+again before saving.
 
 ## Protect a document
 
@@ -18,7 +20,8 @@ Protect a document with a password, open a protected one, or take the protection
 
 The passwords take effect when you save. Applying them can be undone with Ctrl+Z, like any other change. With
 nothing selected, the inspector's **Security** line says how the document will be saved: None, Open password or
-Permissions password; for a protected document you opened, Removed on save, until you set a password again.
+Permissions password; for a protected document you opened, Removed on save, until you set a password again. While
+passwords are set, the status bar says **Will be encrypted on save**.
 
 The encryptions are RC4 40-bit and 128-bit (both weak, for old readers only), and AES 128-bit and 256-bit. What
 others may be allowed to do: printing, high-resolution printing, modifying, copying content, commenting, filling
@@ -31,23 +34,42 @@ again. Opening several protected documents at once asks for each in turn, and **
 unopened. A document with only a permissions password opens without asking, as it does in other readers, and a
 notice says it has one.
 
-**Append PDFs…** asks for a protected file's password in the same way: **Add pages** adds its pages, **Skip this
-file** goes on without it, and **Cancel** adds nothing
+**Insert PDF pages…** and **Append PDFs…** ask for a protected file's password in the same way: **Add pages** adds
+its pages, **Skip this file** goes on without it, and **Cancel** adds nothing
 ([Organising pages](organising-pages.md#add-pages-and-merge-documents)).
+
+## Save a protected document and keep it protected
+
+A protected document you open is saved **without** its protection unless you set it again: LimarePDF doesn't keep
+its passwords or its permissions. A notice says so when it opens, and with nothing selected the inspector's
+**Security** line says **Removed on save**. To keep it protected:
+
+1. Choose **Protect > Passwords**, or press **Password security** in the notice. Password security starts empty:
+   the document's old settings aren't filled in.
+2. Tick **Protect with passwords when saving**, type the passwords (the old ones or new ones), choose the
+   encryption, and untick under **Allow** what others may not do.
+3. Press **Apply**, then save.
+
+**Save** writes over the file, protected only if you set it again. **Save As** writes a new file the same way and
+leaves the original file as it was, still protected.
 
 ## Take the protection off
 
 Open the document with its password, and save it: saving removes the protection unless you set it again in Password
-security. A notice says so when such a document opens.
+security. A notice says so when such a document opens. Save As instead keeps the protected original.
 
 ## Things to know
 
-- To keep a protected document protected when you save it, set its passwords again in Password security first.
-- Password-protected documents get no [recovery copies](gui.md#recovery-copies).
+- Password-protected documents get no [recovery copies](gui.md#recovery-copies), and neither does a document you
+  add a protected document's pages to.
 - Digital signatures can't be added to a password-protected document, nor to one set to get a password when saved.
+- A digitally signed document that is protected, or that you set a password on, can be saved only by writing the
+  whole file, which breaks its signatures; LimarePDF asks first
+  ([Saving a signed document](signatures.md#saving-a-signed-document)).
 - Certificate encryption is not supported.
 - On the command line: `limarepdf-cli encrypt` and `limarepdf-cli decrypt` (see
-  [Properties and security](cli.md#properties-and-security)).
+  [Properties and security](cli.md#properties-and-security)). Every other command writes its output without a
+  password, even from a protected input.
 
 ## How this was tested
 
