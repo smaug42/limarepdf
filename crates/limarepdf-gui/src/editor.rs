@@ -1325,6 +1325,9 @@ pub struct Editor {
     /// Where the floating bar was drawn last, and in which pass: a click there doesn't end
     /// a line being edited either.
     pub bar_rect: (Rect, u64),
+    /// The box of the text being typed on the page (a line, new text, a note or a text box)
+    /// as drawn this frame, for its right-click menu; the tab takes it each frame.
+    pub typing_box: Option<egui::Response>,
     /// Where the band's groups that change the text being typed (its look, Copy and Paste)
     /// were drawn this frame: a click there doesn't end the typing ([`band::show`]).
     ///
@@ -1461,6 +1464,7 @@ impl Default for Editor {
             words_note: page_text::Refused::default(),
             insp_rect: (Rect::NOTHING, 0),
             bar_rect: (Rect::NOTHING, 0),
+            typing_box: None,
             keep_typing: Vec::new(),
             tfont: FontChoice::default(),
             tsize: 14.0,
@@ -2157,6 +2161,7 @@ impl Editor {
             return false;
         };
         let shown = a.ui(ui, r, k, self.page_colours, accent, settled);
+        self.typing_box = Some(shown.edit);
         if shown.done {
             self.finish_adding();
         }
@@ -2293,7 +2298,8 @@ impl Editor {
             // At the line, moved left as far as it must to stay in view.
             let view = ui.clip_rect();
             let x = area.min.x.min(view.max.x - size.x).max(view.min.x);
-            let out = egui::Area::new(id.with("area"))
+            let held = egui::TextEdit::load_state(&ctx, id).and_then(|s| s.cursor.char_range());
+            let mut out = egui::Area::new(id.with("area"))
                 .fixed_pos(Pos2::new(x, area.min.y))
                 .order(egui::Order::Foreground)
                 .show(&ctx, |ui| {
@@ -2314,6 +2320,7 @@ impl Editor {
                     }
                 })
                 .inner;
+            page_text::keep_on_right_click(&ctx, id, &mut out, held);
             (out, area)
         };
         // The styles follow what was typed.
@@ -2329,6 +2336,7 @@ impl Editor {
         let now = ctx.input(|i| i.time);
         insp.history.observe(&insp.text, sel, now, settled(&ctx));
         let edit = &out.response.response;
+        self.typing_box = Some(edit.clone());
         le.area = area.union(edit.rect);
         let name = format!("Editing text: {}", o.text.as_deref().unwrap_or(""));
         dialogs::set_name(edit, &name);
@@ -2449,6 +2457,7 @@ impl Editor {
                 ui.painter()
                     .rect_filled(area, 2.0, Color32::from_rgb(cr, cg, cb));
             }
+            let held = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
             let inner = egui::Area::new(scope.with(("note-writing", page)))
                 .fixed_pos(area.right_top() + Vec2::new(6.0, 0.0))
                 .order(egui::Order::Foreground)
@@ -2456,13 +2465,14 @@ impl Editor {
                     egui::Frame::popup(ui.style())
                         .show(ui, |ui| {
                             ui.set_width(240.0);
-                            ui.add(
-                                egui::TextEdit::multiline(&mut w.text)
-                                    .id(id)
-                                    .hint_text("Comment")
-                                    .desired_rows(4)
-                                    .desired_width(f32::INFINITY),
-                            )
+                            let mut out = egui::TextEdit::multiline(&mut w.text)
+                                .id(id)
+                                .hint_text("Comment")
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY)
+                                .show(ui);
+                            page_text::keep_on_right_click(ui.ctx(), id, &mut out, held);
+                            out.response.response
                         })
                         .inner
                 });
@@ -2500,11 +2510,14 @@ impl Editor {
             // As `Ui::put` lays it out, keeping the output for the note at the caret.
             let layout = egui::Layout::centered_and_justified(egui::Direction::TopDown);
             let at = egui::UiBuilder::new().max_rect(area).layout(layout);
-            let out = ui.scope_builder(at, |ui| te.show(ui)).inner;
+            let held = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
+            let mut out = ui.scope_builder(at, |ui| te.show(ui)).inner;
+            page_text::keep_on_right_click(ui.ctx(), id, &mut out, held);
             *ui.visuals_mut() = theme;
             w.refused.show(ui.ctx(), &out, id);
             (out.response.response, false, false)
         };
+        self.typing_box = Some(out.clone());
         if w.fresh {
             out.request_focus();
             w.fresh = false;

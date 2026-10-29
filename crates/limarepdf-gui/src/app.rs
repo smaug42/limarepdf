@@ -2737,6 +2737,11 @@ impl App {
                         t.ed.refocus_typing();
                         self.clip = Some((clip, id));
                     }
+                    // Over words selected while reading: the system pastes, and what it
+                    // pastes is typed in their place, as Ctrl+V types it (`App::type_over`).
+                    (None, Clip::Paste) if t.ed.selection.words().is_some() => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                    }
                     // Pages cut move to where pages go: the insertion bar, else after the
                     // pages selected.
                     (None, Clip::Paste) => {
@@ -6418,6 +6423,7 @@ mod tests {
     mod redact_marks;
     mod review;
     mod sign;
+    mod typing_menus;
 
     /// The height of the window the tests draw: room for the commands above the pages.
     const TEST_HEIGHT: f32 = 1000.0;

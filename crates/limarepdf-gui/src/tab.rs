@@ -2780,6 +2780,19 @@ impl Tab {
         resp.context_menu(|ui| actions::context_menu(ui, &sel, &c, &mut self.requested));
     }
 
+    /// A right-click in the text being typed on the page: the menu for its text, Cut, Copy
+    /// and Paste, Bold and Italic, as word processors have. The box as drawn this frame
+    /// (`Editor::typing_box`): one read again by its id would give up the keyboard it was
+    /// just given back, when a press elsewhere came this frame.
+    fn typing_menu(&mut self, base: &Ctx) {
+        let Some(resp) = self.ed.typing_box.take() else {
+            return;
+        };
+        let mut c = *base;
+        self.fill_ctx(&mut c);
+        resp.context_menu(|ui| actions::typing_menu(ui, &c, &mut self.requested));
+    }
+
     /// A small bar for the selected object or words, with icon buttons for the right-click
     /// menu's commands (for a line being edited, Bold, Italic and Copy). It goes where it
     /// covers neither the selection nor the page's other text ([`bar_place`], ENH-20),
@@ -3187,7 +3200,9 @@ impl Tab {
                         .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
                     self.context_menu(&resp, base);
                     // The right-click menu replaces the toolbar while it is open.
-                    let menu_open = resp.context_menu_opened();
+                    let typing_menu = self.ed.typing_box.as_ref();
+                    let menu_open = resp.context_menu_opened()
+                        || typing_menu.is_some_and(|r| r.context_menu_opened());
                     if let Some((p, b)) = self.ed.selection_box() {
                         if p == i && !self.ed.dragging() && !menu_open {
                             self.floating_toolbar(ui, base, i, r, self.zoom * BASE, b);
@@ -3236,6 +3251,7 @@ impl Tab {
         self.edge = (top <= 0.5, top >= room - 0.5);
         let at = Pos2::new(out.state.clamped_offset().x, top);
         self.last_view = Some(Rect::from_min_size(at, out.inner_rect.size()));
+        self.typing_menu(base);
         let ed = &mut self.ed;
         ed.form.keys(&ctx, &mut ed.actions);
         self.apply_actions(&ctx);

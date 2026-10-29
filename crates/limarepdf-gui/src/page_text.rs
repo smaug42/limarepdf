@@ -98,6 +98,8 @@ pub struct Shown {
     pub over: bool,
     /// Esc or Tab finished the typing, or the text went out of view.
     pub done: bool,
+    /// The text's box as drawn, for its right-click menu.
+    pub edit: egui::Response,
 }
 
 /// Whether `c` can be typed in `font`: line breaks, and what LimarePDF can write in it (the
@@ -329,6 +331,33 @@ pub fn select(ctx: &egui::Context, id: egui::Id, sel: (usize, usize)) {
         );
         st.cursor.set_char_range(Some(range));
         st.store(ctx, id);
+    }
+}
+
+/// A right-click on what is selected in the text box `id` leaves it selected, for the menu
+/// to act on, as in word processors (egui moves the caret for a press of any button); a
+/// right-click elsewhere puts the caret there. `held` is what was selected before the box
+/// was drawn this frame.
+pub fn keep_on_right_click(
+    ctx: &egui::Context,
+    id: egui::Id,
+    out: &mut egui::text_edit::TextEditOutput,
+    held: Option<egui::text::CCursorRange>,
+) {
+    let Some(held) = held.filter(|r| !r.is_empty()) else {
+        return;
+    };
+    let right = ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+    let at = ctx.input(|i| i.pointer.interact_pos());
+    let (true, Some(at)) = (right && out.response.response.hovered(), at) else {
+        return;
+    };
+    let on = out.galley.cursor_from_pos(at - out.galley_pos).index.0;
+    let [from, to] = held.sorted_cursors();
+    if (from.index.0..=to.index.0).contains(&on) {
+        out.state.cursor.set_char_range(Some(held));
+        out.state.clone().store(ctx, id);
+        out.cursor_range = Some(held);
     }
 }
 
@@ -748,9 +777,11 @@ pub fn field(
                 .min_size(inner.size())
                 .clip_text(false)
                 .layouter(&mut layouter);
-            let out = ui
+            let held = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range());
+            let mut out = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| te.show(ui))
                 .inner;
+            keep_on_right_click(ctx, id, &mut out, held);
             (grab, out)
         })
         .inner;
@@ -873,6 +904,7 @@ impl PageText {
             return Shown {
                 over: true,
                 done: false,
+                edit: edit.clone(),
             };
         }
         if let Some(grab) = &f.grip {
@@ -906,6 +938,7 @@ impl PageText {
                 return Shown {
                     over: true,
                     done: false,
+                    edit: edit.clone(),
                 };
             }
         }
@@ -915,6 +948,7 @@ impl PageText {
         Shown {
             over: done || on_grip || edit.contains_pointer(),
             done,
+            edit: edit.clone(),
         }
     }
 }
