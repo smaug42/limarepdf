@@ -197,9 +197,9 @@ fn the_index_follows_the_document() {
     assert!((0..=n).all(|i| !ix.has(i)));
 }
 
-/// The sizes of all pages at once are each page's size.
+/// The sizes and crop margins of all pages at once are each page's.
 #[test]
-fn page_sizes_are_each_pages_size() {
+fn page_sizes_and_margins_are_each_pages() {
     let mut p = Pdf::new();
     for (i, (w, h)) in [(612.0, 792.0), (300.0, 200.0), (595.0, 842.0)]
         .into_iter()
@@ -213,4 +213,8 @@ fn page_sizes_are_each_pages_size() {
     assert_eq!(one[1], (200.0, 300.0));
     let full: Vec<(f32, f32)> = (0..3).map(|i| p.full_page_size(i).unwrap()).collect();
     assert_eq!(p.full_page_sizes(), full);
+    p.set_crop_margins(1, [10.0, 20.0, 30.0, 40.0]).unwrap();
+    let margins: Vec<[f32; 4]> = (0..3).map(|i| p.crop_margins(i).unwrap()).collect();
+    assert_eq!(p.all_crop_margins(), margins);
+    assert_eq!(margins[1], [10.0, 20.0, 30.0, 40.0]);
 }

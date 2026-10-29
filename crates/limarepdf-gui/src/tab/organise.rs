@@ -576,13 +576,15 @@ impl Tab {
                 if proof {
                     self.proof_thumb(ui.painter(), i, img);
                 }
-                // The checkbox, ticked white on the accent, and the page's name beside it.
+                // The checkbox, ticked white on the accent, and the page's name beside it;
+                // not ticked, its edge stands out from the card.
                 let look = ui.style().interact(&cb);
                 let accent = theme::accent(dark);
                 let (fill, edge) = match sel {
-                    true => (accent, egui::Stroke::new(1.0, accent)),
-                    false => (look.bg_fill, look.bg_stroke),
+                    true => (accent, accent),
+                    false => (look.bg_fill, theme::muted(dark)),
                 };
+                let edge = egui::Stroke::new(1.0, edge);
                 let corner = egui::CornerRadius::same(3);
                 let inside = egui::StrokeKind::Inside;
                 ui.painter()

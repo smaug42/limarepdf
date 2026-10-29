@@ -146,6 +146,9 @@
   outline width as it is. A rule thinner than a point, moved by its X or Y in the inspector, no longer moves down a
   little too.
 - Paste's tooltip shows its key as the system writes it, ⌘V on a Mac. Before, its text named Ctrl+V everywhere.
+- A long document stopped the window for a while once it was read, and again after each change to its pages, for a
+  time that grew with the square of its pages: about half a minute on 10,000 pages. Its page sizes are now read
+  in one pass, and a 10,000-page document opens in about a tenth of a second.
 
 ## [0.11.0] - 2026-10-27
 

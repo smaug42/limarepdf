@@ -945,6 +945,16 @@ thumbnails", `Sense::FOCUSABLE` over the panel, the thumbnails `Sense::CLICK | S
 column (`Tab::thumb_focus`, `thumb_screen` thumbnails to a screen, `thumb_seek` to scroll one into view); a key that
 selects goes to its page.
 
+Long documents (batch 41's 10,000-page check): `Tab::new` and every `Tab::refresh` read the page sizes (and, while
+the crop is set, the whole pages' sizes and the crop margins) from core's lists made in one walk of the page tree,
+`Pdf::page_sizes`, `full_page_sizes` and `all_crop_margins`. A loop asking `page_size(i)` or `crop_margins(i)` page
+by page walks the tree once a page (PB-29): that stopped the window for about 33 s on 10,000 pages, on opening and
+after each page change (`a_long_document_is_read_again_in_one_pass`). The way back from the grid: `set_organise`
+puts the page that was at the top of the page view back there by its object (`Tab::rezoom`), and a zoom change
+before the page view is drawn keeps that place (`Tab::zoom_to` leaves a `rezoom` waiting as it is): Fit width works
+its zoom out again in that first frame when the widest page changed while organising, and `Tab::view` is by place,
+from before the pages moved.
+
 The inspector (batch 39's second stage: PF-40, with ENH-38 and ENH-41) shows the editor's section for a selection
 or a tool that adds content (`Editor::owns_panel`), else `inspector::show`, which draws the task open alone, else
 the selected pages, else the document. A task is a `Section` for which `Section::is_task` holds (all but

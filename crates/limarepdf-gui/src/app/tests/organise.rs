@@ -212,6 +212,83 @@ fn page_commands_act_on_the_pages_selected_in_the_grid() {
     assert_eq!(size, (600.0, 404.0), "not the page selected");
 }
 
+/// D7 (build plan 6.4): two pages selected in the grid by a click and Shift, moved to the
+/// end, turned and extracted; back in the page view at the page being read; saved and
+/// opened again with the order and turns shown, and the page labels and bookmarks with
+/// their pages; Undo takes back the turn, then the move.
+#[test]
+fn organised_pages_save_and_reopen_as_the_grid_showed() {
+    use limarepdf_core::{BookmarkPlace, LabelRange, LabelStyle};
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 6);
+    let first = app.tabs[0].pdf.page_ids();
+    let range = |page, style| LabelRange {
+        page,
+        style: Some(style),
+        prefix: String::new(),
+        first: 1,
+    };
+    assert!(app.tabs[0].edit(&ctx, |p| {
+        let ranges = [
+            range(0, LabelStyle::LowerRoman),
+            range(2, LabelStyle::Decimal),
+        ];
+        p.set_label_ranges(&ranges)?;
+        p.add_bookmark("Results", 2, BookmarkPlace::End)?;
+        p.add_bookmark("End", 5, BookmarkPlace::End)?;
+        Ok(())
+    }));
+    let labels = |l: [&str; 6]| Some(l.map(String::from).to_vec());
+    let marks = |p: &Pdf| p.outline().into_iter().map(|b| b.page).collect::<Vec<_>>();
+    app.tabs[0].go_to(3);
+    ty.pause(&mut app);
+    organise(&mut app, &ty);
+    let [third, fourth] = [2, 3].map(|p| format!("Page {}", app.tabs[0].page_name(p)));
+    click_as(&mut app, &ty, &third, egui::Modifiers::NONE);
+    click_as(&mut app, &ty, &fourth, egui::Modifiers::SHIFT);
+    assert_eq!(chosen(&app), [2, 3]);
+    key_as(&mut app, &ty, Key::End, ALT_SHIFT);
+    assert_eq!(order(&app, &first), [0, 1, 4, 5, 2, 3]);
+    app.act(&ctx, Act::RotR);
+    assert_eq!(chosen(&app), [4, 5]);
+    app.act(&ctx, Act::Extract);
+    assert_eq!(app.tabs.len(), 2, "no new tab");
+    let out = app.tabs[1].pdf.page_sizes();
+    assert_eq!(out, [(600.0, 402.0), (600.0, 403.0)], "extracted");
+    app.active = 0;
+    app.act(&ctx, Act::Organise);
+    ty.pause(&mut app);
+    assert_eq!(app.tabs[0].current, 5, "not the page being read");
+
+    let path = test_dir("organised").join("organised.pdf");
+    app.tabs[0].path = Some(path.clone());
+    app.act(&ctx, Act::Save);
+    saves_done(&mut app, &ctx);
+    let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    let widths = [400.0, 401.0, 404.0, 405.0];
+    let mut sizes: Vec<(f32, f32)> = widths.iter().map(|&w| (w, 600.0)).collect();
+    sizes.extend([(600.0, 402.0), (600.0, 403.0)]);
+    assert_eq!(back.page_sizes(), sizes, "order and turns");
+    let moved = labels(["i", "ii", "3", "4", "1", "2"]);
+    assert_eq!(back.page_labels(), moved, "labels with their pages");
+    assert_eq!(
+        marks(&back),
+        [Some(4), Some(3)],
+        "bookmarks with their pages"
+    );
+
+    app.act(&ctx, Act::Undo);
+    let unturned = app.tabs[0].pdf.page_sizes();
+    assert_eq!(unturned[4..], [(402.0, 600.0), (403.0, 600.0)], "the turn");
+    app.act(&ctx, Act::Undo);
+    assert_eq!(order(&app, &first), [0, 1, 2, 3, 4, 5], "the move");
+    assert_eq!(marks(&app.tabs[0].pdf), [Some(2), Some(5)]);
+    let back = labels(["i", "ii", "1", "2", "3", "4"]);
+    assert_eq!(app.tabs[0].pdf.page_labels(), back);
+}
+
 /// The pictures of pages moved or deleted around are kept, by the page, not drawn again;
 /// a turned page's is drawn again.
 #[test]
@@ -294,6 +371,30 @@ fn leaving_organise_returns_to_the_page_being_read() {
     assert_eq!(app.tabs[0].current, 2);
 }
 
+/// Back from Organise at the page being read when the page view's zoom changes on the way
+/// back: here Fit width, as a page turned while organising is now the widest. The place
+/// to go back to was replaced by the place the view had before the pages moved.
+#[test]
+fn leaving_organise_returns_to_the_page_being_read_at_a_new_zoom() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 6);
+    let first = app.tabs[0].pdf.page_ids();
+    app.tabs[0].go_to(3);
+    ty.pause(&mut app);
+    assert!(app.tabs[0].fit, "not fitting the width");
+    organise(&mut app, &ty);
+    app.tabs[0].ed.selection = Selection::pages_from([0].into());
+    app.act(&ctx, Act::MovePages(actions::PageMove::End));
+    assert_eq!(order(&app, &first), [1, 2, 3, 4, 5, 0]);
+    let zoom = app.tabs[0].zoom;
+    app.act(&ctx, Act::RotR);
+    app.act(&ctx, Act::Organise);
+    ty.pause(&mut app);
+    assert_ne!(app.tabs[0].zoom, zoom, "the zoom kept");
+    assert_eq!(app.tabs[0].current, 2, "not the page being read");
+}
+
 /// What is being typed on a page goes into the document before the grid shows; a tool
 /// chosen while organising goes back to the page view, at the page selected.
 #[test]
@@ -334,6 +435,83 @@ fn a_long_document_draws_only_the_cards_in_view() {
     let t = &app.tabs[0];
     assert!(t.grid_pictures().len() + t.grid_waiting() <= 60);
     assert!(!t.grid_drawn(0), "the first page's picture is kept");
+}
+
+/// A long document's tab reads its pages' sizes going through the pages once, not once a
+/// page: reading the tab's document again after a change costs a few listings of the
+/// pages, where it cost one a page (a 10,000-page document's window stopped for 40 s on
+/// opening and after each page change).
+#[test]
+fn a_long_document_is_read_again_in_one_pass() {
+    use std::time::{Duration, Instant};
+    let ctx = test_ctx();
+    let mut hundred = Pdf::new();
+    for i in 0..100 {
+        hundred.insert_blank(i, 612.0, 792.0).unwrap();
+    }
+    let pdf = Pdf::merge(vec![hundred; 20]).unwrap();
+    assert_eq!(pdf.page_count(), 2000);
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    assert!(app.add_tab(&ctx, pdf, None, None, false));
+    let fastest = |f: &mut dyn FnMut()| {
+        let mut best = Duration::MAX;
+        for _ in 0..3 {
+            let at = Instant::now();
+            f();
+            best = best.min(at.elapsed());
+        }
+        best
+    };
+    let t = &mut app.tabs[0];
+    let listing = fastest(&mut || drop(t.pdf.page_ids()));
+    let reading = fastest(&mut || t.refresh(&ctx));
+    // The document's copy for the pages' pictures is most of it.
+    let most = listing * 200;
+    assert!(reading < most, "{reading:?} against {listing:?} a listing");
+}
+
+/// A card's checkbox shows when not ticked: a box whose edge stands out from the card as
+/// a control's edge should (3:1, by the accessibility guidelines), in both themes, as the
+/// mockup's does; ticked, it is the accent.
+#[test]
+fn the_cards_checkboxes_show_when_not_ticked() {
+    for theme in [egui::Theme::Light, egui::Theme::Dark] {
+        let ctx = test_ctx();
+        let ty = Typist::new(&ctx);
+        let mut app = grid_tab(&ctx, 3);
+        ctx.set_theme(theme);
+        let dark = theme == egui::Theme::Dark;
+        organise(&mut app, &ty);
+        click_as(&mut app, &ty, "Page 2", egui::Modifiers::NONE);
+        let tree = ty.pause(&mut app);
+        ty.time.set(ty.time.get() + 0.05);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, TEST_HEIGHT),
+            )),
+            time: Some(ty.time.get()),
+            ..Default::default()
+        };
+        let mut f = eframe::Frame::_new_kittest();
+        let out = ctx.run_ui(raw, |ui| eframe::App::ui(&mut app, ui, &mut f));
+        let edge = |name: &str| {
+            let (at, _) = node(&tree, name).expect("the checkbox");
+            let boxes = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if at.contains_rect(r.rect) => Some(r.stroke),
+                _ => None,
+            });
+            boxes
+                .max_by(|a, b| a.width.total_cmp(&b.width))
+                .expect("a box")
+        };
+        let card = theme::surface(dark);
+        let unticked = edge("Select page 1");
+        let ratio = theme::contrast(unticked.color, card);
+        assert!(unticked.width >= 1.0, "{theme:?}: {unticked:?}");
+        assert!(ratio >= 3.0, "{theme:?}: {ratio} against the card");
+        assert_eq!(edge("Select page 2").color, theme::accent(dark));
+    }
 }
 
 /// The grid zooms on its own: Ctrl+= and Ctrl+−, Ctrl with the wheel and the status bar

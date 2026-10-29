@@ -466,7 +466,7 @@ impl Tab {
             pdf.refresh_appearances();
         }
         let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
-        let sizes = sizes_of(&pdf);
+        let sizes = pdf.page_sizes();
         let labels = pdf.page_labels();
         Ok(Self {
             ids: pdf.page_ids(),
@@ -967,12 +967,10 @@ impl Tab {
 
     /// The page sizes the view lays out: whole pages while the crop is being set.
     fn shown_sizes(&self) -> Vec<(f32, f32)> {
-        if self.crop_view.is_none() {
-            return sizes_of(&self.pdf);
+        match self.crop_view {
+            None => self.pdf.page_sizes(),
+            Some(_) => self.pdf.full_page_sizes(),
         }
-        (0..self.pdf.page_count())
-            .map(|i| self.pdf.full_page_size(i).unwrap_or((612.0, 792.0)))
-            .collect()
     }
 
     /// After a change that doesn't show on the pages: read again what the tab keeps from the
@@ -980,9 +978,7 @@ impl Tab {
     fn reread(&mut self) {
         self.labels = self.pdf.page_labels();
         if let Some(m) = self.crop_view.as_mut() {
-            *m = (0..self.pdf.page_count())
-                .map(|i| self.pdf.crop_margins(i).unwrap_or_default())
-                .collect();
+            *m = self.pdf.all_crop_margins();
         }
     }
 
@@ -2743,14 +2739,16 @@ impl Tab {
         self.zoom_to(z);
     }
 
-    /// Change the zoom, keeping the same place in the document at the top of the view.
+    /// Change the zoom, keeping the same place in the document at the top of the view: the
+    /// place still to be put there if there is one (as on the way back from Organise, where
+    /// the view's own is from before the pages moved).
     fn zoom_to(&mut self, z: f32) {
         let z = z.clamp(0.1, MAX_ZOOM);
         if (z - self.zoom).abs() < 1e-4 {
             return;
         }
         self.zoom = z;
-        self.rezoom = Some(self.view);
+        self.rezoom.get_or_insert(self.view);
     }
 
     /// The command state for this tab's part: document, undo, selection and tool.
@@ -3652,12 +3650,6 @@ fn failed_page(painter: &egui::Painter, r: Rect, why: &str) {
         painter.galley(Pos2::new(x, y), g, grey);
         y += h + gap;
     }
-}
-
-fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {
-    (0..pdf.page_count())
-        .map(|i| pdf.page_size(i).unwrap_or((612.0, 792.0)))
-        .collect()
 }
 
 /// The page order after moving `moving` to just before `to`: for each new position,

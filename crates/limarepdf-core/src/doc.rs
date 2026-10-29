@@ -739,11 +739,20 @@ impl Pdf {
     /// `[top, right, bottom, left]` as the page is displayed, rotation applied.
     pub fn crop_margins(&self, index: usize) -> Result<[f32; 4]> {
         self.check_indices(&[index])?;
-        let id = self.page_ids()[index];
+        Ok(self.margins_of(self.page_ids()[index]))
+    }
+
+    /// Every page's [`Pdf::crop_margins`], in order, with the pages listed once.
+    pub fn all_crop_margins(&self) -> Vec<[f32; 4]> {
+        let ids = self.page_ids();
+        ids.into_iter().map(|id| self.margins_of(id)).collect()
+    }
+
+    fn margins_of(&self, id: ObjectId) -> [f32; 4] {
         let m = self.media_box(id);
         let [x0, y0, x1, y1] = self.page_box(id);
         let unrotated = [m[3] - y1, m[2] - x1, y0 - m[1], x0 - m[0]];
-        Ok(rotate_sides(unrotated, self.page_rotation(id)).map(|v| v.max(0.0)))
+        rotate_sides(unrotated, self.page_rotation(id)).map(|v| v.max(0.0))
     }
 
     /// Crop a page by margins in points from its full (media) box:
