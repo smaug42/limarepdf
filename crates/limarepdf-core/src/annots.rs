@@ -305,6 +305,24 @@ impl Pdf {
             .collect()
     }
 
+    /// The pages (zero-based) annotations `ids` are on, by the pages that list them: `None`
+    /// for one no page lists. One walk of the page tree, however many are asked.
+    pub fn annotation_pages(&self, ids: &[(u32, u16)]) -> Vec<Option<usize>> {
+        let mut out = vec![None; ids.len()];
+        for (i, page) in self.page_ids().into_iter().enumerate() {
+            if out.iter().all(Option::is_some) {
+                break;
+            }
+            let refs = self.all_annot_refs(page);
+            for (k, id) in ids.iter().enumerate() {
+                if out[k].is_none() && refs.contains(id) {
+                    out[k] = Some(i);
+                }
+            }
+        }
+        out
+    }
+
     /// Give annotations written into a page's `/Annots` directly, which the format doesn't
     /// allow, objects of their own, so that removing information finds them like any other.
     /// How they look and what they hold is unchanged.

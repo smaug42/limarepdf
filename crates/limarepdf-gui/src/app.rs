@@ -2332,8 +2332,15 @@ impl App {
         let in_line = styles && has && self.tabs[self.active].ed.editing_line();
         let in_typing = a == Act::Cut && has && self.tabs[self.active].ed.typing_id().is_some();
         let on_typing = in_line || in_typing;
-        if has && a.uses_document() && !on_typing && !self.tabs[self.active].keep_typing(ctx) {
-            return;
+        if has && a.uses_document() && !on_typing {
+            let t = &mut self.tabs[self.active];
+            let kept = match a {
+                Act::Undo | Act::Redo => t.keep_typing_but_drafts(ctx),
+                _ => t.keep_typing(ctx),
+            };
+            if !kept {
+                return;
+            }
         }
         // The page view's commands go back to it first, at the page selected (NEW-14).
         if has && self.tabs[self.active].organising() && of_the_page(a) {
@@ -2560,6 +2567,12 @@ impl App {
             Act::SearchView => self.show_view(Side::Search),
             Act::Bookmarks => self.show_view(Side::Bookmarks),
             Act::Comments => self.show_view(Side::Comments),
+            Act::PrevComment | Act::NextComment => {
+                let t = &mut self.tabs[self.active];
+                if let Some(said) = t.step_comment(a == Act::NextComment) {
+                    t.info = Some(said.into());
+                }
+            }
             Act::Signatures => self.show_view(Side::Signatures),
             Act::SignatureDetails(i) => {
                 self.sig_details = Some((self.tabs[self.active].id, i));
@@ -5188,6 +5201,8 @@ fn inspector_body(
         t.ed.sign_kit = s.sign.clone();
         // Lent for the tools' placing; the pin in the heading changes it (`inspector_head`).
         t.ed.keep.clone_from(&s.keep_tools);
+        // The selected comment's page by its label, as the Comments view names it.
+        t.ed.annot_page = t.ed.selection.annot().map(|(p, _)| t.page_name(p));
         t.ed.inspector(ui);
         if std::mem::take(&mut t.ed.apply_redactions) {
             t.requested.push(Act::ApplyRedactions);
@@ -6399,6 +6414,7 @@ mod tests {
 
     mod organise;
     mod redact_marks;
+    mod review;
     mod sign;
 
     /// The height of the window the tests draw: room for the commands above the pages.

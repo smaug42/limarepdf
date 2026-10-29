@@ -129,6 +129,10 @@ pub enum Act {
     /// Show the side panel's Bookmarks view.
     Bookmarks,
     Comments,
+    /// Select the comment before or after the selected one, as the Comments view lists
+    /// them, and show its mark (Word's Review > Previous and Next).
+    PrevComment,
+    NextComment,
     /// Show the side panel's Signatures tab.
     Signatures,
     /// The details of the active document's nth digital signature. Opened from the
@@ -304,6 +308,8 @@ impl Act {
             | Act::SearchView
             | Act::Bookmarks
             | Act::Comments
+            | Act::PrevComment
+            | Act::NextComment
             | Act::Signatures
             | Act::SignatureDetails(_)
             | Act::SignedVersion(_)
@@ -1240,6 +1246,24 @@ pub static ACTIONS: &[Action] = &[
         label: "Comments",
         icon: icon::CHAT_TEXT,
         hint: "List the document's comments, notes and markup in the navigation panel.",
+        ..BASE
+    },
+    Action {
+        act: Act::PrevComment,
+        group: Group::View,
+        label: "Previous comment",
+        icon: icon::CARET_UP,
+        hint: "Select the comment before this one, as the Comments view lists them, and \
+               show it on the page.",
+        ..BASE
+    },
+    Action {
+        act: Act::NextComment,
+        group: Group::View,
+        label: "Next comment",
+        icon: icon::CARET_DOWN,
+        hint: "Select the comment after this one, as the Comments view lists them, and \
+               show it on the page.",
         ..BASE
     },
     Action {

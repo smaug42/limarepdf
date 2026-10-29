@@ -340,7 +340,16 @@ returns it, as it was, and the caller stops. It runs in `Tab::edit`, `Tab::edit_
 after it) and before a job's result replaces the document (typing since the job started discards the result).
 `Tab::keep_typing` adds the forms and runs in `App::act` for every command `Act::uses_document` names (an
 exhaustive match: a new command must be classed), so a command's question (`App::asked`) is about the document
-with the typing in it. A form field that loses the keyboard to a dialog keeps its typing and takes the keyboard
+with the typing in it. Replies are drafts kept per comment (batch 42's Q1, as Word and Google Docs keep them):
+`Editor::drafts` maps a comment's id to its page and text, the inspector's reply box (its own id per comment, so
+its typing undo is the comment's) edits the selected comment's entry, an empty one is dropped, and nothing moves
+when the selection changes. `Typed::Reply` keeps one draft a call, and `Tab::keep_pieces` loops it, so every draft
+is its own undo step and one that fails is put back alone. Undo and Redo keep `Typed::BUT_DRAFTS` (`App::act`
+through `Tab::keep_typing_but_drafts`, and `Tab::undo`/`redo`): a draft added first would be what Undo took back.
+After every change and Undo or Redo, `Tab::place_drafts` finds each draft's comment with core's
+`Pdf::annotation_pages` (one walk of the page tree, by the pages that list them): a draft follows its comment's
+page, and one whose comment is gone has no page, so it is neither pending nor kept, until Redo brings the comment
+back. Reload replaces the whole tab, and is refused while `pending` (DA02), drafts included. A form field that loses the keyboard to a dialog keeps its typing and takes the keyboard
 back when the dialog closes (`Edit::Text`'s `back`); one whose own change is refused as it is left gets its typing
 back the same way (`FormUi::kept`). Panel Apply buttons that redraw only some pages or nothing don't commit first:
 they lose nothing, and their forms join their own undo steps.
@@ -483,6 +492,26 @@ corner by corner, so stretching doesn't widen the gap (the outline, drawn from t
 and Finish signing… are enabled by `Ctx::marked` and `Ctx::signing`, from `Editor::redact_marks` and `sign_items`,
 which `Tab::refresh_marks_banner` counts once per revision; `why_not` gives their reasons (`signing::NOTHING_PLACED`
 is shared with the pane's greyed button).
+
+The Comments view (ENH-40, batch 42) is `tab/comments.rs`. `Tab::read_comments` reads `Pdf::annotations` once per
+revision (letting go of a selected comment no longer there); `Tab::shown_order` is `thread_order` filtered by
+thread (the comment decides type, author and page; the search looks in the whole thread and in the words a
+markup without a comment marks, read with `page_words` per page and kept in `Review::marked` for the revision),
+cached in `Review::order` against `Shown` (revision, filter, the page read for This page, the lowercased query).
+`Tab::review` (`Review`) holds the filter and search per tab, never written. `Tab::cards` lays the rows out as
+search results do: heights from fixed parts (padding, the author line, the kind and date line, a Draft reply line,
+the selected card's Reply button) and the comment's first lines, counted once per width with `glyph_width` (one
+line when it fits, else `LINES`), so the tops are known without laying out text; `show_viewport` draws only the
+rows in view, page headings by `Tab::page_name`'s rule. A selection that differs from `Review::shown` (a click on
+the page, Previous/Next, the keys) sets `seek`, which scrolls the list only as far as the card needs, against last
+frame's `Review::view`. The list is one Tab stop (`Tab::comments_id`, in `holds_keys`, so Delete and Esc reach
+the commands as in the thumbnails); `Tab::list_keys` hands its keys to `Tab::comment_keys`: Up/Down/Home/End
+select a card (`take_keyboard` cancels egui's arrow focus move), Enter sets `Editor::reply_focus`, Esc surrenders
+the keyboard leaving the selection. A card's mark is shown by `Tab::show_mark`: `reveal` on the page being read,
+else `go_to` with `goto_y`. `Act::PrevComment`/`NextComment` call `Tab::step_comment`, which steps by the
+selected comment's place in the whole `thread_order` to the next card shown (so a comment the filter hides still
+has a place), from nothing selected by the page being read, and returns what to say at the ends (`Tab::info`).
+The inspector's heading names the comment's page by label through `Editor::annot_page`, lent by the app.
 Character and drawing-part coverage is the share of the box under the marks' union (`share_under`, Q14): each
 mark clipped to the box (`part_1d`; a flat box is all in or all out by its middle), the union's area summed in
 vertical slabs between the marks' edges. It was the sum of each mark's share, capped at 1, which counted a part

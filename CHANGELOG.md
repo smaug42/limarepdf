@@ -66,6 +66,18 @@
   outline), or press the arrow keys; drag the handles of a mark of one area to resize it. A mark over several lines
   moves as one. Applying removes what is under each mark where it then is. Before, a mark could only be deleted
   and made again.
+- The Comments view has a search box for the comments' words (their replies' and the words a highlight marks too),
+  a count ("4 of 12 comments") and a Filter ▾ menu to show only some types, some authors or the page being read,
+  with Clear filters. The filter and search belong to the document's tab and are never saved in the file.
+- Previous and Next comment, in Review's Comments group (as in Word) and ☰ > View: select the comment before or
+  after the selected one, in the Comments view's order and with its filter, and show it on the page. With nothing
+  selected, Next starts from the page being read; at the first or last comment they say so.
+- The Comments view takes the keys: click a card or Tab to the list, then Up and Down go from card to card, Home
+  and End to the first and last, each selected and shown on the page; Enter goes to the reply box, Delete deletes
+  the comment and Esc goes back to the page. Ctrl+Enter in the reply box adds the reply.
+- A reply left unfinished stays with its comment as a draft, as in Word and Google Docs: its card says Draft reply,
+  and selecting the comment again puts it back in the reply box. Saving, printing and other commands that change or
+  use the document add every draft first, and closing asks about them; Undo and Redo leave them as they are.
 
 ### Changed
 
@@ -145,6 +157,11 @@
   and the status bar says how many pages are being cropped and how to finish; a click away from the crop box's
   edges (on the page or beside it), Enter, Esc or Crop again shows the pages cropped. Before, only the
   inspector's × or Esc ended it, and nothing said so: a crop could look as if it hadn't been done.
+- The Comments view shows cards, as Word's and Acrobat's comment lists do: each with who made it, what it is and
+  when, and the first lines of its comment, or for a highlight or other markup with no comment the words it marks;
+  replies under what they answer, the selected comment in the accent with a Reply button. Selecting a comment on the
+  page selects its card and brings it into view. Only the cards in view are drawn, so a document with thousands of
+  comments shows them at once.
 - The user guide puts the everyday task first: Digital signatures is a short task page (check, sign, trust,
   digital IDs, certify), with the detail on a new reference page, Digital signatures in depth. First steps ends
   with the tasks most people need next. The guide now says plainly what recovery copies cover (none for any
@@ -160,6 +177,10 @@
 - The notice for one redaction mark said "nothing under them has been removed"; it says "under it".
 - The tooltip of Your name in the Fill and sign and stamp panes pointed to Edit > Your name for comments, which
   isn't in the Edit band; it says Review > Comments > Your name for comments.
+- A reply typed in the inspector was dropped without a word when another comment was selected; it stays with its
+  comment now, as a draft.
+- The Comments view and the selected comment's inspector named pages by their numbers; they use the page labels,
+  as the rest of the app does (☰ > View > Use the document's page labels).
 
 - A line clicked with the Text tool to edit it showed the look of the next new text in Edit > Font and the
   inspector, and changes there went to that new text instead of the line. They show and change the line now.

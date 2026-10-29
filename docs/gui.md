@@ -87,7 +87,7 @@ undo.", "Select some text first." or "Click in a form field first."
 | --- | --- |
 | Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, and Select ▾ (Read and select text, the arrow, select all text, objects or pages) |
 | Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
-| Review | Note, Comments ▾ (your name for comments); Highlight ▾ (underline, strike out, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
+| Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline, strike out, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
 | Forms and sign | Fill fields ▾ (next and previous field, highlight fields, clear, reset or flatten the form), Fill and sign ▾ (saved signatures and initials, Create signature…, the date, your name, text, marks); Digital signature ▾ (sign, certify, the signatures in this document, digital IDs, trusted certificates) |
 | Protect | Mark redaction ▾ (the area tool, the selected words, all search results), Apply redactions…; Passwords, Remove hidden data |
@@ -158,8 +158,9 @@ including text being typed, from the first key; the window's title is marked the
 
 Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a
 comment or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet
-added. Saving keeps that text first, as clicking away would, and so do printing and the other commands that
-change or use the document ([Undo](#undo)).
+added, to any comment ([drafts](comments-and-markup.md#see-every-comment-and-reply)). Saving keeps that text first,
+as clicking away would, and so do printing and the other commands that change or use the document ([Undo](#undo)),
+except that Undo and Redo leave draft replies as they are.
 
 The question, Save changes?, offers **Save** (**Save as…** for a document with no file yet, such as a new or
 recovered one), **Discard** or **Cancel**. Save asks the same questions as saving does at other times (a file
@@ -478,6 +479,9 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
 | Arrow keys, Home, End, PageUp, PageDown (in Organise's grid or the thumbnails) | Go to the next card or thumbnail, a row, the first or last, a screen of rows, selecting it; with Shift, select from where you started; with Ctrl, go there without selecting |
 | Space (or Ctrl+Space), Enter (in Organise's grid or the thumbnails) | Add the page the keys are at to the pages selected, or take it out; show that page |
+| Up, Down, Home, End (in the Comments view's cards) | Select the comment before or after, the first or the last, and show it on the page |
+| Enter, Esc (in the Comments view's cards) | Type a reply to the selected comment; go back to the page, the comment staying selected |
+| Ctrl+Enter (in the inspector's Reply box) | Add the reply |
 | Alt+Shift+Left, Alt+Shift+Right; Alt+Shift+Up, Alt+Shift+Down; Alt+Shift+Home, Alt+Shift+End | Move the selected pages a place earlier or later; a row up or down (a place, in the thumbnails); to the start or the end |
 | Ctrl+A (Organise) | Select every page |
 | Delete, Backspace | Delete the selected words, objects, comment or mark, or the selected pages |
@@ -510,7 +514,9 @@ view it shows, and each document's tab says whether it is the one shown and whet
 band's names are tabs that say which is shown, the side panel's icons say which view is shown, and so do the
 status bar's Page view and Organise pages. The thumbnails are one stop, Page thumbnails, and Organise's grid
 another, Page grid, where the arrow keys move between the pages; each card is named after its page (Page 3) and
-says whether it is selected, and its checkbox is named Select page 3. A planned feature's name ends in "Planned",
+says whether it is selected, and its checkbox is named Select page 3. The Comments view's cards are one stop too,
+Comment list; each card is named by what it says (Highlight · Sam Lee · 2026-10-28 14:02: and the comment or the
+marked words, then Draft reply when it has one) and says whether it is selected. A planned feature's name ends in "Planned",
 and icon-only buttons are named in words, such as Close Watermark for a tool's ×. The inspector's Future text tools
 is named "Future text tools — Planned"; unlike the planned buttons, Tab stops on it, as it opens to show its note.
 The edges of the side panel and the inspector are named Side panel width and Inspector width; they move with the

@@ -325,6 +325,9 @@ static REVIEW: &[Group] = &[
                 icon::CHAT_TEXT,
                 &[Act::CommentName],
             ),
+            // As Word's Review band has them, beside the comments.
+            b(Act::PrevComment, "Previous", icon::CARET_UP),
+            b(Act::NextComment, "Next", icon::CARET_DOWN),
         ],
     ),
     group(
@@ -1170,6 +1173,8 @@ mod tests {
             (Act::Tool(Tool::Image), 1),
             (Act::Tool(Tool::Note), 1),
             (Act::Comments, 1),
+            (Act::PrevComment, 1),
+            (Act::NextComment, 1),
             (Act::RotR, 1),
             (Act::RotL, 2),
             (Act::Extract, 1),

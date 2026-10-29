@@ -226,7 +226,7 @@ fn list_key(
 /// The keyboard to the list `id`, which took a key. An arrow pressed with nothing holding
 /// the keyboard was already taken by egui to move it from one control to the next at the
 /// end of the frame, which would take it straight on from the list: not now.
-fn take_keyboard(ctx: &egui::Context, id: egui::Id) {
+pub(super) fn take_keyboard(ctx: &egui::Context, id: egui::Id) {
     ctx.memory_mut(|m| {
         m.request_focus(id);
         m.move_focus(egui::FocusDirection::None);
@@ -279,11 +279,13 @@ impl Tab {
         egui::Id::unique(("page-list", self.id))
     }
 
-    /// Whether the grid or the thumbnails have the keyboard: their keys are the pages',
-    /// and the commands' plain keys (Delete, Esc) work there too.
+    /// Whether the grid, the thumbnails or the comment cards have the keyboard: their keys
+    /// are the pages' or the comments', and the commands' plain keys (Delete, Esc) work there
+    /// too.
     pub fn holds_keys(&self, ctx: &egui::Context) -> bool {
         let focused = ctx.memory(|m| m.focused());
-        matches!(focused, Some(f) if f == self.grid_id() || f == self.list_id())
+        let lists = [self.grid_id(), self.list_id(), self.comments_id()];
+        focused.is_some_and(|f| lists.contains(&f))
     }
 
     /// Show the pages as Organise's grid, or the pages again. What is being typed on a
@@ -795,10 +797,14 @@ impl Tab {
     }
 
     /// The keys of the grid, when it has the keyboard or nothing has, or of the
-    /// thumbnails, when they have it (see [`list_key`]). Run before the commands' keys,
-    /// which then don't see them.
+    /// thumbnails or the comment cards, when they have it (see [`list_key`] and
+    /// [`Tab::comment_keys`]). Run before the commands' keys, which then don't see them.
     pub fn list_keys(&mut self, ctx: &egui::Context) {
         let focused = ctx.memory(|m| m.focused());
+        if focused == Some(self.comments_id()) {
+            self.comment_keys(ctx);
+            return;
+        }
         let n = self.page_count();
         if n == 0 {
             return;

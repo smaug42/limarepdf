@@ -1115,6 +1115,23 @@ fn replies_are_listed_but_not_drawn() {
     assert_eq!(p.remove_annotations(|a| a.id == note).unwrap(), 2);
 }
 
+/// Batch 42 (ENH-40): the pages comments are on, found by the pages listing them: draft
+/// replies follow their comments when pages move, and know when one is gone.
+#[test]
+fn annotations_are_found_by_the_pages_listing_them() {
+    let mut p = page();
+    p.insert_blank(1, 300.0, 200.0).unwrap();
+    let yellow = [1.0, 0.85, 0.2];
+    let first = p.add_note(0, (50.0, 50.0), yellow, "One", "Sam").unwrap();
+    let second = p.add_note(1, (50.0, 50.0), yellow, "Two", "Sam").unwrap();
+    let pages = |p: &Pdf| p.annotation_pages(&[second, first, (999, 0)]);
+    assert_eq!(pages(&p), [Some(1), Some(0), None]);
+    p.reorder(&[1, 0]).unwrap();
+    assert_eq!(pages(&p), [Some(0), Some(1), None]);
+    p.remove_annotations(|a| a.id == first).unwrap();
+    assert_eq!(pages(&p), [Some(0), None, None]);
+}
+
 fn png(w: u32, h: u32, c: [u8; 4]) -> Vec<u8> {
     let img = image::RgbaImage::from_pixel(w, h, image::Rgba(c));
     let mut out = std::io::Cursor::new(Vec::new());

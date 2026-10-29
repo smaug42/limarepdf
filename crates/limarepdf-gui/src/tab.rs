@@ -1,6 +1,6 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{annot_tip, Action, Editor, Match, StampPick, Tool, Typed};
+use crate::editor::{Action, Editor, Match, StampPick, Tool, Typed};
 use crate::icon;
 use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
@@ -26,9 +26,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod comments;
 mod organise;
 mod previews;
 mod proofs;
+pub use comments::Review;
 use organise::Organise;
 use previews::{CropDrag, Picture};
 use proofs::Proofs;
@@ -415,6 +417,8 @@ pub struct Tab {
     /// The annotations, read when the Comments tab is first shown and again after the
     /// document changes: the revision they were read at, and the list.
     comments: Option<(u64, Vec<Annot>)>,
+    /// The Comments view's filter, search and place (ENH-40).
+    pub review: Review,
     /// Single-page layout: whether the view was at the page's top and bottom at the end
     /// of the last frame, so the next wheel step past it turns the page.
     edge: (bool, bool),
@@ -552,6 +556,7 @@ impl Tab {
             outline_rename: None,
             outline_focus: false,
             comments: None,
+            review: Review::default(),
             edge: (false, false),
             flipped: 0.0,
             layout: Layout::default(),
@@ -680,27 +685,50 @@ impl Tab {
         self.keep_page_typing(ctx) && self.keep_forms(ctx)
     }
 
+    /// [`Tab::keep_typing`] before Undo or Redo: draft replies stay drafts
+    /// ([`Typed::BUT_DRAFTS`]).
+    pub fn keep_typing_but_drafts(&mut self, ctx: &egui::Context) -> bool {
+        self.keep_pieces(ctx, &Typed::BUT_DRAFTS) && self.keep_forms(ctx)
+    }
+
     /// Put what is being typed on the pages into the document, as clicking away would,
     /// before a change that uses, draws again or replaces the document (BUG-01): one edit
     /// for each, which Undo takes back. Typing that can't be kept stays as it is, with the
     /// reason shown, and false says the change mustn't go ahead.
     pub fn keep_page_typing(&mut self, ctx: &egui::Context) -> bool {
+        self.keep_pieces(ctx, &Typed::ALL)
+    }
+
+    /// [`Tab::keep_page_typing`] for `pieces`; every draft reply is one edit of its own.
+    fn keep_pieces(&mut self, ctx: &egui::Context, pieces: &[Typed]) -> bool {
         // Changes queued before go in first, as they would at the end of the frame.
         self.apply_actions(ctx);
         let earlier = self.error.take();
-        for piece in Typed::ALL {
-            let Some(held) = self.ed.keep(piece) else {
-                continue;
-            };
-            self.apply_actions(ctx);
-            if self.error.is_some() {
-                self.ed.put_back(held);
-                return false;
+        for &piece in pieces {
+            while let Some(held) = self.ed.keep(piece) {
+                self.apply_actions(ctx);
+                if self.error.is_some() {
+                    self.ed.put_back(held);
+                    return false;
+                }
+                self.ed.done(held);
+                if piece != Typed::Reply {
+                    break;
+                }
             }
-            self.ed.done(held);
         }
         self.error = earlier;
         true
+    }
+
+    /// The draft replies follow their comments after a change to the document: to the
+    /// page each is on now, or set aside while it isn't in the document.
+    fn place_drafts(&mut self) {
+        let ids = self.ed.drafted();
+        if !ids.is_empty() {
+            let pages = self.pdf.annotation_pages(&ids);
+            self.ed.place_drafts(&pages);
+        }
     }
 
     pub fn state(&self) -> State {
@@ -930,6 +958,7 @@ impl Tab {
         }
         self.revision += 1;
         self.scrubbed |= scrub;
+        self.place_drafts();
         true
     }
 
@@ -1582,9 +1611,9 @@ impl Tab {
     }
 
     /// Undo the last change. What is being typed on the pages is kept first, as its own
-    /// change, so that is what Undo takes back.
+    /// change, so that is what Undo takes back; draft replies stay drafts.
     pub fn undo(&mut self, ctx: &egui::Context) {
-        if !self.keep_page_typing(ctx) {
+        if !self.keep_pieces(ctx, &Typed::BUT_DRAFTS) {
             return;
         }
         if let Some(step) = self.undo.pop() {
@@ -1599,9 +1628,9 @@ impl Tab {
 
     /// Redo the last undone change. The app withdraws the recovery copies first when
     /// [`Tab::redo_removes`]. What is being typed on the pages is kept first, as for any
-    /// change, which leaves nothing to redo.
+    /// change, which leaves nothing to redo; draft replies stay drafts.
     pub fn redo(&mut self, ctx: &egui::Context) {
-        if !self.keep_page_typing(ctx) {
+        if !self.keep_pieces(ctx, &Typed::BUT_DRAFTS) {
             return;
         }
         if let Some(step) = self.redo.pop() {
@@ -1643,6 +1672,7 @@ impl Tab {
             if let Some(kept) = kept {
                 self.put_pictures(kept);
             }
+            self.place_drafts();
         }
         Some(Step {
             pdf,
@@ -1947,106 +1977,6 @@ impl Tab {
                 self.outline_sel = Some(i);
                 self.outline_rename = Some((i, title));
                 self.outline_focus = true;
-            }
-        }
-    }
-
-    /// The Comments side tab: the annotations by page, replies under what they answer.
-    /// Clicking one goes to it and outlines it; right-click to delete it.
-    pub fn show_comments(&mut self, ui: &mut egui::Ui) {
-        let rev = self.revision;
-        if self.comments.as_ref().is_none_or(|(r, _)| *r != rev) {
-            let list = self.pdf.annotations();
-            let gone = |(_, id)| !list.iter().any(|a| a.id == id);
-            if self.ed.selection.annot().is_some_and(gone) {
-                self.ed.selection.clear_annot();
-            }
-            self.comments = Some((rev, list));
-        }
-        let chosen_id = self.ed.selection.annot().map(|(_, id)| id);
-        let Some((_, list)) = &self.comments else {
-            return;
-        };
-        if list.is_empty() {
-            ui.weak("This document has no comments or markup.");
-            return;
-        }
-        let mut chosen = None;
-        let mut delete = None;
-        let mut reply = false;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let mut page = usize::MAX;
-                for (i, depth) in thread_order(list) {
-                    let a = &list[i];
-                    if a.page != page {
-                        page = a.page;
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(format!("Page {}", page + 1))
-                                .small()
-                                .strong(),
-                        );
-                    }
-                    let first = a
-                        .contents
-                        .lines()
-                        .map(|l| limarepdf_core::display_line(l, 200))
-                        .find(|l| !l.is_empty());
-                    let who = limarepdf_core::display_line(&a.author, 80);
-                    let text = match (who.as_str(), first) {
-                        ("", None) => a.label(),
-                        ("", Some(t)) => format!("{}: {t}", a.label()),
-                        (w, None) => format!("{} · {w}", a.label()),
-                        (w, Some(t)) => format!("{w}: {t}"),
-                    };
-                    let mut text = egui::RichText::new(text);
-                    if a.hidden() {
-                        text = text.weak();
-                    }
-                    let tip = annot_tip(a);
-                    ui.horizontal(|ui| {
-                        ui.add_space(depth as f32 * 12.0);
-                        let row =
-                            egui::Button::selectable(chosen_id == Some(a.id), text).truncate();
-                        let r = ui.add(row).on_hover_text(tip);
-                        if r.clicked() {
-                            chosen = Some(i);
-                        }
-                        r.context_menu(|ui| {
-                            let answer = icon::ARROW_BEND_UP_LEFT;
-                            if theme::glyph_button(ui, answer, "Reply…").clicked() {
-                                chosen = Some(i);
-                                reply = true;
-                            }
-                            let label = if list.iter().any(|b| b.reply_to == Some(a.id)) {
-                                "Delete, with its replies"
-                            } else {
-                                "Delete"
-                            };
-                            let del = ui
-                                .add_enabled(!a.locked(), egui::Button::new(label))
-                                .on_disabled_hover_text("It is locked in this document.");
-                            if del.clicked() {
-                                delete = Some(a.id);
-                            }
-                        });
-                    });
-                }
-            });
-        if let Some(i) = chosen {
-            let a = &list[i];
-            let (id, page, top) = (a.id, a.page, a.bbox[1]);
-            self.ed.selection = Selection::Annot { page, id };
-            self.ed.reply_focus = reply;
-            self.go_to(page);
-            self.goto_y = Some(top);
-        }
-        if let Some(id) = delete {
-            let ctx = ui.ctx().clone();
-            if self.edit(&ctx, |p| p.remove_annotations(|a| a.id == id).map(|_| ())) {
-                self.notice = Some("Deleted the comment".into());
             }
         }
     }
