@@ -886,6 +886,8 @@ fn is_on(act: Act, c: &Ctx) -> bool {
         Act::Tool(t) => c.tool == Some(t) && t != Tool::Read,
         // Edit text is the Text tool, with nothing selected.
         Act::EditObjectText => c.tool == Some(Tool::Text),
+        // Crop while the crop is being set; a click on it again ends that, as in Word.
+        Act::Crop => c.cropping,
         _ => actions::get(act).checked.is_some_and(|on| on(c)),
     }
 }

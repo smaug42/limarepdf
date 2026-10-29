@@ -163,19 +163,22 @@ pages it removed. Undo brings them back. A document whose pages are all blank is
 
 ## Crop pages
 
-Crop trims margins from the pages as they are shown.
+Crop trims margins from the pages: what is outside the crop is no longer shown, printed or exported, here or in
+other PDF apps. It works as cropping a picture in a word processor does.
 
 1. Select the pages to crop (or none, for every page), and choose **Pages > Crop** (or ☰ > Pages > Crop pages…).
-   **Crop** opens in the inspector. The pages are shown whole, with the part outside each page's crop box dimmed.
+   **Crop** shows pressed, and opens in the inspector. The pages are shown whole, with the part outside each
+   page's crop box dimmed; the status bar says how many pages you are cropping.
 2. Drag the crop box's edges or corners on the page, or type the margins. Each drag or number crops all the pages
-   in the Pages box at once, and dragging back out undoes a crop.
-3. Close Crop with the × at the top of the inspector, or press Esc, to see the pages cropped.
+   in the Pages box at once (one step for Undo), and dragging back out undoes a crop.
+3. To finish, click anywhere away from the crop box's edges (on the page or beside it), press Enter or Esc, or
+   click **Crop** again. The pages are shown cropped.
 
 With pages selected, Crop is also in the inspector under **Page properties**: open it there, and fold it again (or
-press Esc) to see the pages cropped.
+finish as above) to see the pages cropped.
 
-While Crop is open, clicks on the pages only move the crop box. The margin fields start with the first page's
-crop, measured from the full page. **Remove crop** shows the whole page again.
+The margin fields start with the first page's crop, measured from the full page. **Remove crop** shows the whole
+page again.
 
 Cropping hides content; it doesn't delete it. To remove what is outside the crop box for good, use
 [Remove hidden information](redaction.md#removing-hidden-information).

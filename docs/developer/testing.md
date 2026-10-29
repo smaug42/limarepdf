@@ -331,7 +331,10 @@ button was 30 points, not the 24 counted, and the picture's outline 2 points a s
 `saved_signatures_leave_the_inspector_its_width` records the width every frame as signatures are added, at the
 default width and at a remembered 150), and the Your name tooltip's ▾ had no glyph (none of the interface's fonts
 has it; the glyph test shows that tooltip too). `the_pin_shows_for_placing_tools_but_not_for_a_comment` covers the
-Stamp tool and a comment selected. The whole suite: 1341 passed, 39 ignored, headless.
+Stamp tool and a comment selected. The whole suite: 1341 passed, 39 ignored, headless. After stage 1, the user's
+try found Crop gave no sign the crop was done or how to finish: `cropping_ends_as_a_word_processor_crop_does`
+(failing on the code before at the band's Crop not pressed) checks the pressed button, the status bar, and that
+Crop again, a click on the page, a click beside the pages and Enter each end it while a drag of an edge doesn't.
 
 D2's flow (build plan 6.4; batch 42, ENH-09) for a photographed or flat form, each step with its test:
 

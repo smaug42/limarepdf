@@ -302,8 +302,12 @@ impl Tab {
             ]
         };
         let id = egui::Id::unique(("crop-box", self.id, page));
-        // The page and the room around it to take its edges.
-        let resp = ui.interact(r.expand(GRAB), id, Sense::drag());
+        // The page and the room around it to take its edges; a click there, not a drag,
+        // ends the crop, as a click away from a picture ends Word's.
+        let resp = ui.interact(r.expand(GRAB), id, Sense::click_and_drag());
+        if resp.clicked() {
+            self.end_crop();
+        }
         resp.widget_info(|| {
             let name = format!("Crop box on page {}", page + 1);
             egui::WidgetInfo::labeled(egui::Role::Unknown, true, name)

@@ -1001,7 +1001,12 @@ the selected pages, else the document. A task is a `Section` for which `Section:
 `Properties`, a section of the document's inspector), headed by `Section::title`, and kept in `Forms::task` until
 closed. `Forms::choose` makes a task the one open, in place of another, or closes it for Properties, and sets
 `reveal`; `show` does the same with a section revealed, and a `Forms::close` naming the task closes it (Esc on Crop, `Act::Escape` while
-`Tab::crop_view`, or `Tab::set_crop_view` when typing on the page can't be kept). Each section's controls are one
+`Tab::crop_view`, or `Tab::set_crop_view` when typing on the page can't be kept). Setting the crop ends as a word
+processor's picture crop does, all through `Tab::end_crop` (batch 42): Esc, Enter with nothing focused and no
+question open (`App::ui`, after `shortcuts`), Crop again (`Act::Crop` while `crop_view`; the band shows it pressed
+from `Ctx::cropping`), a click on a page that isn't a drag of the crop box's edges (`crop_page_ui` senses clicks
+and drags), and a click on the page view's canvas beside the pages (sensing clicks only while cropping); the status
+bar says "Cropping N pages" from `Tab::cropping`. Each section's controls are one
 function, `tool_ui`, used for the task alone and inside the selected pages' Page properties, where Crop and Page
 labels are each a section of their own (a second `Sections`, whose open list joins the outer one, so the pages show
 the crop box while either Crop is open); `split_ui` is Split's. The facts are `document_facts` (pages; paper;

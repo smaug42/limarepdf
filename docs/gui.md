@@ -424,7 +424,8 @@ and the command palette (Ctrl+K).
 | ☰ > Export pages as images… | Export pages as images ([Pages as images](export-and-printing.md#pages-as-images)) |
 
 - **Close a tool** with the × at the top of the inspector, beside »; the inspector goes back to what is selected, or
-  the document. Opening or closing a tool changes nothing in the document. Esc also closes Crop.
+  the document. Opening or closing a tool changes nothing in the document. Crop also closes with Esc, Enter, a
+  click away from the crop box, or Crop again ([Crop pages](organising-pages.md#crop-pages)).
 - **One at a time:** choosing another tool's command puts that tool in its place.
 - **Pages:** a tool stays open while you select pages, and a Pages box in it follows the selection (all pages
   when none are selected). Selecting words, an object or a comment, or choosing a tool that adds content (such as

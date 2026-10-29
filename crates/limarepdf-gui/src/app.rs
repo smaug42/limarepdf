@@ -2656,9 +2656,7 @@ impl App {
             }
             // Setting the crop on the pages: Esc closes the Crop section, showing the pages
             // as cropped again.
-            Act::Escape if self.tabs[self.active].crop_view() => {
-                self.tabs[self.active].forms.close = Some(inspector::Section::Crop);
-            }
+            Act::Escape if self.tabs[self.active].crop_view() => self.tabs[self.active].end_crop(),
             // Pages dragged stay, pages cut are no longer, then the insertion bar goes, then
             // in Organise the pages selected are let go (Tab::escape_pages).
             Act::Escape => {
@@ -2917,6 +2915,8 @@ impl App {
             Act::Ocr => self.reveal(Section::Ocr),
             Act::HeaderFooter => self.reveal(Section::HeaderFooter),
             Act::Watermark => self.reveal(Section::Watermark),
+            // Crop again while the crop is being set ends it, as in Word.
+            Act::Crop if self.tabs[self.active].crop_view() => self.tabs[self.active].end_crop(),
             Act::Crop => self.reveal(Section::Crop),
             Act::Props => self.reveal(Section::Properties),
             Act::Security => self.reveal(Section::Security),
@@ -5690,6 +5690,14 @@ impl eframe::App for App {
             self.tabs[self.active].ed.refocus_typing();
         }
         self.shortcuts(&ctx);
+        // Setting the crop: Enter ends it, unless the keyboard is on a control (a margin
+        // being typed takes its Enter) or a question is open.
+        let free = ctx.memory(|m| m.focused()).is_none() && matches!(self.dialog, Dialog::None);
+        let enter = free && ctx.input(|i| i.key_pressed(Key::Enter));
+        let t = self.tabs.get_mut(self.active);
+        if let Some(t) = t.filter(|t| enter && t.crop_view()) {
+            t.end_crop();
+        }
         self.type_over(&ctx);
         self.clipboard(&ctx);
 
@@ -5892,6 +5900,12 @@ impl eframe::App for App {
                     // A line edited on the page: how much the typing can change.
                     if t.is_some_and(|t| t.ed.editing_line()) {
                         said.push("Editing one line".into());
+                    } else if let Some(n) = t.and_then(Tab::cropping) {
+                        // Setting the crop: what is cropped, and the way out.
+                        let pages = if n == 1 { "page" } else { "pages" };
+                        said.push(format!(
+                            "Cropping {n} {pages}: click away or press Esc to finish"
+                        ));
                     } else if let Some(t) = t.filter(|t| t.ed.owns_panel()) {
                         said.push(t.ed.heading());
                     }
@@ -13006,6 +13020,92 @@ mod tests {
         assert_eq!(margins(&app, 1), [72.0, 0.0, 0.0, 0.0]);
         app.tabs[0].undo(&ctx);
         assert_eq!(margins(&app, 1), [0.0; 4]);
+    }
+
+    /// Cropping ends as Word's picture crop does (the user's find, batch 42): the band's
+    /// Crop shows pressed while the crop is set and a click on it again ends it, showing the
+    /// pages cropped; so do a click on a page away from the crop box's edges, a click on the
+    /// grey beside the pages, and Enter. Meanwhile the status bar says what is cropped and
+    /// how to end it.
+    #[test]
+    fn cropping_ends_as_a_word_processor_crop_does() {
+        use egui::accesskit::{Role, Toggled};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.band = Band::Pages;
+        // The band's Crop button (the inspector's heading says Crop too): where, and
+        // whether pressed.
+        let crop = |tree: &egui::accesskit::TreeUpdate| {
+            let n = tree.nodes.iter().find(|(_, n)| {
+                n.role() == Role::Button && n.label() == Some("Crop") && n.bounds().is_some()
+            });
+            let n = &n.expect("the band's Crop").1;
+            let b = n.bounds().unwrap();
+            let at = egui::pos2((b.x0 + b.x1) as f32 / 2.0, (b.y0 + b.y1) as f32 / 2.0);
+            (at, n.toggled() == Some(Toggled::True))
+        };
+        let says = |tree: &egui::accesskit::TreeUpdate| {
+            let mut values = tree.nodes.iter().filter_map(|(_, n)| n.value());
+            values.any(|v| v.starts_with("Cropping 2 pages"))
+        };
+        let tree = settle(&mut app, &ctx);
+        let (at, on) = crop(&tree);
+        assert!(!on, "pressed before cropping");
+        assert!(!says(&tree), "said before cropping");
+        // The band's button: on, then off again.
+        window(&mut app, &ctx, 1400.0, click_at(at));
+        let tree = settle(&mut app, &ctx);
+        assert!(app.tabs[0].crop_view(), "not cropping");
+        assert!(crop(&tree).1, "not pressed while cropping");
+        assert!(says(&tree), "the status bar");
+        window(&mut app, &ctx, 1400.0, click_at(at));
+        let tree = settle(&mut app, &ctx);
+        assert!(!app.tabs[0].crop_view(), "Crop again didn't end it");
+        assert!(!crop(&tree).1);
+        // A click on the page, inside the crop box, away from its edges.
+        let page = |app: &mut App| {
+            app.act(&ctx, Act::Crop);
+            let tree = settle(app, &ctx);
+            assert!(app.tabs[0].crop_view());
+            let (r, _) = node(&tree, "Crop box on page 1").expect("the crop box");
+            r.shrink(8.0)
+        };
+        let r = page(&mut app);
+        window(&mut app, &ctx, 1400.0, click_at(r.center()));
+        settle(&mut app, &ctx);
+        assert!(!app.tabs[0].crop_view(), "a click on the page");
+        // A click on the grey beside the pages, zoomed out to leave room.
+        for _ in 0..4 {
+            app.act(&ctx, Act::ZoomOut);
+        }
+        let r = page(&mut app);
+        let beside = egui::pos2(r.min.x - 40.0, r.center().y);
+        window(&mut app, &ctx, 1400.0, click_at(beside));
+        settle(&mut app, &ctx);
+        assert!(!app.tabs[0].crop_view(), "a click beside the pages");
+        // Enter.
+        page(&mut app);
+        let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![enter]);
+        settle(&mut app, &ctx);
+        assert!(!app.tabs[0].crop_view(), "Enter didn't end it");
+        // A drag of the crop box's edge still crops, and leaves it open.
+        let r = page(&mut app);
+        let top = egui::pos2(r.center().x, r.min.y);
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::PointerMoved(top)]);
+        window(&mut app, &ctx, 1400.0, vec![press(top, true)]);
+        for i in 1..=4 {
+            let p = top + egui::vec2(0.0, 10.0 * i as f32);
+            window(&mut app, &ctx, 1400.0, vec![egui::Event::PointerMoved(p)]);
+        }
+        let end = top + egui::vec2(0.0, 40.0);
+        window(&mut app, &ctx, 1400.0, vec![press(end, false)]);
+        settle(&mut app, &ctx);
+        assert!(app.tabs[0].crop_view(), "a drag ended it");
+        let top = app.tabs[0].pdf.crop_margins(0).unwrap()[0];
+        assert!(top > 0.0, "not cropped");
     }
 
     /// What the signing window hands over once a document was signed and written.

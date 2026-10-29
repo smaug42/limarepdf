@@ -141,6 +141,10 @@
   is marked, each saying why on hover. Finish signing… is also at the end of the Fill and sign ▾ menu.
 - The Keep tool active pin is in the inspector's heading, beside its other buttons, for every tool that puts things
   down. Before, it took a row of its own between the heading and the tool's options.
+- Cropping ends as cropping a picture does in a word processor: while the crop is set, Pages > Crop shows pressed
+  and the status bar says how many pages are being cropped and how to finish; a click away from the crop box's
+  edges (on the page or beside it), Enter, Esc or Crop again shows the pages cropped. Before, only the
+  inspector's × or Esc ended it, and nothing said so: a crop could look as if it hadn't been done.
 - The user guide puts the everyday task first: Digital signatures is a short task page (check, sign, trust,
   digital IDs, certify), with the detail on a new reference page, Digital signatures in depth. First steps ends
   with the tasks most people need next. The guide now says plainly what recovery copies cover (none for any

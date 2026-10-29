@@ -455,6 +455,8 @@ pub struct Ctx {
     pub signing: bool,
     /// Areas are marked for redaction, not yet applied.
     pub marked: bool,
+    /// The crop is being set: the pages shown whole with their crop box (Crop).
+    pub cropping: bool,
     /// The markup colours last chosen; see [`Act::MarkColor`].
     pub highlight: usize,
     pub line: usize,

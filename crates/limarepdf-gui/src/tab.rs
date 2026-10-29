@@ -1003,6 +1003,19 @@ impl Tab {
         self.crop_view.is_some()
     }
 
+    /// While the crop is being set, how many pages it is set for (the Crop tool's Pages).
+    pub fn cropping(&self) -> Option<usize> {
+        self.crop_view.as_ref()?;
+        let range = &self.forms.crop.pages;
+        Some(limarepdf_core::parse_page_range(range, self.page_count()).map_or(0, |p| p.len()))
+    }
+
+    /// Stop setting the crop: the Crop section closes and the pages are shown cropped, as
+    /// Esc, Enter, a click away from the crop box or Crop again do.
+    pub fn end_crop(&mut self) {
+        self.forms.close = Some(crate::inspector::Section::Crop);
+    }
+
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
         match self.shown_snapshot() {
             Ok(bytes) => {
@@ -2791,6 +2804,7 @@ impl Tab {
         c.object_moves = self.ed.object_moves();
         c.signing = self.ed.sign_items > 0;
         c.marked = self.ed.redact_marks > 0;
+        c.cropping = self.crop_view();
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
     }
@@ -3123,7 +3137,21 @@ impl Tab {
         let mut probe = shown;
         let out = area.show_viewport(ui, |ui, vp| {
             let avail_w = ui.available_width().max(content_w);
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, total_h), Sense::hover());
+            // While the crop is set, a click beside the pages ends it, as a click away from
+            // a picture ends Word's crop: a click target for the pointer, not a Tab stop
+            // (Enter ends it from the keyboard).
+            let sense = match self.crop_view {
+                Some(_) => Sense::CLICK,
+                None => Sense::hover(),
+            };
+            let (rect, canvas) = ui.allocate_exact_size(Vec2::new(avail_w, total_h), sense);
+            if self.crop_view.is_some() {
+                let name = "Beside the pages: a click ends cropping";
+                canvas.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, name));
+            }
+            if canvas.clicked() {
+                self.end_crop();
+            }
             let painter = ui.painter().clone();
             let spine = rect.min.x + avail_w / 2.0;
             let first = row_top.partition_point(|&t| t < vp.min.y).saturating_sub(1);
