@@ -131,7 +131,7 @@ fn place(f: FontChoice) -> (usize, usize) {
 }
 
 /// Key of LimarePDF's own entry in the fonts it writes.
-const KEY: &[u8] = b"LimarePDF";
+pub(crate) const KEY: &[u8] = b"LimarePDF";
 /// Most glyphs one embedded font holds: a glyph number is two bytes, and the subsetter's
 /// numbering stops short of 65,536.
 const MAX_GLYPHS: usize = 0xFFF0;

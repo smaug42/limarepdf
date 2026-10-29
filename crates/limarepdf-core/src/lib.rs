@@ -8,6 +8,7 @@ mod annot_write;
 mod annots;
 mod asn1;
 mod atomic;
+mod base_encodings;
 mod blank;
 mod cms_check;
 mod cms_write;
@@ -36,6 +37,7 @@ mod ocr;
 mod outline;
 mod overlay;
 mod own_encoding;
+mod own_font;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
@@ -92,6 +94,7 @@ pub use outline::{BookmarkPlace, OutlineItem};
 pub use overlay::{
     picture_size, text_width, today_iso, Bates, HeaderFooter, ImageWatermark, Placed, Watermark,
 };
+pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use redact::{PageRedaction, RedactReport};
 pub use sanitise::{Hidden, HiddenReport, LayersDamaged};

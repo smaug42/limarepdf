@@ -183,6 +183,12 @@
 
 ### Fixed
 
+- Text in some fonts came out as other letters or as � in search, copying, Export text and `limarepdf-cli text`:
+  whole lines read as shifted letters ("*TVQQPTF" for "I suppose"), and Czech, Romanian and Russian letters as �.
+  These fonts number their characters by glyph and say no more in the PDF, so LimarePDF now reads each glyph's
+  character from the font's embedded program, as other readers do; and a font whose ToUnicode entry names Identity
+  instead of holding a map now reads each code as its character's own number. Of the 1,089 test files, 9 read
+  better and none worse.
 - The tick and cross in the Fill and sign pane and its menu showed as empty boxes; they are drawn now.
 - The Finish signing question, its notice when nothing is put down and its command's tooltip named "the Sign
   tool"; they say Fill and sign, the tool's name. The notice for Apply redactions with no marks named a menu that

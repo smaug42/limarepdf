@@ -272,7 +272,7 @@ fn shows_as_they_were(ops: &[Operation], t: &TextData, s: &Span) -> Shows {
 type Shows = Vec<([f32; 3], Operation)>;
 
 /// The strings and spacing numbers a show draws, as a `TJ` array holds them.
-fn show_items(o: &Operation, show: Show) -> Vec<Object> {
+pub(crate) fn show_items(o: &Operation, show: Show) -> Vec<Object> {
     match show {
         Show::TJ => o
             .operands
@@ -606,7 +606,7 @@ fn plain_show(o: &Operation, show: Show) -> Operation {
 }
 
 impl Pdf {
-    fn load_edit(&self, page_index: usize) -> Result<(ObjectId, Parsed)> {
+    pub(crate) fn load_edit(&self, page_index: usize) -> Result<(ObjectId, Parsed)> {
         let page = self.page_id_at(page_index)?;
         let parsed = self.parse_page(page_index)?;
         if parsed.ops.iter().any(|o| o.operator == "BI") {
@@ -615,7 +615,7 @@ impl Pdf {
         Ok((page, parsed))
     }
 
-    fn pick(parsed: &Parsed, id: usize) -> Result<&Obj> {
+    pub(crate) fn pick(parsed: &Parsed, id: usize) -> Result<&Obj> {
         parsed
             .objs
             .get(id)
