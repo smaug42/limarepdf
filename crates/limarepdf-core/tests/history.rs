@@ -11,9 +11,13 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 const W: f32 = 300.0;
 const H: f32 = 200.0;
 
-/// The document as written out, from a copy, so the document itself is untouched.
+/// The document as written out, from a copy, with the highest object number the highest in
+/// use: Undo doesn't lower it (no number is given to another object), and puts back
+/// everything else.
 fn bytes(p: &Pdf) -> Vec<u8> {
-    p.clone().snapshot().unwrap()
+    let mut copy = p.clone();
+    copy.doc.max_id = copy.doc.objects.keys().map(|id| id.0).max().unwrap_or(0);
+    copy.snapshot().unwrap()
 }
 
 /// One page with a red rectangle and "Hello" in Helvetica, as `tests/edit.rs` makes them.

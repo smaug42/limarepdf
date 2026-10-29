@@ -6413,6 +6413,7 @@ mod tests {
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
 
     mod forms;
+    mod history;
     mod organise;
     mod redact_marks;
     mod review;

@@ -15,10 +15,10 @@ use std::mem::{size_of, swap, take};
 pub struct Before(Document);
 
 /// What puts a document back as it was before an edit: the old values of the objects the edit
-/// changed or removed, the objects it added (to be removed again), and the trailer, the
-/// highest object number and the version when the edit changed them. What lopdf read when the
-/// document was opened (the cross-reference data, the encryption state) is no edit's to change
-/// and is left as it is.
+/// changed or removed, the objects it added (to be removed again), and the trailer and the
+/// version when the edit changed them; the highest object number is never lowered (see
+/// [`Pdf::restore`]). What lopdf read when the document was opened (the cross-reference data,
+/// the encryption state) is no edit's to change and is left as it is.
 #[derive(Clone)]
 pub struct Restore {
     /// Each object's value to put back; `None`: it didn't exist, so it is removed.
@@ -71,15 +71,22 @@ impl Pdf {
         Before(self.doc.clone())
     }
 
-    /// Put the document back as it was before an edit that failed. The fonts LimarePDF
-    /// embedded meanwhile stay known, as [`Pdf::reopen`] keeps them.
+    /// Put the document back as it was before an edit that failed, but for the highest
+    /// object number (see [`Pdf::restore`]). The fonts LimarePDF embedded meanwhile stay
+    /// known, as [`Pdf::reopen`] keeps them.
     pub fn go_back(&mut self, before: Before) {
+        let top = self.doc.max_id;
         self.doc = before.0;
+        self.doc.max_id = self.doc.max_id.max(top);
     }
 
     /// Put a [`Restore`]'s values in place: Undo, or Redo with the one that reversed it.
-    /// Returns the [`Restore`] that reverses this one.
+    /// Returns the [`Restore`] that reverses this one. The highest object number isn't
+    /// lowered: a number an object had isn't given to another in the session, so what the
+    /// app keeps by object (a draft reply by its comment, the selection, pages) can't come
+    /// to mean another one after Undo.
     pub fn restore(&mut self, r: Restore) -> Restore {
+        let top = self.doc.max_id;
         let objects = (r.objects.into_iter())
             .map(|(id, value)| {
                 let was = match value {
@@ -93,6 +100,7 @@ impl Pdf {
             h.swap(&mut self.doc);
             h
         });
+        self.doc.max_id = self.doc.max_id.max(top);
         Restore::new(objects, header)
     }
 }
@@ -254,8 +262,28 @@ mod tests {
         p
     }
 
+    /// The document as written, with the highest object number the highest in use: Undo
+    /// doesn't lower it, and puts back everything else.
     fn bytes(p: &Pdf) -> Vec<u8> {
-        p.clone().snapshot().unwrap()
+        let mut copy = p.clone();
+        copy.doc.max_id = copy.doc.objects.keys().map(|id| id.0).max().unwrap_or(0);
+        copy.snapshot().unwrap()
+    }
+
+    /// An object number isn't given to another object after Undo, Redo or a failed edit:
+    /// the next object added takes a new one.
+    #[test]
+    fn object_numbers_are_not_used_again() {
+        let mut p = sample();
+        let before = p.before();
+        let added = p.doc.add_object(dictionary! { "N" => 1 });
+        p.restore(before.undo(&p));
+        assert!(!p.doc.objects.contains_key(&added));
+        assert!(p.doc.add_object(dictionary! { "N" => 2 }).0 > added.0);
+        let before = p.before();
+        let failed = p.doc.add_object(dictionary! { "N" => 3 });
+        p.go_back(before);
+        assert!(p.doc.add_object(dictionary! { "N" => 4 }).0 > failed.0);
     }
 
     /// Objects changed, added and removed are put back, and the reverse puts them again;
