@@ -159,10 +159,12 @@ including text being typed, from the first key; the window's title is marked the
 
 With many documents open, the tabs stay in one row and narrow to share it, long names shortened with "…" (a dot
 stands for **Unsaved** on a tab too narrow for the word); point at a tab to see its whole name. When even narrowed
-tabs don't fit, the row scrolls: turn the mouse wheel over the tabs, or click the arrows at the row's right end.
-The button after the arrows, **All open documents**, lists every open document, the one in front marked; choose one
-to bring it to the front. The tab in front is always scrolled into view: when you choose it, open a document,
-close one or make the window narrower.
+tabs don't fit, the row scrolls: turn the mouse wheel over the tabs, or click the arrows at the row's right end, a
+tab at a time (hold one down to keep scrolling). The button after the arrows, **All open documents**, lists every
+open document, the one in front marked; choose one to bring it to the front. Ctrl+Tab (or Ctrl+F6) brings the next
+document to the front and Ctrl+Shift+Tab (or Ctrl+Shift+F6) the one before, from the last round to the first; they
+are under ☰ > View > Go to document too. The tab in front is always scrolled into view: when you choose it, open a
+document, close one or make the window narrower.
 
 Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a
 comment or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet
@@ -478,6 +480,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+O | Open |
 | Ctrl+S, Ctrl+Shift+S | Save, Save As |
 | Ctrl+W | Close the tab |
+| Ctrl+Tab, Ctrl+Shift+Tab (or Ctrl+F6, Ctrl+Shift+F6) | Next, previous open document, from the last round to the first (Ctrl on a Mac too) |
 | Ctrl+P | Print |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) | Undo, redo |
 | Ctrl+F | Find: Search results opens with the keyboard in its box; type, and the matches come once you pause |

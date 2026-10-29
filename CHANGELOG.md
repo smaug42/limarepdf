@@ -14,6 +14,9 @@
   can't take new text. Edits use Times."), why on hover (a Type 3 font, one not in the PDF, vertical writing).
   Before, a line in an embedded subset was written again in another font, and its spacing between letters was
   lost.
+- Ctrl+Tab (or Ctrl+F6) brings the next open document to the front and Ctrl+Shift+Tab (or Ctrl+Shift+F6) the one
+  before, from the last round to the first, as in web browsers and Acrobat; they are under ☰ > View > Go to
+  document too, and work with the keyboard in a box.
 - While a line is edited on the page, its floating toolbar has Bold, Italic, Cut, Copy and Paste for what is
   selected in the line, as Ctrl+B, Ctrl+I, Ctrl+X, Ctrl+C and Ctrl+V do there. Clicking them leaves the line open,
   with the keyboard back in it.
@@ -195,7 +198,8 @@
 
 - With several documents open, the tabs no longer wrap a name letter by letter down the window. They stay in one
   row, narrowing to share it with long names shortened (the whole name on hover), then scroll by the mouse wheel
-  or the arrows at the row's end, and All open documents lists every one; the tab in front is always in view.
+  or the arrows at the row's end (a tab a click, on and on while held), and All open documents lists every one;
+  the tab in front is always in view.
 - Text in some fonts came out as other letters or as � in search, copying, Export text and `limarepdf-cli text`:
   whole lines read as shifted letters ("*TVQQPTF" for "I suppose"), and Czech, Romanian and Russian letters as �.
   These fonts number their characters by glyph and say no more in the PDF, so LimarePDF now reads each glyph's

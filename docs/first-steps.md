@@ -11,7 +11,7 @@ change and saving it. Shortcuts are written with Ctrl; on a Mac, use ⌘ (Comman
    lists the PDFs you opened recently: click one to open it again.
 2. Open a PDF with the **Open** button at the top left, or Ctrl+O. You can also drop a file on the window (except
    on Linux in a Wayland session, see [Troubleshooting](troubleshooting.md#dropping-files-on-the-window-does-nothing)).
-3. The document opens in a tab of its own. Open more and switch between them with the tabs.
+3. The document opens in a tab of its own. Open more and switch between them with the tabs, or with Ctrl+Tab.
 
 Photos and scans (PNG, JPEG or TIFF) open as a new document, one page per picture. The start screen's **Make a PDF
 from images…** does the same.

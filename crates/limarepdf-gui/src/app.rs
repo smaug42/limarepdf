@@ -2560,6 +2560,14 @@ impl App {
             Act::Palette => self.palette = Some(Palette::default()),
             Act::NextRegion => self.regions.step = 1,
             Act::PrevRegion => self.regions.step = -1,
+            // The tab strip scrolls the new one into view.
+            Act::NextDocument | Act::PrevDocument => {
+                let n = self.tabs.len();
+                if n > 1 {
+                    let by = if a == Act::NextDocument { 1 } else { n - 1 };
+                    self.active = (self.active + by) % n;
+                }
+            }
             Act::TrustedCertificates => self.trusted = Some(TrustedWindow::load()),
             _ if !has => {}
             Act::PageLabels => self.reveal_labels(),
@@ -4490,6 +4498,7 @@ impl App {
     /// The state the commands' conditions are checked against.
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
+            docs: self.tabs.len(),
             busy: self.busy || self.sign_window.as_ref().is_some_and(SignWindow::busy),
             saving: self
                 .tabs
@@ -4733,7 +4742,7 @@ impl App {
                         | Act::Bold
                         | Act::Italic
                 );
-                let global = k.modifiers.command && !page_only;
+                let global = (k.modifiers.command || k.modifiers.ctrl) && !page_only;
                 let in_box = in_text && matches!(a.act, Act::Undo | Act::Redo);
                 let closes = (picking || back) && a.act == Act::Escape;
                 // F6 leaves a text box too (in a form, Tab stays among the fields), but
@@ -4845,6 +4854,10 @@ const TAB_SPACE: f32 = 8.0;
 const TAB_CLOSE: f32 = 22.0;
 /// The size of each of the arrows and the documents button at the tab strip's right.
 const STRIP_BUTTON: f32 = 26.0;
+/// An arrow held down steps the tabs again after this many seconds, then every
+/// [`HOLD_EVERY`], as a scroll bar's arrows do.
+const HOLD_FIRST: f64 = 0.4;
+const HOLD_EVERY: f64 = 0.12;
 /// The most a name takes in the menu of open documents.
 const MENU_NAME_MOST: f32 = 360.0;
 
@@ -4955,13 +4968,44 @@ fn tab_title(name: &str, dirty: bool) -> String {
 
 /// How far the document tabs are scrolled, with the tab in front, the number of tabs and the
 /// room they were last drawn with: when any of those changes, the tab in front is scrolled
-/// into view.
+/// into view. `held` is the arrow held down (-1 left, 1 right) and when it steps next.
 #[derive(Clone, Copy, Default)]
 struct TabScroll {
     offset: f32,
     front: Option<u64>,
     count: usize,
     room: f32,
+    held: Option<(i8, f64)>,
+}
+
+impl TabScroll {
+    /// Whether the arrow `r` toward `dir` steps the tabs this frame, at `now`: once when it
+    /// is pressed, clicked or chosen with the keyboard, then again and again while it is held
+    /// down. Letting it go after holding it doesn't step again.
+    fn steps(&mut self, ctx: &egui::Context, r: &egui::Response, dir: i8, now: f64) -> bool {
+        let down = r.is_pointer_button_down_on();
+        match self.held.filter(|&(d, _)| d == dir) {
+            Some((_, next)) if down => {
+                let step = now >= next;
+                if step {
+                    self.held = Some((dir, now + HOLD_EVERY));
+                }
+                let wait = self.held.map_or(0.0, |(_, next)| next - now);
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.0)));
+                step
+            }
+            Some(_) => {
+                self.held = None;
+                false
+            }
+            None if down => {
+                self.held = Some((dir, now + HOLD_FIRST));
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(HOLD_FIRST));
+                true
+            }
+            None => r.clicked(),
+        }
+    }
 }
 
 /// What was done to a document tab this frame.
@@ -5171,11 +5215,16 @@ fn tab_strip(ui: &mut egui::Ui, tabs: &[Tab], active: usize) -> (Option<usize>, 
                 .min_size(egui::Vec2::splat(STRIP_BUTTON));
             let r = ends.put(place(k), |ui: &mut egui::Ui| ui.add_enabled(enabled, b));
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
-            r.on_hover_text(name).clicked()
+            r.on_hover_text(name)
         };
         let (can_left, can_right) = (s.offset > 0.5, s.offset < most - 0.5);
-        let to_left = arrow(0.0, icon::CARET_LEFT, "Scroll tabs left", can_left);
-        let to_right = arrow(1.0, icon::CARET_RIGHT, "Scroll tabs right", can_right);
+        let left = arrow(0.0, icon::CARET_LEFT, "Scroll tabs left", can_left);
+        let right = arrow(1.0, icon::CARET_RIGHT, "Scroll tabs right", can_right);
+        let now = ui.input(|i| i.time);
+        let (to_left, to_right) = (
+            s.steps(ui.ctx(), &left, -1, now),
+            s.steps(ui.ctx(), &right, 1, now),
+        );
         if to_left {
             // The last tab starting left of the part seen, to its left edge.
             let i = starts.iter().rposition(|&x| x < s.offset - 0.5);
@@ -5186,6 +5235,14 @@ fn tab_strip(ui: &mut egui::Ui, tabs: &[Tab], active: usize) -> (Option<usize>, 
             let seen_to = s.offset + view.width() + 0.5;
             let i = (0..tabs.len()).find(|&i| starts[i] + widths[i] > seen_to);
             s.offset = i.map_or(most, |i| starts[i] + widths[i] - view.width());
+        }
+        // An arrow scrolled to its end is greyed and can't keep the keyboard (PB-49): it goes
+        // to the other arrow.
+        if to_right && s.offset >= most - 0.5 && right.has_focus() {
+            left.request_focus();
+        }
+        if to_left && s.offset <= 0.5 && left.has_focus() {
+            right.request_focus();
         }
         let list = egui::Button::new(theme::icon(icon::CARET_DOWN).size(14.0))
             .frame_when_inactive(false)

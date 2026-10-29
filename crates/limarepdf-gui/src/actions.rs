@@ -31,6 +31,10 @@ pub enum Act {
     ExportText,
     Print,
     CloseTab,
+    /// Bring the open document after the one in front to the front (the first after the
+    /// last), or the one before it, as Ctrl+Tab goes through a web browser's tabs.
+    NextDocument,
+    PrevDocument,
     /// Keep recovery copies of documents with unsaved changes, or stop.
     ToggleRecovery,
     /// Show, in the file manager, the recovery file the active tab's notice names. Offered
@@ -274,6 +278,8 @@ impl Act {
             | Act::NewFromImages
             | Act::ExportImages
             | Act::CloseTab
+            | Act::NextDocument
+            | Act::PrevDocument
             | Act::ToggleRecovery
             | Act::ShowRecoveryFile
             | Act::Quit
@@ -388,6 +394,8 @@ impl Group {
 pub struct Ctx {
     /// A document is open.
     pub doc: bool,
+    /// How many documents are open.
+    pub docs: usize,
     /// The document was opened from or saved to a file.
     pub file: bool,
     /// A background job (OCR, optimising, exporting, printing) is running.
@@ -500,6 +508,10 @@ fn doc(c: &Ctx) -> bool {
 fn idle(c: &Ctx) -> bool {
     c.doc && !c.busy
 }
+/// Another open document to go to.
+fn other_docs(c: &Ctx) -> bool {
+    c.docs > 1
+}
 /// The document's file, which waits while it is saved.
 fn file(c: &Ctx) -> bool {
     c.file && !c.busy && !c.saving
@@ -597,6 +609,9 @@ const CS: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const N: Modifiers = Modifiers::NONE;
 const S: Modifiers = Modifiers::SHIFT;
 const AS: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
+/// Ctrl itself, on a Mac too, where Cmd+Tab goes from app to app.
+const CT: Modifiers = Modifiers::CTRL;
+const CTS: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
 const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(m, key)
 }
@@ -1160,6 +1175,27 @@ pub static ACTIONS: &[Action] = &[
         label: "Last page",
         keys: &[k(N, Key::End)],
         submenu: "Go to page",
+        ..BASE
+    },
+    Action {
+        act: Act::NextDocument,
+        group: Group::View,
+        label: "Next document",
+        keys: &[k(CT, Key::Tab), k(CT, Key::F6)],
+        enabled: other_docs,
+        hint: "Bring the open document after this one to the front, the first after the last.",
+        submenu: "Go to document",
+        ..BASE
+    },
+    Action {
+        act: Act::PrevDocument,
+        group: Group::View,
+        label: "Previous document",
+        keys: &[k(CTS, Key::Tab), k(CTS, Key::F6)],
+        enabled: other_docs,
+        hint: "Bring the open document before this one to the front, the last before the \
+               first.",
+        submenu: "Go to document",
         ..BASE
     },
     Action {
@@ -2126,13 +2162,14 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 23] = [
+    let fixes: [Fix; 24] = [
         (
             |d| d.busy = false,
             "Waits until the task under way finishes.",
         ),
         (|d| d.saving = false, "Waits until the document is saved."),
         (|d| d.file = true, "Save the document as a file first."),
+        (|d| d.docs = 2, "Open another document first."),
         (|d| d.can_undo = true, "Nothing to undo."),
         (|d| d.can_redo = true, "Nothing to redo."),
         // In Organise's grid, where nothing is typed or selected but pages, these first.

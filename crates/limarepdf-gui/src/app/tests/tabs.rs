@@ -659,3 +659,146 @@ fn tab_goes_through_the_tabs_then_the_arrows_and_the_documents_button() {
     let arrow = at(LEFT).or(at(RIGHT)).expect("an arrow by Tab");
     assert!(arrow > last && arrow < docs, "{reached:?}");
 }
+
+/// Ctrl as Linux and Windows send it, with Command; with Shift too.
+fn ctrl(shift: bool) -> egui::Modifiers {
+    egui::Modifiers {
+        ctrl: true,
+        command: true,
+        shift,
+        ..Default::default()
+    }
+}
+
+/// ENH-43: Ctrl+Tab and Ctrl+F6 bring the next document to the front, with Shift the one
+/// before, round from the last to the first and back, the tab coming into view; with the
+/// keyboard in a text box too. With one document open they do nothing.
+#[test]
+fn ctrl_tab_and_ctrl_f6_go_through_the_documents_in_turn() {
+    let ctx = test_ctx();
+    let mut one = empty_app();
+    long_tabs(&mut one, &ctx, 1);
+    drawn(&mut one, &ctx, 700.0);
+    window(&mut one, &ctx, 700.0, vec![key_with(Key::Tab, ctrl(false))]);
+    assert_eq!(one.active, 0, "one document");
+
+    let ctx = test_ctx();
+    let mut app = empty_app();
+    let names = long_tabs(&mut app, &ctx, 12);
+    app.active = 0;
+    drawn(&mut app, &ctx, 700.0);
+    let steps = [
+        (Key::Tab, false, 1),
+        (Key::F6, false, 2),
+        (Key::Tab, true, 1),
+        (Key::F6, true, 0),
+        (Key::Tab, true, 11),
+        (Key::Tab, false, 0),
+        (Key::F6, true, 11),
+        (Key::F6, false, 0),
+    ];
+    for (key, shift, want) in steps {
+        window(&mut app, &ctx, 700.0, vec![key_with(key, ctrl(shift))]);
+        let tree = drawn(&mut app, &ctx, 700.0);
+        assert_eq!(app.active, want, "{key:?} with Shift {shift}");
+        let f = front(&tree);
+        assert_eq!(f.name, names[want]);
+        assert!(in_view(&tree, 700.0, f.rect), "{} at {:?}", f.name, f.rect);
+    }
+
+    // The keyboard in the search box.
+    window(&mut app, &ctx, 700.0, vec![key_with(Key::F, ctrl(false))]);
+    drawn(&mut app, &ctx, 700.0);
+    assert!(ctx.text_edit_focused(), "the search box has the keyboard");
+    window(&mut app, &ctx, 700.0, vec![key_with(Key::Tab, ctrl(false))]);
+    assert_eq!(app.active, 1, "from the search box");
+}
+
+/// PB-49: Enter on an arrow with the keyboard scrolls the tabs; at the row's end, the arrow
+/// greyed, the keyboard goes to the other arrow rather than nowhere, and so back.
+#[test]
+fn the_keyboard_stays_on_the_arrows_at_the_row_s_ends() {
+    let ctx = test_ctx();
+    let mut app = empty_app();
+    long_tabs(&mut app, &ctx, 12);
+    app.active = 0;
+    drawn(&mut app, &ctx, 700.0);
+    // Tab comes to the arrows after the last tab, which it brought into view: to the arrow
+    // left, the arrow right being greyed then.
+    let tab = key_with(Key::Tab, egui::Modifiers::NONE);
+    let mut found = false;
+    for _ in 0..60 {
+        window(&mut app, &ctx, 700.0, vec![tab.clone()]);
+        let tree = window(&mut app, &ctx, 700.0, vec![]);
+        if focused_name(&ctx, &tree).as_deref() == Some(LEFT) {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "Tab reaches the arrow left");
+    let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+    for (from, to) in [(LEFT, RIGHT), (RIGHT, LEFT)] {
+        let mut presses = 0;
+        let tree = loop {
+            window(&mut app, &ctx, 700.0, vec![enter.clone()]);
+            let tree = drawn(&mut app, &ctx, 700.0);
+            if is_disabled(&tree, from) {
+                break tree;
+            }
+            assert_eq!(focused_name(&ctx, &tree).as_deref(), Some(from));
+            presses += 1;
+            assert!(presses < 20, "never reached the end");
+        };
+        assert!(presses > 0, "{from} scrolled");
+        assert_eq!(focused_name(&ctx, &tree).as_deref(), Some(to), "at the end");
+    }
+    assert_eq!(app.active, 0, "the tab in front stays");
+}
+
+/// An arrow held down steps the tabs once at once, then again and again until it is let
+/// go, which doesn't step again; one held only briefly steps once.
+#[test]
+fn holding_an_arrow_keeps_scrolling_the_tabs() {
+    let ctx = test_ctx();
+    let mut app = empty_app();
+    long_tabs(&mut app, &ctx, 30);
+    app.active = 0;
+    let tree = drawn(&mut app, &ctx, 700.0);
+    let first = |tree: &TreeUpdate| tabs(tree)[0].rect.left();
+    let start = first(&tree);
+    let (r, _) = node(&tree, RIGHT).expect("the arrow right");
+    let p = r.center();
+    window(&mut app, &ctx, 700.0, vec![egui::Event::PointerMoved(p)]);
+    // Each frame here is 1/60 of a second on; the tabs are drawn as they were scrolled the
+    // frame before.
+    window(&mut app, &ctx, 700.0, vec![press(p, true)]);
+    let tree = window(&mut app, &ctx, 700.0, vec![]);
+    let once = start - first(&tree);
+    assert!(once > 20.0 && once < 300.0, "a step of {once}");
+    let mut tree = tree;
+    for _ in 0..17 {
+        tree = window(&mut app, &ctx, 700.0, vec![]);
+    }
+    let short = start - first(&tree);
+    assert!(
+        (short - once).abs() < 0.5,
+        "a short hold steps once: {short}"
+    );
+    for _ in 0..42 {
+        tree = window(&mut app, &ctx, 700.0, vec![]);
+    }
+    let long = start - first(&tree);
+    assert!(
+        long > once * 4.0,
+        "a second's hold moved {long}, a step {once}"
+    );
+    let tree = window(&mut app, &ctx, 700.0, vec![press(p, false)]);
+    let held = start - first(&tree);
+    let tree = drawn(&mut app, &ctx, 700.0);
+    let after = start - first(&tree);
+    assert!(
+        (after - held).abs() < 0.5,
+        "letting go stepped: {after} after {held}"
+    );
+    assert_eq!(app.active, 0, "the tab in front stays");
+}
