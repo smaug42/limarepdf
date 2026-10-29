@@ -22,6 +22,7 @@ mod form_ap;
 mod form_flatten;
 mod form_write;
 mod forms;
+mod history;
 mod ids;
 mod imgs;
 mod incremental;
@@ -77,6 +78,7 @@ pub use embed::{
 };
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};
+pub use history::{Before, Restore};
 pub use ids::{
     password_problem, DigitalId, IdList, IdStore, NewId, Stored, UnlockedId, WrongPassword,
     MIN_PASSWORD,

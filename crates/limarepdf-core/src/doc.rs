@@ -290,11 +290,15 @@ impl Pdf {
             || self.doc.trailer.has(b"Encrypt")
     }
 
-    /// Serialise without pruning, compressing or encrypting. Used for undo snapshots, where
-    /// speed matters more than size.
+    /// Serialise without pruning, compressing or encrypting, for copies where speed matters
+    /// more than size. The document is left as it was: lopdf's writer takes a new object
+    /// number for a cross-reference stream and writes the table's keys into the trailer.
     pub fn snapshot(&mut self) -> Result<Vec<u8>> {
+        let (max_id, trailer) = (self.doc.max_id, self.doc.trailer.clone());
         let mut out = Vec::new();
-        self.doc.save_to(&mut out)?;
+        let written = self.doc.save_to(&mut out);
+        (self.doc.max_id, self.doc.trailer) = (max_id, trailer);
+        written?;
         Ok(out)
     }
 
@@ -1284,6 +1288,27 @@ mod tests {
         assert_eq!(e.page_count(), 2);
         assert_eq!(e.page_size(0).unwrap(), (203.0, 300.0));
         assert!(p.delete_pages(&[0, 1, 2]).is_err());
+    }
+
+    /// Writing a copy, for undo or for drawing the pages, leaves the document as it was:
+    /// lopdf's writer takes a new object number for a cross-reference stream and writes the
+    /// table's keys into the document's own trailer (batch 43).
+    #[test]
+    fn snapshots_leave_the_document_as_it_was() {
+        use lopdf::xref::XrefType;
+        let mut p = sample(2);
+        for xref in [
+            XrefType::CrossReferenceStream,
+            XrefType::CrossReferenceTable,
+        ] {
+            p.doc.reference_table.cross_reference_type = xref;
+            let (max_id, trailer) = (p.doc.max_id, p.doc.trailer.clone());
+            let first = p.snapshot().unwrap();
+            p.app_snapshot().unwrap();
+            assert!(p.snapshot().unwrap() == first, "{xref:?}");
+            assert_eq!(p.doc.max_id, max_id, "{xref:?}");
+            assert!(p.doc.trailer == trailer, "{xref:?}: {:?}", p.doc.trailer);
+        }
     }
 
     #[test]
