@@ -127,7 +127,9 @@ installed font it came from, or in Helvetica, Times or Courier. While you edit i
 
 ### Undo doesn't go back far enough
 
-Undo keeps up to 20 steps, and at most 1 GB per document, so very large documents get fewer steps.
+Undo keeps up to 100 steps, and at most 1 GB per document. Most steps are small, but changes that each alter
+much of a very large document (optimising a long scan, which rewrites its pictures) can fill that, and then Undo
+goes back fewer steps. The latest change can always be undone. See [Undo](gui.md#undo).
 
 ## Saving and recovery
 

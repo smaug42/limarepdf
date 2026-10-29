@@ -354,14 +354,52 @@ back when the dialog closes (`Edit::Text`'s `back`); one whose own change is ref
 back the same way (`FormUi::kept`). Panel Apply buttons that redraw only some pages or nothing don't commit first:
 they lose nothing, and their forms join their own undo steps.
 
-Undo steps (`tab.rs`'s `Step`) each hold a whole copy of the document as an `Arc`, at most `MAX_UNDO` of them and
-`UNDO_BUDGET` (1 GB) per tab together, the oldest dropped first and the latest always kept (`trim`). A watermark or
-headers and footers just added stay linked to the inspector's form (`Tab::stamp`, a `Stamped`) until anything else
-changes; the link's `base`, the document before the stamp, is the same `Arc` as the undo step made when it was
-added, so it costs nothing while that step is kept. `held` counts every copy once, wherever it is held (steps, the
-links kept in steps, the form's link). When the latest step and a link's copy no step holds are over the budget on
-their own, those links end (`Tab::keep_to_budget`, run after every push and after `put_stamp`) and `Tab::info`
-says so (BUG-36).
+Undo steps (`tab.rs`'s `Step`; batch 43, PF-42) keep only what each change changed: `Step::doc` is an
+`Option<Arc<Restore>>`, `None` for a change of the password settings alone, made by core's
+`crates/limarepdf-core/src/history.rs`. `Tab::edit_inner` takes `Pdf::before` (a `Before`: the document cloned)
+before the change, and after it `Before::undo(&pdf)` compares each object with its old value and gives a `Restore`: the old values of the
+objects changed or removed, `None` for those added (to be removed again), and the version, binary mark, trailer
+and highest object number when any of them changed. The comparison is order-sensitive and bit for bit (`same`,
+`same_dict`): lopdf's `==` ignores a dictionary's key order and takes 0.0 for −0.0, which are written
+differently, so a change of either would have been missed and left in the document by Undo. `Pdf::restore` puts a
+`Restore`'s values in place and returns the one that reverses it (Undo's gives Redo's, and back); `Pdf::go_back`
+puts the document back whole after a change that failed or panicked, or whose redraw panicked. A change joined to
+the last step (typing into a line again soon, a setting nudged again) merges its `Restore` into the step's
+(`Arc::make_mut`, `Restore::merge`, which keeps each object's older value), so Undo goes back to before the first.
+`Tab::restore` can't fail and reads nothing again, so what was read when the document was opened stays as it was:
+that it was protected, repaired or reads differently in other apps, lopdf's cross-reference data and encryption
+state. Before batch 43 Undo put a written-out copy in place with `Pdf::reopen`, a new reading, which read all of
+these afresh from a clean copy: a password-protected document came back as unprotected, so signing it was no
+longer refused (`undo_keeps_a_password_protected_document_protected`). Object numbers are never used again in a
+session: `restore` and `go_back` never lower `max_id`, so what the app keeps by object (a draft reply by its
+comment, the selection, pages) can't come to mean another object; stage 2's tests found an undone comment's number
+taken by a new object, which sent a draft reply to the wrong place. Writing a copy no longer changes the document
+either: `Pdf::snapshot` puts `max_id` and the trailer back after lopdf's `save_to`, whose writer takes a new object
+number for a cross-reference stream and writes the stream's keys into the document's trailer, so every copy
+written of such a file (each redraw's, each undo step's) changed the document a little.
+
+At most `MAX_UNDO` (100, as Word and LibreOffice keep by default) steps and `UNDO_BUDGET` (1 GiB) per tab are kept,
+the oldest dropped first and the latest always kept (`trim`), counted by `Restore::size`: an estimate of the memory
+the values hold (`map_size`, `heap`, `dict_heap`: the map's nodes and lopdf's dictionaries' tables as they are
+allocated), within 1 % of a counting allocator's count (`tests/history_size.rs`, which allows 0.75 to 1.33 times it).
+A step is the size of what changed: a note on a 100-page scan keeps about 5 KB where a whole copy was 82 MB. Some
+are larger than a whole copy was: the first page change on an opened document flattens its page tree and so
+changes every page dictionary (28 MB on 10,000 pages), and a watermark on 10,000 pages keeps 32 MB. Each change
+clones the document first and compares after: a peak of about one copy of the document's heap, 16 ms on a 100-page
+scan and 21 to 24 ms on 10,000 pages (performance.md's [Undo history](performance.md#undo-history)). The pages are still drawn from a written-out copy after each
+change and each Undo and Redo (`refresh`, about 43 ms on 10,000 pages; PB-37).
+
+A watermark or headers and footers just added stay linked to the inspector's form (`Tab::stamp`, a `Stamped`) until
+anything else changes. The link's `base` is the `Restore` that takes the document back to before the stamp: when
+it is added, the same `Arc` as its undo step's, so it costs nothing while that step is kept; after each update, the
+link's joined with that update's step (`merge`), which adds the objects this stamp changed that the last didn't
+(nothing else changed them since the stamp was added). An update (`put_stamp`) restores a copy of the base and adds
+the stamp again, as one step, and draws again the pages it is on and those it was on (`StampForm::range`, read
+again: nothing else changed since, so it gives the same pages); before batch 43 only the new pages were drawn
+again, so a stamp updated for fewer pages still showed on the pages it left (`pages_a_stamp_leaves_are_drawn_again`).
+`held` counts every `Restore` once, by `Arc::ptr_eq`, wherever it is held (steps, the links kept in steps, the form's
+link). When the latest step and a link's `Restore` no step holds are over the budget on their own, those links end
+(`Tab::keep_to_budget`, run after every push, every joined step and `put_stamp`) and `Tab::info` says so (BUG-36).
 
 While the Watermark or Headers, footers, Bates tool is open and its stamp isn't added yet, the pages show it
 (`tab/previews.rs`, `tab/proofs.rs`; ENH-23, the user's Q2 of batch 40). `Tab::stamping` says which stamps go on
@@ -398,10 +436,13 @@ subsetter first, so they keep their numbers and earlier text stays valid. The fo
 records the face, the glyphs with their characters and a checksum of the font file; a font another app has
 changed since is left alone and a new one started. In a signed document only fonts made since it was opened
 (`Pdf::made_fonts`) are grown, as growing one a signed revision holds would show as a change to it. Going back to
-an earlier copy in the same session (undo and redo, a failed change put back, a stamp redone from its base) uses
-`Pdf::reopen`, which keeps that set (PB-07): ids survive a snapshot and reload, and signing opens the signed file
-in a new tab with no history, so no font of a signed revision can be in it; an id the copy lacks belongs to
-nothing signed, whatever takes it later. Reading the copy with `Pdf::from_bytes` started a new font each time.
+an earlier state in the same session (undo and redo, a failed change put back, a stamp updated from its base) puts
+the old objects back in place (`Pdf::restore`, `Pdf::go_back`; batch 43), reading nothing again, so the set stays
+as it is (PB-07; `a_made_font_keeps_growing_after_undo_and_redo`): object numbers aren't used again in a session,
+and signing opens the signed file in a new tab with no history, so no font of a signed revision can be in it; an
+id the earlier state lacks belongs to nothing signed, whatever takes it later. Before batch 43 Undo read a copy in
+the document's place with `Pdf::reopen`, which keeps the set (now used only by core's tests); reading the copy
+with `Pdf::from_bytes` alone started a new font each time.
 Characters
 are put together (NFC) first; right-to-left and shaped scripts are refused (Liberation has Hebrew). A face covers
 a character only when its glyph has an outline (`Face::outlined`, found once per glyph through skrifa), except
@@ -833,10 +874,27 @@ row, the command band, the command palette, the right-click menus, the floating 
 are all built from that list.
 
 The floating toolbar (`Tab::floating_toolbar`, ENH-20) shows `actions::toolbar_items`: the right-click menu's
-commands that have icons, or, while a line is edited on the page (`Ctx::line_edit`), Bold, Italic, Cut and Copy.
-`actions::context_items` gives the right-click menu by what is selected: words; objects with any line of page
-text among them (Edit text, Move or resize text, Copy the selected text lines | Cut, Delete the object); other
-objects (Replace image… | Delete the object), so a picture's menu offers nothing greyed that never applies.
+commands that have icons, or, while a line is edited on the page (`Ctx::line_edit`), Bold, Italic | Cut, Copy,
+Paste. `actions::context_items` gives the right-click menu by what is selected: words (Cut, Copy, Paste, Select
+all text | Edit text, Bold, Italic | Highlight | Mark for redaction | printing or saving the selection); objects
+with any line of page text among them (Edit text, Move or resize text, Copy the selected text lines | Cut, Delete
+the object); other objects (Replace image… | Delete the object), so a picture's menu offers nothing greyed that
+never applies. Paste with words selected while reading (`pasteable`: text being typed, or, when nothing is busy,
+words selected or pages cut) sends egui's `ViewportCommand::RequestPaste` (`App::act`'s `(None, Clip::Paste)`
+with `selection.words()`), and the paste that arrives is typed over the words by `App::type_over`, as Ctrl+V's
+is; `why_not` skips "Select some text first." (`SELECT_TEXT`) for Paste, so a greyed Paste still says where typed
+text goes. Text being typed on the page (a line being edited, new text, a note or a text box being written) has a
+right-click menu of its own (batch 43, the user's find), `actions::typing_menu` (`TYPING`: Cut, Copy, Paste |
+Bold, Italic, those that apply), opened by `Tab::typing_menu` after the pages are drawn, on `Editor::typing_box`:
+the box's `Response` as drawn that frame (`page_text::Shown::edit` for new text, the line editor's and the writing
+box's own), which the tab takes each frame. The floating bar hides while that menu is open, as it does for the
+selection's. Two egui traps came up building it. egui's `TextEdit` moves its caret on a press of any button
+inside it, so a right-click let go of what was selected: `page_text::keep_on_right_click`, called after each such
+box is shown with what was selected before it was drawn (`TextEdit::load_state`), puts the selection back when the
+right-click was inside it (one elsewhere puts the caret there, as word processors do). And
+`Context::read_response(id)` (through `get_response`) makes a focused widget give up the keyboard when a press
+came elsewhere in that frame, so a box read back by its id lost the keyboard it had just been given back: the menu
+is opened on the `Response` kept when the box was drawn, never one read back by id.
 `tab::bar_place` places it from its size as last drawn (kept in egui's data under the bar's id), the selection's
 box on screen (for a line being edited, joined with where its editor was drawn as typed, `Editor::line_area`) and
 the page's text (`Editor::text_boxes`: its lines and words as far as they have been read): above the selection,

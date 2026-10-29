@@ -42,8 +42,8 @@ const THUMB_W: f32 = 120.0;
 /// The most undo steps a tab keeps, as Word and LibreOffice keep by default.
 const MAX_UNDO: usize = 100;
 /// The most memory one tab's undo steps may hold. Beyond it the oldest steps are dropped,
-/// though the latest is always kept, so undo is shorter after changes that each hold much of
-/// a very large document (optimising or recognising text in a long scan).
+/// though the latest is always kept, so undo is shorter after changes that each change much
+/// of a very large document (optimising a long scan, which rewrites its pictures).
 const UNDO_BUDGET: usize = 1 << 30;
 /// Edits to the words of one line of page text this soon (seconds) after the last one,
 /// with nothing else in between, are one undo step, as typing is in a word processor.
@@ -1630,7 +1630,7 @@ impl Tab {
         };
         self.info = Some(format!(
             "{what} can't be changed from its tool any more: this document is too \
-             large to keep the copy that needs. What was added stays on the pages"
+             large to keep what that needs. What was added stays on the pages"
         ));
     }
 
@@ -2794,10 +2794,11 @@ impl Tab {
     }
 
     /// A small bar for the selected object or words, with icon buttons for the right-click
-    /// menu's commands (for a line being edited, Bold, Italic and Copy). It goes where it
-    /// covers neither the selection nor the page's other text ([`bar_place`], ENH-20),
-    /// scrolls with the page and stays inside the view. `i` is the page, drawn at `page` on
-    /// the screen, `k` the screen size of a point, `b` the selection's box in page points.
+    /// menu's commands (for a line being edited, Bold, Italic, Cut, Copy and Paste). It goes
+    /// where it covers neither the selection nor the page's other text ([`bar_place`],
+    /// ENH-20), scrolls with the page and stays inside the view. `i` is the page, drawn at
+    /// `page` on the screen, `k` the screen size of a point, `b` the selection's box in page
+    /// points.
     fn floating_toolbar(
         &mut self,
         ui: &egui::Ui,
@@ -3972,6 +3973,8 @@ mod tests {
         let said = t.info.take().unwrap();
         let start = "The watermark just added can't be changed";
         assert!(said.starts_with(start), "{said}");
+        // Undo keeps what changes changed, not copies of the document (batch 43).
+        assert!(!said.contains("copy"), "{said}");
         // The form adds nothing now until asked, and Undo still takes back the last change.
         t.forms.wm.text = "LATER".into();
         let depth = t.undo.len();

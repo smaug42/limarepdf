@@ -158,7 +158,9 @@ memory (`VmHWM` and `VmRSS` in `/proc/<pid>/status`):
 Edits on the scan felt immediate. Each one added about 130 MB, close to the file's 139 MB, because each undo step
 keeps a whole copy of the document. The first rows were measured when the app kept up to 20 steps per document
 whatever its size. Undo steps are now limited to 1 GB per document, the oldest dropped first (about 7 steps on this
-scan), and the last two rows were measured with the limit: 20 edits added 1.16 GB instead of 2.6 GB.
+scan), and the last two rows were measured with the limit: 20 edits added 1.16 GB instead of 2.6 GB. Since batch
+43 a step keeps only what its edit changed ([Undo history](#undo-history)): a note on a scan keeps about 5 KB, so
+the history of 20 such edits is a few hundred kilobytes at most. The app's memory with them wasn't measured again.
 Zooming to 6400% added nothing measurable. The 5134 row was measured on a 3840 × 2160 screen at scale 1, the
 window not full screen: zooming in quickly straight after opening keeps several whole-page drawings and the tiles
 running at once, each drawing stopping only at its next band. The page showed enlarged until zooming stopped, then
@@ -179,8 +181,9 @@ OCR speed is in [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed).
   any zoom, while a whole Letter page at 1152 dpi takes about 0.4 s and 500 MB.
 - A whole-page drawing that is no longer wanted (a zoom passed through, changed colours, an edited document) stops
   at its next [band](../rendering.md#large-drawings) instead of running to the end.
-- Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
-  per step, up to 1 GB per document, see [above](#memory-in-the-desktop-app)).
+- Undo keeps only the old values of the objects each edit changed, up to 100 steps within 1 GB per document
+  ([Undo history](#undo-history)). The pages are still drawn from a copy of the document written out without
+  compressing after each edit and each Undo.
 - OCR, optimising, exporting images, printing, search and saving run in the background (search since batch 22: a
   thread per tab, [below](#search); saving since batch 37, ENH-35: a thread per save, which writes a copy of the
   document, [measured below](#startup-and-responsiveness)). A save's questions and checks still come first on the
@@ -266,6 +269,86 @@ release-built app test (kept as `target/b25perf/frames_probe.rs.txt`):
 
 A move of the artwork's objects takes less than half the 2.9 s the page takes to draw, and its frames stay well
 within a 60 Hz frame while they are selected and dragged. Recorded, not thresholds (6.3 has none for edits).
+
+## Undo history
+
+Batch 43 (PF-42) changed what an undo step keeps. Before, each step was a whole copy of the document as written
+out (`Pdf::snapshot`), up to 20 steps within 1 GB per document, and Undo read that copy back as a new document
+(`Pdf::reopen`). Now an edit clones the document's objects first (`Pdf::before`), compares them with the edited
+ones after it (`Before::undo`) and keeps only the old values of what changed (a `Restore`); Undo and Redo put
+those in place (`Pdf::restore`), up to 100 steps within 1 GB. Measured on 29 October 2026 on the machine above
+with a throwaway release-built probe (`target/b43perf/`, its `--shipped` mode), core alone (no window, no
+drawing), on REL-07's reference set, batch 41's made-up 300- and 10,000-page documents (`p300`, `big`) and two
+made in memory: `scan-100` (the 20-page scan five times over) and `mixed` (text-300, then scan-20). The median of
+five runs; the old way measured in the same run; memory counted by the probe's own allocator. Before the change,
+the same probe compared the old way with compressed copies and a prototype of this one (scans don't compress: 99
+to 105 % of their size, at 1 to 2 s a step on scan-100).
+
+| Document | Its objects in memory | Old step | New step: a note, highlight, move, picture, redaction or properties | New: turn, delete or move a page | New: a watermark on every page |
+| --- | --- | --- | --- | --- | --- |
+| text-300 (300 pages) | 2.7 MB | 1.6 MB | 1.9 to 4.5 KB | 4.0 to 37 KB | 0.94 MB |
+| artwork (1 page, 27,000 paths) | 4.2 MB | 3.0 MB | 2.7 to 57 KB | 56 KB (turn) | 57 KB |
+| p300 (300 pages) | 1.3 MB | 0.27 MB | 1.9 to 4.5 KB | 0.83 to 0.84 MB (the first page change) | 0.94 MB |
+| scan-20 | 16.5 MB | 16.3 MB | 1.9 to 4.6 KB | 4.0 to 4.3 KB | 64 KB |
+| mixed (320 pages) | 19.1 MB | 18.0 MB | 1.9 to 4.5 KB | 4.0 to 39 KB | 1.0 MB |
+| scan-100 | 82.3 MB | 81.7 MB | 1.9 to 4.6 KB | 4.0 to 14 KB | 0.32 MB |
+| big (10,000 pages) | 44.8 MB | 9.3 MB | 1.9 to 4.5 KB | 27.6 MB (the first page change) | 31.4 MB |
+
+| Document | Old: the copy before an edit | Old: Undo (a copy of now, read back) | New: clone and compare, each edit | New: Undo / Redo |
+| --- | --- | --- | --- | --- |
+| text-300 | 0.7 to 1.2 ms | 2.1 to 3.8 ms | 0.7 to 1.2 ms | ≤ 0.3 / 0.2 ms |
+| artwork | 1.0 ms | 2.5 to 4.9 ms | 1.0 to 1.2 ms | 0 ms |
+| p300 | 0.5 to 0.6 ms | 1.7 to 2.9 ms | 0.4 to 0.9 ms | ≤ 0.3 / 0.2 ms |
+| scan-20 | 4.1 to 4.5 ms | 6.4 to 8.7 ms | 3.1 to 3.8 ms | ≤ 0.02 ms |
+| mixed | 3.2 to 6.4 ms | 9.2 to 14.9 ms | 4.1 to 6.2 ms | ≤ 0.4 / 0.2 ms |
+| scan-100 (quiet run) | 9.8 to 36 ms | 54 to 78 ms | 15.5 to 16.5 ms | ≤ 0.1 ms |
+| big | 17.7 to 19.4 ms | 64 to 67 ms (107 after the watermark) | 21 to 24 ms | 0 ms; a page change 4.2 to 4.4 / 3.6 ms; the watermark 12.4 / 9.0 ms |
+
+What the figures show:
+
+- A step is now what its edit changed: a few kilobytes for everyday edits on every document, where the old copy
+  was 0.3 to 82 MB. Two kinds are larger than the old copy: the first page change on a long document (it
+  flattens the page tree, so every page's dictionary changes: 27.6 MB on 10,000 pages) and a watermark on every
+  page of one (31.4 MB). The 1 GB budget holds 33 to 38 such steps there, and 100 of every other kind measured.
+- Undo and Redo put the values in place: 0 to 12 ms, where the old Undo copied the document and read the copy back
+  (up to 107 ms on 10,000 pages, 78 ms on scan-100).
+- Each edit's own cost is close to the old copy's on small and middling documents and a little more on the
+  largest: the clone and the compare cost 21 to 24 ms on 10,000 pages (the old copy 17.7 to 19.4 ms) and 15.5 to
+  16.5 ms on scan-100 (the old copy about 10 ms for four edits, 36 ms for the fifth). Times vary with the
+  machine's load: in a first run beside other work, scan-100's clone and compare took 39 to 43 ms against 20 to
+  31 ms for the old copy in the same run, and its old Undo 80 to 87 ms.
+- While an edit is made the clone is held until the compare ends, about the document's objects in memory (2.7 MB
+  on text-300, 82 MB on scan-100, 44 MB on 10,000 pages), and then let go; the old copy was the written-out file
+  (1.6, 82 and 9.3 MB), kept as the step. Undo and Redo allocate at most 4.9 MB (the watermark on 10,000 pages).
+- `Restore::size`, which the budget counts, was within 1 % of the allocator's count on every step over 10 KB, and
+  within 0.6 KB on the smallest.
+- After every edit, Undo and Redo the document written out was the same, byte for byte, as before the edit and
+  after it, on every document here and on the corpus (testing.md).
+- Not changed: the pages are drawn from a copy of the document written out after each edit and each Undo
+  (`app_snapshot`, then hayro reads it): 1.6 to 2.9 ms on text-300, 15 to 47 ms on scan-100, 42 to 101 ms on
+  10,000 pages. On large documents that is now most of an Undo's cost (PB-37).
+
+In the app, on batch 41's made-up 10,000-page `big.pdf`: the release builds of `main` before batch 43 (1449943)
+and of the batch (cf9bec6), run in turn four times each on 29 October 2026 under Xvfb (1280 × 800, scale 1) with
+`target/dialog-shots/perf.sh`'s timing log, from the key to the frame built; in Organise, pages 3 to 5 selected,
+then moved to the end (Alt+Shift+End), Undo, Redo, Delete, Undo, Redo. The median (and range) of four:
+
+| 10,000 pages | Before | After |
+| --- | --- | --- |
+| Move pages 3 to 5 to the end | 330 ms (322 to 430) | 354 ms (338 to 364) |
+| Its Undo | 161 ms (156 to 167) | 105 ms (103 to 110) |
+| Its Redo | 295 ms (289 to 334) | 249 ms (241 to 258) |
+| Delete them | 386 ms (386 to 490) | 434 ms (414 to 449) |
+| Its Undo | 296 ms (290 to 426) | 241 ms (240 to 248) |
+| Its Redo | 304 ms (290 to 388) | 241 ms (239 to 259) |
+
+Undo and Redo are 46 to 63 ms quicker; the move and the deletion 24 and 48 ms slower, more than the core probe's 3
+to 5 ms for the clone and compare against the old copy. Not traced: the app also clears the Redo steps and makes the
+step after the pages are drawn, the clone held meanwhile (about 44 MB more in use while the pages are drawn again).
+On 300 pages (`p300.pdf`, the batch's build, two runs) each of them took 3 to 29 ms. PB-37 records both. REL-07's
+typing and search rows, run again on the batch's build, are as before and within their thresholds: typing 24.6 to
+26.3 ms median shown and none over 50 ms (built 1.4 to 2.1 ms median, 22.2 ms at worst); search as you type 249 to
+261 ms in total at the median, 265 ms at worst (processing 40 to 49 ms).
 
 ## Startup and responsiveness
 

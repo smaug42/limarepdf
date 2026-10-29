@@ -34,8 +34,11 @@ While you type:
   caret. The inspector shows the font and size too, the font the PDF names (**PDF font**) and whether it is kept
   (**Source font**, see [Change size, font and colour](#change-size-font-and-colour)). Esc in the size box (or
   another box there) drops what you typed in it and goes back to the line.
-- The floating toolbar has **B**, ***I*** and Copy for what is selected in the line. It sits above, below or
-  beside the line, clear of other text where there is room, never over the line; clicking it leaves the line open.
+- The floating toolbar has **B**, ***I***, Cut, Copy and Paste for what is selected in the line. It sits above,
+  below or beside the line, clear of other text where there is room, never over the line; clicking it leaves the
+  line open.
+- Right-click what is selected in the line for Cut, Copy and Paste, then Bold and Italic: the selection stays as it
+  was. New text, a note and a text box being typed have it too, with Bold and Italic where the text takes them.
 - Going to another tab and back leaves the line open, ready to go on typing.
 
 A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
@@ -96,9 +99,10 @@ and vertical writing keep their look; a short notice says when part of the selec
 Words you select with the read tool can be changed as in a word processor, without opening their line first:
 
 - **Type** to replace them. Their line opens for editing with what you typed in their place, and you go on typing
-  there; press Enter, Esc or Tab, or click elsewhere, to keep it. **Ctrl+V** pastes over them the same way. Over
-  words on more than one line nothing is typed, and a note says "Type over words within one line. Paragraph editing
-  is planned." With no words selected and nothing being typed, Ctrl+V says where to click to paste.
+  there; press Enter, Esc or Tab, or click elsewhere, to keep it. **Ctrl+V**, or **Paste** (in **Edit** in the
+  band, the right-click menu or the floating toolbar), pastes over them the same way. Over words on more than one
+  line nothing is typed, and a note says "Type over words within one line. Paragraph editing is planned." With no
+  words selected and nothing being typed, Ctrl+V says where to click to paste.
 - **Delete** or **Backspace** removes them, across lines and pages, in one step that Undo takes back. As in Word,
   a space beside them goes too when two would be left together, or one at the start or end of a line. A line left
   empty is gone; the lines around it stay where they are, as lines aren't joined together.
@@ -242,7 +246,7 @@ text that isn't a size leaves the size as it was.
 
 Add text and Add image put one thing down and then give way to the read tool, with the new item selected so you
 can adjust it: new text of several lines is selected as one, so it moves together. To add several in a row, pin the tool (see [Keep tool active](gui.md#keep-tool-active)). Everything
-can be undone with Ctrl+Z, up to 20 steps back ([fewer on very large documents](gui.md#undo)).
+can be undone with Ctrl+Z, up to 100 steps back ([Undo](gui.md#undo)).
 
 ## How it works
 

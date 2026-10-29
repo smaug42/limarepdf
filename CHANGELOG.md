@@ -4,13 +4,17 @@
 
 ### Added
 
-- While a line is edited on the page, its floating toolbar has Bold, Italic, Cut and Copy for what is selected in
-  the line, as Ctrl+B, Ctrl+I, Ctrl+X and Ctrl+C do there. Clicking them leaves the line open, with the keyboard
-  back in it.
+- While a line is edited on the page, its floating toolbar has Bold, Italic, Cut, Copy and Paste for what is
+  selected in the line, as Ctrl+B, Ctrl+I, Ctrl+X, Ctrl+C and Ctrl+V do there. Clicking them leaves the line open,
+  with the keyboard back in it.
+- A right-click in text being typed on the page (a line being edited, new text, a note or a text box) opens a menu
+  for it, as in a word processor: Cut, Copy and Paste, then Bold and Italic where the text takes them. A
+  right-click on what is selected there keeps it selected for the menu. Before, a right-click let go of the
+  selection and opened nothing.
 - Typing over words selected with the read tool replaces them, as in a word processor: their line opens for
-  editing with what you typed in their place, and you go on typing there. Ctrl+V pastes over them the same way.
-  Over words on more than one line nothing is typed, and a note says "Type over words within one line. Paragraph
-  editing is planned."
+  editing with what you typed in their place, and you go on typing there. Ctrl+V pastes over them the same way, as
+  does Paste in the Edit band, the words' right-click menu and their floating toolbar. Over words on more than one
+  line nothing is typed, and a note says "Type over words within one line. Paragraph editing is planned."
 - Delete or Backspace removes the words selected with the read tool, across lines and pages, in one step that
   Undo takes back. As in Word, a space beside them goes too when two would be left together, or one at the start
   or end of a line. A line left empty is gone; lines aren't joined together.
@@ -169,6 +173,13 @@
   document drops its password unless it is set again, and what happens to form fields when files are merged.
   New screenshots show Fill and sign, the Comments view, a form being filled in and redaction marks, and every
   screenshot in the guide is sharper on high-resolution screens.
+- Undo goes back up to 100 steps, as Word and LibreOffice do by default. Before, it went back 20. Each step keeps
+  only what its change altered, so a note added to a long scan keeps a few kilobytes rather than a copy of the
+  whole document, and the 1 GB a document's steps may hold together is reached only by changes that each alter
+  much of a very large document (optimising a long scan). The latest change can always be undone.
+- Undo and Redo put back what the change altered, without reading the whole document again, so they are quicker
+  on large documents: on a 10,000-page document, Undo and Redo of moving or deleting pages take a sixth to a third
+  less time (about 0.1 to 0.26 s), while the move or the deletion itself takes about 25 to 50 ms longer.
 
 ### Fixed
 
@@ -205,6 +216,11 @@
 - A long document stopped the window for a while once it was read, and again after each change to its pages, for a
   time that grew with the square of its pages: about half a minute on 10,000 pages. Its page sizes are now read
   in one pass, and a 10,000-page document opens in about a tenth of a second.
+- A document opened with its password was no longer treated as protected after Undo or Redo, so signing it was no
+  longer refused, as it is for any encrypted document. It stays protected now.
+- A watermark or headers and footers just added, changed in its tool to cover fewer pages, still showed on the
+  pages it had left until they were drawn again for another reason. Those pages are drawn again at once, without
+  it.
 
 ## [0.11.0] - 2026-10-27
 

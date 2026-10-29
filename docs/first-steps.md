@@ -79,7 +79,7 @@ and Help.
 
 ## Undo, save and keep your work safe
 
-- **Undo** with Ctrl+Z, up to 20 steps back, and **redo** with Ctrl+Y.
+- **Undo** with Ctrl+Z, up to 100 steps back, and **redo** with Ctrl+Y.
 - **Unsaved** beside a tab's name means the document has unsaved changes. **Save** with Ctrl+S. **Save As**
   (Ctrl+Shift+S) writes a new file and leaves the original as it was, which is the safe choice for documents that
   matter.

@@ -2213,8 +2213,8 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 }
 
 /// The floating toolbar's buttons: the right-click menu's commands that are
-/// available now and have an icon, in groups. While a line is edited on the page, Bold,
-/// Italic, Cut and Copy for what is selected in it, as the keys do there (ENH-20).
+/// available now and have an icon, in groups. While a line is edited on the page, Bold and
+/// Italic, then Cut, Copy and Paste for what is selected in it, as the keys do there (ENH-20).
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
     const LINE_EDIT: &[&[Act]] = &[
         &[Act::Bold, Act::Italic],
