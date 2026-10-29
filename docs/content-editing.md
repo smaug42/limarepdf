@@ -20,9 +20,14 @@ While you type:
 - The line is drawn as it will be written, with an outline around it (the accent colour with a white or black line
   inside, so it shows on any page) and the old line hidden underneath in the colour around it. The status bar says
   **Editing one line**: what you type changes this line only. A line with words in other fonts, sizes or colours
-  (a bold word, a superscript) is edited whole, each word in its own style. Each keeps its own font when LimarePDF
-  can keep it; otherwise it is written in the installed font it came from (when LimarePDF can embed it), or in the
-  Helvetica, Times or Courier that replaces it, which switches as you type a character its font can't take.
+  (a bold word, a superscript) is edited whole, each word in its own style. Each keeps its own font, embedded in
+  the PDF or not, letter by letter: letters you leave as they are keep their exact spacing, and new letters are
+  written in the font when it holds them, drawn in its own letters as you type. A word with a letter the font
+  lacks is written in the installed font it came from (when LimarePDF can embed it), or in the Helvetica, Times or
+  Courier that replaces it, and switches as you type that letter; the rest of the line keeps its font. The
+  inspector says which letters the font lacks and which font their words use ("Not in this PDF's font: ö ß. Those
+  words use Helvetica."), or that the font can't take new text at all (a Type 3 font, one not in the PDF, vertical
+  writing), why when you point at it.
 - When what you type runs past the edge of the page, or on past the line's end into the text beside it, the
   outline turns the caution colour and a tag under it says **Past the page edge** or **Over other text**. It is
   only a warning: what you type is kept as it is.
@@ -282,12 +287,14 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   multi-line editing: typing over words selected on more than one line types nothing, and deleting words leaves
   each line where it was, an emptied one blank. Text boxes are estimated from font metrics, so they can be
   slightly off for unusual fonts.
-- Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font where it is changed: a word you
-  change (or change some of the letters of) is written in the installed family the font is from when LimarePDF
-  can embed it, else in Helvetica, Times or Courier (or their Liberation face, as new text is), and the inspector
-  says so. The words left as they were around it keep their font, except where the page's font shows letters on
-  both sides of a space together, or the line would read differently once parted: then they are written in the
-  similar font too, and a notice says so. Text written anew is limited to Latin, Greek
+- A changed line keeps its font only for letters the font verifiably holds: one that is cut down to the letters
+  the file uses (a subset) can't take others, and a Type 3 font, a font not held in the PDF (beyond plain English
+  letters in a standard one), vertical writing and fonts whose codes LimarePDF can't read take none. A word with
+  such a letter is written in the installed family the font is from when LimarePDF can embed it, else in
+  Helvetica, Times or Courier (or their Liberation face, as new text is), and the inspector says so; the words
+  left as they were keep their font. Letters a font draws joined (a ligature such as "fi") keep it only together
+  and unchanged. Where the changed line would read as other words (when it runs into the text after it, say), it
+  is written in the similar font instead, and a notice says so. Text written anew is limited to Latin, Greek
   and Cyrillic, and Chinese, Japanese and Korean in an installed font that has them: the app doesn't let others
   be typed, and a line that already has them (Chinese in a line that becomes Helvetica, say) can't be written
   anew; the change is refused with a message naming them. Right-to-left and shaped scripts (Hebrew, Arabic,
@@ -297,16 +304,18 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 - Installed fonts whose licence restricts embedding, or that have no Latin letters, aren't offered; a family's
   missing bold or italic isn't made up. The list is read once, when the app starts (about a second, on another
   thread): fonts installed while it runs show after a restart.
-- While a line that keeps its font is edited, its character and word spacing and horizontal scaling (`Tc`, `Tw`,
-  `Tz`) aren't drawn, and an embedded font is drawn from the installed or Liberation look-alike rather than its own
-  data, so the line can look slightly different until you finish. A part raised high above the line (a large
+- While a line that keeps its font is edited, its character and word spacing, horizontal scaling (`Tc`, `Tw`,
+  `Tz`) and the fine spacing between its letters aren't drawn, a font not held in the PDF is drawn in the installed
+  or Liberation look-alike, and the letters of a ligature in the Liberation look-alike, so the line can look
+  slightly different until you finish. A part raised high above the line (a large
   superscript) is drawn lower while you type, within the line, and is written where it was. Turned lines are
   edited in a box over the line, and invisible text in a plain box.
-- A part of a line written again (changed text in a font LimarePDF can't keep, or another font chosen) loses its
-  own character and word spacing and horizontal scaling; parts left as they were keep theirs.
+- A word written in another font (a letter its font lacks, or another font chosen) loses its own character and
+  word spacing and horizontal scaling, and words moved by cut and paste lose the fine spacing between their
+  letters; letters left as they were keep theirs.
 - There is no underline or strike-through for page text. Styling words doesn't rewrap: bold or larger words make
   their line longer and the rest of it moves along, and highlights, links and redaction marks over them stay where
-  they were. The space after a word you make larger can grow with it.
+  they were.
 - Editing text does not change its width: longer text can overlap its neighbours. The outline warns of it (**Over
   other text**) only for text beside the line's end, on its right; new text is checked against the page's edge
   only. The warning's tag sits under the outline's right end, and can be hidden by the floating toolbar when the

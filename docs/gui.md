@@ -12,7 +12,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 ## The window
 
 - **Tabs**, at the top: one per document, with a × inside it to close it. **Unsaved** beside the name means
-  unsaved changes, from the first key you type. Text you are typing on a page (new text, a line, a note or text
+  unsaved changes, from the first key you type. With many open they share the row and then scroll
+  ([Opening files](#opening-files)). Text you are typing on a page (new text, a line, a note or text
   box) stays open while you look at another tab; back on its tab, you go on typing where you were.
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
@@ -155,6 +156,13 @@ Files that no longer exist are left out. The list holds 10 files and is kept on 
 
 Each document gets a tab. The tab shows its name, with **Unsaved** beside it while it has unsaved changes,
 including text being typed, from the first key; the window's title is marked the same way.
+
+With many documents open, the tabs stay in one row and narrow to share it, long names shortened with "…" (a dot
+stands for **Unsaved** on a tab too narrow for the word); point at a tab to see its whole name. When even narrowed
+tabs don't fit, the row scrolls: turn the mouse wheel over the tabs, or click the arrows at the row's right end.
+The button after the arrows, **All open documents**, lists every open document, the one in front marked; choose one
+to bring it to the front. The tab in front is always scrolled into view: when you choose it, open a document,
+close one or make the window narrower.
 
 Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a
 comment or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet

@@ -102,7 +102,7 @@ pub fn winansi_bytes(s: &str) -> Vec<u8> {
 
 /// The letters of a Latin ligature character (U+FB00..=U+FB06); other characters as
 /// they are.
-fn unligature(c: char) -> String {
+pub(crate) fn unligature(c: char) -> String {
     match c {
         '\u{FB00}' => "ff",
         '\u{FB01}' => "fi",

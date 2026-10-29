@@ -372,7 +372,13 @@ impl Styled {
             color: s.color,
             rise: s.rise,
             from: None,
+            origins: Vec::new(),
         }]
+    }
+
+    /// The font the line's part `i` is shown as.
+    pub fn span_font(&self, i: usize) -> FontChoice {
+        self.spans.get(i).map_or(self.base.font, |(_, f)| *f)
     }
 
     /// The style of the first character a style command with `sel` selected looks at.
@@ -534,15 +540,18 @@ impl Styled {
 
     /// Characters `range` in parts of one style each. Characters in their part's own font
     /// that are still as they were read ([`Self::owned`]) are parts of their own, which
-    /// say where they were.
+    /// say where they were; in the others, each such character says where it was
+    /// ([`TextPart::origins`]), so that it keeps the code it was drawn with.
     fn parts_in(&self, range: std::ops::Range<usize>) -> Vec<TextPart> {
         let owned = self.owned();
         let mut out: Vec<(TextPart, usize)> = Vec::new();
-        let chars = self.text.chars().zip(&self.styles).zip(owned);
-        for ((c, s), at) in chars.skip(range.start).take(range.len()) {
-            let (font, from) = match self.kept(s) {
-                Some(i) => (PartFont::Span(i), at),
-                None => (PartFont::Choice(s.font), None),
+        let chars = (self.text.chars().zip(&self.styles))
+            .zip(owned)
+            .zip(&self.origins);
+        for (((c, s), at), &origin) in chars.skip(range.start).take(range.len()) {
+            let (font, from, origin) = match self.kept(s) {
+                Some(i) => (PartFont::Span(i), at, origin),
+                None => (PartFont::Choice(s.font), None, None),
             };
             let style = (font, s.size, s.color, s.rise);
             match out.last_mut() {
@@ -551,6 +560,7 @@ impl Styled {
                         && p.from.map(|f| f + *n) == from =>
                 {
                     p.text.push(c);
+                    p.origins.push(origin);
                     *n += 1;
                 }
                 _ => out.push((
@@ -561,9 +571,16 @@ impl Styled {
                         color: s.color,
                         rise: s.rise,
                         from,
+                        origins: vec![origin],
                     },
                     1,
                 )),
+            }
+        }
+        // A part with no character from the line as read says so with no origins.
+        for (p, _) in &mut out {
+            if p.origins.iter().all(Option::is_none) {
+                p.origins.clear();
             }
         }
         out.into_iter().map(|(p, _)| p).collect()

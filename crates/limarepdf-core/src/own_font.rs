@@ -20,12 +20,14 @@
 //! font aren't all drawn.
 
 use crate::base_encodings::{mac_code, Base};
-use crate::edit::show_items;
+use crate::edit::{drawn, show_items, Drawn};
 use crate::fonts::FontCtx;
-use crate::objects::{Parsed, TextData};
+use crate::objects::{Parsed, Span, TextData};
 use crate::own_encoding::{glyph_text, listed, MAX_PROGRAM};
+use crate::preview_font::{opentype, Glyph, Metrics, Outline, Seg};
 use crate::{Pdf, Result};
 use anyhow::anyhow;
+use lopdf::content::Operation;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
@@ -88,8 +90,11 @@ pub struct LineFont {
     /// program decides, so no code is written whose glyph it lacks.
     ascii: bool,
     /// The codes the line shows in this font, and those the page shows in it.
-    line: HashSet<u32>,
-    page: HashSet<u32>,
+    line: Arc<HashSet<u32>>,
+    page: Arc<HashSet<u32>>,
+    /// How each of the line's characters is drawn, for writing it again as it was
+    /// (`edit.rs`), the same for all the line's fonts; `None` when that isn't known.
+    drawn: Option<Arc<[Drawn]>>,
 }
 
 impl std::fmt::Debug for LineFont {
@@ -108,6 +113,12 @@ impl LineFont {
         self.font.as_ref().err().copied()
     }
 
+    /// Whether new text can be written in the font at all: its own program can take it, or
+    /// it is an unembedded font whose plain ASCII is written as it is.
+    pub fn takes_new_text(&self) -> bool {
+        self.font.is_ok() || self.ascii
+    }
+
     /// The code (its bytes) that writes `c` in this font, or why it can't be written. An
     /// unembedded font whose plain ASCII is reused writes ASCII as itself.
     pub fn code(&self, c: char) -> std::result::Result<Vec<u8>, CharRefusal> {
@@ -116,19 +127,88 @@ impl LineFont {
             Err(_) if self.ascii && (' '..='~').contains(&c) => return Ok(vec![c as u8]),
             Err(why) => return Err(CharRefusal::Font(*why)),
         };
-        let found = font.check(c)?;
-        let used = |codes: &HashSet<u32>| found.iter().find(|(k, _)| codes.contains(k));
-        let code = match used(&self.line).or_else(|| used(&self.page)) {
-            Some(&(k, _)) => k,
-            None if found.iter().all(|(_, g)| *g == found[0].1) => {
-                found.iter().map(|(k, _)| *k).min().expect("found")
-            }
-            None => return Err(CharRefusal::Ambiguous),
-        };
+        let code = self.pick(font, c)?;
         Ok(match font.two {
             true => vec![(code >> 8) as u8, code as u8],
             false => vec![code as u8],
         })
+    }
+
+    /// The code that writes `c` in `font`, this one's program: of those that pass every
+    /// check, the one the line uses, else the page, else the lowest when they draw one glyph.
+    fn pick(&self, font: &OwnFont, c: char) -> std::result::Result<u32, CharRefusal> {
+        let found = font.check(c)?;
+        let used = |codes: &HashSet<u32>| found.iter().find(|(k, _)| codes.contains(k));
+        match used(&self.line).or_else(|| used(&self.page)) {
+            Some(&(k, _)) => Ok(k),
+            None if found.iter().all(|(_, g)| *g == found[0].1) => {
+                Ok(found.iter().map(|(k, _)| *k).min().expect("found"))
+            }
+            None => Err(CharRefusal::Ambiguous),
+        }
+    }
+
+    /// A small OpenType font drawing what can be written in this font as its own program
+    /// draws it, for showing text typed in it (the app's typing fonts): the characters the
+    /// line shows with a code of their own, as it shows them, then the others the font has a
+    /// code for ([`LineFont::code`]), at most 4,096, each with its glyph's outline
+    /// and the PDF's width as its advance, so that the caret goes where the text will be
+    /// written. `None` when the program can't take new text. Drawing every glyph, it is for
+    /// another thread than the window's.
+    pub fn preview(&self) -> Option<Vec<u8>> {
+        let font = self.font.as_ref().ok()?;
+        // Each character with its codes and their widths.
+        type Codes<'a> = &'a [(u32, Option<f32>)];
+        let mut chars: Vec<(char, Codes)> =
+            (font.by_char.iter()).map(|(c, k)| (*c, &k[..])).collect();
+        chars.sort_unstable_by_key(|(c, _)| *c);
+        let mut chosen: Vec<(char, u32, Option<f32>)> = Vec::new();
+        let mut taken = HashSet::new();
+        for &(c, codes) in &chars {
+            if let Some(&(k, w)) = codes.iter().find(|(k, _)| self.line.contains(k)) {
+                chosen.push((c, k, w));
+                taken.insert(c);
+            }
+        }
+        for &(c, codes) in &chars {
+            if chosen.len() >= PREVIEW_MOST {
+                break;
+            }
+            if let (false, Ok(k)) = (taken.contains(&c), self.pick(font, c)) {
+                let w = (codes.iter().find(|(code, _)| *code == k)).and_then(|(_, w)| *w);
+                chosen.push((c, k, w));
+            }
+        }
+        let glyphs: Vec<Glyph> = (chosen.into_iter())
+            .map(|(c, k, w)| {
+                let mut outline = Outline::default();
+                let advance = font.program.trace(font.glyph(k), &mut outline);
+                let outline = rounded(outline);
+                let advance = w.or(advance).unwrap_or(0.0);
+                Glyph {
+                    c,
+                    advance,
+                    outline,
+                }
+            })
+            .collect();
+        Some(opentype("Limare Preview", &glyphs, font.metrics))
+    }
+
+    /// What tells this font's preview ([`LineFont::preview`]) from another's: the same for
+    /// one font on the lines that show the same codes in it. `None` when it has none.
+    pub fn preview_key(&self) -> Option<u64> {
+        let font = self.font.as_ref().ok()?;
+        let mut line: Vec<u32> = self.line.iter().copied().collect();
+        line.sort_unstable();
+        let mut h = DefaultHasher::new();
+        (font.key, line).hash(&mut h);
+        Some(h.finish())
+    }
+
+    /// How each of the line's characters is drawn, when that is known.
+    pub(crate) fn drawn(&self) -> Option<&[Drawn]> {
+        self.drawn.as_deref()
     }
 }
 
@@ -143,60 +223,111 @@ impl Pdf {
         Ok(self.fonts_of(page, &parsed, t))
     }
 
-    /// [`Pdf::line_fonts`] for line `t` of page `page`, parsed as `parsed`. The codes a
-    /// line uses are those of all its parts in the font.
+    /// [`Pdf::line_fonts`] for line `t` of page `page`, parsed as `parsed`.
     pub(crate) fn fonts_of(&self, page: ObjectId, parsed: &Parsed, t: &TextData) -> Vec<LineFont> {
+        let fonts = self.font_resources(page);
+        PageFonts::new(&self.doc, &fonts).of(parsed, t)
+    }
+
+    /// The fonts in page `page`'s resources, by name.
+    pub(crate) fn font_resources(&self, page: ObjectId) -> Dictionary {
         let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-        let fonts = self.resolved_dict(res.get(b"Font").ok());
-        let mut read: HashMap<&[u8], LineFont> = HashMap::new();
+        self.resolved_dict(res.get(b"Font").ok())
+    }
+}
+
+/// A page's fonts as [`Pdf::line_fonts`] reads them, each read once: kept while several of
+/// its lines are written.
+pub(crate) struct PageFonts<'a> {
+    doc: &'a Document,
+    /// The page's fonts by name ([`Pdf::font_resources`]).
+    fonts: &'a Dictionary,
+    /// Each font read so far, as the page is read and as it takes new text; `None` for one
+    /// the page doesn't have.
+    read: HashMap<Vec<u8>, Option<(FontCtx<'a>, LineFont)>>,
+}
+
+impl<'a> PageFonts<'a> {
+    pub(crate) fn new(doc: &'a Document, fonts: &'a Dictionary) -> Self {
+        Self {
+            doc,
+            fonts,
+            read: HashMap::new(),
+        }
+    }
+
+    /// The fonts of line `t` of the page, parsed as `parsed`: one for each of its parts, in
+    /// order. The codes a line uses in a font are those of all its parts in it.
+    pub(crate) fn of(&mut self, parsed: &Parsed, t: &TextData) -> Vec<LineFont> {
+        let (doc, fonts) = (self.doc, self.fonts);
         let mut out = Vec::new();
         for s in &t.spans {
-            let dict = (fonts.get(&s.font).ok())
-                .and_then(|o| self.doc.dereference(o).ok())
-                .and_then(|(_, o)| o.as_dict().ok());
-            let Some(dict) = dict else {
+            let read = self.read.entry(s.font.clone()).or_insert_with(|| {
+                let (_, dict) = doc.dereference(fonts.get(&s.font).ok()?).ok()?;
+                let dict = dict.as_dict().ok()?;
+                let ctx = FontCtx::new(doc, dict);
+                let mut page = HashSet::new();
+                for o in parsed.objs.iter().filter_map(|o| o.text.as_ref()) {
+                    for other in o.spans.iter().filter(|o| o.font == s.font) {
+                        codes(&ctx, &parsed.ops, o, other, &mut page);
+                    }
+                }
+                let font = OwnFont::read(doc, dict).map(Arc::new);
+                let unembedded = matches!(font, Err(FontRefusal::NotEmbedded));
+                let font = LineFont {
+                    font,
+                    ascii: unembedded && ctx.reusable(),
+                    line: Arc::default(),
+                    page: Arc::new(page),
+                    drawn: None,
+                };
+                Some((ctx, font))
+            });
+            let Some((ctx, font)) = read else {
                 out.push(LineFont {
                     font: Err(FontRefusal::Unreadable),
                     ascii: false,
-                    line: HashSet::new(),
-                    page: HashSet::new(),
+                    line: Arc::default(),
+                    page: Arc::default(),
+                    drawn: None,
                 });
                 continue;
             };
-            let ctx = FontCtx::new(&self.doc, dict);
-            let codes = |t: &TextData, s: &crate::objects::Span, into: &mut HashSet<u32>| {
-                for run in &t.runs[s.runs.0..s.runs.1] {
-                    for it in show_items(&parsed.ops[run.op], run.show) {
-                        if let Object::String(bytes, _) = it {
-                            into.extend(ctx.codes(&bytes).into_iter().map(|(k, ..)| k));
-                        }
-                    }
-                }
-            };
-            let font = read.entry(s.font.as_slice()).or_insert_with(|| {
-                let (mut line, mut page) = (HashSet::new(), HashSet::new());
-                for other in t.spans.iter().filter(|o| o.font == s.font) {
-                    codes(t, other, &mut line);
-                }
-                for o in parsed.objs.iter().filter_map(|o| o.text.as_ref()) {
-                    for other in o.spans.iter().filter(|o| o.font == s.font) {
-                        codes(o, other, &mut page);
-                    }
-                }
-                let font = OwnFont::read(&self.doc, dict).map(Arc::new);
-                let unembedded = matches!(font, Err(FontRefusal::NotEmbedded));
-                LineFont {
-                    font,
-                    ascii: unembedded && ctx.reusable(),
-                    line,
-                    page,
-                }
+            let mut line = HashSet::new();
+            for other in t.spans.iter().filter(|o| o.font == s.font) {
+                codes(ctx, &parsed.ops, t, other, &mut line);
+            }
+            out.push(LineFont {
+                line: Arc::new(line),
+                ..font.clone()
             });
-            out.push(font.clone());
+        }
+        let ctxs: Vec<Option<&FontCtx>> = (t.spans.iter())
+            .map(|s| Some(&self.read.get(&s.font)?.as_ref()?.0))
+            .collect();
+        let drawn: Option<Arc<[Drawn]>> = drawn(&parsed.ops, t, &ctxs).map(Into::into);
+        for f in &mut out {
+            f.drawn = drawn.clone();
         }
         out
     }
 }
+
+/// The codes part `s` of line `t` shows in its font, read as `ctx` reads them, put in
+/// `into`; `ops` are the page's operators.
+fn codes(ctx: &FontCtx, ops: &[Operation], t: &TextData, s: &Span, into: &mut HashSet<u32>) {
+    for run in &t.runs[s.runs.0..s.runs.1] {
+        for it in show_items(&ops[run.op], run.show) {
+            if let Object::String(bytes, _) = it {
+                into.extend(ctx.codes(&bytes).into_iter().map(|(k, ..)| k));
+            }
+        }
+    }
+}
+
+/// Most characters a preview font holds ([`LineFont::preview`]): enough for a language's
+/// letters and more, not all of a Chinese, Japanese or Korean font's.
+const PREVIEW_MOST: usize = 4096;
 
 /// Counts the segments of an outline.
 #[derive(Default)]
@@ -296,27 +427,28 @@ impl Program {
     /// Whether glyph `gid` draws something, and its advance width in 1/1000 em.
     fn draw(&self, gid: GlyphId) -> (bool, Option<f32>) {
         let mut pen = Segments::default();
-        let advance = match self {
+        let advance = self.trace(gid, &mut pen);
+        (pen.0 > 0, advance)
+    }
+
+    /// Glyph `gid` drawn with `pen` at 1000 units to the em; its advance width.
+    fn trace(&self, gid: GlyphId, pen: &mut impl OutlinePen) -> Option<f32> {
+        match self {
             Self::Sfnt(_) => {
-                let Some(font) = self.font() else {
-                    return (false, None);
-                };
+                let font = self.font()?;
                 if let Some(o) = font.outline_glyphs().get(gid) {
                     let at = DrawSettings::unhinted(Size::new(1000.0), LocationRef::default());
-                    let _ = o.draw(at, &mut pen);
+                    let _ = o.draw(at, &mut *pen);
                 }
                 let metrics = font.glyph_metrics(Size::new(1000.0), LocationRef::default());
                 metrics.advance_width(gid)
             }
             Self::Cff(_) => self.cff_font().and_then(|c| {
                 let sub = c.subfont(c.subfont_index(gid)?, &[]).ok()?;
-                c.draw(&sub, gid, &[], Some(1000.0), &mut pen)
-                    .ok()
-                    .flatten()
+                c.draw(&sub, gid, &[], Some(1000.0), pen).ok().flatten()
             }),
-            Self::Type1(t) => t.draw(gid, Some(1000.0), &mut pen).ok().flatten(),
-        };
-        (pen.0 > 0, advance)
+            Self::Type1(t) => t.draw(gid, Some(1000.0), pen).ok().flatten(),
+        }
     }
 
     /// A CFF program's glyph names (not a CID-keyed one's), by glyph, in its charset's order.
@@ -514,6 +646,44 @@ fn number(doc: &Document, d: &Dictionary, key: &[u8]) -> Option<f32> {
     doc.dereference(d.get(key).ok()?).ok()?.1.as_float().ok()
 }
 
+/// A hash of a font's program `data` and its dictionaries `dicts` (as they print, the
+/// objects they refer to by number), which tells it from another font.
+fn key_of(data: &[u8], dicts: &[&Dictionary]) -> u64 {
+    let mut h = DefaultHasher::new();
+    data.hash(&mut h);
+    for d in dicts {
+        format!("{d:?}").hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Font descriptor `fd`'s ascent and descent, in 1/1000 em, where it gives them; else
+/// those of most Latin fonts.
+fn metrics_of(doc: &Document, fd: &Dictionary) -> Metrics {
+    let ascent = number(doc, fd, b"Ascent").filter(|a| a.is_finite() && *a > 0.0);
+    let descent = number(doc, fd, b"Descent").filter(|d| d.is_finite() && *d < 0.0);
+    Metrics {
+        ascent: ascent.unwrap_or(800.0),
+        descent: descent.unwrap_or(-200.0),
+    }
+}
+
+/// `o` with each coordinate rounded to a whole unit (1/1000 em), which the renderer draws
+/// alike and writes in fewer bytes.
+fn rounded(o: Outline) -> Outline {
+    let r = |x: f32| x.round();
+    Outline(
+        (o.0.into_iter())
+            .map(|s| match s {
+                Seg::Move(x, y) => Seg::Move(r(x), r(y)),
+                Seg::Line(x, y) => Seg::Line(r(x), r(y)),
+                Seg::Curve(a, b, c, d, e, f) => Seg::Curve(r(a), r(b), r(c), r(d), r(e), r(f)),
+                Seg::Close => Seg::Close,
+            })
+            .collect(),
+    )
+}
+
 /// The character a glyph name is drawn for in a TrueType font's Unicode cmap, as hayro reads
 /// it: by the Adobe Glyph List, else a `uniXXXX` or `uXXXX` name.
 fn name_char(name: &str) -> Option<char> {
@@ -532,6 +702,10 @@ struct OwnFont {
     program: Program,
     /// Codes are two bytes (Identity-H), not one.
     two: bool,
+    /// What tells the font from another: its program's bytes and its dictionaries, hashed.
+    key: u64,
+    /// The font descriptor's ascent and descent.
+    metrics: Metrics,
     /// A simple font's glyph for each code, as the renderer finds it.
     glyphs: Vec<GlyphId>,
     /// A CID font's glyphs by CID.
@@ -570,6 +744,11 @@ impl OwnFont {
         Self {
             program,
             two,
+            key: 0,
+            metrics: Metrics {
+                ascent: 800.0,
+                descent: -200.0,
+            },
             glyphs: Vec::new(),
             cids: CidMap::Identity,
             by_char: HashMap::new(),
@@ -593,6 +772,7 @@ impl OwnFont {
         let keys: [&[u8]; 3] = [b"FontFile2", b"FontFile3", b"FontFile"];
         let (key, stream) = program_stream(doc, fd, &keys).ok_or(NotEmbedded)?;
         let data = (stream.get_plain_content_with_limit(MAX_PROGRAM)).map_err(|_| Unreadable)?;
+        let (key_hash, metrics) = (key_of(&data, &[dict]), metrics_of(doc, fd));
         // The renderer reads a TrueType font's program from `/FontFile2` and a Type 1 font's
         // from `/FontFile3` (CFF) or `/FontFile`; OpenType in `/FontFile3`, which it draws
         // in a standard face, is read as the other readers read it.
@@ -606,6 +786,7 @@ impl OwnFont {
             _ => None,
         };
         let mut font = Self::new(program.ok_or(Unreadable)?, false);
+        (font.key, font.metrics) = (key_hash, metrics);
 
         let (base, differences) =
             match doc.dereference(dict.get(b"Encoding").unwrap_or(&Object::Null)) {
@@ -688,7 +869,9 @@ impl OwnFont {
         let keys: [&[u8]; 3] = [b"FontFile2", b"FontFile3", b"FontFile"];
         let (_, stream) = program_stream(doc, fd, &keys).ok_or(NotEmbedded)?;
         let data = (stream.get_plain_content_with_limit(MAX_PROGRAM)).map_err(|_| Unreadable)?;
+        let (key, metrics) = (key_of(&data, &[dict, desc]), metrics_of(doc, fd));
         let mut font = Self::new(Program::any(data).ok_or(Unreadable)?, true);
+        (font.key, font.metrics) = (key, metrics);
         font.cids = CidMap::of(doc, desc);
         for code in 0..=0xFFFFu32 {
             let raw = [(code >> 8) as u8, code as u8];
@@ -1272,5 +1455,90 @@ mod tests {
         // Unlike LimarePDF's reading of names, no suffix is left out.
         assert_eq!(name_char("a.sc"), None);
         assert_eq!(name_char("unixyz"), None);
+    }
+
+    /// The box around everything a pen draws.
+    #[derive(Default)]
+    struct Bounds(Option<[f32; 4]>);
+
+    impl Bounds {
+        fn add(&mut self, x: f32, y: f32) {
+            let b = self.0.get_or_insert([x, y, x, y]);
+            *b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+        }
+    }
+
+    impl OutlinePen for Bounds {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.add(x, y);
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.add(x, y);
+        }
+        fn quad_to(&mut self, a: f32, b: f32, x: f32, y: f32) {
+            self.add(a, b);
+            self.add(x, y);
+        }
+        fn curve_to(&mut self, a: f32, b: f32, c: f32, d: f32, x: f32, y: f32) {
+            self.add(a, b);
+            self.add(c, d);
+            self.add(x, y);
+        }
+        fn close(&mut self) {}
+    }
+
+    /// A line's preview font holds the characters the font can write, each drawn as the
+    /// program draws its glyph, at the PDF's width (here 1% more than the program's, which
+    /// the checks allow), and nothing the font has no code for.
+    #[test]
+    fn a_preview_font_draws_the_program_s_glyphs_at_the_pdf_s_widths() {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 300.0, 200.0).unwrap();
+        let program = ("FontFile2", Dictionary::new(), sans());
+        let encoding = Some("WinAnsiEncoding".into());
+        let mut font = simple(&mut p, "TrueType", program, 32, encoding);
+        let pdf_width = |c: char| crate::text_width(&c.to_string(), 1000.0) * 1.01;
+        let widths: Vec<Object> = (32u8..=126).map(|b| pdf_width(b as char).into()).collect();
+        font.set("FirstChar", 32);
+        font.set("LastChar", 126);
+        font.set("Widths", widths);
+        let font = p.doc.add_object(font);
+        let content = b"BT /F1 10 Tf 10 100 Td (Walrus) Tj ET".to_vec();
+        let s = p.doc.add_object(Stream::new(Dictionary::new(), content));
+        let page = p.page_ids()[0];
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", s);
+        d.set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => font } },
+        );
+        let fonts = p.line_fonts(0, 0).unwrap();
+        let bytes = fonts[0].preview().unwrap();
+        let preview = FontRef::new(&bytes).unwrap();
+        let sans = sans();
+        let program = FontRef::new(&sans).unwrap();
+        let unscaled = preview.glyph_metrics(Size::unscaled(), LocationRef::default());
+        for c in ['W', 'a', 'z', '!', '7'] {
+            let gid = preview.charmap().map(c).unwrap_or_else(|| panic!("{c}"));
+            let want = Some(pdf_width(c).round());
+            assert_eq!(unscaled.advance_width(gid), want, "{c}");
+            let drawn = |f: &FontRef, gid, size| {
+                let mut b = Bounds::default();
+                let at = DrawSettings::unhinted(size, LocationRef::default());
+                let outline = f.outline_glyphs().get(gid).unwrap();
+                outline.draw(at, &mut b).unwrap();
+                b.0.unwrap()
+            };
+            let at = program.charmap().map(c).unwrap();
+            let own = drawn(&program, at, Size::new(1000.0));
+            let shown = drawn(&preview, gid, Size::unscaled());
+            for (a, b) in own.iter().zip(shown) {
+                assert!((a - b).abs() <= 1.5, "{c}: {own:?} vs {shown:?}");
+            }
+        }
+        assert_eq!(preview.charmap().map('Ω'), None);
+        // One font on lines showing the same codes has one preview.
+        let again = p.line_fonts(0, 0).unwrap();
+        assert_eq!(fonts[0].preview_key(), again[0].preview_key());
     }
 }

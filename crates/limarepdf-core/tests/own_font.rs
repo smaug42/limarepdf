@@ -4,11 +4,20 @@
 //! own names contradict. Fonts that can't take new text say why, and so does each character
 //! that can't be written. A Type 0 TrueType font with no ToUnicode map reads through its
 //! program's cmap (PB-26).
+//!
+//! An edited line written in that font (stage 2): changed words through those codes, the
+//! letters left as they were with their own codes and the spacing numbers between them, a
+//! word with a character the font can't write sent alone to another font, a line in one part
+//! rewritten in place as one `TJ`, and a line that wouldn't read back as its words written
+//! again in another font. Opt-in: `cargo test -p limarepdf-core --test own_font -- --ignored
+//! cross_check` has Poppler read and draw edited lines.
 
 use limarepdf_core::CharRefusal::{Ambiguous, Contradicted, Encoding, NoCode, NoGlyph, Width};
 use limarepdf_core::{
-    bundled_face, CharRefusal, FontChoice, FontRefusal, LineFont, ObjectKind, Pdf,
+    bundled_face, CharRefusal, FontChoice, FontRefusal, LineFont, ObjectKind, PageObject, PartFont,
+    Pdf, TextEdit, TextPart,
 };
+use lopdf::content::{Content, Operation};
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
@@ -985,4 +994,1172 @@ fn a_tounicode_naming_identity_reads_each_code_as_its_unicode_value() {
     let font = p.doc.get_dictionary_mut(id).unwrap();
     font.set("ToUnicode", Object::Name(b"Identity-H".to_vec()));
     assert_eq!(text(&p), "Výbava ș");
+}
+
+// Stage 2: edited lines written in their own font.
+
+/// The page's text line reading `text`.
+fn line_of(p: &Pdf, text: &str) -> PageObject {
+    let objs = p.page_objects(0).unwrap().into_iter();
+    let mut found = objs.filter(|o| o.kind == ObjectKind::Text && o.text.as_deref() == Some(text));
+    found
+        .next()
+        .unwrap_or_else(|| panic!("no line {text:?} in {:?}", texts(p)))
+}
+
+/// `n` characters of a line as read, from its character `from` on, unchanged where they were.
+fn keep(from: usize, n: usize) -> Vec<Option<usize>> {
+    (from..from + n).map(Some).collect()
+}
+
+/// `n` characters typed or moved.
+fn none(n: usize) -> Vec<Option<usize>> {
+    vec![None; n]
+}
+
+/// Part `i` of line `o` holding `text`, in the part's own style, as the app sends an edit:
+/// each character the line's own where `origins` says it was (`None` for one typed or
+/// moved).
+fn at(o: &PageObject, i: usize, text: &str, origins: Vec<Option<usize>>) -> TextPart {
+    assert_eq!(origins.len(), text.chars().count(), "{text:?}");
+    let s = &o.spans[i];
+    TextPart {
+        text: text.into(),
+        font: PartFont::Span(i),
+        size: s.font_size,
+        color: s.fill.unwrap_or([0.0; 3]),
+        rise: s.rise,
+        from: None,
+        origins,
+    }
+}
+
+/// Part `i` of line `o` changed to `new`: the characters it shares with the part's text at
+/// its start and end are the line's own there, and those between are typed, as core reads
+/// a change of words alone.
+fn typed(o: &PageObject, i: usize, new: &str) -> TextPart {
+    let line: Vec<char> = o.text.as_deref().unwrap().chars().collect();
+    let (a, b) = o.spans[i].chars;
+    let (old, text): (&[char], Vec<char>) = (&line[a..b], new.chars().collect());
+    let head = old.iter().zip(&text).take_while(|(x, y)| x == y).count();
+    let room = old.len().min(text.len()) - head;
+    let tail = (old.iter().rev().zip(text.iter().rev()))
+        .take_while(|(x, y)| x == y)
+        .count()
+        .min(room);
+    let typed = none(text.len() - head - tail);
+    let origins = [keep(a, head), typed, keep(b - tail, tail)];
+    at(o, i, new, origins.concat())
+}
+
+/// A change of a line's words alone.
+fn words(text: &str) -> TextEdit {
+    TextEdit {
+        text: text.into(),
+        font: None,
+        size: None,
+        color: None,
+        parts: Vec::new(),
+    }
+}
+
+/// Whether `part` of line `o` of page 1 is written all in the font of the line's part it
+/// names ([`PageObject::keeps_font`]).
+fn kept(p: &Pdf, o: &PageObject, part: &TextPart) -> bool {
+    o.keeps_font(part, &p.line_fonts(0, o.id).unwrap())
+}
+
+/// Whether a change of line `o`'s words alone to `text` keeps its font
+/// ([`TextEdit::keeps_font`]).
+fn words_kept(p: &Pdf, o: &PageObject, text: &str) -> bool {
+    words(text).keeps_font(o, &p.line_fonts(0, o.id).unwrap())
+}
+
+/// A piece of a part as [`PageObject::kept_pieces`] says it is written: its characters,
+/// whether it keeps the font, and the characters that send it to another.
+type Predicted = ((usize, usize), bool, Vec<char>);
+
+/// How `part` of line `o` of page 1 is written ([`PageObject::kept_pieces`]).
+fn predicted(p: &Pdf, o: &PageObject, part: &TextPart) -> Vec<Predicted> {
+    let fonts = p.line_fonts(0, o.id).unwrap();
+    let pieces = o.kept_pieces(part, &fonts).into_iter();
+    pieces.map(|k| (k.chars, k.kept, k.missing)).collect()
+}
+
+/// Line `o` of page 1 written as `parts`: the ids [`Pdf::edit_texts`] says were written in
+/// another font after all.
+fn write(p: &mut Pdf, o: &PageObject, parts: Vec<TextPart>) -> Vec<usize> {
+    p.edit_texts(0, &[(o.id, TextEdit::in_parts(parts))])
+        .unwrap()
+}
+
+/// The page's operators, as parsed.
+fn ops(p: &Pdf) -> Vec<Operation> {
+    let page = p.page_ids()[0];
+    Content::decode(&p.doc.get_page_content(page))
+        .unwrap()
+        .operations
+}
+
+/// An operator as its name and operands, to compare.
+fn op_of(o: &Operation) -> (String, Vec<Object>) {
+    (o.operator.clone(), o.operands.clone())
+}
+
+/// The page's operators, to compare ([`op_of`]).
+fn op_list(p: &Pdf) -> Vec<(String, Vec<Object>)> {
+    ops(p).iter().map(op_of).collect()
+}
+
+/// The operators' names.
+fn names(ops: &[Operation]) -> Vec<&str> {
+    ops.iter().map(|o| o.operator.as_str()).collect()
+}
+
+/// What a show draws, as a `TJ` array holds it ([`shown`]).
+#[derive(Clone, Debug, PartialEq)]
+enum Item {
+    /// Codes: the bytes of the strings next to each other, together.
+    Codes(Vec<u8>),
+    /// A spacing number, to hundredths.
+    Move(f32),
+}
+
+/// Codes `b` as a show draws them ([`Item::Codes`]).
+fn codes(b: &[u8]) -> Item {
+    Item::Codes(b.to_vec())
+}
+
+/// What show `o` (`Tj`, `TJ`, `'` or `"`) draws.
+fn shown(o: &Operation) -> Vec<Item> {
+    let items = match o.operator.as_str() {
+        "TJ" => o.operands[0].as_array().unwrap().clone(),
+        "Tj" | "'" => o.operands.clone(),
+        "\"" => o.operands[2..].to_vec(),
+        other => panic!("{other} shows nothing"),
+    };
+    let mut out = Vec::new();
+    for it in items {
+        match (it, out.last_mut()) {
+            (Object::String(b, _), Some(Item::Codes(codes))) => codes.extend(b),
+            (Object::String(b, _), _) => out.push(Item::Codes(b)),
+            (n, _) => out.push(Item::Move((n.as_float().unwrap() * 100.0).round() / 100.0)),
+        }
+    }
+    out
+}
+
+/// The page's shows in order, each with the name of the font it is drawn in.
+fn shows(p: &Pdf) -> Vec<(String, Vec<Item>)> {
+    let mut font = String::new();
+    let mut out = Vec::new();
+    for o in ops(p) {
+        match o.operator.as_str() {
+            "Tf" => font = String::from_utf8_lossy(o.operands[0].as_name().unwrap()).into(),
+            "Tj" | "TJ" | "'" | "\"" => out.push((font.clone(), shown(&o))),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The object `o` is, or refers to.
+fn resolve<'a>(p: &'a Pdf, o: &'a Object) -> &'a Object {
+    p.doc.dereference(o).unwrap().1
+}
+
+/// The names of the page's fonts, each with the object it names.
+fn font_resources(p: &Pdf) -> Vec<(String, Object)> {
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    let res = resolve(p, page.get(b"Resources").unwrap());
+    let fonts = resolve(p, res.as_dict().unwrap().get(b"Font").unwrap());
+    let fonts = fonts.as_dict().unwrap();
+    let mut out: Vec<(String, Object)> = (fonts.iter())
+        .map(|(k, v)| (String::from_utf8_lossy(k).into(), v.clone()))
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// The names of the page's fonts.
+fn font_names(p: &Pdf) -> Vec<String> {
+    font_resources(p).into_iter().map(|(n, _)| n).collect()
+}
+
+/// The embedded programs of the page's fonts named `names`, as their streams decode, each
+/// with its font's name.
+fn programs_of(p: &Pdf, names: &[String]) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    for (name, font) in font_resources(p) {
+        if !names.contains(&name) {
+            continue;
+        }
+        let font = resolve(p, &font);
+        let font = match font.as_dict().unwrap().get(b"DescendantFonts") {
+            Ok(d) => resolve(p, &resolve(p, d).as_array().unwrap()[0]),
+            Err(_) => font,
+        };
+        let Ok(d) = font.as_dict().unwrap().get(b"FontDescriptor") else {
+            continue;
+        };
+        let d = resolve(p, d).as_dict().unwrap();
+        for key in ["FontFile", "FontFile2", "FontFile3"] {
+            if let Ok(f) = d.get(key.as_bytes()) {
+                let s = resolve(p, f).as_stream().unwrap();
+                out.push((name.clone(), s.get_plain_content().unwrap()));
+            }
+        }
+    }
+    out
+}
+
+/// The embedded programs of all the page's fonts ([`programs_of`]).
+fn programs(p: &Pdf) -> Vec<(String, Vec<u8>)> {
+    programs_of(p, &font_names(p))
+}
+
+/// The page's words, as read.
+fn word_list(p: &Pdf) -> Vec<String> {
+    let words = p.page_words(0).unwrap().into_iter();
+    words.map(|w| w.text).collect()
+}
+
+/// Each part of line `o`: its font and its characters.
+fn styles(o: &PageObject) -> Vec<(String, (usize, usize))> {
+    (o.spans.iter())
+        .map(|s| (s.font_name.clone(), s.chars))
+        .collect()
+}
+
+/// Where `part` (part 0 of line `o`) first changes the line: its first character that isn't
+/// the line's own there.
+fn change_in(o: &PageObject, part: &TextPart) -> usize {
+    let line: Vec<char> = o.text.as_deref().unwrap().chars().collect();
+    let text: Vec<char> = part.text.chars().collect();
+    let own = |j: usize| part.origins[j] == Some(j) && line.get(j) == Some(&text[j]);
+    (0..text.len()).find(|&j| !own(j)).unwrap_or(text.len())
+}
+
+/// Where each of `part`'s characters was in the line ([`TextPart::origins`]).
+fn origins_of(part: &TextPart) -> Vec<Option<usize>> {
+    part.origins.clone()
+}
+
+/// Whether positions `a` and `b` are the same within 0.05 pt.
+fn close(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.05)
+}
+
+/// Part of a show as a test writes it: characters, or a spacing number.
+#[derive(Clone, Copy, Debug)]
+enum Piece {
+    C(&'static str),
+    N(f32),
+}
+use Piece::{C, N};
+
+/// What the pieces of a show read as: their characters, a spacing number under -150 a space.
+fn read(pieces: &[Piece]) -> String {
+    let each = pieces.iter().map(|p| match *p {
+        C(s) => s,
+        N(x) if x < -150.0 => " ",
+        N(_) => "",
+    });
+    each.collect()
+}
+
+/// A kind of font the writer is checked in: the font, and the code it shows each character
+/// with.
+struct Kind {
+    name: &'static str,
+    font: Box<dyn AddFont>,
+    code: Box<dyn Fn(char) -> Vec<u8>>,
+}
+
+impl Kind {
+    fn new(
+        name: &'static str,
+        font: impl AddFont + 'static,
+        code: impl Fn(char) -> Vec<u8> + 'static,
+    ) -> Self {
+        let (font, code) = (Box::new(font), Box::new(code));
+        Self { name, font, code }
+    }
+
+    /// The codes of `text`.
+    fn codes(&self, text: &str) -> Vec<u8> {
+        text.chars().flat_map(|c| (self.code)(c)).collect()
+    }
+
+    /// A show of `pieces`, as a content stream holds it.
+    fn tj(&self, pieces: &[Piece]) -> String {
+        let each: Vec<String> = (pieces.iter())
+            .map(|p| match *p {
+                C(s) => format!("<{}>", hex(&self.codes(s))),
+                N(x) => format!("{x}"),
+            })
+            .collect();
+        format!("[{}] TJ", each.join(" "))
+    }
+
+    /// What a show of `pieces` draws ([`shown`]).
+    fn items(&self, pieces: &[Piece]) -> Vec<Item> {
+        let mut out = Vec::new();
+        for p in pieces {
+            match (*p, out.last_mut()) {
+                (C(s), Some(Item::Codes(codes))) => codes.extend(self.codes(s)),
+                (C(s), _) => out.push(Item::Codes(self.codes(s))),
+                (N(x), _) => out.push(Item::Move(x)),
+            }
+        }
+        out
+    }
+}
+
+/// Bytes as a hex string's digits.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+/// A character as its byte, for fonts whose codes are ASCII's.
+fn ascii(c: char) -> Vec<u8> {
+    vec![c as u8]
+}
+
+/// The characters the Type 0 fixtures of [`latin`] have.
+const LATIN: &str = "The quickfox";
+
+/// Source Serif 4 whole, an OpenType program with CFF outlines, in a simple font with
+/// WinAnsi, codes 32 to 255, their widths from the program.
+fn serif_opentype() -> Simple {
+    let otf = serif();
+    Simple {
+        subtype: "Type1",
+        base: "ABCDEF+SourceSerif4-Regular",
+        program: Some((
+            "FontFile3",
+            dictionary! { "Subtype" => "OpenType" },
+            otf.clone(),
+        )),
+        flags: 32,
+        encoding: Some("WinAnsiEncoding".into()),
+        first: 32,
+        widths: widths_by_cmap(&otf, "WinAnsiEncoding", 32, 255),
+        to_unicode: Vec::new(),
+    }
+}
+
+fn simple_truetype() -> Kind {
+    Kind::new("simple TrueType", sans_simple(), ascii)
+}
+
+fn simple_cff() -> Kind {
+    Kind::new("simple CFF", serif_cff(&[]), ascii)
+}
+
+fn simple_opentype() -> Kind {
+    Kind::new("OpenType CFF in a simple font", serif_opentype(), ascii)
+}
+
+fn type0_truetype(mapped: bool) -> Kind {
+    let name = match mapped {
+        true => "Type 0 TrueType",
+        false => "Type 0 TrueType without ToUnicode",
+    };
+    Kind::new(name, sans_type0(LATIN, mapped), |c| two(glyph(sans(), c)))
+}
+
+fn type0_cff(bare: bool) -> Kind {
+    let name = match bare {
+        true => "Type 0 CFF",
+        false => "Type 0 OpenType CFF",
+    };
+    let (font, cids) = serif_cid(LATIN, bare);
+    Kind::new(name, font, move |c| two(cid_of(&cids, c)))
+}
+
+fn own_encoding_cff() -> Kind {
+    Kind::new("CFF by its own encoding", limare_cff(), ascii)
+}
+
+fn own_encoding_type1() -> Kind {
+    Kind::new("Type 1 by its own encoding", limare_type1(), ascii)
+}
+
+fn symbolic_truetype() -> Kind {
+    Kind::new("symbolic TrueType", limare_symbolic(), ascii)
+}
+
+/// A line as one `TJ` shows it, another line of the page, and edits of the line as the app
+/// sends them, each with the show it should be written as.
+struct Script {
+    line: Vec<Piece>,
+    other: &'static str,
+    edits: Vec<Change>,
+}
+
+/// An edit of a [`Script`]'s line.
+struct Change {
+    what: &'static str,
+    text: &'static str,
+    origins: Vec<Option<usize>>,
+    shown: Vec<Piece>,
+}
+
+/// "The quck fox", kerned between letters: a letter put in (the number between the letters
+/// it goes between dropped), a word deleted, and a word moved (its own kerning lost).
+fn latin() -> Script {
+    let change = |what, text, origins: &[Vec<Option<usize>>], shown: &[Piece]| Change {
+        what,
+        text,
+        origins: origins.concat(),
+        shown: shown.to_vec(),
+    };
+    // "Th" and "ox" are kerned, and every edit keeps them.
+    let kerned = |middle: &[Piece], after: &[Piece]| {
+        [&[C("Th"), N(25.0)], middle, &[N(12.0), C("ox")], after].concat()
+    };
+    Script {
+        line: kerned(&[C("e qu"), N(10.0), C("ck f")], &[]),
+        other: "fox",
+        edits: vec![
+            change(
+                "a letter put in",
+                "The quick fox",
+                &[keep(0, 6), none(1), keep(6, 6)],
+                &kerned(&[C("e quick f")], &[]),
+            ),
+            change(
+                "a word deleted",
+                "The fox",
+                &[keep(0, 4), keep(9, 3)],
+                &kerned(&[C("e f")], &[]),
+            ),
+            change(
+                "a word moved",
+                "The fox quck",
+                &[keep(0, 4), keep(9, 3), none(5)],
+                &kerned(&[C("e f")], &[C(" quck")]),
+            ),
+        ],
+    }
+}
+
+/// "ABC CAB BA" in a Limare test font, which has only A to C of the letters and no space:
+/// its spaces are moves. A letter put in, a word deleted, and a word moved (the space
+/// before it, which has no code, written as the line's own word gap).
+fn limare_line() -> Script {
+    let change = |what, text, origins: &[Vec<Option<usize>>], shown: &[Piece]| Change {
+        what,
+        text,
+        origins: origins.concat(),
+        shown: shown.to_vec(),
+    };
+    let gap = N(-300.0);
+    Script {
+        line: vec![C("A"), N(40.0), C("BC"), gap, C("CAB"), gap, C("BA")],
+        other: "CAB",
+        edits: vec![
+            change(
+                "a letter put in",
+                "ABBC CAB BA",
+                &[keep(0, 2), none(1), keep(2, 8)],
+                &[C("A"), N(40.0), C("BBC"), gap, C("CAB"), gap, C("BA")],
+            ),
+            change(
+                "a word deleted",
+                "ABC BA",
+                &[keep(0, 4), keep(8, 2)],
+                &[C("A"), N(40.0), C("BC"), gap, C("BA")],
+            ),
+            change(
+                "a word moved",
+                "ABC BA CAB",
+                &[keep(0, 4), keep(8, 2), none(4)],
+                &[C("A"), N(40.0), C("BC"), gap, C("BA"), gap, C("CAB")],
+            ),
+        ],
+    }
+}
+
+/// A 300 × 200 page with the script's line in the kind's font at (10, 100), and its other
+/// line in that font below.
+fn script_page(kind: &Kind, s: &Script) -> Pdf {
+    let other = hex(&kind.codes(s.other));
+    let content = format!(
+        "BT /F1 20 Tf 10 100 Td {} ET\nBT /F1 20 Tf 10 50 Td <{other}> Tj ET\n",
+        kind.tj(&s.line)
+    );
+    page(&[("F1", kind.font.as_ref())], &content)
+}
+
+/// Each of the script's edits in the kind's font, as the app sends it: written in place as
+/// the one show it should be, in the line's own font and program with nothing added, read as
+/// its words, the characters before the change where they were and the rest of the page as
+/// it was; the same as the change of words alone writes; then saved, opened again and edited
+/// again, still in that font and program.
+fn edits_keep_the_font(kind: &Kind, s: &Script) {
+    let was = read(&s.line);
+    for e in &s.edits {
+        let why = format!("{}, {}", kind.name, e.what);
+        let mut p = script_page(kind, s);
+        let o = line_of(&p, &was);
+        let other = line_of(&p, s.other);
+        let (before, fonts, progs) = (ops(&p), font_resources(&p), programs(&p));
+        assert_eq!(progs.len(), 1, "{why}");
+        let part = at(&o, 0, e.text, e.origins.clone());
+        let (n, k) = (e.text.chars().count(), change_in(&o, &part));
+        assert_eq!(predicted(&p, &o, &part), [((0, n), true, vec![])], "{why}");
+        assert!(kept(&p, &o, &part), "{why}");
+        assert_eq!(write(&mut p, &o, vec![part]), Vec::<usize>::new(), "{why}");
+
+        // In place: the page's operators as they were but the line's show, which is now
+        // the one wanted.
+        let after = ops(&p);
+        assert_eq!(after.len(), before.len(), "{why}");
+        let show = (before.iter()).position(|o| o.operator == "TJ").unwrap();
+        for (i, (a, b)) in before.iter().zip(&after).enumerate() {
+            if i != show {
+                assert_eq!(op_of(a), op_of(b), "{why}: operator {i}");
+            }
+        }
+        assert_eq!(after[show].operator, "TJ", "{why}");
+        assert_eq!(shown(&after[show]), kind.items(&e.shown), "{why}");
+        // The line's own font object and its program, nothing added.
+        assert_eq!(font_resources(&p), fonts, "{why}");
+        assert_eq!(programs(&p), progs, "{why}");
+
+        // Read as its words, in its font; the characters before the change where they were,
+        // and the other line too.
+        let now = line_of(&p, e.text);
+        let font = o.spans[0].font_name.clone();
+        assert_eq!(styles(&now), [(font.clone(), (0, n))], "{why}");
+        let mut want: Vec<&str> = e.text.split_whitespace().collect();
+        want.push(s.other);
+        assert_eq!(word_list(&p), want, "{why}");
+        assert!(
+            close(&now.stops[..k], &o.stops[..k]),
+            "{why}: {:?} then {:?}",
+            o.stops,
+            now.stops
+        );
+        let (b0, b1) = (o.baseline.unwrap(), now.baseline.unwrap());
+        assert!(close(&[b0.0, b0.1], &[b1.0, b1.1]), "{why}");
+        assert!(close(&line_of(&p, s.other).bbox, &other.bbox), "{why}");
+
+        // A change of words alone whose characters are kept at its ends is written alike.
+        if origins_of(&typed(&o, 0, e.text)) == e.origins {
+            let mut q = script_page(kind, s);
+            assert!(words_kept(&q, &o, e.text), "{why}");
+            q.edit_text(0, o.id, &words(e.text)).unwrap();
+            assert_eq!(op_list(&q), op_list(&p), "{why}");
+        }
+
+        // Saved, opened again and edited again: still the line's own font and program.
+        let mut q = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+        assert_eq!(programs(&q), progs, "{why}: saved");
+        let again = line_of(&q, e.text);
+        assert_eq!(styles(&again), [(font.clone(), (0, n))], "{why}");
+        let shorter: String = e.text.chars().take(n - 1).collect();
+        q.edit_text(0, again.id, &words(&shorter)).unwrap();
+        let now = line_of(&q, &shorter);
+        assert_eq!(styles(&now), [(font, (0, n - 1))], "{why}: edited again");
+        assert_eq!(font_names(&q), ["F1"], "{why}: edited again");
+        assert_eq!(programs(&q), progs, "{why}: edited again");
+        let mut want: Vec<&str> = shorter.split_whitespace().collect();
+        want.push(s.other);
+        assert_eq!(word_list(&q), want, "{why}: edited again");
+    }
+}
+
+#[test]
+fn a_truetype_subset_keeps_its_font_and_kerning_through_typos_deleted_and_moved_words() {
+    edits_keep_the_font(&simple_truetype(), &latin());
+}
+
+#[test]
+fn a_cff_font_keeps_its_font_and_kerning_through_typos_deleted_and_moved_words() {
+    edits_keep_the_font(&simple_cff(), &latin());
+}
+
+#[test]
+fn an_opentype_cff_simple_font_keeps_its_font_and_kerning_through_edits() {
+    edits_keep_the_font(&simple_opentype(), &latin());
+}
+
+#[test]
+fn an_identity_truetype_font_keeps_its_font_and_kerning_through_edits() {
+    edits_keep_the_font(&type0_truetype(true), &latin());
+}
+
+#[test]
+fn an_identity_truetype_font_without_tounicode_keeps_its_font_through_edits() {
+    edits_keep_the_font(&type0_truetype(false), &latin());
+}
+
+#[test]
+fn an_identity_cff_subset_keeps_its_font_and_kerning_through_edits() {
+    edits_keep_the_font(&type0_cff(true), &latin());
+}
+
+#[test]
+fn an_identity_opentype_cff_subset_keeps_its_font_and_kerning_through_edits() {
+    edits_keep_the_font(&type0_cff(false), &latin());
+}
+
+#[test]
+fn a_cff_font_by_its_own_encoding_keeps_its_font_through_edits() {
+    edits_keep_the_font(&own_encoding_cff(), &limare_line());
+}
+
+#[test]
+fn a_type1_font_by_its_own_encoding_keeps_its_font_through_edits() {
+    edits_keep_the_font(&own_encoding_type1(), &limare_line());
+}
+
+#[test]
+fn a_symbolic_truetype_font_keeps_its_font_through_edits() {
+    edits_keep_the_font(&symbolic_truetype(), &limare_line());
+}
+
+/// Whether each of line `o`'s characters but spaces is in font `own`.
+fn letters_in(o: &PageObject, own: &str) -> Vec<(char, bool)> {
+    let text: Vec<char> = o.text.as_deref().unwrap().chars().collect();
+    let font = |j: usize| {
+        let s = o.spans.iter().find(|s| s.chars.0 <= j && j < s.chars.1);
+        s.unwrap().font_name == own
+    };
+    (0..text.len())
+        .filter(|&j| !text[j].is_whitespace())
+        .map(|j| (text[j], font(j)))
+        .collect()
+}
+
+/// Whether each of `text`'s characters but spaces keeps the font, as `pieces` say.
+fn letters_kept(text: &str, pieces: &[Predicted]) -> Vec<(char, bool)> {
+    let text: Vec<char> = text.chars().collect();
+    let kept = |j: usize| pieces.iter().find(|p| p.0 .0 <= j && j < p.0 .1).unwrap().1;
+    (0..text.len())
+        .filter(|&j| !text[j].is_whitespace())
+        .map(|j| (text[j], kept(j)))
+        .collect()
+}
+
+/// Line `o` of page 1 edited as `part` (its part 0), which `want` says is written in pieces:
+/// said so beforehand ([`PageObject::kept_pieces`]) and written so, each piece in the line's
+/// font or another, reading as the words; the line's font and program kept, and a font
+/// added only for the words that went to another; the characters before the change where
+/// they were. With `exact`, the parts of the line as read are the pieces (spaces the font
+/// has codes for); else only its letters are compared, as a space written as a move goes
+/// with the show before it, in whichever font.
+fn falls_back(p: &mut Pdf, o: &PageObject, part: TextPart, want: &[Predicted], exact: bool) {
+    let why = part.text.clone();
+    let own = o.spans[0].font_name.clone();
+    let (fonts, names) = (font_resources(p), font_names(p));
+    let progs = programs(p);
+    assert_eq!(predicted(p, o, &part), want, "{why}");
+    assert_eq!(kept(p, o, &part), want.iter().all(|w| w.1), "{why}");
+    let k = change_in(o, &part);
+    assert!(write(p, o, vec![part.clone()]).is_empty(), "{why}");
+    let now = line_of(p, &part.text);
+    let (got, said) = (letters_in(&now, &own), letters_kept(&why, want));
+    assert_eq!(got, said, "{why}: {:?}", styles(&now));
+    if exact {
+        let mut parts: Vec<((usize, usize), bool)> = Vec::new();
+        for (font, chars) in styles(&now) {
+            match parts.last_mut() {
+                Some((c, k)) if *k == (font == own) => c.1 = chars.1,
+                _ => parts.push((chars, font == own)),
+            }
+        }
+        let pieces: Vec<_> = want.iter().map(|w| (w.0, w.1)).collect();
+        assert_eq!(parts, pieces, "{why}: {:?}", styles(&now));
+    }
+    let after = font_resources(p);
+    assert!(fonts.iter().all(|f| after.contains(f)), "{why}: {after:?}");
+    let added = after.iter().filter(|f| !fonts.contains(f));
+    let elsewhere = want.iter().any(|w| !w.1);
+    assert_eq!(added.count(), usize::from(elsewhere), "{why}: {after:?}");
+    assert_eq!(programs_of(p, &names), progs, "{why}");
+    let want_words: Vec<&str> = part.text.split_whitespace().collect();
+    let read: Vec<String> = word_list(p).into_iter().take(want_words.len()).collect();
+    assert_eq!(read, want_words, "{why}");
+    let (was, is) = (&o.stops[..k], &now.stops[..k]);
+    assert!(close(is, was), "{why}: {was:?} then {is:?}");
+}
+
+/// A word holding a character the font's subset has no code for goes whole to another font
+/// (plan Q2), with the space between it and the next such word; the rest of the line keeps
+/// the font, its kerning too, as `kept_pieces` says beforehand.
+#[test]
+fn a_word_the_subset_can_t_write_goes_alone_to_another_font() {
+    for kind in [type0_cff(true), type0_cff(false), type0_truetype(true)] {
+        let s = latin();
+        let mut p = script_page(&kind, &s);
+        let o = line_of(&p, "The quck fox");
+        // b, r, w and n aren't in the subset; e and o are.
+        let part = typed(&o, 0, "The quick brown wren fox");
+        let want = [
+            ((0, 10), true, vec![]),
+            ((10, 20), false, vec!['b', 'r', 'w', 'n']),
+            ((20, 24), true, vec![]),
+        ];
+        falls_back(&mut p, &o, part, &want, true);
+        let in_f1: Vec<Vec<Item>> = (shows(&p).into_iter())
+            .filter(|(f, _)| f == "F1")
+            .map(|(_, items)| items)
+            .collect();
+        let other = kind.items(&[C("fox")]);
+        let kerned = [
+            other,
+            kind.items(&[C("Th"), N(25.0), C("e quick ")]),
+            kind.items(&[C(" f"), N(12.0), C("ox")]),
+        ];
+        assert_eq!(in_f1, kerned, "{}", kind.name);
+    }
+}
+
+/// A font that can't take new text (Type 3, a subset that isn't embedded) keeps the words
+/// left as they were, each letter with its own code; the changed words go to another font.
+#[test]
+fn a_font_that_can_t_take_new_text_keeps_the_words_left_as_they_were() {
+    let subset = unembedded("ABCDEF+Helvetica", Some("WinAnsiEncoding"));
+    let src = "BT /F1 20 Tf 10 100 Td (Hello there world) Tj ET\n";
+    let typo = vec![
+        ((0, 6), true, vec![]),
+        ((6, 11), false, vec!['i', 'r']),
+        ((11, 17), true, vec![]),
+    ];
+    let deleted = vec![((0, 11), true, vec![])];
+    let moved = vec![
+        ((0, 12), true, vec![]),
+        ((12, 17), false, vec!['t', 'h', 'e', 'r']),
+    ];
+    // The word moved: cut, and put at the end with a space before it.
+    let moved_origins = [keep(0, 6), keep(12, 5), none(6)].concat();
+    let cases = [
+        ("Hello their world", None, typo),
+        ("Hello world", None, deleted),
+        ("Hello world there", Some(moved_origins), moved),
+    ];
+    for (text, origins, want) in cases {
+        let mut p = page(&[("F1", &subset)], src);
+        let o = line_of(&p, "Hello there world");
+        let part = match origins {
+            Some(origins) => at(&o, 0, text, origins),
+            None => typed(&o, 0, text),
+        };
+        let all = want.len() == 1;
+        falls_back(&mut p, &o, part, &want, true);
+        // Written all in its own font, the line is changed in place.
+        if all {
+            let one = vec![codes(b"Hello world")];
+            assert_eq!(shows(&p), [("F1".into(), one)]);
+        }
+    }
+    // A Type 3 font's one glyph draws a; the b typed sends its word elsewhere.
+    let src = "BT /F1 20 Tf 10 100 Td [(aa) -300 (a)] TJ ET\n";
+    let mut p = page(&[("F1", &Type3)], src);
+    let o = line_of(&p, "aa a");
+    let want = [((0, 3), true, vec![]), ((3, 5), false, vec!['b'])];
+    falls_back(&mut p, &o, typed(&o, 0, "aa ab"), &want, true);
+    let aa = vec![codes(b"aa"), Item::Move(-300.0)];
+    assert_eq!(shows(&p)[0], ("F1".into(), aa));
+}
+
+/// A letter left as it was keeps the code it was drawn with even where a new one wouldn't be
+/// given it: here the PDF's width for e is 10% off the program's.
+#[test]
+fn letters_left_as_they_were_keep_codes_new_letters_would_not_be_given() {
+    let e = (b'e' - 32) as usize;
+    let mut font = sans_simple();
+    font.widths[e] = (font.widths[e] as f64 * 1.10).round() as i64;
+    let mut p = one(&font, HELLO);
+    let o = line_of(&p, "Hello");
+    let want = [((0, 6), true, vec![]), ((6, 11), false, vec!['e'])];
+    falls_back(&mut p, &o, typed(&o, 0, "Hello there"), &want, true);
+}
+
+/// A space the font has no code for is written as a move: the nearest gap of the line read
+/// as a space, else a quarter of an em. It reads back as a space.
+#[test]
+fn a_space_the_font_has_no_code_for_is_the_line_s_word_gap() {
+    let kind = own_encoding_cff();
+    let gap = N(-300.0);
+    let check = |line: &[Piece], text: &str, want: &[Piece]| {
+        let content = format!("BT /F1 20 Tf 10 100 Td {} ET\n", kind.tj(line));
+        let mut p = page(&[("F1", kind.font.as_ref())], &content);
+        let o = line_of(&p, &read(line));
+        let part = typed(&o, 0, text);
+        let n = part.text.chars().count();
+        assert_eq!(predicted(&p, &o, &part), [((0, n), true, vec![])]);
+        assert!(write(&mut p, &o, vec![part]).is_empty());
+        assert_eq!(shows(&p), [("F1".into(), kind.items(want))], "{text}");
+        assert_eq!(word_list(&p), text.split(' ').collect::<Vec<_>>());
+    };
+    // The line's own gap, and none to be had.
+    let want = [C("ABC"), gap, C("CAB"), gap, C("BA")];
+    check(&[C("ABC"), gap, C("CAB")], "ABC CAB BA", &want);
+    check(&[C("ABC")], "ABC CAB", &[C("ABC"), N(-250.0), C("CAB")]);
+}
+
+/// A line in a Limare test font whose first code draws the ff ligature, which reads as "ff".
+const LIGATURE: &str = "BT /F1 20 Tf 10 100 Td [<0B41> -300 <4243>] TJ ET\n";
+
+/// A ligature's code is written again only with all its letters unchanged and together;
+/// else each letter goes through the font's codes, and the program has no f of its own, so
+/// the word goes to another font.
+#[test]
+fn a_ligature_is_kept_only_with_all_its_letters_unchanged_and_together() {
+    let mut p = page(&[("F1", &limare_cff())], LIGATURE);
+    let o = line_of(&p, "ffA BC");
+    let part = typed(&o, 0, "ffAB BC");
+    assert!(kept(&p, &o, &part));
+    assert!(write(&mut p, &o, vec![part]).is_empty());
+    let want = vec![codes(&[0x0B, 0x41, 0x42]), Item::Move(-300.0), codes(b"BC")];
+    assert_eq!(shows(&p), [("F1".into(), want)]);
+    assert_eq!(word_list(&p), ["ffAB", "BC"]);
+    // One f deleted.
+    let mut p = page(&[("F1", &limare_cff())], LIGATURE);
+    let o = line_of(&p, "ffA BC");
+    let want = [((0, 2), false, vec!['f']), ((2, 5), true, vec![])];
+    falls_back(&mut p, &o, typed(&o, 0, "fA BC"), &want, false);
+}
+
+/// A ligature character typed (ﬁ, U+FB01) has no code in a font whose ligature glyphs read
+/// as their letters, so its word goes to another font, and only that word: LimarePDF reads
+/// the character back as its letters ("fi"), which is still the word typed.
+#[test]
+fn a_typed_ligature_character_sends_only_its_word_to_another_font() {
+    let mut p = page(&[("F1", &limare_cff())], LIGATURE);
+    let o = line_of(&p, "ffA BC");
+    let part = typed(&o, 0, "ﬁA BC");
+    let want = [((0, 2), false, vec!['ﬁ']), ((2, 5), true, vec![])];
+    assert_eq!(predicted(&p, &o, &part), want);
+    assert_eq!(write(&mut p, &o, vec![part]), Vec::<usize>::new());
+    let now = line_of(&p, "fiA BC");
+    let own = o.spans[0].font_name.as_str();
+    let kept = [false, false, false, true, true];
+    let letters: Vec<(char, bool)> = "fiABC".chars().zip(kept).collect();
+    assert_eq!(letters_in(&now, own), letters, "{:?}", styles(&now));
+}
+
+/// Plain ASCII typed into an embedded font goes through its program too: a whole font with
+/// no encoding of the PDF's own has no f, so the word with the f goes to another font (it
+/// was written in it, drawing nothing). An unembedded standard font still takes plain
+/// ASCII as itself, in place.
+#[test]
+fn ascii_goes_through_the_program_and_an_unembedded_font_still_takes_it() {
+    let mut font = limare_cff();
+    font.base = "LimareOwnEncoding";
+    let src = "BT /F1 20 Tf 10 100 Td [(AB) -300 (C)] TJ ET\n";
+    let mut p = page(&[("F1", &font)], src);
+    let o = line_of(&p, "AB C");
+    let want = [((0, 3), false, vec!['f']), ((3, 5), true, vec![])];
+    falls_back(&mut p, &o, typed(&o, 0, "AfB C"), &want, false);
+    let f1: Vec<_> = shows(&p).into_iter().filter(|(f, _)| f == "F1").collect();
+    assert_eq!(f1, [("F1".into(), vec![codes(b"C")])]);
+
+    let helvetica = unembedded("Helvetica", Some("WinAnsiEncoding"));
+    let src = "BT /F1 20 Tf 10 100 Td [(He) 20 (llo)] TJ ET\n";
+    let mut p = page(&[("F1", &helvetica)], src);
+    let o = line_of(&p, "Hello");
+    let before = ops(&p);
+    assert!(write(&mut p, &o, vec![typed(&o, 0, "Help")]).is_empty());
+    assert_eq!(ops(&p).len(), before.len());
+    let want = vec![codes(b"He"), Item::Move(20.0), codes(b"lp")];
+    assert_eq!(shows(&p), [("F1".into(), want)]);
+    assert_eq!(font_names(&p), ["F1"]);
+    // Only plain ASCII, as before: the word with é is written anew (in Helvetica again,
+    // which LimarePDF writes it in), the line's show taken out.
+    let src = "BT /F1 20 Tf 10 100 Td (Hello) Tj ET\n";
+    let mut p = page(&[("F1", &helvetica)], src);
+    let o = line_of(&p, "Hello");
+    let part = typed(&o, 0, "Héllo");
+    assert_eq!(predicted(&p, &o, &part), [((0, 5), false, vec!['é'])]);
+    assert!(write(&mut p, &o, vec![part]).is_empty());
+    let all = shows(&p);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert!(all[0].0.starts_with("LimareEd"), "{all:?}");
+    assert_eq!(texts(&p), ["Héllo"]);
+}
+
+/// A line in one part drawn by several shows is written in place of the first as one `TJ`:
+/// everything before it as it was, its other shows gone, a `'` or `"` show's line move kept,
+/// and the show that carries on after it put back where it was.
+#[test]
+fn a_line_of_several_shows_is_rewritten_in_place_as_one_tj() {
+    let src = "BT /F1 20 Tf 10 100 Td (The ) Tj [(qu) 10 (ck)] TJ ( fox) Tj [-3000 (Far)] TJ ET\n\
+               BT /F1 20 Tf 10 50 Td (fox) Tj ET\n";
+    let mut p = page(&[("F1", &sans_simple())], src);
+    let o = line_of(&p, "The quck fox");
+    let far = line_of(&p, "Far");
+    let before = ops(&p);
+    assert!(write(&mut p, &o, vec![typed(&o, 0, "The quick fox")]).is_empty());
+    let after = ops(&p);
+    let line = ["BT", "Tf", "Td", "TJ", "Tm", "TJ", "ET"];
+    let other = ["BT", "Tf", "Td", "Tj", "ET"];
+    assert_eq!(names(&after), [&line[..], &other].concat());
+    for i in 0..3 {
+        assert_eq!(op_of(&after[i]), op_of(&before[i]));
+    }
+    assert_eq!(shown(&after[3]), [codes(b"The quick fox")]);
+    for (a, b) in after[5..].iter().zip(&before[6..]) {
+        assert_eq!(op_of(a), op_of(b));
+    }
+    assert!(close(&line_of(&p, "Far").bbox, &far.bbox));
+    assert_eq!(word_list(&p), ["The", "quick", "fox", "Far", "fox"]);
+
+    // Shown by ' or ", whose line move stays.
+    let cases = [
+        ("(The quck fox) '", vec!["T*"]),
+        ("0 0 (The quck fox) \"", vec!["Tw", "Tc", "T*"]),
+    ];
+    for (show, moves) in cases {
+        let src = format!("BT /F1 20 Tf 24 TL 10 124 Td {show} ET\n");
+        let mut p = page(&[("F1", &sans_simple())], &src);
+        let o = line_of(&p, "The quck fox");
+        assert!(write(&mut p, &o, vec![typed(&o, 0, "The quick fox")]).is_empty());
+        let want = [vec!["BT", "Tf", "TL", "Td"], moves, vec!["TJ", "ET"]].concat();
+        assert_eq!(names(&ops(&p)), want, "{show}");
+        let now = line_of(&p, "The quick fox");
+        assert_eq!(now.baseline, o.baseline, "{show}");
+    }
+}
+
+/// A line in several parts is written on top of the page, its old shows taken out and the
+/// rest of the page as it was; each part in its own font, the changed one through its codes.
+#[test]
+fn a_line_in_several_parts_is_written_on_top_without_its_old_shows() {
+    let src = format!(
+        "BT /F1 20 Tf 10 100 Td <{HELLO}> Tj /F2 20 Tf ( world) Tj ET\n\
+         BT /F1 20 Tf 10 50 Td (fox) Tj ET\n"
+    );
+    let helvetica = unembedded("Helvetica", Some("WinAnsiEncoding"));
+    let mut p = page(&[("F1", &sans_simple()), ("F2", &helvetica)], &src);
+    let o = line_of(&p, "Hello world");
+    let (before, fonts, progs) = (ops(&p), font_resources(&p), programs(&p));
+    let parts = vec![typed(&o, 0, "Hallo"), typed(&o, 1, " world")];
+    assert!(parts.iter().all(|t| kept(&p, &o, t)));
+    assert!(write(&mut p, &o, parts).is_empty());
+    let now = line_of(&p, "Hallo world");
+    let want = [
+        ("ABCDEF+LiberationSans".to_string(), (0, 5)),
+        ("Helvetica".to_string(), (5, 11)),
+    ];
+    assert_eq!(styles(&now), want);
+    assert_eq!(font_resources(&p), fonts);
+    assert_eq!(programs(&p), progs);
+    assert!(close(&now.stops[..1], &o.stops[..1]));
+    assert_eq!(word_list(&p), ["Hallo", "world", "fox"]);
+    // The page as it was without the line's two shows, then the line on top.
+    let after = ops(&p);
+    let top = after.iter().rposition(|o| o.operator == "q").unwrap();
+    let mut page_ops = &after[..top];
+    if page_ops.first().map(|o| o.operator.as_str()) == Some("q") {
+        page_ops = &page_ops[1..page_ops.len() - 1];
+    }
+    let shows_at = [3, 5];
+    let left: Vec<_> = (before.iter().enumerate())
+        .filter(|(i, _)| !shows_at.contains(i))
+        .map(|(_, o)| op_of(o))
+        .collect();
+    assert_eq!(page_ops.iter().map(op_of).collect::<Vec<_>>(), left);
+    let on_top = names(&after[top..]);
+    assert_eq!(on_top[..2], ["q", "BT"]);
+    assert_eq!(on_top[on_top.len() - 2..], ["ET", "Q"]);
+    let line = [
+        ("F1".to_string(), vec![codes(b"Hallo")]),
+        ("F2".to_string(), vec![codes(b" world")]),
+    ];
+    assert_eq!(shows(&p)[1..], line);
+}
+
+/// A line that wouldn't read back as its words, written in its own font, is written again in
+/// another font, and `edit_texts` says so: here written in place, it would end where the next
+/// show starts and run into it ("ABJJJJFar"). The next show stays where it was.
+#[test]
+fn a_line_that_would_read_as_other_words_is_written_in_another_font_and_said() {
+    // "Far" starts 40 pt after "AB", which "JJJJ" fills exactly (500 thousandths an em each,
+    // at 20 pt).
+    let src = "BT /F1 20 Tf 10 100 Td (AB) Tj [-2000 (Far)] TJ ET\n";
+    let mut p = page(&[("F1", &sans_simple())], src);
+    let o = line_of(&p, "AB");
+    let far = line_of(&p, "Far");
+    let part = typed(&o, 0, "ABJJJJ");
+    assert!(kept(&p, &o, &part));
+    assert_eq!(write(&mut p, &o, vec![part]), [o.id]);
+    let now = line_of(&p, "ABJJJJ");
+    assert_ne!(now.spans[0].font_name, o.spans[0].font_name);
+    assert_eq!(word_list(&p), ["ABJJJJ", "Far"]);
+    assert!(close(&line_of(&p, "Far").bbox, &far.bbox));
+    assert!(close(&now.stops[..2], &o.stops[..2]));
+    let fonts = font_names(&p);
+    assert_eq!(fonts.len(), 2, "{fonts:?}");
+    assert!(fonts[1].starts_with("LimareEd"), "{fonts:?}");
+}
+
+/// The folder for one run of a Poppler tool, as the cross-checks run side by side.
+fn run_dir() -> std::path::PathBuf {
+    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!("limarepdf-own-font-{}-{run}", std::process::id());
+    let dir = std::env::temp_dir().join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// The text Poppler's `pdftotext` reads in the PDF `bytes`, its words one space apart.
+fn poppler_text(bytes: &[u8]) -> String {
+    let dir = run_dir();
+    let pdf = dir.join("in.pdf");
+    std::fs::write(&pdf, bytes).unwrap();
+    let out = std::process::Command::new("pdftotext")
+        .arg(&pdf)
+        .arg("-")
+        .output()
+        .expect("pdftotext installed");
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(out.status.success(), "pdftotext failed");
+    spaced(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `text`'s words one space apart.
+fn spaced(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The first page of the PDF `bytes` as Poppler's `pdftoppm` draws it in grey at 2 pixels a
+/// point: its width, and a byte a pixel.
+fn poppler_page(bytes: &[u8]) -> (usize, Vec<u8>) {
+    let dir = run_dir();
+    let pdf = dir.join("in.pdf");
+    std::fs::write(&pdf, bytes).unwrap();
+    let ok = std::process::Command::new("pdftoppm")
+        .args(["-r", "144", "-gray", "-singlefile"])
+        .arg(&pdf)
+        .arg(dir.join("out"))
+        .status()
+        .expect("pdftoppm installed")
+        .success();
+    assert!(ok, "pdftoppm failed");
+    let pgm = std::fs::read(dir.join("out.pgm")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    // A binary PGM: "P5", width, height and the largest value, a space, then a byte a pixel.
+    let mut fields = Vec::new();
+    let mut at = 0;
+    while fields.len() < 4 {
+        while pgm[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        let from = at;
+        while !pgm[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        fields.push(String::from_utf8_lossy(&pgm[from..at]).into_owned());
+    }
+    (fields[1].parse().unwrap(), pgm[at + 1..].to_vec())
+}
+
+/// Poppler reads an edited line as its words (where it reads the line as it was), and draws
+/// the page as it was but for the line from its first changed character to its end, the
+/// letters there drawing something (no blank glyphs where letters should be); with a
+/// `reference`, the page written by hand as the edit should write it, exactly as that is
+/// drawn (so no `.notdef` box either, which some fonts draw as a box like any other).
+fn poppler_sees(why: &str, mut p: Pdf, o: &PageObject, part: TextPart, reference: Option<Pdf>) {
+    let was_text = poppler_text(&p.to_bytes().unwrap());
+    let (w, was) = poppler_page(&p.to_bytes().unwrap());
+    let k = change_in(o, &part);
+    let text = part.text.clone();
+    assert!(write(&mut p, o, vec![part]).is_empty(), "{why}");
+    let now = line_of(&p, &text);
+    let bytes = p.to_bytes().unwrap();
+    if was_text.contains(&spaced(o.text.as_deref().unwrap())) {
+        let (read, want) = (poppler_text(&bytes), spaced(&text));
+        assert!(read.contains(&want), "{why}: Poppler reads {read:?}");
+    } else {
+        eprintln!("{why}: Poppler reads {was_text:?} before the edit: text not compared");
+    }
+    let (_, is) = poppler_page(&bytes);
+    assert_eq!(was.len(), is.len(), "{why}");
+    // The changed area, in pixels, with a few to spare for edges drawn soft.
+    let (bx, _) = o.baseline.unwrap();
+    let x0 = 2.0 * (bx + o.stops[k]) - 4.0;
+    let x1 = 2.0 * o.bbox[2].max(now.bbox[2]) + 4.0;
+    let y0 = 2.0 * o.bbox[1].min(now.bbox[1]) - 4.0;
+    let y1 = 2.0 * o.bbox[3].max(now.bbox[3]) + 4.0;
+    let inside = |x: usize, y: usize| {
+        let (x, y) = (x as f32, y as f32);
+        x0 <= x && x <= x1 && y0 <= y && y <= y1
+    };
+    let outside = (0..was.len())
+        .filter(|&i| was[i] != is[i] && !inside(i % w, i / w))
+        .count();
+    assert_eq!(outside, 0, "{why}: changed outside the line's change");
+    let chars: Vec<char> = text.chars().collect();
+    for j in (k..chars.len()).filter(|&j| !chars[j].is_whitespace()) {
+        let (a, b) = (2.0 * (bx + now.stops[j]), 2.0 * (bx + now.stops[j + 1]));
+        let ink = (0..is.len())
+            .filter(|&i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                a <= x && x < b && y0 <= y && y <= y1 && is[i] < 128
+            })
+            .count();
+        assert!(ink > 0, "{why}: {:?} draws nothing", chars[j]);
+    }
+    if let Some(mut r) = reference {
+        let (_, want) = poppler_page(&r.to_bytes().unwrap());
+        let off = (0..is.len()).filter(|&i| is[i] != want[i]).count();
+        assert_eq!(off, 0, "{why}: not drawn as written by hand");
+    }
+}
+
+/// Poppler reads and draws a typo fixed in each kind of font, and a word sent to another
+/// font. Opt-in: `cargo test -p limarepdf-core --test own_font -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_edited_lines_with_poppler() {
+    let have = |tool: &str| std::process::Command::new(tool).arg("-v").output().is_ok();
+    if !have("pdftotext") || !have("pdftoppm") {
+        eprintln!("pdftotext or pdftoppm (Poppler) isn't installed: nothing checked");
+        return;
+    }
+    let latin_kinds = [
+        simple_truetype(),
+        simple_cff(),
+        simple_opentype(),
+        type0_truetype(true),
+        type0_truetype(false),
+        type0_cff(true),
+        type0_cff(false),
+    ];
+    let own_kinds = [
+        own_encoding_cff(),
+        own_encoding_type1(),
+        symbolic_truetype(),
+    ];
+    let scripts = (latin_kinds.iter().map(|k| (k, latin())))
+        .chain(own_kinds.iter().map(|k| (k, limare_line())));
+    for (kind, s) in scripts {
+        for e in &s.edits {
+            let p = script_page(kind, &s);
+            let o = line_of(&p, &read(&s.line));
+            let part = at(&o, 0, e.text, e.origins.clone());
+            let by_hand = Script {
+                line: e.shown.clone(),
+                other: s.other,
+                edits: Vec::new(),
+            };
+            let reference = Some(script_page(kind, &by_hand));
+            let why = format!("{}, {}", kind.name, e.what);
+            poppler_sees(&why, p, &o, part, reference);
+        }
+    }
+    for kind in [type0_cff(true), type0_truetype(true)] {
+        let p = script_page(&kind, &latin());
+        let o = line_of(&p, "The quck fox");
+        let part = typed(&o, 0, "The quick brown wren fox");
+        let why = format!("{}, a word sent to another font", kind.name);
+        poppler_sees(&why, p, &o, part, None);
+    }
 }

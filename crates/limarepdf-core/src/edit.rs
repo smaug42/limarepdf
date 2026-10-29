@@ -6,6 +6,7 @@ use crate::imgs::orient_matrix;
 use crate::inline::Inline;
 use crate::matrix::{self as mx, mul, M};
 use crate::objects::{Obj, ObjectKind, Parsed, Run, Show, Span, TextData};
+use crate::own_font::{LineFont, PageFonts};
 use crate::{PageObject, Pdf, Result};
 use anyhow::{anyhow, bail};
 use image::metadata::Orientation;
@@ -40,9 +41,39 @@ pub struct TextPart {
     pub rise: f32,
     /// Where `text` starts in the edited line's text, when it is the line's own characters
     /// there, unchanged. In the font of the line's part they are in ([`PartFont::Span`])
-    /// they are then written with their own shows, cut out of the line's where that can be
-    /// done ([`Pdf::edit_texts`]). `None` for anything else.
+    /// they are then written with their own codes and spacing ([`Pdf::edit_texts`]). `None`
+    /// for anything else.
     pub from: Option<usize>,
+    /// Where each of `text`'s characters is in the edited line's text as it was read, for
+    /// those that are the line's own characters there, unchanged; `None` for one typed or
+    /// moved. In the font of the line's part they are in, they keep the codes they were
+    /// drawn with and the spacing numbers between neighbours. Empty when not known (then
+    /// `from` says, when it is given).
+    pub origins: Vec<Option<usize>>,
+}
+
+impl TextPart {
+    /// Where character `j` of the part is in the edited line as it was read, if it is the
+    /// line's own character there ([`TextPart::origins`], else [`TextPart::from`]).
+    fn origin(&self, j: usize) -> Option<usize> {
+        match self.origins.is_empty() {
+            true => self.from.map(|f| f + j),
+            false => self.origins.get(j).copied().flatten(),
+        }
+    }
+}
+
+/// A piece of a part of a line as [`Pdf::edit_text`] writes it ([`PageObject::kept_pieces`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeptPiece {
+    /// Its characters in the part's text, from and to.
+    pub chars: (usize, usize),
+    /// Written in the font of the line's part the part names; otherwise in the installed
+    /// family that font is from or the nearest standard font.
+    pub kept: bool,
+    /// The characters that font has no code for, which send the piece's words to another
+    /// font, each once.
+    pub missing: Vec<char>,
 }
 
 /// The font a part of a line is written in.
@@ -57,13 +88,61 @@ pub enum PartFont {
 }
 
 impl TextEdit {
-    /// Whether [`Pdf::edit_text`] keeps the line's own font for this change: the font can
-    /// be reused ([`crate::PageObject::font_reusable`]), the new text is plain ASCII and no
-    /// style changes. Otherwise the line is written anew. For a line in one style changed
-    /// in one style; [`crate::PageObject::keeps_font`] tells for each of `parts`.
-    pub fn keeps_font(&self, reusable: bool) -> bool {
-        let keep_style = self.font.is_none() && self.size.is_none() && self.color.is_none();
-        reusable && ascii(&self.text) && keep_style
+    /// Whether [`Pdf::edit_text`] keeps line `o`'s own font for all of this change, `fonts`
+    /// being the line's ([`Pdf::line_fonts`]): no style changes, and every new character
+    /// has a code in the font of the part it is in ([`PageObject::keeps_font`]).
+    pub fn keeps_font(&self, o: &PageObject, fonts: &[LineFont]) -> bool {
+        let first = o.spans.first().map(|s| (s.font_size, s.fill, s.rise));
+        match self.parts_for(o.text.as_deref().unwrap_or(""), first) {
+            Some(parts) => parts.iter().all(|p| o.keeps_font(p, fonts)),
+            None => false,
+        }
+    }
+
+    /// The parts this edit writes in a line whose text is `line`, its first part in
+    /// `first` (size, colour and rise): its own, or a change of words alone as one part in
+    /// that part's font, the characters it keeps at its start and end saying where they
+    /// were. `None` for a change in one style that sets the font, size or colour, which is
+    /// written anew.
+    fn parts_for(
+        &self,
+        line: &str,
+        first: Option<(f32, Option<[f32; 3]>, f32)>,
+    ) -> Option<std::borrow::Cow<'_, [TextPart]>> {
+        if !self.parts.is_empty() {
+            return Some(self.parts.as_slice().into());
+        }
+        if self.font.is_some() || self.size.is_some() || self.color.is_some() {
+            return None;
+        }
+        let (size, fill, rise) = first?;
+        let (old, new): (Vec<char>, Vec<char>) =
+            (line.chars().collect(), self.text.chars().collect());
+        let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let room = old.len().min(new.len()) - head;
+        let tail = (old.iter().rev().zip(new.iter().rev()))
+            .take_while(|(a, b)| a == b)
+            .count()
+            .min(room);
+        let origins = (0..new.len())
+            .map(|j| match j {
+                _ if j < head => Some(j),
+                _ if j >= new.len() - tail => Some(old.len() + j - new.len()),
+                _ => None,
+            })
+            .collect();
+        Some(
+            vec![TextPart {
+                text: self.text.clone(),
+                font: PartFont::Span(0),
+                size,
+                color: fill.unwrap_or([0.0; 3]),
+                rise,
+                from: None,
+                origins,
+            }]
+            .into(),
+        )
     }
 
     /// The line as `parts`, in their styles.
@@ -76,133 +155,183 @@ impl TextEdit {
             parts,
         }
     }
-
-    /// This edit in one style, written as before parts were: an edit given in one style, or
-    /// one in parts that only changes the words of a line in one style, in its font when
-    /// that can be kept, which is changed in place. `None` when it is written in parts.
-    fn one_style(&self, t: &TextData) -> Option<TextEdit> {
-        if self.parts.is_empty() {
-            return Some(self.clone());
-        }
-        let [s] = &t.spans[..] else {
-            return None;
-        };
-        let unchanged = |q: &TextPart| {
-            q.font == PartFont::Span(0)
-                && q.size == s.size
-                && q.color == s.fill.unwrap_or([0.0; 3])
-                && q.rise == s.rise
-        };
-        let words = TextEdit {
-            text: self.text.clone(),
-            font: None,
-            size: None,
-            color: None,
-            parts: Vec::new(),
-        };
-        (self.parts.iter().all(unchanged) && words.keeps_font(s.reuse)).then_some(words)
-    }
 }
 
 impl PageObject {
-    /// Whether [`Pdf::edit_text`] writes `part` of this line in the font of the line's
-    /// part it names ([`PartFont::Span`]): its text is that part's own, unchanged (its
-    /// shows are kept as they were), or some of that part's own characters, unchanged and
-    /// ending at spaces ([`TextPart::from`]; their shows are cut out of the part's, which
-    /// can fail on characters the page's font codes together), or the font can be reused
-    /// and the text is plain ASCII. Otherwise it is written in the installed family the
-    /// font is from or the nearest standard font.
-    pub fn keeps_font(&self, part: &TextPart) -> bool {
+    /// Whether [`Pdf::edit_text`] writes all of `part` of this line in the font of the
+    /// line's part it names ([`PartFont::Span`]), `fonts` being the line's
+    /// ([`Pdf::line_fonts`]): [`PageObject::kept_pieces`] keeps every piece.
+    pub fn keeps_font(&self, part: &TextPart, fonts: &[LineFont]) -> bool {
+        match part.font {
+            PartFont::Span(i) if part.text.is_empty() => i < self.spans.len(),
+            _ => self.kept_pieces(part, fonts).iter().all(|p| p.kept),
+        }
+    }
+
+    /// How [`Pdf::edit_text`] writes `part` of this line, `fonts` being the line's
+    /// ([`Pdf::line_fonts`]): its text in pieces, in order, each in the font of the line's
+    /// part it names ([`PartFont::Span`]) or not. A part that is that part's own text,
+    /// unchanged, keeps it. Otherwise each character keeps it when it is the line's own
+    /// character, unchanged, where it was ([`TextPart::origins`]), drawn with a code of its
+    /// own (a ligature's letters only together), or when the font has a code for it
+    /// ([`LineFont::code`]); a space the font has none for is written as a move. A word
+    /// with a character that can't sends the whole word to the installed family the font is
+    /// from or the nearest standard font, with the spaces between two such words.
+    pub fn kept_pieces(&self, part: &TextPart, fonts: &[LineFont]) -> Vec<KeptPiece> {
+        let text: Vec<char> = part.text.chars().collect();
+        let all = |kept| {
+            vec![KeptPiece {
+                chars: (0, text.len()),
+                kept,
+                missing: Vec::new(),
+            }]
+        };
+        if text.is_empty() {
+            return Vec::new();
+        }
         let PartFont::Span(i) = part.font else {
-            return false;
+            return all(false);
         };
-        let (Some(s), Some(text)) = (self.spans.get(i), &self.text) else {
-            return false;
+        let (Some(s), Some(line)) = (self.spans.get(i), &self.text) else {
+            return all(false);
         };
-        let line: Vec<char> = text.chars().collect();
-        let (vertical, from) = (self.vertical, part.from);
-        kept(&line, s.chars, s.font_reusable, vertical, &part.text, from).is_some()
+        let line: Vec<char> = line.chars().collect();
+        if !self.vertical && line.get(s.chars.0..s.chars.1) == Some(&text[..]) {
+            return all(true);
+        }
+        let font = fonts.get(i);
+        let drawn = font.and_then(LineFont::drawn);
+        let ways = plan(&line, s.chars, drawn, font, &text, |j| part.origin(j));
+        pieces(&text, &ways)
     }
 }
 
-fn ascii(text: &str) -> bool {
-    text.chars().all(|c| (' '..='~').contains(&c))
+/// How a character of a part is written in the font of the line's part it names ([`plan`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Way {
+    /// With what drew the line's character `o` as it was read ([`Drawn`]): its code (and
+    /// the letters after it of a ligature, which follow it unchanged), or the move that is
+    /// a space.
+    Own(usize),
+    /// Drawn by the code of a character before it, a ligature's.
+    WithBefore,
+    /// With the font's code for it ([`LineFont::code`]).
+    Code,
+    /// A space the font has no code for, written as a move.
+    Space,
+    /// The font can't write it.
+    Missing,
 }
 
-/// How a part of a line keeps the font of the line's part it is from.
-#[derive(Clone, Copy, PartialEq)]
-enum Kept {
-    /// Its text is that part's own: written with its shows as they were.
-    AsItWas,
-    /// Its text is the line's characters from and to, unchanged, within that part:
-    /// written with their shows cut out of the part's ([`shows_cut`]).
-    Cut(usize, usize),
-    /// Plain ASCII in a font that can be reused.
-    Ascii,
-}
-
-/// Whether text `text` keeps the font of the part of `line` at `chars`, whose font is
-/// `reusable`, and how; `from` is where the text starts in the line when it is the line's
-/// own characters there ([`TextPart::from`]). Not in vertical writing, which the line is
-/// written across.
-fn kept(
+/// How each of `text`'s characters is written in the font `font` of the part of `line` at
+/// `span`, whose characters are drawn as `drawn` says (when known); `origin` says where a
+/// character of `text` was in the line as read ([`TextPart::origin`]).
+fn plan(
     line: &[char],
-    chars: (usize, usize),
-    reusable: bool,
-    vertical: bool,
-    text: &str,
-    from: Option<usize>,
-) -> Option<Kept> {
-    let own = line
-        .get(chars.0..chars.1)
-        .is_some_and(|c| c.iter().copied().eq(text.chars()));
-    let cut = from.filter(|_| !vertical).and_then(|a| {
-        let b = a + text.chars().count();
-        let inside = chars.0 <= a && a < b && b <= chars.1;
-        let same = inside && line[a..b].iter().copied().eq(text.chars());
-        let at = |i: usize| cuttable(line, chars, i);
-        (same && at(a) && at(b)).then_some(Kept::Cut(a, b))
-    });
-    if own && !vertical {
-        Some(Kept::AsItWas)
-    } else if cut.is_some() {
-        cut
-    } else if reusable && ascii(text) {
-        Some(Kept::Ascii)
-    } else {
-        None
+    span: (usize, usize),
+    drawn: Option<&[Drawn]>,
+    font: Option<&LineFont>,
+    text: &[char],
+    origin: impl Fn(usize) -> Option<usize>,
+) -> Vec<Way> {
+    // Where character `j` was, if it is the line's own character there, in this part.
+    let own =
+        |j: usize| origin(j).filter(|&o| span.0 <= o && o < span.1 && line.get(o) == text.get(j));
+    let mut ways = vec![Way::Missing; text.len()];
+    let mut j = 0;
+    while j < text.len() {
+        let c = text[j];
+        let ink = own(j).and_then(|o| Some((o, &drawn?.get(o)?.ink)));
+        let (way, n) = match ink {
+            Some((o, Ink::Code { at, n, .. }))
+                if *at == o && (1..*n).all(|i| own(j + i) == Some(o + i)) =>
+            {
+                (Way::Own(o), *n)
+            }
+            Some((o, Ink::Move(_))) => (Way::Own(o), 1),
+            _ if font.is_some_and(|f| f.code(c).is_ok()) => (Way::Code, 1),
+            _ if c.is_whitespace() => (Way::Space, 1),
+            _ => (Way::Missing, 1),
+        };
+        ways[j] = way;
+        ways[j + 1..j + n].fill(Way::WithBefore);
+        j += n;
     }
+    ways
 }
 
-/// Whether the part of `line` at `chars` may be cut at character `at`: at either end of
-/// the part, or next to a space, so that no word is parted.
-fn cuttable(line: &[char], chars: (usize, usize), at: usize) -> bool {
-    let space = |i: Option<usize>| {
-        i.and_then(|i| line.get(i))
-            .is_some_and(|c| c.is_whitespace())
+/// `text`'s characters in pieces kept in the line's font or not, by how they are written
+/// (`ways`, [`plan`]): a word with a character the font can't write goes to another font,
+/// with the spaces between two such words.
+fn pieces(text: &[char], ways: &[Way]) -> Vec<KeptPiece> {
+    let n = text.len();
+    // Whether each character's word goes to another font; spaces belong to none.
+    let mut lost = vec![false; n];
+    let mut j = 0;
+    while j < n {
+        if text[j].is_whitespace() {
+            j += 1;
+            continue;
+        }
+        let end = (j..n).find(|&k| text[k].is_whitespace()).unwrap_or(n);
+        let gone = ways[j..end].contains(&Way::Missing);
+        lost[j..end].fill(gone);
+        j = end;
+    }
+    // Spaces between two words that go go with them.
+    let words = lost.clone();
+    let word = |mut range: Box<dyn Iterator<Item = usize>>| {
+        range
+            .find(|&k| !text[k].is_whitespace())
+            .is_some_and(|k| words[k])
     };
-    at == chars.0 || at == chars.1 || space(at.checked_sub(1)) || space(Some(at))
+    for j in 0..n {
+        if text[j].is_whitespace() {
+            lost[j] = word(Box::new((0..j).rev())) && word(Box::new(j + 1..n));
+        }
+    }
+    let mut out: Vec<KeptPiece> = Vec::new();
+    for j in 0..n {
+        let kept = !lost[j];
+        match out.last_mut() {
+            Some(p) if p.kept == kept => p.chars.1 = j + 1,
+            _ => out.push(KeptPiece {
+                chars: (j, j + 1),
+                kept,
+                missing: Vec::new(),
+            }),
+        }
+        let p = out.last_mut().expect("pushed");
+        if ways[j] == Way::Missing && !p.missing.contains(&text[j]) {
+            p.missing.push(text[j]);
+        }
+    }
+    out
 }
 
-/// A line of parts to write ([`Pdf::written_lines`]): the line edited (the page's operators
-/// and the line) or none for new text, its parts, and whether they may cut their shows out
-/// of the line's.
-type Asked<'a> = (
-    Option<(&'a [Operation], &'a TextData)>,
-    &'a [TextPart],
-    bool,
-);
+/// A line of parts to write ([`Pdf::written_lines`]): the line edited (the page as parsed,
+/// and the line) or none for new text, its parts, and whether characters may be written
+/// in the line's own fonts (only those whose text is a part's own, unchanged, otherwise).
+type Asked<'a> = (Option<(&'a Parsed, &'a TextData)>, &'a [TextPart], bool);
 
 /// A page's operators with text edits made ([`Pdf::edit_texts`]).
 struct Edited {
     ops: Vec<Operation>,
     /// The `q`s left open, to close.
     depth: usize,
-    /// The edits written with shows cut out of their lines: their index, their operators
-    /// from and to, and the text they should read.
-    cuts: Vec<(usize, (usize, usize), String)>,
-    /// The ids of the lines where shows asked for couldn't be cut out.
-    lost: Vec<usize>,
+    /// The edits with characters written in their lines' own fonts, to read back: their
+    /// index, where they are in `ops` (from and to; or, changed in place, the operator
+    /// that shows them), and the text they should read.
+    checks: Vec<(usize, Check, String)>,
+}
+
+/// Where an edited line is in a page's operators, to read it back ([`Pdf::misread`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Check {
+    /// Written on top, as these operators, from and to.
+    OnTop(usize, usize),
+    /// Changed in place: the show at this operator.
+    InPlace(usize),
 }
 
 /// A part of a line as it is written by [`line_ops`]: the font's name in the page's
@@ -297,117 +426,380 @@ fn gap_move(run: &Run, s: &Span) -> Option<Object> {
     (run.gap > 0.0).then(|| r(-run.gap * 1000.0 / size))
 }
 
-/// The shows of the line's characters `a..b`, within part `s` of line `t` (in `font`),
-/// cut out of the part's shows on the page's operators `ops`: each show's strings cut
-/// between character codes, read as the page was read ([`FontCtx::codes`]). A spacing
-/// number goes with the character before it, or at the start of a show with the first
-/// one after it; a gap read as a space is put back as the same move. A move that is the
-/// first character, a space, comes apart: at the start of a show it would read as no
-/// space, so it goes at the end of the shows before. `None` when a cut would go through a
-/// character code (a ligature's letters, say), or through a string LimarePDF can't be
-/// sure it parts as it draws ([`FontCtx::codes_known`], [`FontCtx::drawn_alike`]), or
-/// when the characters don't add up as the line was read.
-fn shows_cut(
+/// How one character of a line as it was read is drawn ([`drawn`]), to write it again with
+/// its own code.
+#[derive(Clone, Debug)]
+pub(crate) struct Drawn {
+    /// The show it is in ([`TextData::runs`]).
+    run: usize,
+    ink: Ink,
+    /// What the shows draw between the character before it and this one: what follows the
+    /// one before in its show (spacing numbers, glyphs that read as no character, and the
+    /// move to this one's show when that is another), in that show's units; then what comes
+    /// before this one in its own show.
+    after_last: Vec<Object>,
+    before: Vec<Object>,
+}
+
+/// What draws a character of a line ([`Drawn`]).
+#[derive(Clone, Debug)]
+enum Ink {
+    /// The line's characters `at..at + n` are drawn by these bytes: one code (of several
+    /// characters for a ligature), or a whole string whose codes LimarePDF can't be sure it
+    /// parts as they are drawn ([`FontCtx::codes_known`], [`FontCtx::drawn_alike`]).
+    Code {
+        at: usize,
+        n: usize,
+        bytes: Vec<u8>,
+        format: StringFormat,
+    },
+    /// A space drawn as a move: this spacing number, in its show's units.
+    Move(f32),
+}
+
+/// How each character of line `t` is drawn by the page's operators `ops`, each of the
+/// line's parts read with its font in `fonts` (`None` for one the page doesn't have, whose
+/// bytes are then read one character each), as the parser read them: a code's characters,
+/// a spacing number under -150 after a character that isn't a space read as a space, and
+/// the gap read as a space after a show. The moves between shows are measured from where
+/// one ends to where the next starts. `None` when the characters don't add up to the
+/// line's, and in vertical writing, which is measured as if it ran across.
+pub(crate) fn drawn(
     ops: &[Operation],
     t: &TextData,
-    s: &Span,
-    font: Option<&FontCtx>,
-    (a, b): (usize, usize),
-) -> Option<(Option<Object>, Shows)> {
-    let mut out = Vec::new();
-    let mut lead = None;
-    for k in s.runs.0..s.runs.1 {
-        let (run, (ra, rb)) = (&t.runs[k], t.pieces[k].chars);
-        if ra > b || rb < a {
-            continue;
-        }
-        // Each character's place in the line, and the run's text so far (a big negative
-        // spacing number reads as a space only after a character that isn't one).
-        let (mut at, mut text) = (ra, String::new());
-        let has = |from: usize, to: usize| a <= from && to <= b;
-        let mut kept: Vec<Object> = Vec::new();
-        for it in show_items(&ops[run.op], run.show) {
-            match &it {
-                Object::String(bytes, format) => {
-                    let codes: Vec<(&[u8], String)> = match font {
-                        Some(f) => (f.codes(bytes).into_iter())
-                            .map(|(code, _, raw)| (raw, f.decode_code(code, raw)))
-                            .collect(),
-                        None => (bytes.chunks(1))
-                            .map(|c| (c, (c[0] as char).to_string()))
-                            .collect(),
-                    };
-                    let (mut part, mut left) = (Vec::new(), false);
-                    for (raw, decoded) in codes {
-                        let n = decoded.chars().count();
-                        let inside = match n {
-                            // A glyph with no characters, as a spacing number.
-                            0 if text.is_empty() => has(at, at + 1),
-                            0 => a < at && at <= b,
-                            _ if has(at, at + n) => true,
-                            _ if at < a && a < at + n || at < b && b < at + n => return None,
-                            _ => false,
-                        };
-                        if inside {
-                            part.extend_from_slice(raw);
-                        } else {
-                            left = true;
-                        }
-                        text.push_str(&decoded);
-                        at += n;
-                    }
-                    let safe = font.is_none_or(|f| f.codes_known && f.drawn_alike(bytes));
-                    if left && !part.is_empty() && !safe {
-                        return None;
-                    }
-                    if !part.is_empty() {
-                        kept.push(Object::String(part, *format));
-                    }
+    fonts: &[Option<&FontCtx>],
+) -> Option<Vec<Drawn>> {
+    if t.vertical {
+        return None;
+    }
+    let along = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0) * t.dir.0 + (b.1 - a.1) * t.dir.1;
+    let mut out: Vec<Drawn> = Vec::with_capacity(t.text.len());
+    // Where the text is after the last character's show (its end, or the start of the
+    // next show when the gap to it was read as a space), and that show's units.
+    let mut pos = t.pieces.first()?.corners[0];
+    let mut units: Option<f32> = None;
+    let mut after: Vec<Object> = Vec::new();
+    for (s, &font) in t.spans.iter().zip(fonts) {
+        for k in s.runs.0..s.runs.1 {
+            let (run, (ra, rb)) = (&t.runs[k], t.pieces[k].chars);
+            if ra == rb {
+                continue;
+            }
+            let own = (s.size * run.spacing[2]).max(1e-3);
+            let mut before = Vec::new();
+            let d = along(pos, t.pieces[k].corners[0]);
+            if d.abs() > 1e-3 {
+                match units {
+                    Some(u) => after.push(r(-d * 1000.0 / u)),
+                    None => before.push(r(-d * 1000.0 / own)),
                 }
-                o => {
-                    let x = o.as_float().unwrap_or(0.0);
-                    let space = x < -150.0 && !text.ends_with(' ') && !text.is_empty();
-                    let inside = if space {
-                        text.push(' ');
-                        at += 1;
-                        has(at - 1, at)
-                    } else if text.is_empty() {
-                        has(at, at + 1)
-                    } else {
-                        a < at && at <= b
-                    };
-                    if space && at - 1 == a && out.is_empty() && kept.is_empty() {
-                        lead = Some(it.clone());
-                    } else if inside {
-                        kept.push(it.clone());
+            }
+            let (mut at, mut text) = (ra, String::new());
+            let mut put = |ink: Ink, after: &mut Vec<Object>, before: &mut Vec<Object>| {
+                let (after_last, before) = (std::mem::take(after), std::mem::take(before));
+                let drawn = Drawn {
+                    run: k,
+                    ink,
+                    after_last,
+                    before,
+                };
+                out.push(drawn);
+            };
+            for it in show_items(&ops[run.op], run.show) {
+                match &it {
+                    Object::String(bytes, format) => {
+                        let codes: Vec<(&[u8], String)> = match font {
+                            Some(f) => (f.codes(bytes).into_iter())
+                                .map(|(code, _, raw)| (raw, f.decode_code(code, raw)))
+                                .collect(),
+                            None => (bytes.chunks(1))
+                                .map(|c| (c, (c[0] as char).to_string()))
+                                .collect(),
+                        };
+                        let safe = font.is_none_or(|f| f.codes_known && f.drawn_alike(bytes));
+                        let pieces: Vec<(Vec<u8>, String)> = match safe {
+                            true => (codes.into_iter())
+                                .map(|(raw, d)| (raw.to_vec(), d))
+                                .collect(),
+                            false => {
+                                let text = codes.into_iter().map(|(_, d)| d).collect();
+                                vec![(bytes.clone(), text)]
+                            }
+                        };
+                        for (bytes, decoded) in pieces {
+                            let n = decoded.chars().count();
+                            if n == 0 {
+                                // A glyph that reads as no character, between two that do.
+                                before.push(Object::String(bytes, *format));
+                                continue;
+                            }
+                            let ink = Ink::Code {
+                                at,
+                                n,
+                                bytes,
+                                format: *format,
+                            };
+                            for _ in 0..n {
+                                put(ink.clone(), &mut after, &mut before);
+                            }
+                            text.push_str(&decoded);
+                            at += n;
+                        }
+                    }
+                    o => {
+                        let x = o.as_float().unwrap_or(0.0);
+                        if x < -150.0 && !text.ends_with(' ') && !text.is_empty() {
+                            put(Ink::Move(x), &mut after, &mut before);
+                            text.push(' ');
+                            at += 1;
+                        } else {
+                            before.push(it.clone());
+                        }
                     }
                 }
             }
-        }
-        let gap = gap_move(run, s);
-        if at + usize::from(gap.is_some()) != rb {
-            return None;
-        }
-        if gap.is_some() && rb - 1 == a && out.is_empty() && kept.is_empty() {
-            lead = gap;
-        } else if gap.is_some() && has(rb - 1, rb) {
-            kept.extend(gap);
-        }
-        if !kept.is_empty() {
-            out.push((run.spacing, op("TJ", vec![Object::Array(kept)])));
+            // What follows the show's last character waits for the next one.
+            after = std::mem::take(&mut before);
+            pos = t.pieces[k].corners[1];
+            if run.gap > 0.0 {
+                let next = t.pieces.get(k + 1)?.corners[0];
+                put(
+                    Ink::Move(-along(pos, next) * 1000.0 / own),
+                    &mut after,
+                    &mut before,
+                );
+                at += 1;
+                pos = next;
+            }
+            units = Some(own);
+            if at != rb {
+                return None;
+            }
         }
     }
-    Some((lead, out))
+    (out.len() == t.text.chars().count()).then_some(out)
 }
 
-/// Show `show` followed by the move `x`, as a `TJ`.
-fn then_move(show: &mut Operation, x: Object) {
+/// Show `show` followed by `more` (moves, and glyphs that read as no character), as a `TJ`.
+fn then_move(show: &mut Operation, more: Vec<Object>) {
     let mut items = match show.operator.as_str() {
         "TJ" => show_items(show, Show::TJ),
         _ => show.operands.clone(),
     };
-    items.push(x);
+    items.extend(more);
     *show = op("TJ", vec![Object::Array(items)]);
+}
+
+/// Line `t`, edited to `parts` written as `written`, as one show in place of its first:
+/// the operator it goes in place of, and the show. Only for a line in one part, its style
+/// unchanged, in one spacing, written all in its own font, that starts with a show of
+/// characters (one of none before them may be in another font).
+fn in_place(t: &TextData, parts: &[TextPart], written: &[Written]) -> Option<(usize, Operation)> {
+    let ([s], Some(first)) = (&t.spans[..], t.runs.first()) else {
+        return None;
+    };
+    let unchanged = |q: &TextPart| {
+        q.font == PartFont::Span(0)
+            && q.size == s.size
+            && q.color == s.fill.unwrap_or([0.0; 3])
+            && q.rise == s.rise
+    };
+    let starts = t.pieces.first().is_some_and(|p| p.chars.1 > p.chars.0);
+    let spacing = first.spacing;
+    let ok = !t.vertical
+        && starts
+        && parts.iter().all(unchanged)
+        && t.runs.iter().all(|r| r.spacing == spacing)
+        && !written.is_empty()
+        && (written.iter())
+            .all(|w| w.font == s.font && w.shows.iter().all(|(sp, _)| *sp == spacing));
+    if !ok {
+        return None;
+    }
+    let items = (written.iter())
+        .flat_map(|w| &w.shows)
+        .flat_map(|(_, show)| show_items(show, Show::TJ))
+        .collect();
+    Some((first.op, op("TJ", vec![Object::Array(items)])))
+}
+
+/// Bytes `bytes` put at the end of a show's items `items`: in the string there when it is
+/// in format `format`, else in a new one.
+fn put_code(items: &mut Vec<Object>, bytes: &[u8], format: StringFormat) {
+    match items.last_mut() {
+        Some(Object::String(b, f)) if *f == format => b.extend_from_slice(bytes),
+        _ => items.push(Object::String(bytes.to_vec(), format)),
+    }
+}
+
+/// Whether a show's items `items` draw a character a move after them reads as a space
+/// after: a string with bytes in it.
+fn has_text(items: &[Object]) -> bool {
+    items
+        .iter()
+        .any(|o| matches!(o, Object::String(b, _) if !b.is_empty()))
+}
+
+/// Writes the characters of a line kept in its own fonts, piece by piece
+/// ([`Pdf::written_lines`]), keeping the spacing between neighbours that were neighbours
+/// in the line as read.
+struct OwnPen<'a> {
+    t: &'a TextData,
+    drawn: Option<&'a [Drawn]>,
+    /// The line's character the last one written was, when it was written with what drew
+    /// it there.
+    last: Option<usize>,
+    /// Near which of the line's characters the writing is, for a space's width.
+    near: usize,
+    /// Something of the line has been written.
+    started: bool,
+}
+
+/// What a piece written by [`OwnPen`] puts at the end of the piece before it: what the
+/// line drew between their characters, in that piece's last show's units, then a space
+/// as a move (a move at the start of a show reads as no space): a spacing number, and the
+/// size of its show's units (the text size times the horizontal scaling).
+#[derive(Default)]
+struct Tail {
+    items: Vec<Object>,
+    space: Option<(f32, f32)>,
+}
+
+impl<'a> OwnPen<'a> {
+    fn new(t: &'a TextData, drawn: Option<&'a [Drawn]>) -> Self {
+        Self {
+            t,
+            drawn,
+            last: None,
+            near: 0,
+            started: false,
+        }
+    }
+
+    /// Something not written with this pen (a part as it was, or in another font) comes
+    /// next: the characters after it have no neighbours before them.
+    fn apart(&mut self) {
+        self.last = None;
+        self.started = true;
+    }
+
+    /// The width of a space the font has no code for, as a spacing number in a show of
+    /// spacing `spacing` of part `s`: the nearest move of the part read as a space, else a
+    /// quarter of an em.
+    fn word_gap(&self, s: &Span, spacing: [f32; 3]) -> f32 {
+        let gaps = (self.drawn.into_iter().flatten().enumerate())
+            .filter(|(_, d)| (s.runs.0..s.runs.1).contains(&d.run))
+            .filter_map(|(i, d)| match d.ink {
+                Ink::Move(x) => Some((i, x * self.t.runs[d.run].spacing[2])),
+                _ => None,
+            });
+        let nearest = gaps.min_by_key(|(i, _)| i.abs_diff(self.near));
+        nearest.map_or(-250.0, |(_, x)| x / spacing[2].max(1e-3))
+    }
+
+    /// Characters `range` of a part's text `text` in part `s` of the line, written as
+    /// `ways` says ([`plan`]; none of them [`Way::Missing`]) in its font `font`, of size
+    /// `size`: the shows, and what goes at the end of the piece before.
+    fn write(
+        &mut self,
+        s: &Span,
+        font: Option<&LineFont>,
+        text: &[char],
+        ways: &[Way],
+        range: std::ops::Range<usize>,
+        size: f32,
+    ) -> (Tail, Shows) {
+        let mut shows: Vec<([f32; 3], Vec<Object>)> = Vec::new();
+        let mut tail = Tail::default();
+        let first = !self.started;
+        // The spacing of the first character written with what drew it, for the others.
+        let own_spacing = (range.clone())
+            .find_map(|j| match ways[j] {
+                Way::Own(o) => Some(self.t.runs[self.drawn?[o].run].spacing),
+                _ => None,
+            })
+            .unwrap_or_else(|| run_spacing(self.t, s));
+        for j in range {
+            let spacing = shows.last().map_or(own_spacing, |(sp, _)| *sp);
+            let (item, spacing) = match ways[j] {
+                Way::Own(o) => {
+                    let Some(d) = self.drawn.and_then(|d| d.get(o)) else {
+                        continue;
+                    };
+                    let next_to = o > 0 && self.last == Some(o - 1);
+                    if next_to {
+                        match shows.last_mut() {
+                            Some((_, items)) => items.extend(d.after_last.iter().cloned()),
+                            None => tail.items.extend(d.after_last.iter().cloned()),
+                        }
+                    }
+                    let spacing = self.t.runs[d.run].spacing;
+                    if shows.last().is_none_or(|(sp, _)| *sp != spacing) {
+                        shows.push((spacing, Vec::new()));
+                    }
+                    if next_to || (!self.started && o == 0) {
+                        let items = &mut shows.last_mut().expect("pushed").1;
+                        items.extend(d.before.iter().cloned());
+                    }
+                    self.near = o;
+                    match &d.ink {
+                        Ink::Code { n, .. } => self.last = Some(o + n - 1),
+                        Ink::Move(_) => self.last = Some(o),
+                    }
+                    (d.ink.clone(), spacing)
+                }
+                Way::WithBefore | Way::Missing => continue,
+                Way::Code => {
+                    let Some(bytes) = font.and_then(|f| f.code(text[j]).ok()) else {
+                        continue;
+                    };
+                    let format = match bytes.len() {
+                        1 => StringFormat::Literal,
+                        _ => StringFormat::Hexadecimal,
+                    };
+                    self.last = None;
+                    let code = Ink::Code {
+                        at: 0,
+                        n: 1,
+                        bytes,
+                        format,
+                    };
+                    (code, spacing)
+                }
+                Way::Space => {
+                    self.last = None;
+                    (Ink::Move(self.word_gap(s, spacing)), spacing)
+                }
+            };
+            self.started = true;
+            if shows.last().is_none_or(|(sp, _)| *sp != spacing) {
+                shows.push((spacing, Vec::new()));
+            }
+            match item {
+                Ink::Code { bytes, format, .. } => {
+                    put_code(&mut shows.last_mut().expect("pushed").1, &bytes, format)
+                }
+                Ink::Move(x) => {
+                    // A move reads as a space only after a character in its show: else at
+                    // the end of the show before, or of the piece before.
+                    let k = shows.len() - 1;
+                    if has_text(&shows[k].1) || (k == 0 && first) {
+                        shows[k].1.push(r(x));
+                    } else if k > 0 {
+                        let th = shows[k - 1].0[2] / spacing[2].max(1e-3);
+                        shows[k - 1].1.push(r(x / th.max(1e-3)));
+                    } else {
+                        tail.space = Some((x, size * spacing[2]));
+                    }
+                }
+            }
+        }
+        let shows = (shows.into_iter())
+            .filter(|(_, items)| !items.is_empty())
+            .map(|(sp, items)| (sp, op("TJ", vec![Object::Array(items)])))
+            .collect();
+        (tail, shows)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -456,6 +848,7 @@ fn upright(o: Orientation) -> Option<Operation> {
 fn rgb(o: &str, c: [f32; 3]) -> Operation {
     op(o, c.iter().map(|&x| r(x.clamp(0.0, 1.0))).collect())
 }
+#[cfg(test)]
 fn lit(b: Vec<u8>) -> Object {
     Object::String(b, StringFormat::Literal)
 }
@@ -918,43 +1311,45 @@ impl Pdf {
 
     /// Change several text objects of one page at once, each as [`Pdf::edit_text`] would,
     /// in one rewrite of the page's content: the ids are as the page is now, and the lines
-    /// written anew go on top in the order given. A part that keeps its own characters'
-    /// shows ([`TextPart::from`]) is read back: a line that doesn't read as it should then
-    /// is written without them. Returns the ids of the lines where characters that asked
-    /// to keep their shows couldn't, and were written in another font.
+    /// written anew go on top in the order given. A line with characters written in its own
+    /// fonts ([`PageObject::kept_pieces`]) is read back: one that doesn't read as it should
+    /// then is written with only its parts left as they were in them. Returns the ids of
+    /// those lines, whose characters were written in another font after all.
     pub fn edit_texts(
         &mut self,
         page_index: usize,
         edits: &[(usize, TextEdit)],
     ) -> Result<Vec<usize>> {
         let (page, parsed) = self.load_edit(page_index)?;
-        let mut cut = vec![true; edits.len()];
+        let mut own = vec![true; edits.len()];
+        let mut lost = Vec::new();
         loop {
-            let e = self.edited_ops(page, &parsed, edits, &cut)?;
-            let misread = self.misread(page, &parsed.inline, &e.ops, &e.cuts)?;
+            let e = self.edited_ops(page, &parsed, edits, &own)?;
+            let misread = self.misread(page, &parsed.inline, &e.ops, &e.checks)?;
             if misread.is_empty() {
                 self.commit(page, e.ops, e.depth, &parsed.inline)?;
-                return Ok(e.lost);
+                return Ok(lost);
             }
             for k in misread {
-                cut[k] = false;
+                own[k] = false;
+                lost.push(edits[k].0);
             }
         }
     }
 
-    /// The page's operators with `edits` made ([`Pdf::edit_texts`]), each edit's parts
-    /// cutting shows out of its line only where `cut` says.
+    /// The page's operators with `edits` made ([`Pdf::edit_texts`]), each edit's characters
+    /// written in its line's own fonts only where `own` says.
     fn edited_ops(
         &mut self,
         page: ObjectId,
         parsed: &Parsed,
         edits: &[(usize, TextEdit)],
-        cut: &[bool],
+        own: &[bool],
     ) -> Result<Edited> {
-        // A line is written in place of its first show (one style, its font kept), or on
+        // A line is written in place of its first show, as one show in its own font, or on
         // top of the page without its shows.
         enum Plan {
-            InPlace(usize, String),
+            InPlace(usize, Operation),
             OnTop(Vec<Operation>),
         }
         let mut lines: Vec<(&Obj, &TextData)> = Vec::new();
@@ -970,22 +1365,21 @@ impl Pdf {
             let t = (obj.text.as_ref()).ok_or_else(|| anyhow!("object {id} is not text"))?;
             lines.push((obj, t));
         }
-        // The lines written in parts, together, so they share the fonts they add.
-        let in_parts: Vec<usize> = (0..edits.len())
-            .filter(|&k| !lines[k].1.hidden && edits[k].1.one_style(lines[k].1).is_none())
-            .collect();
-        let asked: Vec<_> = (in_parts.iter())
-            .map(|&k| {
-                (
-                    Some((&parsed.ops[..], lines[k].1)),
-                    &edits[k].1.parts[..],
-                    cut[k],
-                )
+        // The parts each line is written in, the lines in parts written together, so they
+        // share the fonts they add.
+        let parts: Vec<_> = (edits.iter().zip(&lines))
+            .map(|((_, e), (_, t))| {
+                let first = t.spans.first().map(|s| (s.size, s.fill, s.rise));
+                (!t.hidden).then(|| e.parts_for(&t.text, first)).flatten()
             })
             .collect();
+        let asked: Vec<Asked> = (parts.iter().zip(&lines).zip(own))
+            .filter_map(|((p, (_, t)), &own)| Some((Some((parsed, *t)), &p.as_ref()?[..], own)))
+            .collect();
         let mut written = self.written_lines(page, &asked)?.into_iter();
-        let mut lost = Vec::new();
         let mut plans = Vec::new();
+        // Whether each line is read back, with what it should read.
+        let mut check = vec![None; edits.len()];
         for (k, ((_, e), (_, t))) in edits.iter().zip(&lines).enumerate() {
             let (dx, dy) = t.dir;
             let tm = [dx, dy, -dy, dx, t.origin.0, t.origin.1];
@@ -1017,43 +1411,42 @@ impl Pdf {
                     ]);
                 }
                 Plan::OnTop(ops)
-            } else if let Some(one) = e.one_style(t) {
-                if one.keeps_font(t.reuse) {
-                    // In place of the first show with characters, which is in the line's font.
-                    let first_run = (t.pieces.iter())
-                        .position(|p| p.chars.1 > p.chars.0)
-                        .map_or(t.runs[0].op, |k| t.runs[k].op);
-                    Plan::InPlace(first_run, one.text)
-                } else {
-                    // Replacement: the new text on top, in one style.
-                    let font = one.font.unwrap_or_else(|| FontChoice::of_font(&t.base));
-                    let size = one.size.unwrap_or(t.size).max(1.0);
-                    let color = one.color.or(t.fill).unwrap_or([0.0; 3]);
-                    let (fname, pen) = self.text_font(page, font, &one.text)?;
-                    Plan::OnTop(vec![
-                        op("q", vec![]),
-                        op("BT", vec![]),
-                        op("Tf", vec![name(&fname), r(size)]),
-                        rgb("rg", color),
-                        at,
-                        op("Tj", vec![pen.string(&one.text)]),
-                        op("ET", vec![]),
-                        op("Q", vec![]),
-                    ])
+            } else if let Some(parts) = &parts[k] {
+                // In parts: in place, as one show, when the line is in one style and
+                // spacing, changed in words only, all in its own font; else on top as one
+                // line.
+                let (written, pen) = written.next().expect("written");
+                if pen {
+                    check[k] = Some(e.text.clone());
+                }
+                match in_place(t, parts, &written) {
+                    Some((first, show)) => Plan::InPlace(first, show),
+                    None => {
+                        let mut ops = Vec::new();
+                        if !written.is_empty() {
+                            ops.push(op("q", vec![]));
+                            ops.extend(line_ops(tm, &written));
+                            ops.push(op("Q", vec![]));
+                        }
+                        Plan::OnTop(ops)
+                    }
                 }
             } else {
-                // In parts, written on top as one line.
-                let (parts, gone) = written.next().expect("written");
-                if gone {
-                    lost.push(edits[k].0);
-                }
-                let mut ops = Vec::new();
-                if !parts.is_empty() {
-                    ops.push(op("q", vec![]));
-                    ops.extend(line_ops(tm, &parts));
-                    ops.push(op("Q", vec![]));
-                }
-                Plan::OnTop(ops)
+                // Restyled in one style: the new text on top.
+                let font = e.font.unwrap_or_else(|| FontChoice::of_font(&t.base));
+                let size = e.size.unwrap_or(t.size).max(1.0);
+                let color = e.color.or(t.fill).unwrap_or([0.0; 3]);
+                let (fname, pen) = self.text_font(page, font, &e.text)?;
+                Plan::OnTop(vec![
+                    op("q", vec![]),
+                    op("BT", vec![]),
+                    op("Tf", vec![name(&fname), r(size)]),
+                    rgb("rg", color),
+                    at,
+                    op("Tj", vec![pen.string(&e.text)]),
+                    op("ET", vec![]),
+                    op("Q", vec![]),
+                ])
             };
             plans.push(plan);
         }
@@ -1070,14 +1463,18 @@ impl Pdf {
             shows.extend(t.runs.iter().map(|r| (r.op, (r.show, k))));
         }
         let mut out = Vec::with_capacity(parsed.ops.len() + 8 * edits.len());
+        let mut checks = Vec::new();
         for (i, o) in parsed.ops.iter().enumerate() {
             out.extend(fixes.get(&i).into_iter().flatten().cloned());
             match shows.get(&i) {
                 Some(&(show, k)) => {
                     out.extend(move_only(show));
-                    if let Plan::InPlace(first, text) = &plans[k] {
+                    if let Plan::InPlace(first, line) = &plans[k] {
                         if *first == i {
-                            out.push(op("Tj", vec![lit(text.clone().into_bytes())]));
+                            if let Some(want) = check[k].take() {
+                                checks.push((k, Check::InPlace(out.len()), want));
+                            }
+                            out.push(line.clone());
                         }
                     }
                 }
@@ -1085,162 +1482,179 @@ impl Pdf {
             }
         }
         if plans.iter().all(|p| matches!(p, Plan::InPlace(..))) {
-            let (ops, depth, cuts) = (out, parsed.depth_left, Vec::new());
-            return Ok(Edited {
-                ops,
-                depth,
-                cuts,
-                lost,
-            });
+            let (ops, depth) = (out, parsed.depth_left);
+            return Ok(Edited { ops, depth, checks });
+        }
+        // Closing what the page leaves open may put a `q` before it all.
+        let shift = usize::from(leaks_state(&out));
+        for (_, at, _) in &mut checks {
+            if let Check::InPlace(i) = at {
+                *i += shift;
+            }
         }
         let mut ops = closed(out, parsed.depth_left);
-        let mut cuts = Vec::new();
         for (k, plan) in plans.into_iter().enumerate() {
             if let Plan::OnTop(line) = plan {
                 let from = ops.len();
                 ops.extend(line);
-                let shows_cut = (edits[k].1.parts.iter()).any(|p| p.from.is_some()) && cut[k];
-                if shows_cut && !lines[k].1.hidden {
-                    cuts.push((k, (from, ops.len()), edits[k].1.text.clone()));
+                if let Some(want) = check[k].take() {
+                    checks.push((k, Check::OnTop(from, ops.len()), want));
                 }
             }
         }
         Ok(Edited {
             ops,
             depth: 0,
-            cuts,
-            lost,
+            checks,
         })
     }
 
-    /// Which of the lines written with shows cut out of their old ones (their index, their
-    /// operators from and to in `ops`, and the text they should read) don't read as the
-    /// same words, as the page will be read with `ops` as its content.
+    /// Which of the lines with characters written in their own fonts (their index, where
+    /// they are in `ops`, and the text they should read) don't read as the same words, as
+    /// the page will be read with `ops` as its content. A line changed in place may now read
+    /// as one with the text next to it.
     fn misread(
         &self,
         page: ObjectId,
         inline: &Inline,
         ops: &[Operation],
-        cuts: &[(usize, (usize, usize), String)],
+        checks: &[(usize, Check, String)],
     ) -> Result<Vec<usize>> {
-        if cuts.is_empty() {
+        if checks.is_empty() {
             return Ok(Vec::new());
         }
         let bytes = (inline.encode(ops.to_vec()))
             .map_err(|e| anyhow!("cannot encode the page content: {e}"))?;
         let parsed = self.parse_as_page(page, &bytes)?;
-        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-        Ok(cuts
+        // A ligature character typed reads back as its letters, as the page is read.
+        let words = |s: &str| {
+            let s: String = s.chars().map(crate::fonts::unligature).collect();
+            s.split_whitespace().map(str::to_string).collect::<Vec<_>>()
+        };
+        let read = |keep: &dyn Fn(&Obj) -> bool| -> String {
+            (parsed.objs.iter())
+                .filter(|o| keep(o))
+                .filter_map(|o| o.text.as_ref())
+                .map(|t| t.text.as_str())
+                .collect()
+        };
+        Ok(checks
             .iter()
-            .filter(|(_, (from, to), want)| {
-                let read: String = (parsed.objs.iter())
-                    .filter(|o| (*from..*to).contains(&o.first))
-                    .filter_map(|o| o.text.as_ref())
-                    .map(|t| t.text.as_str())
-                    .collect();
-                words(&read) != words(want)
+            .filter(|(_, at, want)| {
+                let want = words(want);
+                match *at {
+                    Check::OnTop(from, to) => {
+                        words(&read(&|o| (from..to).contains(&o.first))) != want
+                    }
+                    Check::InPlace(i) => {
+                        let got = words(&read(&|o| o.first <= i && i <= o.last));
+                        want.is_empty() || !got.windows(want.len()).any(|w| w == want)
+                    }
+                }
             })
             .map(|(k, ..)| *k)
             .collect())
     }
 
-    /// `parts` as they are written, with the fonts they need added to the page's
+    /// New text in `parts` as it is written, with the fonts it needs added to the page's
     /// resources ([`Pdf::written_lines`]).
-    fn written(
-        &mut self,
-        page: ObjectId,
-        line: Option<(&[Operation], &TextData)>,
-        parts: &[TextPart],
-    ) -> Result<Vec<Written>> {
-        let mut lines = self.written_lines(page, &[(line, parts, false)])?;
+    fn written(&mut self, page: ObjectId, parts: &[TextPart]) -> Result<Vec<Written>> {
+        let mut lines = self.written_lines(page, &[(None, parts, false)])?;
         Ok(lines.remove(0).0)
     }
 
     /// Lines of parts as they are written ([`Asked`]), with the fonts they need added to the
-    /// page's resources, one for each font chosen. The parts of an edited line keep the
-    /// font of the line's part they name when they can ([`PageObject::keeps_font`]),
-    /// cutting their shows out of that part's when allowed; new text has none to name.
-    /// Empty parts are left out. With each line, whether characters that asked to keep
-    /// their shows couldn't.
+    /// page's resources, one for each font chosen. The parts of an edited line are written
+    /// in the font of the line's part they name where they can ([`PageObject::kept_pieces`]:
+    /// a part as it was with its shows as they were, others character by character), the
+    /// rest in the installed family that font is from or the nearest standard font; new
+    /// text has none to name. Empty parts are left out. With each line, whether characters
+    /// were written in its own fonts character by character, which reads back.
     fn written_lines(
         &mut self,
         page: ObjectId,
         lines: &[Asked],
     ) -> Result<Vec<(Vec<Written>, bool)>> {
-        // A part keeps its font, written with these shows, or is written in a font added.
+        // A piece of a part keeps its font, written with these shows, or is written in a
+        // font added; with what goes at its end from the piece after it.
         enum How {
-            Own(Vec<u8>, Vec<([f32; 3], Operation)>),
+            Own(Vec<u8>, Shows),
             New(FontChoice),
         }
-        let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-        let page_fonts = self.resolved_dict(res.get(b"Font").ok());
-        let mut hows = Vec::new();
-        {
-            // The page's fonts as the page is read, for cutting shows.
-            let mut ctxs: HashMap<&[u8], Option<FontCtx>> = HashMap::new();
-            for &(line, parts, cut) in lines {
-                let chars: Vec<char> = line.map_or(Vec::new(), |(_, t)| t.text.chars().collect());
-                let mut gone = false;
-                let mut line_hows = Vec::new();
-                for p in parts.iter().filter(|p| !p.text.is_empty()) {
-                    let how = match (p.font, line) {
-                        (PartFont::Choice(c), _) => How::New(c),
-                        (PartFont::Span(i), Some((ops, t))) => {
-                            let s = (t.spans.get(i)).ok_or_else(|| {
-                                anyhow!("the line has no part {i} (the page changed)")
-                            })?;
-                            let ascii_show = || {
-                                let spacing = t.runs[s.runs.0].spacing;
-                                let show = op("Tj", vec![lit(p.text.clone().into_bytes())]);
-                                How::Own(s.font.clone(), vec![(spacing, show)])
-                            };
-                            match kept(&chars, s.chars, s.reuse, t.vertical, &p.text, p.from) {
-                                Some(Kept::AsItWas) => {
-                                    How::Own(s.font.clone(), shows_as_they_were(ops, t, s))
-                                }
-                                Some(Kept::Cut(a, b)) => {
-                                    let ctx = ctxs.entry(s.font.as_slice()).or_insert_with(|| {
-                                        let d = page_fonts.get(&s.font).ok()?;
-                                        let (_, d) = self.doc.dereference(d).ok()?;
-                                        d.as_dict().ok().map(|d| FontCtx::new(&self.doc, d))
-                                    });
-                                    let shows = (cut)
-                                        .then(|| shows_cut(ops, t, s, ctx.as_ref(), (a, b)))
-                                        .flatten();
-                                    match shows {
-                                        Some((lead, mut shows)) => {
-                                            // A space made by a move ends the part before.
-                                            let before = line_hows.last_mut();
-                                            match (lead, before) {
-                                                (Some(x), Some((_, _, tail))) => *tail = Some(x),
-                                                (Some(x), None) => {
-                                                    let x = op("TJ", vec![Object::Array(vec![x])]);
-                                                    shows.insert(0, (run_spacing(t, s), x));
-                                                }
-                                                (None, _) => {}
-                                            }
-                                            How::Own(s.font.clone(), shows)
-                                        }
-                                        None if s.reuse && ascii(&p.text) => ascii_show(),
-                                        None => {
-                                            gone = true;
-                                            How::New(FontChoice::of_font(&s.base))
-                                        }
-                                    }
-                                }
-                                Some(Kept::Ascii) => ascii_show(),
-                                None => How::New(FontChoice::of_font(&s.base)),
-                            }
-                        }
-                        (PartFont::Span(_), None) => {
-                            bail!("new text has no font of its own to keep")
-                        }
+        // Each line's pieces, and whether any was written character by character.
+        type Line = (Vec<(TextPart, How, Tail)>, bool);
+        let mut hows: Vec<Line> = Vec::new();
+        let font_dict = self.font_resources(page);
+        let mut page_fonts = PageFonts::new(&self.doc, &font_dict);
+        for &(line, parts, own) in lines {
+            let mut line_hows: Vec<(TextPart, How, Tail)> = Vec::new();
+            let parts = parts.iter().filter(|p| !p.text.is_empty());
+            let Some((parsed, t)) = line else {
+                for p in parts {
+                    let PartFont::Choice(c) = p.font else {
+                        bail!("new text has no font of its own to keep");
                     };
-                    line_hows.push((p, how, None));
+                    line_hows.push((p.clone(), How::New(c), Tail::default()));
                 }
-                hows.push((line_hows, gone));
+                hows.push((line_hows, false));
+                continue;
+            };
+            let fonts = page_fonts.of(parsed, t);
+            let drawn = fonts.first().and_then(LineFont::drawn);
+            let chars: Vec<char> = t.text.chars().collect();
+            let mut pen = OwnPen::new(t, drawn);
+            let mut used = false;
+            for p in parts {
+                let i = match p.font {
+                    PartFont::Choice(c) => {
+                        pen.apart();
+                        line_hows.push((p.clone(), How::New(c), Tail::default()));
+                        continue;
+                    }
+                    PartFont::Span(i) => i,
+                };
+                let s = (t.spans.get(i))
+                    .ok_or_else(|| anyhow!("the line has no part {i} (the page changed)"))?;
+                let text: Vec<char> = p.text.chars().collect();
+                if !t.vertical && chars.get(s.chars.0..s.chars.1) == Some(&text[..]) {
+                    pen.apart();
+                    let shows = shows_as_they_were(&parsed.ops, t, s);
+                    line_hows.push((p.clone(), How::Own(s.font.clone(), shows), Tail::default()));
+                    continue;
+                }
+                let other = FontChoice::of_font(&s.base);
+                if !own {
+                    pen.apart();
+                    line_hows.push((p.clone(), How::New(other), Tail::default()));
+                    continue;
+                }
+                let font = fonts.get(i);
+                let ways = plan(&chars, s.chars, drawn, font, &text, |j| p.origin(j));
+                for piece in pieces(&text, &ways) {
+                    let (a, b) = piece.chars;
+                    let sub = TextPart {
+                        text: text[a..b].iter().collect(),
+                        from: None,
+                        origins: Vec::new(),
+                        ..p.clone()
+                    };
+                    if !piece.kept {
+                        pen.apart();
+                        line_hows.push((sub, How::New(other), Tail::default()));
+                        continue;
+                    }
+                    let (tail, shows) = pen.write(s, font, &text, &ways, a..b, p.size.max(1.0));
+                    used = true;
+                    if let Some((_, _, before)) = line_hows.last_mut() {
+                        before.items.extend(tail.items);
+                        before.space = tail.space.or(before.space);
+                    }
+                    line_hows.push((sub, How::Own(s.font.clone(), shows), Tail::default()));
+                }
             }
+            hows.push((line_hows, used));
         }
+        drop(page_fonts);
         // One font added for each one chosen, holding all the text written in it.
         let mut texts: Vec<(FontChoice, String)> = Vec::new();
         for (p, how, _) in hows.iter().flat_map(|(h, _)| h) {
@@ -1256,7 +1670,8 @@ impl Pdf {
             let (name, pen) = self.text_font(page, c, &text)?;
             fonts.push((c, name, pen));
         }
-        let write = |(p, how, tail): (&TextPart, How, Option<Object>)| {
+        let write = |(p, how, tail): (TextPart, How, Tail)| {
+            let size = p.size.max(1.0);
             let (font, mut shows) = match how {
                 How::Own(font, shows) => (font, shows),
                 How::New(c) => {
@@ -1265,24 +1680,30 @@ impl Pdf {
                     (name.as_bytes().to_vec(), vec![([0.0, 0.0, 1.0], show)])
                 }
             };
-            match (tail, shows.last_mut()) {
-                (Some(x), Some((_, show))) => then_move(show, x),
-                (Some(x), None) => {
-                    shows.push(([0.0, 0.0, 1.0], op("TJ", vec![Object::Array(vec![x])])))
-                }
-                (None, _) => {}
+            let mut items = tail.items;
+            if let Some((x, units)) = tail.space {
+                let th = shows.last().map_or(1.0, |(sp, _)| sp[2]);
+                let here = (size * th).max(1e-3);
+                items.push(r(if units == here { x } else { x * units / here }));
+            }
+            match shows.last_mut() {
+                _ if items.is_empty() => {}
+                Some((_, show)) => then_move(show, items),
+                None => shows.push(([0.0, 0.0, 1.0], op("TJ", vec![Object::Array(items)]))),
             }
             Written {
                 font,
-                size: p.size.max(1.0),
+                size,
                 color: p.color,
                 rise: p.rise,
                 shows,
             }
         };
+        // A piece with nothing to show (a space that went to the piece before) is left out.
+        let shown = |w: &Written| !w.shows.is_empty();
         Ok(hows
             .into_iter()
-            .map(|(h, gone)| (h.into_iter().map(write).collect(), gone))
+            .map(|(h, used)| (h.into_iter().map(write).filter(shown).collect(), used))
             .collect())
     }
 
@@ -1424,6 +1845,7 @@ impl Pdf {
             color,
             rise: 0.0,
             from: None,
+            origins: Vec::new(),
         };
         self.add_text_parts(page_index, pos, &[part])
     }
@@ -1441,7 +1863,7 @@ impl Pdf {
         }
         let parts = parts.to_vec();
         self.append_layer(page_index, move |s, page| {
-            let written = s.written(page, None, &parts)?;
+            let written = s.written(page, &parts)?;
             Ok(line_ops([1.0, 0.0, 0.0, -1.0, pos.0, pos.1], &written))
         })
     }
@@ -1574,7 +1996,7 @@ mod tests {
             op("ET", vec![]),
         ];
         let (_, inline) = crate::inline::extract(b"").unwrap();
-        let want = |text: &str| vec![(3, (0, ops.len()), text.to_string())];
+        let want = |text: &str| vec![(3, Check::OnTop(0, ops.len()), text.to_string())];
         let misread = |text: &str| p.misread(page, &inline, &ops, &want(text)).unwrap();
         assert_eq!(misread("one two"), [3]);
         assert_eq!(misread("onetwo"), Vec::<usize>::new());

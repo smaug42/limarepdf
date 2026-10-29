@@ -729,7 +729,8 @@ fn keeps_font_says_which_font_an_edit_writes() {
         p.insert_blank(0, W as f32, H as f32).unwrap();
         set_content_in(&mut p, base, "BT /F1 12 Tf 20 150 Td (Seal) Tj ET");
         let o = &p.page_objects(0).unwrap()[0];
-        assert_eq!(e.keeps_font(o.font_reusable), kept, "{base} {:?}", e.text);
+        let fonts = p.line_fonts(0, o.id).unwrap();
+        assert_eq!(e.keeps_font(o, &fonts), kept, "{base} {:?}", e.text);
         p.edit_text(0, 0, &e).unwrap();
         let o = &p.page_objects(0).unwrap()[0];
         assert_eq!(o.text.as_deref(), Some(e.text.as_str()));

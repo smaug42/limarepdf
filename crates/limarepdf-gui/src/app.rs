@@ -4826,70 +4826,421 @@ fn divider(ui: &mut egui::Ui) {
     ui.painter().vline(rect.center().x, rect.y_range(), stroke);
 }
 
-/// A document tab: the file's icon and name, "Unsaved" while it has unsaved changes, and a
-/// close button. The tab shown is a card joined to the commands below it. Returns whether
-/// the tab or its close button was clicked, and where it is.
-fn tab_button(ui: &mut egui::Ui, name: &str, dirty: bool, on: bool) -> (bool, bool, egui::Rect) {
+/// The most a document tab takes; a longer name is cut short with "…".
+const TAB_MOST: f32 = 240.0;
+/// The least a document tab shrinks to as more open, before the tabs scroll instead: room
+/// for its icon, about ten characters of its name and its close button.
+const TAB_LEAST: f32 = 160.0;
+/// The least room a tab's name keeps beside the word "Unsaved", about ten characters; a tab
+/// with less shows a dot for the word.
+const NAME_LEAST: f32 = 70.0;
+/// A document tab's height, and the room between two tabs.
+const TAB_HEIGHT: f32 = 34.0;
+const TAB_GAP: f32 = 6.0;
+/// A document tab's margins at its left and right, the room between its parts, and its close
+/// button's size.
+const TAB_LEFT: f32 = 12.0;
+const TAB_RIGHT: f32 = 6.0;
+const TAB_SPACE: f32 = 8.0;
+const TAB_CLOSE: f32 = 22.0;
+/// The size of each of the arrows and the documents button at the tab strip's right.
+const STRIP_BUTTON: f32 = 26.0;
+/// The most a name takes in the menu of open documents.
+const MENU_NAME_MOST: f32 = 360.0;
+
+/// The parts every document tab has, laid out once a frame: its icon, the word "Unsaved" and
+/// the dot standing for it on a tab too narrow for the word, and the names' font.
+struct TabParts {
+    icon: Arc<egui::Galley>,
+    unsaved: Arc<egui::Galley>,
+    dot: Arc<egui::Galley>,
+    font: egui::FontId,
+}
+
+impl TabParts {
+    fn new(ui: &egui::Ui) -> Self {
+        let lay = |text: &str, font| {
+            let p = ui.painter();
+            p.layout_no_wrap(text.into(), font, egui::Color32::PLACEHOLDER)
+        };
+        Self {
+            icon: lay(icon::FILE_TEXT, egui::FontId::new(16.0, theme::icons())),
+            unsaved: lay("Unsaved", egui::FontId::proportional(11.0)),
+            dot: lay(icon::CIRCLE, egui::FontId::new(8.0, theme::icons_fill())),
+            font: egui::TextStyle::Button.resolve(ui.style()),
+        }
+    }
+
+    /// What a tab takes besides its name and its unsaved mark.
+    fn fixed(&self) -> f32 {
+        TAB_LEFT + self.icon.size().x + TAB_SPACE + TAB_SPACE + TAB_CLOSE + TAB_RIGHT
+    }
+
+    /// The room the word "Unsaved" takes after a name, and the dot standing for it.
+    fn word(&self) -> f32 {
+        TAB_SPACE + self.unsaved.size().x
+    }
+
+    fn dot(&self) -> f32 {
+        TAB_GAP + self.dot.size().x
+    }
+
+    /// The width of a tab showing all of `name`, up to [`TAB_MOST`].
+    fn own_width(&self, ui: &egui::Ui, name: &str, dirty: bool) -> f32 {
+        let mark = if dirty { self.word() } else { 0.0 };
+        let name = text_width(ui, name, &self.font);
+        (self.fixed() + name + mark).ceil().min(TAB_MOST)
+    }
+}
+
+/// The width of `text` in `font`, on one line.
+fn text_width(ui: &egui::Ui, text: &str, font: &egui::FontId) -> f32 {
+    let p = ui.painter();
+    let g = p.layout_no_wrap(text.into(), font.clone(), egui::Color32::PLACEHOLDER);
+    g.size().x
+}
+
+/// `text` as it fits `room` points in `font`: as it is, or its start cut short with "…".
+fn shortened(ui: &egui::Ui, text: &str, font: &egui::FontId, room: f32) -> String {
+    if text_width(ui, text, font) <= room {
+        return text.to_string();
+    }
+    let cut = |kept: usize| {
+        let end = text.char_indices().nth(kept).map_or(text.len(), |(i, _)| i);
+        format!("{}…", text[..end].trim_end())
+    };
+    // The most characters that fit with "…" after them.
+    let (mut lo, mut hi) = (0, text.chars().count());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if text_width(ui, &cut(mid), font) <= room {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    cut(lo)
+}
+
+/// The widths of tabs whose own widths are `own` in `room` points: their own while they all
+/// fit; else the widest cut to an equal share of what the narrower leave, none below
+/// [`TAB_LEAST`] (or its own width, when less), and then they don't all fit.
+fn shared_widths(own: &[f32], room: f32) -> Vec<f32> {
+    let gaps = TAB_GAP * own.len().saturating_sub(1) as f32;
+    if own.iter().sum::<f32>() + gaps <= room {
+        return own.to_vec();
+    }
+    let mut narrow_first = own.to_vec();
+    narrow_first.sort_by(f32::total_cmp);
+    let (mut left, mut share) = (room - gaps, 0.0);
+    for (i, w) in narrow_first.iter().enumerate() {
+        share = left / (narrow_first.len() - i) as f32;
+        if *w > share {
+            break;
+        }
+        left -= w;
+    }
+    let share = share.floor().max(TAB_LEAST);
+    own.iter().map(|w| w.min(share)).collect()
+}
+
+/// A tab's name for screen readers: its document's, saying when it has unsaved changes.
+fn tab_title(name: &str, dirty: bool) -> String {
+    if dirty {
+        format!("{name}, unsaved")
+    } else {
+        name.to_string()
+    }
+}
+
+/// How far the document tabs are scrolled, with the tab in front, the number of tabs and the
+/// room they were last drawn with: when any of those changes, the tab in front is scrolled
+/// into view.
+#[derive(Clone, Copy, Default)]
+struct TabScroll {
+    offset: f32,
+    front: Option<u64>,
+    count: usize,
+    room: f32,
+}
+
+/// What was done to a document tab this frame.
+struct TabUse {
+    /// The tab was clicked, to bring it to the front.
+    pick: bool,
+    close: bool,
+    /// The tab or its close button has just been given the keyboard.
+    focused: bool,
+}
+
+/// A document tab at `rect` in the tab strip `ui` (clipped to the part of the strip seen):
+/// the file's icon and name, cut short with "…" when the tab is narrower than the name,
+/// "Unsaved" while it has unsaved changes (a dot for the word when there is no room for it),
+/// and a close button; the full name on hover. The tab shown is a card joined to the
+/// commands below it. Its ids come from the tab's `id`, so the keyboard and a click stay on
+/// it as tabs before it close.
+fn tab_button(
+    ui: &mut egui::Ui,
+    parts: &TabParts,
+    id: u64,
+    (name, dirty): (&str, bool),
+    rect: egui::Rect,
+    on: bool,
+) -> TabUse {
+    let id = egui::Id::unique(("document tab", id));
+    let mut ui = ui.new_child(egui::UiBuilder::new().scope_id(id).max_rect(rect));
     let dark = ui.visuals().dark_mode;
+    // A tab, saying whether it is the one shown.
+    let pick = ui.interact(rect, id.with("pick"), egui::Sense::click());
+    let title = tab_title(name, dirty);
+    pick.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Tab, true, &title));
+    ui.ctx()
+        .accesskit_node_builder(pick.id, |n| n.set_selected(on));
     let top = egui::CornerRadius {
         nw: 7,
         ne: 7,
         sw: 0,
         se: 0,
     };
-    let (fill, stroke) = if on {
-        (
-            theme::surface(dark),
-            egui::Stroke::new(1.0, theme::border(dark)),
-        )
-    } else {
-        (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
+    let p = ui.painter();
+    if on {
+        let fill = theme::surface(dark);
+        p.rect_filled(rect, top, fill);
+        let edge = egui::Stroke::new(1.0, theme::border(dark));
+        p.rect_stroke(rect, top, edge, egui::StrokeKind::Inside);
+        // Open at the bottom, onto the commands.
+        let across = rect.left() + 1.0..=rect.right() - 1.0;
+        p.hline(across, rect.bottom() - 0.5, egui::Stroke::new(1.0, fill));
+    }
+    if pick.has_focus() {
+        let ring = ui.visuals().selection.stroke;
+        p.rect_stroke(rect.shrink(1.0), top, ring, egui::StrokeKind::Inside);
+    }
+    let mid = rect.center().y;
+    let at = |x: f32, g: &egui::Galley| egui::pos2(x, mid - g.size().y / 2.0);
+    let mut x = rect.left() + TAB_LEFT;
+    let plain = ui.visuals().text_color();
+    p.galley(at(x, &parts.icon), parts.icon.clone(), plain);
+    x += parts.icon.size().x + TAB_SPACE;
+    // The name, and "Unsaved" after it while there is room for the word beside about ten
+    // characters of the name (or all of it), else a dot.
+    let room = rect.width() - parts.fixed();
+    let whole = text_width(&ui, name, &parts.font);
+    let word = dirty && room - parts.word() >= whole.min(NAME_LEAST);
+    let mark = match (dirty, word) {
+        (false, _) => 0.0,
+        (true, true) => parts.word(),
+        (true, false) => parts.dot(),
     };
-    let title = if dirty {
-        format!("{name}, unsaved")
+    let shown = shortened(&ui, name, &parts.font, room - mark);
+    let ink = if on || pick.hovered() {
+        ui.style().interact(&pick).text_color()
+    } else {
+        theme::muted(dark)
+    };
+    let g = p.layout_no_wrap(shown, parts.font.clone(), ink);
+    p.galley(at(x, &g), g.clone(), ink);
+    x += g.size().x;
+    if dirty {
+        let (gap, g) = match word {
+            true => (TAB_SPACE, &parts.unsaved),
+            false => (TAB_GAP, &parts.dot),
+        };
+        p.galley(at(x + gap, g), g.clone(), theme::muted(dark));
+    }
+    let centre = egui::pos2(rect.right() - TAB_RIGHT - TAB_CLOSE / 2.0, mid);
+    // Narrow enough for the glyph to fit its place.
+    ui.spacing_mut().button_padding.x = 4.0;
+    let closer = egui::Button::new(theme::icon(icon::X).size(12.0))
+        .frame_when_inactive(false)
+        .min_size(egui::Vec2::splat(TAB_CLOSE));
+    let closer = ui.put(
+        egui::Rect::from_center_size(centre, egui::Vec2::splat(TAB_CLOSE)),
+        closer,
+    );
+    closer.widget_info(|| named(&format!("Close {name}")));
+    let focused = pick.gained_focus() || closer.gained_focus();
+    let close = closer.on_hover_text("Close tab").clicked();
+    let tip = if dirty {
+        format!("{name}\nUnsaved changes")
     } else {
         name.to_string()
     };
-    let r = egui::Frame::new()
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(top)
-        .inner_margin(egui::Margin {
-            left: 12,
-            right: 6,
-            top: 6,
-            bottom: 6,
-        })
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            ui.label(theme::icon(icon::FILE_TEXT).size(16.0));
-            let text = egui::RichText::new(name);
-            let text = if on {
-                text
-            } else {
-                text.color(theme::muted(dark))
-            };
-            // A tab, saying whether it is the one shown.
-            let pick = ui.add(egui::Button::new(text).frame(false));
-            pick.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Tab, true, &title));
-            ui.ctx()
-                .accesskit_node_builder(pick.id, |n| n.set_selected(on));
-            let pick = pick.clicked();
-            if dirty {
-                let unsaved = egui::RichText::new("Unsaved")
-                    .size(11.0)
-                    .color(theme::muted(dark));
-                ui.add(egui::Label::new(unsaved).selectable(false));
-            }
-            let x = egui::Button::new(theme::icon(icon::X).size(12.0))
+    TabUse {
+        pick: pick.on_hover_text(tip).clicked(),
+        close,
+        focused,
+    }
+}
+
+/// The row of document tabs: each at its own width up to [`TAB_MOST`]; when they don't all
+/// fit, sharing the room, down to [`TAB_LEAST`]; past that the row scrolls, by the wheel over
+/// it (an upright wheel too, as in web browsers) or the arrows at its right, and a button
+/// there lists every open document. The tab in front is scrolled into view when it, the
+/// number of tabs or the room changes, and a tab given the keyboard is too. Every part is
+/// placed by measure, so the row is as wide as the room and one tab high whatever the tabs.
+/// Returns the tab chosen and the one whose close button was clicked.
+fn tab_strip(ui: &mut egui::Ui, tabs: &[Tab], active: usize) -> (Option<usize>, Option<u64>) {
+    let parts = TabParts::new(ui);
+    let names: Vec<(String, bool)> = tabs.iter().map(|t| (t.name(), t.unsaved())).collect();
+    let own: Vec<f32> = (names.iter())
+        .map(|(name, dirty)| parts.own_width(ui, name, *dirty))
+        .collect();
+    let room = ui.available_width();
+    let widths = shared_widths(&own, room);
+    // Where each tab starts, from the first one's left.
+    let mut starts = Vec::with_capacity(tabs.len());
+    let mut end = 0.0f32;
+    for w in &widths {
+        starts.push(end);
+        end += w + TAB_GAP;
+    }
+    let content = (end - TAB_GAP).max(0.0);
+    let more = content > room + 0.5;
+    let (row, _) = ui.allocate_exact_size(egui::vec2(room, TAB_HEIGHT), egui::Sense::hover());
+    let ends = if more {
+        TAB_GAP + 3.0 * STRIP_BUTTON
+    } else {
+        0.0
+    };
+    let right = (row.right() - ends).max(row.left());
+    let view = egui::Rect::from_min_max(row.min, egui::pos2(right, row.bottom()));
+    let most = (content - view.width()).max(0.0);
+    // `offset` moved the least that shows tab `i` whole (its start, if it is wider than the
+    // part seen).
+    let into_view = |offset: f32, i: usize| {
+        let shows_end = starts[i] + widths[i] - view.width();
+        offset.max(shows_end).min(starts[i])
+    };
+    let key = ui.scope_id().with("document tabs");
+    let mut s: TabScroll = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    let front = tabs.get(active).map(|t| t.id);
+    let changed = s.front != front || s.count != tabs.len() || (s.room - room).abs() > 0.5;
+    if changed && active < tabs.len() {
+        s.offset = into_view(s.offset, active);
+    }
+    if more && ui.rect_contains_pointer(row) {
+        let wheel = ui.input(|i| i.smooth_scroll_delta);
+        if wheel != egui::Vec2::ZERO {
+            s.offset -= wheel.x + wheel.y;
+            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+        }
+    }
+    s.offset = s.offset.clamp(0.0, most);
+    let drawn_at = s.offset;
+
+    // Every tab, those out of view too, so a click egui follows on one isn't lost.
+    let mut strip = ui.new_child(egui::UiBuilder::new().max_rect(view));
+    strip.shrink_clip_rect(view);
+    let (mut pick, mut close, mut shown) = (None, None, None);
+    for (i, t) in tabs.iter().enumerate() {
+        let min = egui::pos2(view.left() + starts[i] - s.offset, row.top());
+        let rect = egui::Rect::from_min_size(min, egui::vec2(widths[i], TAB_HEIGHT));
+        let (name, dirty) = &names[i];
+        let on = i == active;
+        let used = tab_button(&mut strip, &parts, t.id, (name, *dirty), rect, on);
+        if on {
+            shown = Some(rect);
+        }
+        if used.pick {
+            pick = Some(i);
+        }
+        if used.close {
+            close = Some(t.id);
+        }
+        if used.focused {
+            s.offset = into_view(s.offset, i);
+        }
+    }
+
+    // The arrows and the documents button, while the tabs don't all fit.
+    if more {
+        let dark = ui.visuals().dark_mode;
+        let place = |k: f32| {
+            let x = view.right() + TAB_GAP + (k + 0.5) * STRIP_BUTTON;
+            let centre = egui::pos2(x, row.center().y);
+            egui::Rect::from_center_size(centre, egui::Vec2::splat(STRIP_BUTTON))
+        };
+        let ends_id = key.with("ends");
+        let mut ends = ui.new_child(egui::UiBuilder::new().scope_id(ends_id).max_rect(row));
+        // Narrow enough for each glyph to fit its place.
+        ends.spacing_mut().button_padding.x = 4.0;
+        let mut arrow = |k: f32, glyph: &str, name: &str, enabled: bool| {
+            let b = egui::Button::new(theme::icon(glyph).size(14.0))
                 .frame_when_inactive(false)
-                .min_size(egui::vec2(22.0, 22.0));
-            let x = ui.add(x);
-            x.widget_info(|| named(&format!("Close {name}")));
-            (pick, x.on_hover_text("Close tab").clicked())
+                .min_size(egui::Vec2::splat(STRIP_BUTTON));
+            let r = ends.put(place(k), |ui: &mut egui::Ui| ui.add_enabled(enabled, b));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
+            r.on_hover_text(name).clicked()
+        };
+        let (can_left, can_right) = (s.offset > 0.5, s.offset < most - 0.5);
+        let to_left = arrow(0.0, icon::CARET_LEFT, "Scroll tabs left", can_left);
+        let to_right = arrow(1.0, icon::CARET_RIGHT, "Scroll tabs right", can_right);
+        if to_left {
+            // The last tab starting left of the part seen, to its left edge.
+            let i = starts.iter().rposition(|&x| x < s.offset - 0.5);
+            s.offset = i.map_or(0.0, |i| starts[i]);
+        }
+        if to_right {
+            // The first tab ending right of it, to its right edge.
+            let seen_to = s.offset + view.width() + 0.5;
+            let i = (0..tabs.len()).find(|&i| starts[i] + widths[i] > seen_to);
+            s.offset = i.map_or(most, |i| starts[i] + widths[i] - view.width());
+        }
+        let list = egui::Button::new(theme::icon(icon::CARET_DOWN).size(14.0))
+            .frame_when_inactive(false)
+            .min_size(egui::Vec2::splat(STRIP_BUTTON));
+        let all = "All open documents";
+        // Every open document in tab order, the one in front chosen.
+        let menu = |ui: &mut egui::Ui| {
+            for (i, (name, dirty)) in names.iter().enumerate() {
+                let mut text = egui::Atoms::new(shortened(ui, name, &parts.font, MENU_NAME_MOST));
+                if *dirty {
+                    let unsaved = egui::RichText::new("Unsaved").size(11.0);
+                    text.push_right(unsaved.color(theme::muted(dark)));
+                }
+                let on = i == active;
+                let r = ui.add(egui::RadioButton::new(on, text));
+                let title = tab_title(name, *dirty);
+                let role = egui::Role::RadioButton;
+                r.widget_info(|| egui::WidgetInfo::selected(role, true, on, &title));
+                if r.clicked() {
+                    pick = Some(i);
+                    ui.close();
+                }
+            }
+        };
+        ends.put(place(2.0), |ui: &mut egui::Ui| {
+            let (r, _) = egui::containers::menu::MenuButton::from_button(list).ui(ui, menu);
+            r.widget_info(|| named(all));
+            r.on_hover_text(all)
         });
-    let (pick, x) = r.inner;
-    (pick, x, r.response.rect)
+    }
+    if s.offset != drawn_at {
+        ui.ctx().request_repaint();
+    }
+    s.front = front;
+    s.count = tabs.len();
+    s.room = room;
+    ui.data_mut(|d| d.insert_temp(key, s));
+
+    // The line under the tabs, open under the one shown where it is seen, which joins the
+    // commands below it.
+    let y = row.bottom() - 0.5;
+    let across = ui.clip_rect().x_range();
+    let stroke = egui::Stroke::new(1.0, theme::border(ui.visuals().dark_mode));
+    let p = ui.painter();
+    let open = shown.map(|r| r.x_range().intersection(view.x_range()));
+    match open.filter(|r| r.span() > 0.0) {
+        Some(at) => {
+            p.hline(across.min..=at.min, y, stroke);
+            p.hline(at.max..=across.max, y, stroke);
+        }
+        None => {
+            p.hline(across, y, stroke);
+        }
+    }
+    (pick, close)
 }
 
 /// The inspector's heading: what it shows ("Selected text", "Document").
@@ -5770,39 +6121,11 @@ impl eframe::App for App {
                 .show_separator_line(false)
                 .show(ui, |ui| {
                     regions::name(ui, Region::Tabs);
-                    let mut shown = None;
-                    let row = ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-                        for i in 0..self.tabs.len() {
-                            let t = &self.tabs[i];
-                            let on = i == self.active;
-                            let (pick, x, at) = tab_button(ui, &t.name(), t.unsaved(), on);
-                            if on {
-                                shown = Some(at);
-                            }
-                            if pick {
-                                self.active = i;
-                            }
-                            if x {
-                                close = Some(self.tabs[i].id);
-                            }
-                        }
-                    });
-                    // The line under the tabs, open under the one shown, which joins the
-                    // commands below it.
-                    let y = row.response.rect.bottom() - 0.5;
-                    let across = ui.clip_rect().x_range();
-                    let stroke = egui::Stroke::new(1.0, theme::border(ui.visuals().dark_mode));
-                    let p = ui.painter();
-                    match shown {
-                        Some(at) => {
-                            p.hline(across.min..=at.left(), y, stroke);
-                            p.hline(at.right()..=across.max, y, stroke);
-                        }
-                        None => {
-                            p.hline(across, y, stroke);
-                        }
+                    let (pick, x) = tab_strip(ui, &self.tabs, self.active);
+                    if let Some(i) = pick {
+                        self.active = i;
                     }
+                    close = x;
                 });
             self.regions.add(Region::Tabs, tabs.response.rect);
         }
@@ -6423,6 +6746,7 @@ mod tests {
     mod redact_marks;
     mod review;
     mod sign;
+    mod tabs;
     mod typing_menus;
 
     /// The height of the window the tests draw: room for the commands above the pages.
@@ -8680,6 +9004,7 @@ mod tests {
             color,
             rise: 0.0,
             from: None,
+            origins: Vec::new(),
         };
         let parts = [
             part("Walrus ", sans, 40.0, [0.0; 3]),
@@ -9028,6 +9353,7 @@ mod tests {
                 color: [0.0; 3],
                 rise: 0.0,
                 from: None,
+                origins: Vec::new(),
             };
             assert!(app.tabs[0].edit(&ctx, |p| p.add_text_parts(0, (230.0, 480.0), &[part])));
             assert!(app.tabs[0].edit(&ctx, |p| p.rotate_pages(&[0], turn)));
@@ -9102,6 +9428,7 @@ mod tests {
             color,
             rise: 0.0,
             from: None,
+            origins: Vec::new(),
         };
         let parts = [
             part("Walrus ", color),

@@ -4,6 +4,16 @@
 
 ### Added
 
+- Editing a line keeps the PDF's own font wherever it can, embedded fonts and their subsets included (Chinese,
+  Japanese and Korean fonts that number their glyphs too): the letters you leave as they were keep their exact
+  spacing, new letters are written in the font when it holds them, and only a word with a letter the font lacks
+  goes to the installed family or the nearest standard font, the rest of the line keeping its font. A line in one
+  style changed in its words alone is changed where it is in the page. While you type, the line shows in the
+  font's own letters, at the widths that will be written. The inspector says which letters the font lacks ("Not
+  in this PDF's font: ö ß. Those words use Helvetica.") or that it can't take new text at all ("This PDF's font
+  can't take new text. Edits use Times."), why on hover (a Type 3 font, one not in the PDF, vertical writing).
+  Before, a line in an embedded subset was written again in another font, and its spacing between letters was
+  lost.
 - While a line is edited on the page, its floating toolbar has Bold, Italic, Cut, Copy and Paste for what is
   selected in the line, as Ctrl+B, Ctrl+I, Ctrl+X, Ctrl+C and Ctrl+V do there. Clicking them leaves the line open,
   with the keyboard back in it.
@@ -183,12 +193,17 @@
 
 ### Fixed
 
+- With several documents open, the tabs no longer wrap a name letter by letter down the window. They stay in one
+  row, narrowing to share it with long names shortened (the whole name on hover), then scroll by the mouse wheel
+  or the arrows at the row's end, and All open documents lists every one; the tab in front is always in view.
 - Text in some fonts came out as other letters or as � in search, copying, Export text and `limarepdf-cli text`:
   whole lines read as shifted letters ("*TVQQPTF" for "I suppose"), and Czech, Romanian and Russian letters as �.
   These fonts number their characters by glyph and say no more in the PDF, so LimarePDF now reads each glyph's
   character from the font's embedded program, as other readers do; and a font whose ToUnicode entry names Identity
   instead of holding a map now reads each code as its character's own number. Of the 1,089 test files, 9 read
   better and none worse.
+- Letters typed into a line in an embedded font that doesn't hold them (a font made with only some letters) were
+  written in it anyway, and showed as nothing; the word goes to another font now, as the inspector says.
 - The tick and cross in the Fill and sign pane and its menu showed as empty boxes; they are drawn now.
 - The Finish signing question, its notice when nothing is put down and its command's tooltip named "the Sign
   tool"; they say Fill and sign, the tool's name. The notice for Apply redactions with no marks named a menu that

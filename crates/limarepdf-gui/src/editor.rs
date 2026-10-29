@@ -15,9 +15,9 @@ use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    words_text, Annot, AnnotKind, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject,
-    PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace,
-    TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
+    words_text, Annot, AnnotKind, FieldValue, FontChoice, FontRefusal, LineFont, Link, LinkTarget,
+    ObjectKind, PageObject, PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor,
+    StampKind, StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -524,6 +524,9 @@ struct Insp {
     orig: Styled,
     /// Undo and redo inside the line, until the change is kept.
     history: History,
+    /// A line's fonts, which say what its words can be written in
+    /// ([`limarepdf_core::Pdf::line_fonts`]): read by the page it is on, once.
+    fonts: Option<Vec<LineFont>>,
 }
 
 impl Insp {
@@ -545,6 +548,7 @@ impl Insp {
             stroke: o.stroke.unwrap_or([0.0; 3]),
             width: o.line_width.unwrap_or(1.0),
             geom: o.bbox,
+            fonts: None,
         }
     }
 }
@@ -1159,29 +1163,56 @@ fn pdf_fonts(o: &PageObject, sel: (usize, usize)) -> Vec<String> {
     out
 }
 
-/// The font `part` of line `o`, as `text` has it, is written in, as core decides it: its
-/// part's own when it can be kept, else the installed family that font is from or the
+/// Line `o`'s text as `text` has it, in the pieces it is written in, each with the font it
+/// is written in, as core decides it, `fonts` being the line's ([`PageObject::kept_pieces`]):
+/// a part's own font where it is kept, else the installed family that font is from or the
 /// nearest standard font, or the font chosen.
-fn part_font<'a>(o: &'a PageObject, text: &Styled, part: &TextPart) -> Wanted<'a> {
-    match part.font {
-        PartFont::Span(i) if o.keeps_font(part) => {
-            Wanted::Kept(o.spans.get(i).map_or("", |s| s.font_name.as_str()))
+fn drawn_pieces<'a>(
+    o: &'a PageObject,
+    fonts: &'a [LineFont],
+    text: &Styled,
+) -> Vec<(TextPart, Wanted<'a>)> {
+    let mut out = Vec::new();
+    for part in text.drawn_parts() {
+        let other = Wanted::Standard(text.font_of(&part));
+        let PartFont::Span(i) = part.font else {
+            out.push((part, other));
+            continue;
+        };
+        let name = o.spans.get(i).map_or("", |s| s.font_name.as_str());
+        let kept = Wanted::Kept(name, fonts.get(i));
+        let font = |k: bool| if k { kept } else { other };
+        if part.text.is_empty() {
+            let keeps = o.keeps_font(&part, fonts);
+            out.push((part, font(keeps)));
+            continue;
         }
-        _ => Wanted::Standard(text.font_of(part)),
+        let chars: Vec<char> = part.text.chars().collect();
+        for piece in o.kept_pieces(&part, fonts) {
+            let (a, b) = piece.chars;
+            let sub = TextPart {
+                text: chars[a..b].iter().collect(),
+                from: None,
+                origins: Vec::new(),
+                ..part.clone()
+            };
+            out.push((sub, font(piece.kept)));
+        }
     }
+    out
 }
 
-/// Where the font line `o` is written in comes from, as `text` has it now: the PDF's own
-/// kept ("Preserved"), else what replaces it, the installed family it is from or the
-/// nearest standard font; "Partly preserved" when only some parts keep it. Parts in a
-/// font chosen in the band are written in that font, so they count only when nothing else
-/// is left. And whether the nearest standard font replaces it anywhere.
-fn source_font(o: &PageObject, text: &Styled) -> (&'static str, bool) {
+/// Where the font line `o` is written in comes from, as `text` has it now, `fonts` being
+/// the line's: the PDF's own kept ("Preserved"), else what replaces it, the installed
+/// family it is from or the nearest standard font; "Partly preserved" when only some of it
+/// keeps it. Parts in a font chosen in the band are written in that font, so they count
+/// only when nothing else is left.
+fn source_font(o: &PageObject, fonts: &[LineFont], text: &Styled) -> &'static str {
     let mut found: Vec<&str> = Vec::new();
-    for part in text.parts() {
-        let source = match part_font(o, text, &part) {
+    for (part, font) in drawn_pieces(o, fonts, text) {
+        let source = match font {
             _ if !matches!(part.font, PartFont::Span(_)) => continue,
-            Wanted::Kept(_) => "Preserved",
+            Wanted::Kept(..) => "Preserved",
             Wanted::Standard(f) if !f.is_standard() => "Installed family",
             Wanted::Standard(_) => "Nearest standard",
         };
@@ -1189,13 +1220,69 @@ fn source_font(o: &PageObject, text: &Styled) -> (&'static str, bool) {
             found.push(source);
         }
     }
-    let source = match found[..] {
+    match found[..] {
         [] => "Font chosen",
         [one] => one,
         _ if found.contains(&"Preserved") => "Partly preserved",
         _ => "Mixed",
+    }
+}
+
+/// What the inspector says about the font line `o` is written in, as `text` has it, with
+/// `sel` selected, `fonts` being the line's, and why on hover: the characters typed that
+/// its font has no code for, whose words go to another font; else, when the font of what
+/// is selected can't take new text at all, that edits use another. `None` when there is
+/// nothing to say.
+fn font_note(
+    o: &PageObject,
+    fonts: &[LineFont],
+    text: &Styled,
+    sel: (usize, usize),
+) -> Option<(String, String)> {
+    let (mut missing, mut used, mut names) = (Vec::new(), None, Vec::new());
+    for part in text.parts() {
+        let PartFont::Span(i) = part.font else {
+            continue;
+        };
+        for piece in o.kept_pieces(&part, fonts) {
+            if piece.missing.is_empty() {
+                continue;
+            }
+            used.get_or_insert(text.font_of(&part).family_name());
+            let name = o.spans.get(i).map(|s| untagged(&s.font_name).to_string());
+            names.extend(name.filter(|n| !names.contains(n)));
+            for c in piece.missing {
+                if !missing.contains(&c) {
+                    missing.push(c);
+                }
+            }
+        }
+    }
+    if let Some(used) = used {
+        let chars: Vec<String> = missing.iter().map(char::to_string).collect();
+        let chars = chars.join(" ");
+        let note = format!("Not in this PDF's font: {chars}. Those words use {used}.");
+        return Some((note, names.join(", ")));
+    }
+    // What is selected, or at a caret the character before it (the first at the start).
+    let (from, to) = (sel.0.min(sel.1), sel.0.max(sel.1));
+    let (from, to) = match from == to {
+        true => (from.saturating_sub(1), from.max(1)),
+        false => (from, to),
     };
-    (source, found.contains(&"Nearest standard"))
+    let (i, s) = (o.spans.iter().enumerate())
+        .filter(|(_, s)| s.chars.0 < to && s.chars.1 > from)
+        .find(|(i, _)| fonts.get(*i).is_some_and(|f| !f.takes_new_text()))?;
+    let why = match fonts[i].refused()? {
+        FontRefusal::Own => return None,
+        FontRefusal::Type3 => "Type 3 font",
+        FontRefusal::NotEmbedded => "Not embedded",
+        FontRefusal::Vertical => "Vertical writing",
+        FontRefusal::Cmap | FontRefusal::Unreadable => "Its characters can't be read",
+    };
+    let used = text.span_font(i).family_name();
+    let note = format!("This PDF's font can't take new text. Edits use {used}.");
+    Some((note, format!("{}: {why}", untagged(&s.font_name))))
 }
 
 /// A PDF font's name without a subset's tag: "ABCDEF+Calibri" is Calibri.
@@ -2242,10 +2329,10 @@ impl Editor {
         let mode = self.page_colours;
         // The text as egui has it this frame, in parts at `k` pixels per point, coloured
         // by `color`.
+        let fonts = insp.fonts.as_deref().unwrap_or(&[]);
         let runs = |t: &str, k: f32, color: &dyn Fn([f32; 3]) -> Color32| {
             let text = insp.text.preview(t);
-            let font = |p: &TextPart| part_font(&o, &text, p);
-            page_text::runs(&ctx, &text.drawn_parts(), k, color, font)
+            page_text::runs(&ctx, &drawn_pieces(&o, fonts, &text), k, color)
         };
         let (out, area) = if drawn {
             let runs = |t: &str| runs(t, k, &|c| page_text::shown(mode, c));
@@ -3262,6 +3349,15 @@ impl Editor {
             .is_some_and(|i| Some(i.key) != self.sel())
         {
             self.sync_insp();
+        }
+        // The selected line's fonts, read once, by the page it is on (a page that can't be
+        // read gives none: the edit then says what is wrong).
+        let line = |o: &PageObject| o.kind == ObjectKind::Text && !o.hidden;
+        if let Some(insp) = (self.insp.as_mut()).filter(|i| i.key.0 == page && i.fonts.is_none()) {
+            let o = self.objs.get(&page).and_then(|v| v.get(insp.key.1));
+            if o.is_some_and(line) {
+                insp.fonts = Some(pdf.line_fonts(page, insp.key.1).unwrap_or_default());
+            }
         }
         self.sync_group();
         let screen_rect =
@@ -5711,7 +5807,8 @@ impl Editor {
                         sel,
                     };
                     let [font, size] = look_facts(&text);
-                    let (source, standard) = source_font(&obj, &insp.text);
+                    let fonts = insp.fonts.as_deref().unwrap_or(&[]);
+                    let source = source_font(&obj, fonts, &insp.text);
                     // The selection's fonts as the PDF names them, without a subset's tag.
                     let names = pdf_fonts(&obj, sel);
                     let named: Vec<&str> = names.iter().map(|n| untagged(n)).collect();
@@ -5723,11 +5820,9 @@ impl Editor {
                         ("Source font", source.into()),
                     ];
                     facts(ui, "line-look", &rows);
-                    // A standard font standing in for one that is neither standard nor
-                    // installed.
-                    if standard && !obj.font_reusable {
-                        note(ui, "Non-standard font: edits use the nearest standard one.")
-                            .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
+                    // Words that go to another font, or a font that can't take new text.
+                    if let Some((said, why)) = font_note(&obj, fonts, &insp.text, sel) {
+                        note(ui, &said).on_hover_text(why);
                     }
                 }
             }
@@ -6599,22 +6694,76 @@ mod tests {
         assert_eq!(font_of("Arial,Bold"), FontChoice::from_name("Arial,Bold"));
     }
 
+    /// The inspector says which characters typed the line's font has no code for, whose
+    /// words go to another font; or that the font can't take new text at all, and why on
+    /// hover (batch 31, Q5).
+    #[test]
+    fn the_inspector_says_what_the_line_s_font_can_t_write() {
+        use lopdf::{dictionary, Dictionary, Object, Stream};
+        let (pdf, ed) = page_with_objects();
+        let o = ed.objs[&0][2].clone();
+        let fonts = pdf.line_fonts(0, 2).unwrap();
+        let mut text = Styled::of(&o, FontChoice::from_name);
+        assert_eq!(font_note(&o, &fonts, &text, (0, 0)), None);
+        text.sync("Walrus like größe Maße", None);
+        let (said, why) = font_note(&o, &fonts, &text, (0, 0)).unwrap();
+        let want = "Not in this PDF's font: ö ß. Those words use Helvetica.";
+        assert_eq!(said, want);
+        assert_eq!(why, "Helvetica");
+
+        // A subset the PDF doesn't hold can't take any.
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let font = pdf.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "ABCDEF+Garamond-Italic",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let content = b"BT /F1 20 Tf 72 700 Td (Walrus) Tj ET".to_vec();
+        let s = pdf.doc.add_object(Stream::new(Dictionary::new(), content));
+        let page = pdf.page_ids()[0];
+        let d = pdf.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", Object::Reference(s));
+        d.set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => font } },
+        );
+        let o = pdf.page_objects(0).unwrap().remove(0);
+        let fonts = pdf.line_fonts(0, o.id).unwrap();
+        let text = Styled::of(&o, FontChoice::from_name);
+        let used = FontChoice::from_name("ABCDEF+Garamond-Italic").family_name();
+        let (said, why) = font_note(&o, &fonts, &text, (0, 0)).unwrap();
+        let want = format!("This PDF's font can't take new text. Edits use {used}.");
+        assert_eq!(said, want);
+        assert_eq!(why, "Garamond-Italic: Not embedded");
+        // Typed letters it lacks say which first.
+        let mut typed = text.clone();
+        typed.sync("Walrus ö", None);
+        let (said, _) = font_note(&o, &fonts, &typed, (0, 0)).unwrap();
+        assert!(said.starts_with("Not in this PDF's font: ö."), "{said}");
+    }
+
     /// The editor draws a line in the font core will write it in.
     #[test]
     fn a_line_is_edited_in_the_font_it_will_be_written_in() {
-        let (_, mut ed) = page_with_objects();
+        let (pdf, mut ed) = page_with_objects();
         let o = ed.objs[&0][2].clone();
+        // Shown as Arial Bold, in the line's own font (an unembedded one, whose plain ASCII
+        // is written as it is).
         let mut kept = o.clone();
         kept.font_name = Some("Arial,Bold".into());
-        kept.font_reusable = true;
         kept.spans[0].font_name = "Arial,Bold".into();
-        kept.spans[0].font_reusable = true;
         ed.objs.get_mut(&0).unwrap()[2] = kept.clone();
         ed.select_object(0, 2);
         ed.sync_insp();
+        let fonts = pdf.line_fonts(0, 2).unwrap();
+        ed.insp.as_mut().unwrap().fonts = Some(fonts.clone());
         let font = |ed: &Editor, o: &PageObject| {
-            let text = &ed.insp.as_ref().unwrap().text;
-            format!("{:?}", part_font(o, text, &text.drawn_parts()[0]))
+            let insp = ed.insp.as_ref().unwrap();
+            let fonts = insp.fonts.as_deref().unwrap_or(&[]);
+            match drawn_pieces(o, fonts, &insp.text)[0].1 {
+                Wanted::Kept(name, _) => format!("Kept({name:?})"),
+                Wanted::Standard(f) => format!("Standard({f:?})"),
+            }
         };
         // Its own font, when core can keep it: its own text, or plain ASCII.
         assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
@@ -6626,15 +6775,15 @@ mod tests {
         // A size or colour changed: still its own, as each part has its size and colour.
         text(&mut ed).set_size((0, 9), 20.0);
         assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
-        // A character beyond ASCII, a font that can't be kept, or another font chosen: the
-        // standard font nearest it, or the one chosen.
+        // A word with a character the font can't take, a font that can't be kept, or
+        // another font chosen: the standard font nearest it, or the one chosen.
         let arial_bold = format!("Standard({:?})", FontChoice::from_name("Arial,Bold"));
         text(&mut ed).sync("Café", None);
         assert_eq!(font(&ed, &kept), arial_bold);
         text(&mut ed).sync("Walrus", None);
-        let mut not_kept = kept.clone();
-        not_kept.spans[0].font_reusable = false;
-        assert_eq!(font(&ed, &not_kept), arial_bold);
+        ed.insp.as_mut().unwrap().fonts = Some(Vec::new());
+        assert_eq!(font(&ed, &kept), arial_bold);
+        ed.insp.as_mut().unwrap().fonts = Some(fonts);
         text(&mut ed).italic((0, 6));
         text(&mut ed).set_family((0, 6), Family::Courier);
         let courier = FontChoice {

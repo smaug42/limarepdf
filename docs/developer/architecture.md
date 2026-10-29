@@ -172,6 +172,41 @@ and compare the glyphs it draws, so a hayro upgrade that finds glyphs otherwise 
 a CMap other than Identity-H, vertical writing, a program that can't be read or isn't one hayro draws with, and
 LimarePDF's own fonts (`embed::KEY`), which their pen grows. Each character is checked when first asked (kept in
 the font's `checked`), so a large CID font's glyphs aren't all drawn; its codes are read once, all 65,536.
+A page's fonts are read once while one edit writes several of its lines (`PageFonts`), and each `LineFont`
+also holds how each of the line's characters is drawn (`edit::drawn`, below), shared by the line's fonts.
+
+An edited line is written in its own fonts from that (ENH-31's writer, batch 31, stage 2; `edit.rs`). `drawn`
+walks the line's shows as the parser reads them and gives each character what draws it (`Ink`: a code, or a
+whole string where `codes_known` and `drawn_alike` can't vouch for its parting, as one unit; or a move read as
+a space, a spacing number under -150 or the gap to the next show measured from piece to piece) and what lies
+between it and the character before (that one's show's trailing numbers and no-character glyphs, the move to
+this one's show, then this show's leading items). The app sends each character's place in the line as read
+(`TextPart::origins`, `None` once typed or pasted; a words-only `TextEdit` gets them from the common start and
+end, `parts_for`). `plan` decides each character: its own code when it is the line's own, unchanged, where it
+was (a ligature's code only with all its letters, together), else `LineFont::code`, else a space as a move,
+else missing; `pieces` sends each word with a missing character, and the spaces between two such words, to
+`FontChoice::of_font` (plan Q2). `PageObject::kept_pieces` and `keeps_font` make the same decision for the app
+from the `LineFont`s. `OwnPen` writes the kept pieces show by show, keeping the items between characters that
+were neighbours as read (so text before the first change draws where it did) and each show's Tc, Tw and Tz;
+new codes take the spacing of the show they join; a space with no code is the part's nearest move read as a
+space, else -250; a move that would start a show (where it reads as no space) goes to the end of the show or
+piece before. A part that is its span's own text, unchanged, keeps its shows as they were. A line in one part,
+its style unchanged, in one spacing, starting with a show of characters, written all in its own font, becomes
+one `TJ` in place of its first show (`in_place`); others go on top as before. Every line with characters
+written this way is read back (`misread`; a line changed in place is found by its operator and may read as one
+with text next to it): one that reads otherwise is written again with only its unchanged parts in its own
+font, and its id returned (the app's "similar font" message).
+
+The typing preview draws a kept embedded font's own glyphs (plan Q6): `LineFont::preview` writes a small
+OpenType font (`preview_font.rs`, LimarePDF's own writer: CFF outlines recorded with a skrifa pen, a
+TrueType program's quadratic segments as the cubics that draw them exactly, coordinates rounded to whole
+units of a 1000-unit em; cmap formats 4 and 12; `hmtx` from the PDF's widths; `head`, `hhea`, `maxp` 0.5,
+`post` 3, `name`, `OS/2` 4 with the descriptor's ascent and descent), holding the characters the line shows
+with a code of their own, as it shows them, and up to 4,096 in all of those `code` gives. egui 0.37 reads it
+with skrifa 0.44, whose CFF drawing and metrics are those of the 0.46 core uses. The app makes it on its loader
+thread (`typing_fonts.rs`, `Candidate::Preview`, keyed by `LineFont::preview_key`: the program and font
+dictionaries hashed, with the codes the line shows), falling back to the Liberation face of its kind, then
+Inter. TJ kerning isn't drawn while typing, and a ligature glyph's letters draw in the Liberation face.
 
 Search (`text.rs`, batch 22) reads a page once into a `PageText`: its words in reading order (`ordered_words`,
 through `Pdf::search_parts`, by page object so the page tree is walked once a search, not twice a page) with a
@@ -1255,33 +1290,30 @@ form XObject, and per inline image.
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.
-- **Editing text** rewrites the string in place when the font is a plain, non-subset, standard-encoded simple font
-  and the new text is ASCII, with no font, size or colour change. Otherwise the old line is removed and the new
-  text is added at the same position, size and colour, in the font chosen, else in the installed family the
-  line's font is from (found by its PostScript name, the subset tag left off; `FontChoice::of_font`), else in the
-  nearest of the 12 standard fonts. A line in parts (`TextEdit::parts`, each part text and a style) is written
-  that way too, as one `BT … ET` with each part's font, colour, rise (`Ts`) and spacing set where they change. A
-  part keeps the font of the span it names when its text is that span's, unchanged (its shows are copied as they
-  were, with their character spacing, word spacing and scaling, and a gap read as a space put back as the same
-  move), or when the font can be reused and the text is ASCII (`PageObject::keeps_font`); otherwise it is written
-  as above, the parts in one font sharing one font object. A part that is some of its span's own characters,
-  unchanged (`TextPart::from`, where they start in the line as read), and starts and ends at a space or an end
-  of its span (`cuttable`), keeps them as they were: `shows_cut` cuts the span's shows between character codes,
-  read with the page's `FontCtx` exactly as the parser reads them (a code's decoded characters, a spacing number
-  under -150 read as a space, the gap after a show), each spacing number going with the character before it (at
-  a show's start, the one after). It gives up (`None`) on a cut through a code (a ligature, or a ToUnicode entry
-  of several characters), through a string `codes_known` and `drawn_alike` don't vouch for, or when the
-  characters don't add up to the piece's; the part is then written as above and the line reported. A space made
-  by a move that would start a cut part goes at the end of the part before instead (`then_move`): at a show's
-  start it reads as no space. `Pdf::edit_texts` makes several lines of a page in one parse and one commit (the
-  shows of every line taken out, each line's `Following` in the page's order, the lines on top in the order
-  given), the parts of all its lines sharing the fonts they add (`written_lines`); `edit_text` is it for one
-  line. Before committing, each line written with cut shows is read back as the page will be (`misread`, by its
-  operators' place): one that reads as other words is written again without cutting, and reported. A line in one style whose words alone change, in a
-  font that can be reused, is still changed in place. While a line is edited on the page, the app makes the same test as it goes
-  (`TextEdit::keeps_font`) and draws the line in the font it will have: the line's own font installed on the
-  computer, or else the Liberation face of its kind, when the font is kept; the installed family's font, or the
-  Liberation face of the standard font replacing it, otherwise. The old line is covered with the most
+- **Editing text** keeps the line's own fonts where it can (ENH-31; the writer is described after "Which code
+  writes a character" above). A line in parts (`TextEdit::parts`, each part text and a style; a words-only edit
+  is one part in the first part's style) is written as one `BT … ET` with each part's font, colour, rise (`Ts`)
+  and spacing set where they change. A part keeps the font of the span it names when its text is that span's,
+  unchanged (its shows are copied as they were, with their character spacing, word spacing and scaling, and a
+  gap read as a space put back as the same move); otherwise character by character, each the line's own code
+  where it is the line's own, unchanged, else the font's code for it (`LineFont::code`; for an unembedded
+  standard-encoded font, plain ASCII as itself), a word with a character it can't write going to the font chosen
+  for it, else the installed family the line's font is from (found by its PostScript name, the subset tag left
+  off; `FontChoice::of_font`), else the nearest of the 12 standard fonts, the parts in one font sharing one font
+  object. A line restyled in one style (a `TextEdit` with a font, size or colour) is written anew on top in that
+  style. `Pdf::edit_texts` makes several lines of a page in one parse and one commit (the shows of every line
+  taken out, each line's `Following` in the page's order, the lines on top in the order given), the parts of all
+  its lines sharing the fonts they add (`written_lines`); `edit_text` is it for one line. A line in one style and
+  spacing changed in words all in its own font is one `TJ` in place of its first show. Before committing, each
+  line with characters written in its own font is read back as the page will be (`misread`): one that reads as
+  other words is written again with only its unchanged parts in its own font, and reported. While a line is
+  edited on the page, the app makes the same decision as it goes, from the line's `LineFont`s read once when it
+  is selected (`Insp::fonts`; `PageObject::kept_pieces`, `editor::drawn_pieces`) and draws each piece in the
+  font it will have: a kept embedded font in its own glyphs (its preview font), a kept unembedded one in the
+  installed font of its name or else the Liberation face of its kind; the installed family's font, or the
+  Liberation face of the standard font replacing it, otherwise. The inspector says which typed characters the
+  font has no code for, and which family their words use, or that the font can't take new text at all (Type 3,
+  not embedded, vertical writing, unreadable codes; `editor::font_note`). The old line is covered with the most
   common colour in a 3-point ring around its box, from a separate drawing of that part of the page in the current
   page colours.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one

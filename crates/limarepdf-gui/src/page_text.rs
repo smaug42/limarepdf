@@ -487,19 +487,18 @@ pub struct Run {
     pub rise: f32,
 }
 
-/// The runs `parts` are drawn in at `k` pixels per point: each part in the font `font`
-/// gives it, its colour as `color` shows it.
-pub fn runs<'w>(
+/// The runs `parts` are drawn in at `k` pixels per point: each part in the font it will be
+/// written in, its colour as `color` shows it.
+pub fn runs(
     ctx: &egui::Context,
-    parts: &[TextPart],
+    parts: &[(TextPart, Wanted)],
     k: f32,
     color: impl Fn([f32; 3]) -> Color32,
-    font: impl Fn(&TextPart) -> Wanted<'w>,
 ) -> Vec<Run> {
     parts
         .iter()
-        .map(|p| {
-            let wanted = font(p);
+        .map(|(p, wanted)| {
+            let wanted = *wanted;
             Run {
                 chars: p.text.chars().count(),
                 font: egui::FontId::new((p.size * k).max(1.0), typing_fonts::family(ctx, wanted)),
@@ -860,8 +859,13 @@ impl PageText {
         let text = &self.text;
         let runs = |t: &str| {
             let text = text.preview(t);
-            let font = |p: &TextPart| Wanted::Standard(text.font_of(p));
-            runs(&ctx, &text.drawn_parts(), k, |c| shown(mode, c), font)
+            let parts: Vec<_> = (text.drawn_parts().into_iter())
+                .map(|p| {
+                    let font = Wanted::Standard(text.font_of(&p));
+                    (p, font)
+                })
+                .collect();
+            runs(&ctx, &parts, k, |c| shown(mode, c))
         };
         let style = Style {
             runs: &runs,
