@@ -642,9 +642,10 @@ The full record, with the files used, is in [Testing](developer/testing.md#digit
   long-term validation data is added either.
 - Encrypted (password-protected) documents can't be signed.
 - The text in a signature's look is in Helvetica, or for Polish, Czech, Greek, Cyrillic and other characters it
-  lacks, its Liberation Sans face, embedded in the file (each signature's look has its own, so an earlier
-  signature's part of the file stays as it was). A name in other scripts (Chinese or Hebrew, say) is left out of
-  the text ("Digitally signed"), and a handwriting style that can't show it isn't used. Every reader still shows
+  lacks, its Liberation Sans face, and for Chinese, Japanese, Korean and single emoji an installed font that has
+  them, embedded in the file (each signature's look has its own, so an earlier signature's part of the file stays
+  as it was). A name LimarePDF can't write (in Hebrew or Arabic, say) is left out of the text ("Digitally
+  signed"), and a handwriting style that can't show it isn't used. Every reader still shows
   the full name from the certificate.
 - A document can be certified only before anyone signs it; after a certification, LimarePDF signs only in signature
   fields the document already has.

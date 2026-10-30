@@ -160,7 +160,9 @@ Both offer two layouts:
   from the top and bottom to the selected lines. Fonts, pictures and layout stay as they are, but anything else
   beside those lines shows too, such as the start of the first line, another column or a picture.
 - **Plain text (PDF):** only the selected words, set in 11-point Helvetica on pages the size of the first selected
-  page, keeping the line breaks. Characters outside Latin, Greek and Cyrillic come out as `?`.
+  page, keeping the line breaks. Characters Helvetica lacks are written in an installed font that has them, as
+  in [Add text](content-editing.md#add-text); those LimarePDF can't write (Hebrew, Arabic and so on, or ones no
+  installed font has) come out as `?`.
 
 Saving also offers **Text file (.txt)**: the same text that Ctrl+C copies. To save all of a document's text, see
 [Export text](export-and-printing.md#text).

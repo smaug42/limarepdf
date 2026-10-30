@@ -18,9 +18,18 @@ It uses:
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
   dialogs. eframe's default features are off and the ones used listed (the workspace's `Cargo.toml`), so a new
   default isn't taken unseen (0.37's `system_fonts` isn't, and `NativeOptions::system_font_fallback` is off with
-  it); winit, which eframe then gives only its X11 and Wayland features, is named in `limarepdf-gui`'s
+  it: interface text falls back to installed fonts through LimarePDF's own `typing_fonts::interface_fallback`,
+  ENH-33, below); winit, which eframe then gives only its X11 and Wayland features, is named in `limarepdf-gui`'s
   `Cargo.toml` for its defaults (Wayland window decorations, libwayland loaded at run time), at eframe's version.
   The icons are the Phosphor fonts in `crates/limarepdf-gui/assets/fonts/`, by name in `src/icon.rs`;
+- [`skrifa`](https://crates.io/crates/skrifa) to read font programs and [`subsetter`](https://crates.io/crates/subsetter)
+  to cut embedded fonts down to the glyphs used; [`harfrust`](https://crates.io/crates/harfrust) 0.13.3 to shape
+  new text (batch 45; it reads fonts through `read-fonts` 0.43, the version `skrifa` 0.46 uses, so core keeps one
+  font reader, while egui's `epaint` keeps its own `harfrust` 0.12),
+  [`unicode-linebreak`](https://crates.io/crates/unicode-linebreak) 0.1.5 for line breaks (UAX #14),
+  [`unicode-script`](https://crates.io/crates/unicode-script) 0.5.8 for each character's script, and
+  `unicode-segmentation` and `unicode-normalization` for words, grapheme clusters and NFC (the app uses both too,
+  `unicode-normalization` since batch 45): the text pipeline below;
 - [`image`](https://crates.io/crates/image) for images;
 - [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scans and OCR](../scanning-and-ocr.md));
   the usual scanner and OCR libraries, SANE and Tesseract, are C/C++, so LimarePDF doesn't drive scanners;
@@ -186,8 +195,10 @@ this one's show, then this show's leading items). The app sends each character's
 (`TextPart::origins`, `None` once typed or pasted; a words-only `TextEdit` gets them from the common start and
 end, `parts_for`). `plan` decides each character: its own code when it is the line's own, unchanged, where it
 was (a ligature's code only with all its letters, together), else `LineFont::code`, else a space as a move,
-else missing; `pieces` sends each word with a missing character, and the spaces between two such words, to
-`FontChoice::of_font` (plan Q2). `PageObject::kept_pieces` and `keeps_font` make the same decision for the app
+else missing (a character of a script not written yet always, PB-53); `pieces` sends each word with a missing
+character (a word by UAX #29 since batch 45: punctuation and each ideograph stand apart), and the spaces between
+two such words, to `FontChoice::of_font` (plan Q2), set through the pipeline below, which falls back further for
+what that font lacks. `PageObject::kept_pieces` and `keeps_font` make the same decision for the app
 from the `LineFont`s. `OwnPen` writes the kept pieces show by show, keeping the items between characters that
 were neighbours as read (so text before the first change draws where it did) and each show's Tc, Tw and Tz;
 new codes take the spacing of the show they join; a space with no code is the part's nearest move read as a
@@ -246,13 +257,16 @@ runs `Pdf::search` itself first. The threads' indexes count against one budget (
 the tab searched longest ago, then the pages already searched of the tab searching.
 
 Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
-signature look, selected text as a plain page) goes through a pen (`embed::Pen`, from `Pdf::pen`): the standard
-font, WinAnsi-encoded through `fonts::winansi_byte`, while the text fits it, else the embedded font below.
-`writable` (core) tells the app which characters can be typed. Form appearances measure and encode through
-`form_ap::Metrics`, which is one-byte widths or an embedded font's codes. In the
-app, new text is typed on the page in `crates/limarepdf-gui/src/page_text.rs`, drawn while typing in the bundled
-Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times and Courier), then written line by
-line with `Pdf::add_text_parts` as one undo step. A line being edited (`editor.rs`'s line editor, sharing
+signature look, selected text as a plain page) is set through one pipeline, core's `layout.rs` (below, "New text is
+set through one pipeline"): a `Setter` lays it out, then a `Pen` writes exactly the lines laid out.
+`writable` (core) tells the app which characters can be typed: those the font asked for, or a font it falls back
+to, can write. Form appearances measure through `form_ap::Metrics`: `Bytes`, a field's own one-byte font's widths
+(the field's font kept), or `Set`, a `Setter`. In the
+app, new text is typed on the page in `crates/limarepdf-gui/src/page_text.rs`, each word drawn while typing in the
+face core will write it in (`page_text::runs`: a standard font's bundled Liberation face, which `typing_fonts.rs`
+picks, with the widths of Helvetica, Times and Courier; an installed family's file; the installed face a word the
+font lacks falls back to, by `limarepdf_core::set_in`), then written line by line with `Pdf::add_text_parts` as
+one undo step. A line being edited (`editor.rs`'s line editor, sharing
 `page_text`'s drawing) sits on `PageObject::baseline` and each part is drawn in the font
 `PageObject::keeps_font` says `Pdf::edit_text` will write it in: the part's own (installed, else its Liberation
 look-alike), the installed family it is from, or a standard one. `page_text::job` puts a line's parts of
@@ -345,9 +359,77 @@ Preserved, else Mixed; none, Font chosen), with its second value, a standard fon
 Non-standard note when the line's font isn't reusable. The status bar says "Editing one line" while
 `Editor::editing_line`. `Tab::title` (the window's title) and `tab_button` take `Tab::unsaved` (`dirty`,
 `Editor::pending` or typing in forms), so typing marks the tab from the first key. `writing_ui` keeps any box
-being written open on a press in the inspector (`insp` is always `drawn_at` the inspector's place), and a new text
-box (no annotation id, not a note) takes its size from the Text box tool's `box_style` each frame, so it shows
-what it will be added with.
+being written open on a press in the inspector (`insp` is always `drawn_at` the inspector's place), and a text box
+takes its text size and border each frame, a new one (no annotation id, not a note) from the Text box tool's
+`box_style`, one already on the page from its annotation's `text_style` in `Editor::annots` (batch 45), so it
+shows what it will be written with as the inspector changes it.
+
+Typing on the page draws what core will write (the text design's section 5; batch 45, 1b). `page_text::runs`
+splits each part by core's `set_in` (the document's `/Lang` from `Pdf::language`, noted in `Editor::lang`) and draws
+each stretch in its own face (`typing_fonts::Wanted`); a kept part of a font LimarePDF wrote itself
+(`FontRefusal::Own`: no preview, no installed font by the PDF's name) is drawn as `Wanted::Standard` of
+`editor::font_of` its name, split the same way. A box of its own (a form field's, a text box's) is laid out by
+`page_text::boxed_galley`, its `TextEdit`'s layouter (a password's dots excepted): the box's font (`Field::font`,
+or Helvetica for a text box), each word it lacks in core's face. A box that wraps takes its lines from core, never
+from egui's wrapping: `page_text::set_in_box` lays the text out with `BoxSetting::lines` (each line's bytes in the
+text), puts a line break after each line core broke that has none, lays out with `job` at the box's leading
+(`BoxSetting::leading`, 1.15; `job` keeps 1.2 elsewhere), then clears those rows' `ends_with_newline` and gives
+the galley the text as typed (sections' bytes mapped back), so the caret, selection and egui's double-click read
+the text the user typed; it adds the margin that puts the text where it is written (sides: border and padding,
+`BoxSetting::margin`; the first baseline 0.8 times the size below that). `writing_ui` (text boxes, with
+`Writing::border`) and `fields.rs`'s `text_box` (multi-line fields; the field's `BoxSetting` from
+`Pdf::field_setting`, kept in `Edit::Text`'s `set`, a `OnceCell` read when the box is first drawn) use it;
+single-line fields and passwords lay out on one line. The caret and deletes go by grapheme cluster:
+`page_text::Clusters` is the `TextBuffer` of every typing box (Delete and Backspace take a cluster, Backspace only
+the last mark of a letter typed with separate accents, variation selectors excepted; its `type_id` is
+`Clusters<'static>`'s), and `snap_to_clusters` (`snap_drawn`) moves a caret egui left inside a cluster to its
+edge, the way it was going (`cluster_edge`), only when the caret moved and no `Ime` event came that frame (a
+composition's range is the input method's). Words go by UAX #29 (`editor::unicode_pieces`: punctuation and each
+ideograph a word; at a boundary the word with letters, then the one starting there) for `word_around`,
+`word_spans` and opening a line at the word clicked; egui's Ctrl+arrows and double-click already were. Input
+methods (PB-54): egui writes a composition into the box, selected and unchecked, and replaces it with what is
+committed, which `leave_out_untypable` filters. `page_text::composition` follows the composition from this
+frame's `Ime` events and the selection; each box keeps it (`composing` in `PageText`, `LineEdit`, `Writing`), and
+one drawn without the keyboard takes it as committed and filters it (`commit_left`, `commit_left_styled`), as
+Windows and macOS input methods commit when a box loses the keyboard; `Editor::keep` does the same for ends that
+don't draw the box again (a band button, `set_tool`), and what was left out goes to `Editor::left_composing`, said
+as the tab's info (`page_text::left_note`). With words selected and nothing holding the keyboard,
+`input_method_at_words` sets egui's `IMEOutput` at the selection's end, so the input method is on and its first
+composition types over the words (`App::type_over` passes `Ime` Preedit and Commit; `Editor::type_over` opens the
+line only for a non-empty one); egui-winit turns the input method on only while some `IMEOutput` is set. The
+inspector's notes: `page_text::fallback_note` names the words that go to another font ("Not in Calibri: 漢字.
+Those characters use Noto Sans CJK JP.", which word uses which font on hover) for a line being edited, new text,
+a new or existing text box and the form field typed in (`FormUi::typed_text`); `editor::font_note` (batch 31's,
+which can show beside it) names the words, as typed, each once, that a line's own font can't write ("Not in this
+PDF's font: größe Maße. Those words use Helvetica."). Not covered: a composition left in the inspector's
+annotation text box reaches core, which refuses it with BUG-39's message; form fields have no typing filter at
+all (core refuses what can't be written when the value is written); a field's `/Q` alignment isn't shown while
+typing (PB-59); another app's text box with `/RD`, a cloud or a callout can wrap otherwise while typed than as
+written (PB-60).
+
+The interface's own text falls back to installed fonts too (ENH-33, built in batch 45's 1b instead of eframe's
+`system_fonts`): `typing_fonts::interface_fallback`, called each frame from `App::ui`, starts once a thread that
+asks core's `fallback_faces("漢あ한😀")` for the installed faces LimarePDF writes those characters in, reads each
+file up to 64 MB (`MAX_INTERFACE`; larger collections are left out, and the interface shows boxes for them) and
+adds it at the end of every interface font family, where typing uses it too. Typing and the interface can read
+one face at once: both put what they read through `typing_fonts::arrived`, which keeps the other's `interface`
+flag and waiting `then` list. Before that, a face typing was still reading when the interface's thread read it
+was replaced by typing's read without `interface`, so Chinese, Japanese and Korean interface text showed boxes
+for the rest of the run; a cold disk cache made typing's read slow enough to lose
+(`a_face_read_for_typing_and_the_interface_at_once_serves_both`). Arabic, Hebrew and Indic scripts would still
+show unjoined: egui doesn't shape them.
+
+Several egui behaviours shaped this. `TextEdit` deletes and steps by `char` (hence `Clusters` and
+`snap_to_clusters`), and a `TextBuffer`'s `type_id` must name a `'static` type. egui puts a composition in the
+box's text, selected, and when the box loses the keyboard only collapses the selection, leaving the composed text
+as typed; a focused box gives up the keyboard while it is drawn in the click's frame, so a band button can end
+typing before the box is drawn again (hence `Editor::keep`'s part). A `Galley` can't be built outside epaint
+(`intrinsic_size` is `pub(crate)`): it is laid out with line breaks added and its rows' public fields changed, and
+its `job.text` must be the text as typed, as egui's double-click picks words from `galley.text()`. And a glyph's
+`pos.x` is only its whole pixel: epaint draws a glyph (colour and CJK ones aside, which round) at its pen position
+to the nearest quarter pixel, so where a glyph lands is measured from the pen (the sum of the `advance_width`s
+before it), as the half-pixel test does. epaint shapes each section with its own `harfrust` 0.12 and no language;
+the half-pixel test would catch a placement that differs from core's 0.13.
 
 Greyed commands say why (`actions::why_not`). A command's `enabled` is a function of `actions::Ctx`, so `why_not`
 gives a copy of the context each thing a command may wait for, in the order people meet them (a `Fix` each: busy,
@@ -514,15 +596,85 @@ tab's id, and the tab closes after the frame's commands (`App::ui`): the rest of
 read at its start (`has`, the commands' state), so nothing after the tab strip reaches for a tab just closed (the
 delta audit's DA01: closing the only tab crashed in the navigation rail).
 
-Text the standard fonts can't write goes into an embedded font (`crates/limarepdf-core/src/embed.rs`,
-`Pdf::embed_codes`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`,
-stored compressed by core's `build.rs` and unpacked by `bundled_face` the first time each is used; the app's
-`typing_fonts.rs` draws with the same copy, added to egui then too) as a Type 0 font with a CIDFontType2 descendant, `Identity-H`,
-`/W` widths and a ToUnicode map. The font file is cut down to the glyphs used by the `subsetter` crate. There is
-one such font per face per document, rewritten in place as text is added: the old glyphs are given to the
-subsetter first, so they keep their numbers and earlier text stays valid. The font dictionary's `/LimarePDF` entry
-records the face, the glyphs with their characters and a checksum of the font file; a font another app has
-changed since is left alone and a new one started. In a signed document only fonts made since it was opened
+New text is set through one pipeline (`crates/limarepdf-core/src/layout.rs`; the text design, NEW-02, batch 45's
+1a), so what is measured is what is written; a writer never measures or encodes text another way. A `Setter`
+(`Pdf::setter`: the font asked for, all the text it will set, and the document's `/Lang` from `Pdf::language`)
+picks each word's font, shapes, measures (`Setter::width`) and breaks lines (`Setter::lines`) without changing the
+document. `Pdf::pen_with` then makes a `Pen` for exactly the lines a writer will show: every glyph they need is
+embedded first, each face's font object grown once, so no glyph is written that wasn't embedded; it is refused
+with nothing changed when a character can't be written in any font or the font asked for can't be read
+(`Setter::missing`, `unusable`). `Pen::ops`, `content` and `shows` give a line's operators by its index (`Tf`
+where the font changes); `Pdf::pen` is both steps at once. Every writer uses them: `edit.rs` (new, edited and
+restyled lines), `annot_ap.rs` and `annot_write.rs` (text boxes), `form_write.rs` and `form_ap.rs` (`Metrics::Set`;
+an appearance laid out first as `form_ap::Drawn` and written once the pen exists), `overlay.rs`, `stamps.rs`,
+`sign.rs` (`standard_tj`), `sig_sign.rs` and `excerpt.rs`. **Fonts** (4.3 of the design, adjusted): a word, as
+Unicode's word rule finds it (UAX #29, `unicode-segmentation`'s word bounds: each Chinese or Japanese ideograph a
+word of its own), goes to the first font that has all of it (`Setter::pieces`, `find_font`): the font asked for (a
+standard font as itself while every character of the text fits WinAnsi, else its embedded face); installed fonts
+named for the word's script (`script_fonts`, each in the asked font's kind, sans, serif or monospaced, and its
+nearest style: for Chinese, Japanese and Korean the families `installed_fonts::Language` lists, the language
+being the document's `/Lang`, else kana or Hangul in the text, else the `LC_ALL`, `LC_CTYPE`, `LANG` or
+`LANGUAGE` variable, then the others in the order Simplified, Traditional, Japanese, Korean; `EMOJI` for a single
+emoji; Noto Sans or DejaVu for Latin, Greek and Cyrillic; "Noto Sans {Script}" for others; `SYMBOLS` for symbols);
+the asked font's standard stand-in (its Liberation face); any installed family that has the word
+(`typefaces::every_typeface`); else it is refused. Any family comes after the stand-in so a Latin letter Calibri
+lacks goes to Liberation, not to the first family alphabetically. A space between two words that went to one font
+goes with them. An installed font is asked through its character map first (`could`, through
+`installed_fonts::maps_all`: the system font list's mapped file, read only while asked, its answers kept for the
+run, so looking through every installed font keeps none of them), and only then read whole (`covers`). Each word's
+font is kept for the run (`UNITS`, by font asked, whether it is written as itself, the CJK language and the word)
+until `typefaces::typeface_count` changes; that count doesn't start the scan of installed fonts, so text the asked
+font has never reads them (`tests/font_scan.rs`, its own test binary, keeps it so: new code that runs as text is
+typed reads coverage only through `maps_all` and must not start the scan). A word it lacks needs the list (`typefaces::family_named`,
+`every_typeface`) and the fallback faces' files, so the app reads the list on its start-up thread
+(`font_list::warm`), then calls `warm_fallbacks`, which sets the words 漢 (and あ and 한 for Japanese and Korean)
+when `LANG` or `LC_*` names Chinese, Japanese or Korean, and 😀 always, once in each of Helvetica, Times and
+Courier, so the first such character typed doesn't wait for them; tests never call it. **Shaping:** a face's text is shaped by `harfrust` (`Face::shape`, its plans kept by script, language and
+kind) with the font's defaults (kerning, ligatures, contextual forms, marks placed), the document's `/Lang` as the
+language and a variable font's coordinates, in stretches of one font and one script (`items`, `unicode-script`;
+Common and Inherited characters join the stretch they are in). A standard font written as itself has no
+ligatures (WinAnsi has none): one code a character, at Adobe's widths plus the kerning its Liberation face's pairs
+give (`Face::shape` with `kerning_only`, `liga`, `clig` and `calt` off). The PDF's own fonts aren't shaped (ENH-31's
+writer, above). **Writing:** `shows` places each glyph where shaping put it, with a `TJ` number wherever the
+widths the font gives would leave it more than `DRIFT` (0.005 thousandths of an em) off; a glyph raised or lowered
+(a mark) starts a show with its own `Ts`, put back after. **Line breaks:** `break_ranges` (UAX #14 through
+`unicode-linebreak`) breaks at line breaks, then greedily where the rule allows (after spaces and hyphens, between
+ideographs, never before closing punctuation or small kana), a word wider than a line between grapheme clusters;
+it gives each line's bytes in the text, trailing spaces in (hanging: not in its width) and line breaks out, and
+`break_lines` maps them through `shown` (trailing spaces off, a soft hyphen "-" at a line's end only), so the two
+can't differ. They replace the three space splitters (`form_ap`'s wrapper, `excerpt.rs`'s, `sig_sign.rs`'s): the
+excerpt starts no line after a final line break, and the signature's name shrinks before a word is broken.
+`BoxSetting` (`form_ap.rs`, public) lays a box out as `form_ap::draw` writes it, for the app to wrap typed text on
+the same lines: `lines(text, lang)` (the size, a field's auto size fitted as `draw` fits it, and each line's
+bytes; `draw`'s `Body::Lines` uses the same `wrapped`), `margin()` (border and `PAD`), `leading()` (1.15); made by
+`BoxSetting::text_box(width, border, size)` (Helvetica) or `Pdf::field_setting(name, widget)` (read only: the
+field's own font as `pick_font` keeps it, its widths unkerned, else the standard font nearest; `OwnFont` and
+`form_write::own_font` shared with `pick_font`; `Widget::id` names the widget). Core's other public text API:
+`fallbacks(f, text)` (the words set in another font, and the font: what the inspector names), `set_in(f, text,
+lang)` (each stretch's characters and font, `None` for what no font writes: what the typing box draws),
+`fallback_faces(samples)` (the installed faces those characters go to: the interface's fallback),
+`warm_fallbacks()`, `Pdf::language`, and `Field::font` (the standard font nearest a field's `/DA` font, Helvetica
+when it names none; `forms.rs`'s `da_font`).
+
+Text a standard font can't write as itself, and text in an installed family, goes into an embedded face
+(`crates/limarepdf-core/src/embed.rs`, `Pdf::embed_glyphs`): the bundled Liberation face of the standard font
+(`LIBERATION`, in core's `assets/fonts/`, stored compressed by core's `build.rs` and unpacked by `bundled_face` the
+first time each is used; the app's `typing_fonts.rs` draws with the same copy, added to egui then too) or the
+installed family's face, as a Type 0 font with `Identity-H`, `/W` widths and a ToUnicode map, the font file cut
+down to the glyphs used by `subsetter`. A TrueType face (a CIDFontType2 descendant, variable fonts set at their
+weight included) embedded since batch 45 has codes of its own, one for each glyph and the text it is written for,
+mapped to its glyphs by a `/CIDToGIDMap` stream: a ligature's glyph maps to all its letters, and a glyph two
+characters share (Latin A and Cyrillic А, in many fonts) to each, so both read back as typed. A CFF face
+(CIDFontType0) takes no map, so its codes stay its glyphs' numbers, and a glyph wanted for a second text goes to
+another font object of the face; the faces LimarePDF 0.11 wrote (`/CIDToGIDMap /Identity`) keep growing that way,
+with their rounded widths. New objects give `/W` to a thousandth of a unit. Otherwise there is one font object per
+face per document, rewritten in place as text is added: the old codes are given to the subsetter first, so they
+keep their numbers and earlier text stays valid. The font dictionary's `/LimarePDF` entry (`embed::KEY`) records
+the face (`Face`, its PostScript name; `Source`, a checksum of its file, index and settings), each code's glyph
+and text in order (`Texts`), whether the codes are its own (`Codes /Own`) or its glyphs' (`/Identity`), whether
+`/W` is exact (`Widths /Exact`) and a checksum of the font file written (`Sum`); 0.11's `Glyphs` list (each
+glyph with its character) is still read. A font another app has changed since, or made from another version of
+the face, is left alone and a new one started. In a signed document only fonts made since it was opened
 (`Pdf::made_fonts`) are grown, as growing one a signed revision holds would show as a change to it. Going back to
 an earlier state in the same session (undo and redo, a failed change put back, a stamp updated from its base) puts
 the old objects back in place (`Pdf::restore`, `Pdf::go_back`; batch 43), reading nothing again, so the set stays
@@ -539,36 +691,48 @@ colour emoji's glyph is often empty, drawn by `COLR`, `CBDT` or `sbix` data a PD
 would show nothing. Text is spelled a grapheme cluster at a time (`unicode-segmentation`): an emoji sequence
 (`embed::emoji_sequence`: a skin tone, regional indicators, the keycap mark, tags or the emoji variation selector,
 or a zero-width joiner between pictographs) is refused whole, as its parts written one by one would say something
-else (BUG-24; PF-14 is the support). A zero-width joiner outside one is an invisible mark and is written. The
-app's caret note (`page_text::note`) points to installed fonts only for characters
-`embed::installed_could_write` allows (not control characters, right-to-left or shaped scripts, or the parts of
-emoji sequences; single emoji yes, as Symbola and DejaVu Sans draw them with outlines), and
-`page_text::keep_typable` keeps or leaves out a whole cluster.
+else (BUG-24; PF-14 is the support). A zero-width joiner outside one is an invisible mark and is written. A
+character a chosen font draws only in colour goes to another font with its outline, when one is installed. What
+no font writes is refused with `embed::cant_write`'s message (PB-34, batch 45: an emoji sequence, "flags, skin
+tones, keycaps and joined emoji aren't supported"; a script not written yet, "right-to-left writing, and scripts
+whose letters join, such as Arabic, Hebrew and Hindi, aren't supported"; else "No font on this computer has …";
+batch 40's "Latin, Greek and Cyrillic characters are supported" is gone), `box_refusal` wording the same as the
+end of a message naming a text box. The app's caret note (`page_text::note`) is `SEQUENCE`, `SCRIPT` or `REFUSED`
+("No font on this computer has this character"), naming no other font, as any font that has a character is
+already tried; `page_text::keep_typable` keeps or leaves out a whole cluster. A line's own font (`edit.rs`'s
+`plan`) takes no character of a script not written yet (PB-53): its word goes to the fallback, which refuses it
+with the reason, as on every other path.
 
-Every path that writes typed text checks it the same way (BUG-24): new and edited lines through `Pdf::pen`; text
+Every path that writes typed text checks it the same way (BUG-24), against the font asked for and the fonts it
+falls back to: new and edited lines through `Pdf::pen`; text
 boxes and fill-and-sign text, always Helvetica, through `embed::check_writable` in `Pdf::add_text_box` and in
-`Pdf::set_annotation` for a box's new text, with the app leaving out at the caret what Helvetica can't write (the
+`Pdf::set_annotation` for a box's new text, with the app leaving out at the caret what Helvetica and its fallbacks
+can't write (the
 text box on the page in `Editor::writing_ui`, the inspector's Text box in `annot_inspector`, Fill and sign's Text
-in `SignPane::ui`, all through `page_text::leave_out_untypable` and `page_text::fixed_note`, which filter typed
-text, pastes, input-method text and middle-click pastes alike; and the other way, `App::offer_selection` sends the
+in `SignPane::ui`, all through `page_text::leave_out_untypable` and `page_text::note`, which filter typed
+text, pastes, committed input-method text and middle-click pastes alike; and the other way, `App::offer_selection` sends the
 page text selected in the tab in front as egui's `TextSelectionSettled` once it settles, which egui-winit puts in
 X11 and Wayland's PRIMARY selection); headers, footers,
 Bates numbers and watermarks through `Pdf::pen` and `inspector::stamp_text`; form values through
 `form_write::check_value`; stamp wording through `stamp_wording`; typed signatures through `typed_signature`; the
 signer's name on a signature's look through `sig_sign::shown_name` (left out when it can't be written). Comments,
 replies, bookmarks, document properties and page labels are text strings (`doc::encode_text`, UTF-16 with
-surrogate pairs past U+FFFF), which take any character. A text box another app wrote may have characters
-Helvetica can't write (`Pdf::box_unwritable`): `Pdf::check_box_drawable` refuses whatever would draw it again
+surrogate pairs past U+FFFF), which take any character. A text box another app wrote may have characters no
+font can write (`Pdf::box_unwritable`, through `embed::unwritable`: a script not written yet, an emoji sequence, a
+character no installed font has; since batch 45 its Chinese, say, falls back to an installed font as any text
+does): `Pdf::check_box_drawable` refuses whatever would draw it again
 into the file (a new look in `set_annotation`, `set_text_style`, a resize in `move_annotation`; BUG-39), and
 `flatten_annotations` refuses when such a box has no drawing, naming its page (`embed::box_refusal` words the
-reason). `Pdf::box_pen`'s `?` fallback is left only for drawings in a copy: the app's view, printing and page
-images (`snapshot_hiding`). Finding an installed font that has the characters was considered and left: the
-font list keeps no coverage, so it would mean reading every installed font file.
+reason). `annot_ap.rs`'s `typeset` draws such characters as `?` only in drawings in a copy: the app's view,
+printing and page images (`snapshot_hiding`).
 
 Installed fonts for writing text are listed by `crates/limarepdf-core/src/typefaces.rs`: the families in
-`InstalledFonts::system()`'s `fontdb` database whose fonts allow embedding and have the Latin letters, each with
-up to four faces (`FaceFile`: file, index, variation settings, PostScript name), read once (`typefaces()`; the
-app starts it on another thread at launch, `font_list::warm`). The list only grows, so `Family::Installed(n)`,
+`InstalledFonts::system()`'s `fontdb` database whose fonts allow embedding, each with
+up to four faces (`FaceFile`: file, index, variation settings, PostScript name), read once (the first of
+`typefaces()`, `every_typeface()` or `family_named`; the app starts it on another thread at launch,
+`font_list::warm`). Font lists offer only families with the Latin letters (`typefaces()`); the others (emoji
+fonts, fonts for one script) are `listed: false`, found by `every_typeface` and `family_named` for the
+pipeline's fallback only. The list only grows, so `Family::Installed(n)`,
 its number, stays valid; `FontChoice` stays `Copy`. `embed::Face::of` reads an installed face from its file
 the first time and keeps it, and the same embedding applies: always embedded (no WinAnsi path), static CFF fonts
 as CIDFontType0 with `/FontFile3 /OpenType`, variable fonts set at their weight by `subsetter`'s `variable-fonts`
@@ -1320,7 +1484,7 @@ form XObject, and per inline image.
   standard-encoded font, plain ASCII as itself), a word with a character it can't write going to the font chosen
   for it, else the installed family the line's font is from (found by its PostScript name, the subset tag left
   off; `FontChoice::of_font`), else the nearest of the 12 standard fonts, the parts in one font sharing one font
-  object. A line restyled in one style (a `TextEdit` with a font, size or colour) is written anew on top in that
+  object; what that font lacks falls back a word at a time as all new text does (the text pipeline above). A line restyled in one style (a `TextEdit` with a font, size or colour) is written anew on top in that
   style. `Pdf::edit_texts` makes several lines of a page in one parse and one commit (the shows of every line
   taken out, each line's `Following` in the page's order, the lines on top in the order given), the parts of all
   its lines sharing the fonts they add (`written_lines`); `edit_text` is it for one line. A line in one style and
@@ -1334,21 +1498,24 @@ form XObject, and per inline image.
   again (up to a third of a second each time on a heavy page; performance.md). It draws each piece in the
   font it will have: a kept embedded font in its own glyphs (its preview font), a kept unembedded one in the
   installed font of its name or else the Liberation face of its kind; the installed family's font, or the
-  Liberation face of the standard font replacing it, otherwise. The inspector says which typed characters the
-  font has no code for, and which family their words use, or that the font can't take new text at all (Type 3,
+  Liberation face of the standard font replacing it, otherwise. The inspector names the typed words, as typed and
+  each once, with a character the font has no code for, and the family they use (batch 45: before, it listed the
+  letters, each once and spaced, which read as a word spaced out), or that the font can't take new text at all (Type 3,
   not embedded, vertical writing, unreadable codes; `editor::font_note`). The old line is covered with the most
   common colour in a 3-point ring around its box, from a separate drawing of that part of the page in the current
-  page colours.
+  page colours. Below that note the inspector names the words that then fall back from the font they go to
+  (`page_text::fallback_note`), and the typing box draws each in the face it will be written in.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
   text line each, their baselines 1.2 times the size apart (Acrobat's spacing). In a standard font it is written
-  in one of the 12 standard fonts with the WinAnsi encoding; a line with characters WinAnsi lacks (Polish, Czech,
-  Vietnamese, Greek, Cyrillic and so on) is written in the bundled Liberation face of that font instead, embedded
-  in the file and cut down to the characters used; one font object per face grows as more is typed. While it is
-  typed, the app draws the text in the Liberation face, which has the standard font's widths, so the caret and
-  line length match the written result. The exception is text in an installed font (below), which is always
-  embedded, whatever its characters: Chinese, Japanese, Korean and single emoji are written only that way, in an
-  installed font that has them with outlines (`embed::installed_could_write`), and the app draws them in the
-  font's own file. Right-to-left and joined scripts and emoji sequences can't be typed in any font.
+  in one of the 12 standard fonts with the WinAnsi encoding, kerned with its Liberation face's pairs; a line with
+  characters WinAnsi lacks (Polish, Czech, Vietnamese, Greek, Cyrillic and so on) is written in the bundled
+  Liberation face of that font instead, embedded in the file and cut down to the characters used, shaped; one font
+  object per face grows as more is typed. While it is typed, the app draws the text in the Liberation face, which
+  has the standard font's widths, so the caret and line length match the written result. Text in an installed font
+  (below) is always embedded, whatever its characters. A word the font lacks (Chinese, Japanese and Korean, a
+  single emoji, a letter an installed font doesn't have) goes a word at a time, each ideograph alone, to an
+  installed font that has it (the text pipeline above), the app drawing it in that font's file and the inspector
+  naming it. Right-to-left and joined scripts and emoji sequences can't be typed in any font.
 - **Pictures** added (`add_image`) or replaced (`replace_image`) are stored as the file has them (a JPEG's bytes as
   they are) and turned upright for the EXIF or TIFF orientation by a `cm` from `imgs::orient_matrix` inside their
   box, as image pages, image watermarks and picture stamps are (`add_upright_image`). A replacement is fitted into
@@ -1359,8 +1526,9 @@ form XObject, and per inline image.
   Latin letters; up to four faces each (regular, bold, italic, bold italic), a variable font set at weight 400 or
   700 (and its `ital` or `slnt` axis for italic). Text in one is always embedded, cut down to the characters used,
   the same way: TrueType fonts and variable fonts (set at the weight, which makes them TrueType) as
-  CIDFontType2 with `/FontFile2`, OpenType CFF fonts as CIDFontType0 with `/FontFile3 /OpenType`. The app draws
-  the text in the font's own file, at that weight.
+  CIDFontType2 with `/FontFile2` (codes of their own and a `/CIDToGIDMap`), OpenType CFF fonts as CIDFontType0
+  with `/FontFile3 /OpenType` (codes their glyphs' numbers). The app draws the text in the font's own file, at that
+  weight. Families without the Latin letters aren't offered, but words other fonts lack may fall back to them.
 - **Invisible text** from OCR is edited as invisible text and stays in place.
 - **Text after a changed line** stays where it was. Text on the same line can carry on from where the line ended
   (a show operator with no line move before it); when the line is deleted, edited or moved, its end is set again

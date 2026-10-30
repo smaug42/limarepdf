@@ -62,12 +62,14 @@ More about notes and text boxes:
   Insert), or Note for any other. Printed, they keep their own drawing, or LimarePDF's, 20 points across. Hovering
   over a note shows its comment.
 - Text boxes use Helvetica, and for Polish, Czech, Vietnamese, Greek, Cyrillic and other characters it lacks, its
-  Liberation Sans face, embedded in the file. Other characters (Chinese, Hebrew, emoji and so on) can't be typed or
-  pasted, on the page or in the inspector, and a note at the caret says so. Chinese, Japanese, Korean and single
-  emoji can be written on the page instead with the Add text tool, in an installed font that has them. Hebrew,
-  Arabic and other right-to-left or shaped scripts, emoji made of several characters (flags, skin tones, joined
-  emoji) and emoji a font draws only in colour can't be written in any font yet
-  ([details](content-editing.md#add-text)). A note's comment takes any character, emoji included.
+  Liberation Sans face; Chinese, Japanese, Korean and single emoji go in an installed font that has them, a word
+  at a time, as in Add text, the inspector naming those words. Each is embedded in the file. Hebrew, Arabic and
+  other right-to-left or shaped scripts, emoji made of several characters (flags, skin tones, joined emoji) and
+  characters no installed font has can't be typed or pasted, on the page or in the inspector, and a note at the
+  caret says so ([details](content-editing.md#add-text)). A note's comment takes any character, emoji included.
+- A text box wraps its lines as you type where they are written in the PDF, inside its border and margin. One
+  made by another app with a cloudy border, a callout line or inner margins of its own can wrap a little
+  differently while you type.
 - When you finish a text box, it grows downward to fit its text, keeping its width. It stops at the bottom of the
   page, and never shrinks (resize it by dragging its handles).
 - The Text box tool can be kept on to add several in a row (see [Keep tool active](gui.md#keep-tool-active)). The
@@ -169,10 +171,10 @@ highlights, underlines, strike-outs, squiggly underlines, notes, text boxes, rec
 freehand drawings, stamps, carets and file attachment icons itself, on screen and when printing, including cloudy
 borders, text box callout lines and line leader lines. The file isn't changed by this; flattening saves LimarePDF's
 drawing into it (file attachments stay as they are). Text boxes are drawn in Helvetica, ignoring any rich-text
-styling; a stamp shows its name in a coloured frame. A text box with characters Helvetica can't write (Chinese,
-Hebrew and so on) shows them as `?` when LimarePDF draws it, so flattening refuses one without a drawing of its
-own, naming its page, and a text box with its own drawing keeps it: a new colour, style, size or text for it is
-refused ([Troubleshooting](troubleshooting.md#limarepdf-cant-draw-this-text-box-again)). [Rendering](rendering.md#known-to-be-wrong) lists what isn't
+styling, with words Helvetica lacks in other fonts as LimarePDF writes them; a stamp shows its name in a coloured
+frame. A text box with characters LimarePDF can't write (Hebrew, Arabic and so on, or ones no installed font has)
+shows them as `?` when LimarePDF draws it, so flattening refuses one without a drawing of its own, naming its
+page, and a text box with its own drawing keeps it: a new colour, style, size or text for it is refused ([Troubleshooting](troubleshooting.md#limarepdf-cant-draw-this-text-box-again)). [Rendering](rendering.md#known-to-be-wrong) lists what isn't
 reproduced.
 
 The app shows up to 10,000 annotations on a page, with a notice on a page that has more.

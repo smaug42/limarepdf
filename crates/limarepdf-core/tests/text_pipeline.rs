@@ -10,9 +10,9 @@ mod common;
 
 use common::saved::tools;
 use limarepdf_core::{
-    add_font_files, bundled_face, fallbacks, typeface, BoxSetting, FieldValue, FontChoice,
-    HeaderFooter, InkColor, ObjectKind, PageObject, Pdf, Stamp, StampColor, StampPlace, TextEdit,
-    TextStyle, Watermark,
+    add_font_files, bundled_face, fallbacks, sign_document, typeface, BoxSetting, FieldValue,
+    FontChoice, HeaderFooter, IdStore, InkColor, NewId, ObjectKind, PageObject, Pdf, SignPlace,
+    SignRequest, Stamp, StampColor, StampPlace, TextEdit, TextStyle, UnlockedId, Watermark,
 };
 use lopdf::{dictionary, Object, Stream};
 use std::sync::OnceLock;
@@ -109,6 +109,48 @@ fn form(p: &mut Pdf) {
     p.doc.catalog_mut().unwrap().set("AcroForm", form);
 }
 
+/// The test digital IDs' password (as `signing.rs`'s).
+const PASSWORD: &str = "mpe-test-password";
+
+/// A page signed by a new digital ID named [`SHORT`], in a box across its top wide enough
+/// for the look's "Digitally signed by" line on one line, its form then flattened so the
+/// look is page content.
+fn signed_page() -> Pdf {
+    static ID: OnceLock<UnlockedId> = OnceLock::new();
+    let id = ID.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "limarepdf-text-pipeline-{}-ids",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = IdStore::new(dir.clone());
+        let new = NewId {
+            name: SHORT.into(),
+            ..NewId::default()
+        };
+        let made = store.create(&new, PASSWORD).unwrap().id;
+        let id = store.unlock(&made, PASSWORD).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        id
+    });
+    let r = SignRequest {
+        id,
+        place: SignPlace::NewBox {
+            page: 0,
+            rect: [10.0, 200.0, 590.0, 290.0],
+        },
+        reason: None,
+        location: None,
+        certify: None,
+        art: None,
+        accept_disallowed: false,
+    };
+    let signed = sign_document(&page().to_bytes().unwrap(), None, &r).unwrap();
+    let mut p = Pdf::from_bytes(&signed.bytes, None).unwrap();
+    p.flatten_form(None).unwrap();
+    p
+}
+
 /// Every writer's text, each on a page of its own: what it is, and the document.
 fn every_writer() -> Vec<(String, Pdf)> {
     installed("Limare Han Test");
@@ -172,6 +214,7 @@ fn every_writer() -> Vec<(String, Pdf)> {
     (p.add_stamp(0, &stamp, StampPlace::Fill([10.0, 100.0, 590.0, 200.0]), "")).unwrap();
     p.flatten_annotations(None).unwrap();
     out.push(("a stamp".into(), p));
+    out.push(("a digital signature's look".into(), signed_page()));
     out.push((
         "selected text as a plain page".into(),
         Pdf::from_text(TEXT, (W, H)).unwrap(),
@@ -183,7 +226,7 @@ fn every_writer() -> Vec<(String, Pdf)> {
 fn wanted(what: &str) -> String {
     match what {
         "a stamp" => SHORT.to_uppercase(),
-        "a watermark" => SHORT.to_string(),
+        "a watermark" | "a digital signature's look" => SHORT.to_string(),
         _ => TEXT.to_string(),
     }
 }

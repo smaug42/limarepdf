@@ -9,11 +9,24 @@
   spacing, new letters are written in the font when it holds them, and only a word with a letter the font lacks
   goes to the installed family or the nearest standard font, the rest of the line keeping its font. A line in one
   style changed in its words alone is changed where it is in the page. While you type, the line shows in the
-  font's own letters, at the widths that will be written. The inspector says which letters the font lacks ("Not
-  in this PDF's font: ö ß. Those words use Helvetica.") or that it can't take new text at all ("This PDF's font
-  can't take new text. Edits use Times."), why on hover (a Type 3 font, one not in the PDF, vertical writing).
-  Before, a line in an embedded subset was written again in another font, and its spacing between letters was
-  lost.
+  font's own letters, at the widths that will be written. The inspector names the words written in another font
+  ("Not in this PDF's font: größe Maße. Those words use Helvetica.") or says that the font can't take new text at
+  all ("This PDF's font can't take new text. Edits use Times."), why on hover (a Type 3 font, one not in the PDF,
+  vertical writing). Before, a line in an embedded subset was written again in another font, and its spacing
+  between letters was lost.
+- Chinese, Japanese, Korean and single emoji can be written in any font, everywhere new text goes: added and
+  edited text, text boxes, form values, headers, footers, Bates numbers, watermarks, stamps, fill-and-sign text, a
+  digital signature's look and plain-text pages of selected text. As in a word processor, a word the font lacks is
+  written whole in an installed font that has it (Chinese and Japanese a character at a time): letters Helvetica,
+  Times or Courier lack in their Liberation face, Chinese, Japanese and Korean in a font for the language (the
+  document's, else the one the characters show, else the computer's), emoji in a font that draws them in outline.
+  While you type, each word is drawn in the font it will be written in, and the inspector names the words in
+  another font and that font ("Not in Calibri: 漢字. Those characters use Noto Sans CJK JP."), which word uses
+  which on hover, for a line, new text, a text box and a form field. Before, Chinese, Japanese, Korean and emoji
+  could be written only with Add text in an installed font that had them, and a character the chosen font lacked
+  couldn't be typed.
+- Typing with an input method (Chinese, Japanese or Korean, say) over words selected with the read tool replaces
+  them, as typing on the keyboard does: their line opens with what you compose in their place.
 - Ctrl+Tab (or Ctrl+F6) brings the next open document to the front and Ctrl+Shift+Tab (or Ctrl+Shift+F6) the one
   before, from the last round to the first, as in web browsers and Acrobat; they are under ☰ > View > Go to
   document too, and work with the keyboard in a box.
@@ -106,8 +119,8 @@
   just above or below it, over as little text as it can. It never covers a line being edited or its caret. Before,
   it always sat just above the selection, over the line above.
 - A note or text box already on the page that you type in stays open while you change it in the inspector (its
-  colour, a text box's size, colours, background and border), as a new note already did; the keyboard comes back
-  to it. Its text is typed on the page only: the inspector's own Comment or Text box is hidden meanwhile.
+  colour, a text box's size, colours, background and border), showing the change at once, as a new note already
+  did; the keyboard comes back to it. Its text is typed on the page only: the inspector's own Comment or Text box is hidden meanwhile.
 - A note, text box or other box you come back to with nothing kept in the document meanwhile can still undo its
   typing with Ctrl+Z; before, it started with nothing to undo each time. A new note or text box still starts
   empty.
@@ -139,8 +152,31 @@
 - Ctrl+B or Ctrl+I in text being typed, in a family with no bold or italic face, says so at the caret
   ("… has no bold."). Before, nothing happened.
 - Typing or pasting Hebrew, Arabic, Hindi, Thai or another script written right to left or with joined letters
-  says "LimarePDF can't add this script yet", naming why. Before, the note said only Latin, Greek and Cyrillic
-  characters work, though Chinese, Japanese and Korean do in an installed font.
+  says "LimarePDF can't add this script yet", naming why, and so do the messages refusing such text in a line, a
+  text box or a form value, and `limarepdf-cli`'s. A character no installed font has says "No font on this computer
+  has this character". Before, the notes and messages said only Latin, Greek and Cyrillic characters work, or
+  asked for an installed font that has the character.
+- New text is set as word processors set it: kerned (pairs such as AV, To and Te closed up), with the font's
+  ligatures (fi) and accents placed by the font, in installed fonts and Liberation; Helvetica, Times and Courier
+  are kerned with their Liberation face's pairs. Before, each letter took its own width, so new text looked looser
+  once written than while it was typed.
+- Text boxes, form fields of several lines, a digital signature's look and plain-text pages break their lines by
+  Unicode's rule: after hyphens and dashes and between Chinese or Japanese characters as well as at spaces, never
+  with closing punctuation or a small kana starting a line; a soft hyphen shows as a hyphen only at a line's end. A
+  signature's name gets smaller before a word in it is broken. Before, lines broke only at spaces, and a word too
+  long for the line at any letter.
+- A text box or form field of several lines wraps as you type exactly where its lines are written, its text where
+  it will be on the page. Before, the box being typed wrapped by its own measure, so lines could break elsewhere
+  once kept (in a box with a border, often a line sooner).
+- The caret, Delete and Backspace go by characters as you see them: a letter with its accent, a Korean syllable
+  or an emoji is one step, everywhere text is typed. Backspace after a letter typed with a separate accent takes
+  off only the accent. Before, a letter typed with its accent apart took two steps, and Delete could take the
+  letter and leave its accent.
+- The word a double-click opens a line with, and the word Bold, Italic and the other styles change with the caret
+  in it, is the word as Unicode's word rule finds it: punctuation isn't part of it, and each Chinese or Japanese
+  character is a word of its own. Before, a word ran from space to space.
+- File names, tab titles, recent files, bookmarks and other text in the interface in Chinese, Japanese or Korean
+  is drawn in an installed font that has it, as is emoji. Before, it showed as empty boxes.
 - Ctrl+V with nothing being typed and no words selected says where to click to paste. Before, nothing happened.
 - In the menus, the tools (☰ > Tools, Edit > Select) mark the one in use, and Edit text in the band shows pressed
   while the Text tool is on.
@@ -213,6 +249,16 @@
   better and none worse.
 - Letters typed into a line in an embedded font that doesn't hold them (a font made with only some letters) were
   written in it anyway, and showed as nothing; the word goes to another font now, as the inspector says.
+- Hebrew, Arabic, Bengali or another script LimarePDF can't write yet, put into a line whose own font has those
+  letters, could be written in it letter by letter, unjoined and in the wrong order. It is refused now, with the
+  reason, as in every other font.
+- Chinese and Japanese text in PDFs printed from Chrome and other Chromium browsers read with some characters as
+  radicals (⼯ for 工, ⽥ for 田) in search, copying, Export text and `limarepdf-cli text`, so words with them
+  weren't found. They read as the characters they show now, as in other readers.
+- With an input method, text still being composed when you clicked away, chose another tool or pressed a button in
+  the band was left in the text unchecked, and a character LimarePDF can't write could then make keeping the
+  typing fail. It is kept as typed, as Windows and macOS do, and checked as typed text is: a character that can't
+  be written is left out, and a message says "Left out "…"" and why.
 - The tick and cross in the Fill and sign pane and its menu showed as empty boxes; they are drawn now.
 - The Finish signing question, its notice when nothing is put down and its command's tooltip named "the Sign
   tool"; they say Fill and sign, the tool's name. The notice for Apply redactions with no marks named a menu that

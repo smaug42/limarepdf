@@ -24,14 +24,23 @@ While you type:
   the PDF or not, letter by letter: letters you leave as they are keep their exact spacing, and new letters are
   written in the font when it holds them, drawn in its own letters as you type. A word with a letter the font
   lacks is written in the installed font it came from (when LimarePDF can embed it), or in the Helvetica, Times or
-  Courier that replaces it, and switches as you type that letter; the rest of the line keeps its font. The
-  inspector names those words and the font they use ("Not in this PDF's font: größe Maße. Those words use
-  Helvetica."), or says that the font can't take new text at all (a Type 3 font, one not in the PDF, vertical
-  writing), why when you point at it.
+  Courier that replaces it, and switches as you type that letter; the rest of the line keeps its font. A word that
+  font lacks too (Chinese in Helvetica, say) goes on to an installed font that has it, as new text does (see
+  [Add text](#add-text)). The inspector names those words and the font they use ("Not in this PDF's font:
+  größe Maße. Those words use Helvetica."), or says that the font can't take new text at all (a Type 3 font, one
+  not in the PDF, vertical writing), why when you point at it.
 - When what you type runs past the edge of the page, or on past the line's end into the text beside it, the
   outline turns the caution colour and a tag under it says **Past the page edge** or **Over other text**. It is
   only a warning: what you type is kept as it is.
 - What you type takes the style of the character before it (at the start of the line, the one after it).
+- The caret, Delete and Backspace go by the character as you see it: a letter with its accent, a Korean syllable
+  or an emoji is one step. Backspace after a letter typed with a separate accent takes off only the accent, so you
+  can type another. Ctrl with the arrow keys and a double-click go by words as Unicode defines them, in which each
+  Chinese or Japanese character is a word of its own.
+- An input method (for Chinese, Japanese or Korean, say) types in the line as it does in other apps: what you are
+  composing shows in the line, and is checked when you commit it. Clicking away or choosing another tool while
+  composing keeps what was composed, as Windows and macOS do; a character in it that can't be written is left out,
+  and a message says "Left out "…"" and why.
 - Ctrl+Z and Ctrl+Y, or Undo and Redo in the commands row, undo and redo typing and style changes in the line, in
   order. Once the change is kept, Undo takes the whole edit back. Typing into the same line again within a few
   seconds, with nothing else changed in between, joins the same undo step.
@@ -107,7 +116,8 @@ Words you select with the read tool can be changed as in a word processor, witho
   there; press Enter, Esc or Tab, or click elsewhere, to keep it. **Ctrl+V**, or **Paste** (in **Edit** in the
   band, the right-click menu or the floating toolbar), pastes over them the same way. Over words on more than one
   line nothing is typed, and a note says "Type over words within one line. Paragraph editing is planned." With no
-  words selected and nothing being typed, Ctrl+V says where to click to paste.
+  words selected and nothing being typed, Ctrl+V says where to click to paste. An input method types over them
+  too: the line opens with what you compose in their place.
 - **Delete** or **Backspace** removes them, across lines and pages, in one step that Undo takes back. As in Word,
   a space beside them goes too when two would be left together, or one at the start or end of a line. A line left
   empty is gone; the lines around it stay where they are, as lines aren't joined together.
@@ -152,17 +162,32 @@ the typeface they stand in for, with the font's own name after it: "Palatino (P0
 typefaces but aren't the typefaces themselves; point at one to see this. Unlike the standard Helvetica, Times and
 Courier at the top of the list, they are embedded in the file, so the text looks the same everywhere.
 
-**Characters:** Latin (Vietnamese included), Greek and Cyrillic characters can be added. Those the standard fonts
-lack are written in their Liberation face, and text in an installed font is written in that font, both embedded in
-the file (cut down to the characters used). Chinese, Japanese and Korean can be typed in an installed font that has
-them, and so can single emoji (Symbola and DejaVu Sans have many). Others (Hebrew, Arabic, Devanagari, Thai and so
-on, and emoji made of several characters: flags, skin tones, keycaps, joined emoji such as families), characters
-the chosen font doesn't have, and emoji it draws only in colour, can't be typed or pasted, and a note at the caret
-says so: for a script written right to left or with joined letters, that LimarePDF can't add that script yet.
-When another font could have the character (Chinese or an emoji in Helvetica, say, or a letter an installed font
-lacks), the note names the font in use and asks you to choose an installed font that has it. The same goes for
-editing a line and the inspector's text field (see
-[What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet)).
+**Characters:** Latin (Vietnamese included), Greek, Cyrillic, Chinese, Japanese and Korean characters, and single
+emoji, can be added in any font. As in a word processor, a word the font lacks is written whole in a font that has
+it, embedded in the file (cut down to the characters used):
+
+- letters Helvetica, Times or Courier lack (Polish, Czech, Greek, Cyrillic and so on) in that font's Liberation
+  face;
+- letters an installed font lacks in Noto Sans or DejaVu Sans (their serif or monospaced kind for a serif or
+  monospaced font), else in the font's Liberation look-alike;
+- Chinese, Japanese and Korean, a character at a time, in an installed font for the language, such as Noto Sans
+  CJK or Source Han Sans (their serif kind for a serif font): the document's language says which, else the characters do
+  (kana are Japanese, Hangul Korean), else your computer's language;
+- an emoji in an installed font that draws it in outline, such as Noto Emoji, Symbola or DejaVu Sans (colour
+  emoji fonts can't be written into a PDF);
+- anything else in the first installed font that has it.
+
+The text is drawn in those fonts as you type, and the inspector names the words and the fonts they use ("Not in
+Calibri: 漢字. Those characters use Noto Sans CJK JP."), which word uses which when you point at it. Characters no
+installed font has, Hebrew, Arabic and the other scripts written right to left or with joined letters
+(Devanagari, Thai and so on), and emoji made of several characters (flags, skin tones, keycaps, joined emoji such
+as families) can't be typed or pasted, and a note at the caret says why: "No font on this computer has this
+character", or that LimarePDF can't add that script or emoji yet. The same goes for editing a line, text boxes and
+the inspector's text field (see [What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet)).
+
+New text is set as the font sets it: kerned (the space between pairs such as AV and To closed up), with the
+font's ligatures (fi) and accents placed by the font, in installed fonts and Liberation. Helvetica, Times and
+Courier are kerned with their Liberation face's pairs, and have no ligatures.
 
 To put the same text on every page, such as page numbers or DRAFT, use
 [headers, footers and watermarks](headers-footers-watermarks.md).
@@ -271,7 +296,13 @@ the page itself.
   1.2 times the size below the one before (as Acrobat does); with sizes that differ, 1.2 times a quarter of the
   line above's largest size and three quarters of its own. Text in Helvetica, Times or Courier with characters
   those fonts lack (Polish, Czech, Vietnamese, Greek, Cyrillic and so on) is written in the bundled Liberation
-  face of that font, which has the same widths, embedded in the file and cut down to the characters used.
+  face of that font, which has the same widths, embedded in the file and cut down to the characters used; a word
+  that face lacks too goes to an installed font that has it (see [Add text](#add-text)).
+- **Every kind of new text** (text added or edited, text boxes, form values, headers, footers, watermarks, stamps,
+  fill-and-sign text) is set the same way: each word in the first font that has it, kerned, and broken into lines,
+  where a box wraps, at the places Unicode's line-breaking rule allows (spaces, after hyphens, between Chinese or
+  Japanese characters, never before closing punctuation). While you type, it is drawn in the fonts and on the
+  lines it will be written in.
 - **Installed fonts** (the font list in **Edit > Font**, after the three standard ones) are the families whose
   licence allows embedding, with up to four styles each. Text in one is always embedded in the file, cut down to the
   characters used, so it looks the same on any computer.
@@ -296,16 +327,17 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   left as they were keep their font. Letters a font draws joined (a ligature such as "fi") keep it only together
   and unchanged. Where the changed line would read as other words (when it runs into the text after it, say, or a
   space it had as a small gap after a raised or lowered part no longer reads as a space), it is written in the
-  similar font instead, and a notice says so. Text written anew is limited to Latin, Greek
-  and Cyrillic, and Chinese, Japanese and Korean in an installed font that has them: the app doesn't let others
-  be typed, and a line that already has them (Chinese in a line that becomes Helvetica, say) can't be written
-  anew; the change is refused with a message naming them. Right-to-left and shaped scripts (Hebrew, Arabic,
-  Devanagari, Thai and the rest) are refused in every font, as they would come out wrong without reordering and
-  shaping. An installed font lacking a character refuses it too, naming the font: a typed character goes in the
-  font of the words around it, with no fallback to another.
-- Installed fonts whose licence restricts embedding, or that have no Latin letters, aren't offered; a family's
-  missing bold or italic isn't made up. The list is read once, when the app starts (about a second, on another
-  thread): fonts installed while it runs show after a restart.
+  similar font instead, and a notice says so. Text written anew is limited to Latin, Greek, Cyrillic, Chinese,
+  Japanese, Korean and single emoji, each in a font that has it: the app doesn't let others be typed, and a line
+  that already has them (Hebrew in a line written anew, say) can't be written anew; the change is refused with a
+  message naming them. Right-to-left and shaped scripts (Hebrew, Arabic, Devanagari, Thai and the rest) are
+  refused in every font, as they would come out wrong without reordering and shaping, even in a line's own font.
+- A word written in another font because its font lacks a letter can look a little different in size and weight
+  beside its neighbours, as in a word processor; the inspector names it.
+- Installed fonts whose licence restricts embedding aren't offered or used. Those with no Latin letters aren't
+  offered, but are used for the characters they have. A family's missing bold or italic isn't made up. The list
+  is read once, when the app starts (on another thread), with the fonts for emoji, and for Chinese, Japanese and
+  Korean when your computer's language is one of them: fonts installed while it runs are used after a restart.
 - While a line that keeps its font is edited, its character and word spacing, horizontal scaling (`Tc`, `Tw`,
   `Tz`) and the fine spacing between its letters aren't drawn, a font not held in the PDF is drawn in the installed
   or Liberation look-alike, and the letters of a ligature in the Liberation look-alike, so the line can look

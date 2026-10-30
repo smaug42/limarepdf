@@ -69,14 +69,20 @@ shows the field you are in: its name, its description and whether it is required
 
 ## How values are written
 
-LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin, Greek
-or Cyrillic for now; anything else is refused with a message rather than saved wrongly, and stays typed in the
-field, which gets the keyboard back once you close the message, so you can change it. A value the field's own
-font can't show is drawn in the Liberation face of its kind, embedded in the file. Fields that have a value but no
-drawing of their own are drawn when the file opens.
+LimarePDF draws the filled fields itself, so the values show the same in other readers. Text can be Latin, Greek,
+Cyrillic, Chinese, Japanese, Korean or single emoji. A value is written in the field's own font where the file
+holds its letters, else in the nearest of Helvetica, Times and Courier; letters those lack go in their Liberation
+face, and Chinese, Japanese, Korean and emoji in an installed font that has them, a word at a time, as in
+[Add text](content-editing.md#add-text). While you type, the field shows the text in those fonts, a field of
+several lines wraps where it will be written, and the inspector names the words in another font. Hebrew, Arabic
+and other right-to-left or shaped scripts, emoji made of several characters and characters no installed font has
+are refused with a message rather than saved wrongly, and stay typed in the field, which gets the keyboard back
+once you close the message, so you can change it. Fields that have a value but no drawing of their own are drawn
+when the file opens. A field set to centre or right-align its text shows it from the left while you type, and
+aligned once kept.
 
-A value filled in by another app in other characters (Japanese, for example) shows only if that app drew it. If it
-didn't, LimarePDF can't either: Flatten form… stops and names the fields rather than lose their values, and Print
+A value filled in by another app in characters LimarePDF can't write (Hebrew or Arabic, for example) shows only
+if that app drew it. If it didn't, LimarePDF can't either: Flatten form… stops and names the fields rather than lose their values, and Print
 asks whether to print without them, since they would come out empty on paper.
 
 ## From the command line
