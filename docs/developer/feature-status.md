@@ -75,7 +75,11 @@ this list once it works. The feature table below has the details.
   none); otherwise the word is written in the installed family it came from, when LimarePDF can embed it, or else
   in Helvetica, Times or Courier, and a line that would read as other words is written so whole (a notice says
   so). While typing, `TJ` spacing between letters isn't drawn, and a ligature's letters draw in the look-alike
-  ([details](../content-editing.md#limits)). Fonts installed under
+  ([details](../content-editing.md#limits)). A space the line had as a small gap (after a subscript) may no
+  longer read as one between larger letters, so such a line is written with its changed words in another font
+  (PB-50); a line the page draws twice (a label over a halo) is edited where clicked, the copy under it
+  keeping the old words (PB-51); the first line selected on a page with heavy content waits for the page to be
+  read, a tenth to a third of a second on 2.5 % of the corpus's pages, once a page (PB-52). Fonts installed under
   code names are shown by the typeface they stand in for only for the URW fonts Linux installs; others show
   their own names.
 - Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into

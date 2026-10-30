@@ -286,15 +286,17 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 - Text objects are lines recovered from the content stream by heuristics, not paragraphs. There is no reflow and no
   multi-line editing: typing over words selected on more than one line types nothing, and deleting words leaves
   each line where it was, an emptied one blank. Text boxes are estimated from font metrics, so they can be
-  slightly off for unusual fonts.
+  slightly off for unusual fonts. A line the page draws twice (as maps draw a label over a halo of its own) is
+  changed where you click it; the copy under it keeps the old words.
 - A changed line keeps its font only for letters the font verifiably holds: one that is cut down to the letters
   the file uses (a subset) can't take others, and a Type 3 font, a font not held in the PDF (beyond plain English
   letters in a standard one), vertical writing and fonts whose codes LimarePDF can't read take none. A word with
   such a letter is written in the installed family the font is from when LimarePDF can embed it, else in
   Helvetica, Times or Courier (or their Liberation face, as new text is), and the inspector says so; the words
   left as they were keep their font. Letters a font draws joined (a ligature such as "fi") keep it only together
-  and unchanged. Where the changed line would read as other words (when it runs into the text after it, say), it
-  is written in the similar font instead, and a notice says so. Text written anew is limited to Latin, Greek
+  and unchanged. Where the changed line would read as other words (when it runs into the text after it, say, or a
+  space it had as a small gap after a raised or lowered part no longer reads as a space), it is written in the
+  similar font instead, and a notice says so. Text written anew is limited to Latin, Greek
   and Cyrillic, and Chinese, Japanese and Korean in an installed font that has them: the app doesn't let others
   be typed, and a line that already has them (Chinese in a line that becomes Helvetica, say) can't be written
   anew; the change is refused with a message naming them. Right-to-left and shaped scripts (Hebrew, Arabic,

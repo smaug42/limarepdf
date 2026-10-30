@@ -1391,6 +1391,9 @@ pub struct Editor {
     pub selection: Selection,
     objs: HashMap<usize, Vec<PageObject>>,
     unavailable: HashMap<usize, String>,
+    /// The fonts of each line of a page, by object id, read together the first time one of
+    /// its lines is selected ([`Editor::read_line_fonts`]), kept as `objs` is.
+    line_fonts: HashMap<usize, Vec<Option<Vec<LineFont>>>>,
     drag: Option<Drag>,
     draw: Option<Draw>,
     /// A rectangle being dragged out with the arrow, selecting what is wholly inside it.
@@ -1542,6 +1545,7 @@ impl Default for Editor {
             selection: Selection::None,
             objs: HashMap::new(),
             unavailable: HashMap::new(),
+            line_fonts: HashMap::new(),
             drag: None,
             draw: None,
             marquee: None,
@@ -1836,6 +1840,7 @@ impl Editor {
     pub fn invalidate(&mut self) {
         self.objs.clear();
         self.unavailable.clear();
+        self.line_fonts.clear();
         self.drag = None;
         self.draw = None;
         self.marquee = None;
@@ -2828,6 +2833,25 @@ impl Editor {
         self.selection.object()
     }
 
+    /// The selected line's fonts, when it is on `page` and they aren't read yet: from the
+    /// fonts of all the page's lines, read together the first time one of them is selected
+    /// and kept until the document changes, so that selecting the page's lines one after
+    /// another reads the page once. A page that can't be read gives none: the edit then
+    /// says what is wrong.
+    fn read_line_fonts(&mut self, pdf: &limarepdf_core::Pdf, page: usize) {
+        let line = |o: &PageObject| o.kind == ObjectKind::Text && !o.hidden;
+        let Some(insp) = (self.insp.as_mut()).filter(|i| i.key.0 == page && i.fonts.is_none())
+        else {
+            return;
+        };
+        let o = self.objs.get(&page).and_then(|v| v.get(insp.key.1));
+        if o.is_some_and(line) {
+            let all = (self.line_fonts.entry(page))
+                .or_insert_with(|| pdf.page_line_fonts(page).unwrap_or_default());
+            insp.fonts = Some(all.get(insp.key.1).cloned().flatten().unwrap_or_default());
+        }
+    }
+
     /// The objects on `page`, read once until the document changes. Read again after a
     /// change, the objects selected there are found again in them ([`Selection::refind`]).
     pub fn objects(&mut self, pdf: &limarepdf_core::Pdf, page: usize) -> &[PageObject] {
@@ -3350,15 +3374,7 @@ impl Editor {
         {
             self.sync_insp();
         }
-        // The selected line's fonts, read once, by the page it is on (a page that can't be
-        // read gives none: the edit then says what is wrong).
-        let line = |o: &PageObject| o.kind == ObjectKind::Text && !o.hidden;
-        if let Some(insp) = (self.insp.as_mut()).filter(|i| i.key.0 == page && i.fonts.is_none()) {
-            let o = self.objs.get(&page).and_then(|v| v.get(insp.key.1));
-            if o.is_some_and(line) {
-                insp.fonts = Some(pdf.line_fonts(page, insp.key.1).unwrap_or_default());
-            }
-        }
+        self.read_line_fonts(pdf, page);
         self.sync_group();
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
@@ -6740,6 +6756,41 @@ mod tests {
         typed.sync("Walrus ö", None);
         let (said, _) = font_note(&o, &fonts, &typed, (0, 0)).unwrap();
         assert!(said.starts_with("Not in this PDF's font: ö."), "{said}");
+    }
+
+    /// A line's fonts are read with all the page's lines the first time one of them is
+    /// selected, and kept until the document changes: selecting another line of the page
+    /// doesn't read the page again (on a page with heavy content, or fonts of two-byte
+    /// codes, that took a tenth to a third of a second each time).
+    #[test]
+    fn a_page_s_line_fonts_are_read_once_until_the_document_changes() {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        for (y, text) in [(300.0, "Walrus like it cold"), (200.0, "Otters too")] {
+            pdf.add_text(0, (100.0, y), text, FontChoice::default(), 12.0, [0.0; 3])
+                .unwrap();
+        }
+        let mut ed = Editor::default();
+        assert_eq!(ed.objects(&pdf, 0).len(), 2);
+        let fonts_of = |ed: &mut Editor, pdf: &limarepdf_core::Pdf, id: usize| {
+            ed.select_object(0, id);
+            ed.sync_insp();
+            ed.read_line_fonts(pdf, 0);
+            ed.insp.as_ref().unwrap().fonts.clone().unwrap()
+        };
+        let takes = |f: &[LineFont]| f.len() == 1 && f[0].takes_new_text();
+        let first = fonts_of(&mut ed, &pdf, 0);
+        assert!(takes(&first), "{first:?}");
+        // The page's fonts taken away behind the editor's back: the next line's fonts are
+        // those read with the first, not read from the page again.
+        let page = pdf.doc.get_dictionary_mut(pdf.page_ids()[0]).unwrap();
+        page.remove(b"Resources");
+        assert!(pdf.line_fonts(0, 1).unwrap()[0].refused() == Some(FontRefusal::Unreadable));
+        let second = fonts_of(&mut ed, &pdf, 1);
+        assert!(takes(&second), "{second:?}");
+        // A change to the document forgets them.
+        ed.invalidate();
+        assert!(ed.line_fonts.is_empty());
     }
 
     /// The editor draws a line in the font core will write it in.

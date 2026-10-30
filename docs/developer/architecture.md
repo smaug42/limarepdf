@@ -150,7 +150,9 @@ against `pdftotext`, and none got worse.
 
 Which code writes a character in a line's own embedded font (ENH-31, batch 31; `own_font.rs`) is answered by
 `Pdf::line_fonts`: a `LineFont` for each part of the line, from `fonts_of` (the page parsed once, each font read
-once per call), holding the codes the line and the page show in that font. `LineFont::code` gives a character's
+once per call, its program read with the decoding context the page is read with), holding the codes the line and
+the page show in that font; `Pdf::page_line_fonts` gives every line's at once, the page parsed and each font read
+once (the app reads a page's lines' fonts with it the first time one is selected). `LineFont::code` gives a character's
 code only when one reads as exactly that character (`FontCtx::decode_code`, and for Type 0 fonts `known_text`,
 which leaves out lopdf's last-resort guess), its glyph is found as hayro 0.8 finds it to draw (simple TrueType by
 the code's glyph name through (3,1), then (1,0) by Mac OS Roman's code, then `post`, or by code through (3,0) or
@@ -190,7 +192,10 @@ from the `LineFont`s. `OwnPen` writes the kept pieces show by show, keeping the 
 were neighbours as read (so text before the first change draws where it did) and each show's Tc, Tw and Tz;
 new codes take the spacing of the show they join; a space with no code is the part's nearest move read as a
 space, else -250; a move that would start a show (where it reads as no space) goes to the end of the show or
-piece before. A part that is its span's own text, unchanged, keeps its shows as they were. A line in one part,
+piece before. Spacing numbers that would stand side by side in a `TJ` are written as one, and one that moves
+nothing is left out (`tj`): a reader takes each number alone, so the move back across a `Tm` of the line as read
+followed by that show's own number forward again would read as a word gap (batch 31, stage 3; pdf.js
+`issue19182`). A part that is its span's own text, unchanged, keeps its shows as they were. A line in one part,
 its style unchanged, in one spacing, starting with a show of characters, written all in its own font, becomes
 one `TJ` in place of its first show (`in_place`); others go on top as before. Every line with characters
 written this way is read back (`misread`; a line changed in place is found by its operator and may read as one
@@ -1307,8 +1312,11 @@ form XObject, and per inline image.
   spacing changed in words all in its own font is one `TJ` in place of its first show. Before committing, each
   line with characters written in its own font is read back as the page will be (`misread`): one that reads as
   other words is written again with only its unchanged parts in its own font, and reported. While a line is
-  edited on the page, the app makes the same decision as it goes, from the line's `LineFont`s read once when it
-  is selected (`Insp::fonts`; `PageObject::kept_pieces`, `editor::drawn_pieces`) and draws each piece in the
+  edited on the page, the app makes the same decision as it goes, from the line's `LineFont`s (`Insp::fonts`;
+  `PageObject::kept_pieces`, `editor::drawn_pieces`): the fonts of all a page's lines are read together the first
+  time one of them is selected and kept with the page's objects until the document changes
+  (`Editor::read_line_fonts`, `Pdf::page_line_fonts`), so selecting one line after another doesn't read the page
+  again (up to a third of a second each time on a heavy page; performance.md). It draws each piece in the
   font it will have: a kept embedded font in its own glyphs (its preview font), a kept unembedded one in the
   installed font of its name or else the Liberation face of its kind; the installed family's font, or the
   Liberation face of the standard font replacing it, otherwise. The inspector says which typed characters the

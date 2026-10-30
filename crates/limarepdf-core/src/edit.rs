@@ -587,7 +587,26 @@ fn then_move(show: &mut Operation, more: Vec<Object>) {
         _ => show.operands.clone(),
     };
     items.extend(more);
-    *show = op("TJ", vec![Object::Array(items)]);
+    *show = tj(items);
+}
+
+/// A `TJ` showing `items`, spacing numbers next to each other written as one and none left
+/// that moves nothing: a reader takes each number alone, so a move back followed by one
+/// forward again (across a `Tm` of the line as read) would read as a word gap.
+fn tj(items: Vec<Object>) -> Operation {
+    let number = |o: &Object| match o {
+        Object::Integer(_) | Object::Real(_) => o.as_float().ok(),
+        _ => None,
+    };
+    let mut out: Vec<Object> = Vec::with_capacity(items.len());
+    for it in items {
+        match (number(&it), out.last().and_then(number)) {
+            (Some(x), Some(before)) => *out.last_mut().expect("a number") = r(before + x),
+            _ => out.push(it),
+        }
+    }
+    out.retain(|o| number(o).is_none_or(|x| x.abs() >= 0.01));
+    op("TJ", vec![Object::Array(out)])
 }
 
 /// Line `t`, edited to `parts` written as `written`, as one show in place of its first:
@@ -620,7 +639,7 @@ fn in_place(t: &TextData, parts: &[TextPart], written: &[Written]) -> Option<(us
         .flat_map(|w| &w.shows)
         .flat_map(|(_, show)| show_items(show, Show::TJ))
         .collect();
-    Some((first.op, op("TJ", vec![Object::Array(items)])))
+    Some((first.op, tj(items)))
 }
 
 /// Bytes `bytes` put at the end of a show's items `items`: in the string there when it is
@@ -796,7 +815,7 @@ impl<'a> OwnPen<'a> {
         }
         let shows = (shows.into_iter())
             .filter(|(_, items)| !items.is_empty())
-            .map(|(sp, items)| (sp, op("TJ", vec![Object::Array(items)])))
+            .map(|(sp, items)| (sp, tj(items)))
             .collect();
         (tail, shows)
     }
@@ -1689,7 +1708,7 @@ impl Pdf {
             match shows.last_mut() {
                 _ if items.is_empty() => {}
                 Some((_, show)) => then_move(show, items),
-                None => shows.push(([0.0, 0.0, 1.0], op("TJ", vec![Object::Array(items)]))),
+                None => shows.push(([0.0, 0.0, 1.0], tj(items))),
             }
             Written {
                 font,

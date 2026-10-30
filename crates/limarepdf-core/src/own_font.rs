@@ -223,6 +223,18 @@ impl Pdf {
         Ok(self.fonts_of(page, &parsed, t))
     }
 
+    /// [`Pdf::line_fonts`] for every line of page `page_index`, by object id as in
+    /// [`Pdf::page_objects`] (`None` for an object that isn't text), with the page read once
+    /// and each of its fonts once: for reading the fonts of a page's lines as they are
+    /// selected, one after another.
+    pub fn page_line_fonts(&self, page_index: usize) -> Result<Vec<Option<Vec<LineFont>>>> {
+        let (page, parsed) = self.load_edit(page_index)?;
+        let fonts = self.font_resources(page);
+        let mut read = PageFonts::new(&self.doc, &fonts);
+        let lines = parsed.objs.iter().map(|o| o.text.as_ref());
+        Ok(lines.map(|t| t.map(|t| read.of(&parsed, t))).collect())
+    }
+
     /// [`Pdf::line_fonts`] for line `t` of page `page`, parsed as `parsed`.
     pub(crate) fn fonts_of(&self, page: ObjectId, parsed: &Parsed, t: &TextData) -> Vec<LineFont> {
         let fonts = self.font_resources(page);
@@ -272,7 +284,7 @@ impl<'a> PageFonts<'a> {
                         codes(&ctx, &parsed.ops, o, other, &mut page);
                     }
                 }
-                let font = OwnFont::read(doc, dict).map(Arc::new);
+                let font = OwnFont::read(doc, dict, &ctx).map(Arc::new);
                 let unembedded = matches!(font, Err(FontRefusal::NotEmbedded));
                 let font = LineFont {
                     font,
@@ -727,16 +739,20 @@ struct OwnFont {
 type Checked = std::result::Result<Vec<(u32, GlyphId)>, CharRefusal>;
 
 impl OwnFont {
-    /// Font `dict`'s own program, read for new text, or why it can't take any.
-    fn read(doc: &Document, dict: &Dictionary) -> std::result::Result<Self, FontRefusal> {
+    /// Font `dict`'s own program, read for new text, or why it can't take any; `ctx` is the
+    /// font as the page is read (`FontCtx::new(doc, dict)`).
+    fn read(
+        doc: &Document,
+        dict: &Dictionary,
+        ctx: &FontCtx,
+    ) -> std::result::Result<Self, FontRefusal> {
         if dict.has(crate::embed::KEY) {
             return Err(FontRefusal::Own);
         }
-        let ctx = FontCtx::new(doc, dict);
         match name(doc, dict, b"Subtype").unwrap_or_default() {
             b"Type3" => Err(FontRefusal::Type3),
-            b"Type0" => Self::cid(doc, dict, &ctx),
-            subtype => Self::simple(doc, dict, subtype, &ctx),
+            b"Type0" => Self::cid(doc, dict, ctx),
+            subtype => Self::simple(doc, dict, subtype, ctx),
         }
     }
 
@@ -1277,7 +1293,8 @@ mod tests {
             "Resources",
             dictionary! { "Font" => dictionary! { "F1" => font } },
         );
-        let own = OwnFont::read(&p.doc, p.doc.get_dictionary(font).unwrap())
+        let dict = p.doc.get_dictionary(font).unwrap();
+        let own = OwnFont::read(&p.doc, dict, &FontCtx::new(&p.doc, dict))
             .ok()
             .unwrap();
         let ours = codes.iter().map(|&c| own.glyph(c).to_u32()).collect();

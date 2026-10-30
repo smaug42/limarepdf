@@ -1927,6 +1927,70 @@ fn a_line_of_several_shows_is_rewritten_in_place_as_one_tj() {
     }
 }
 
+/// A letter shown alone, then a `Tm` back to the left and a `TJ` whose first number moves on
+/// again to just after it, as in pdf.js `issue19182.pdf`: the move back and the number
+/// forward are written as one spacing number, which moves nothing, so the line reads as it
+/// did and keeps its font (written side by side, the reader took the number forward alone
+/// as a word gap, and the line went to another font).
+#[test]
+fn spacing_numbers_side_by_side_are_written_as_one() {
+    let font = sans_simple();
+    let c = font.widths[(b'C' - 32) as usize];
+    let src = format!(
+        "BT /F1 20 Tf 1 0 0 1 10 100 Tm (C) Tj 1 0 0 1 0 100 Tm [{} (ompany Secretary)] TJ ET\n",
+        -(500 + c)
+    );
+    let mut p = page(&[("F1", &font)], &src);
+    let o = line_of(&p, "Company Secretary");
+    let part = typed(&o, 0, "Company Sceretary");
+    assert!(kept(&p, &o, &part));
+    assert!(write(&mut p, &o, vec![part]).is_empty());
+    assert_eq!(font_names(&p), ["F1"]);
+    assert_eq!(word_list(&p), ["Company", "Sceretary"]);
+    for (font, items) in shows(&p) {
+        let numbers = items.windows(2);
+        let side_by_side = numbers.filter(|w| matches!(w, [Item::Move(_), Item::Move(_)]));
+        assert_eq!(side_by_side.count(), 0, "{font}: {items:?}");
+    }
+    // The letters stand where they did. The line as read began its box at the second `Tm`,
+    // the room its first number moved over included; written again, it begins at the C.
+    let (now, was) = (line_of(&p, "Company Sceretary").bbox, o.bbox);
+    assert!(close(&now[1..], &was[1..]), "{now:?} {was:?}");
+    assert!((now[0] - 10.0).abs() < 0.05, "{now:?}");
+}
+
+/// The fonts of all a page's lines, read together with the page read once, are each line's
+/// own: the same refusals, the same code for each character, the same preview.
+#[test]
+fn a_page_s_line_fonts_read_together_are_each_line_s() {
+    let src = format!(
+        "BT /F1 20 Tf 10 150 Td <{HELLO}> Tj ET\n\
+         BT /F2 20 Tf 10 100 Td (fox ) Tj /F1 20 Tf <{HELLO}> Tj ET\n\
+         10 10 50 50 re f\n"
+    );
+    let helvetica = unembedded("Helvetica", Some("WinAnsiEncoding"));
+    let p = page(&[("F1", &sans_simple()), ("F2", &helvetica)], &src);
+    let objs = p.page_objects(0).unwrap();
+    let all = p.page_line_fonts(0).unwrap();
+    assert_eq!(all.len(), objs.len());
+    assert_eq!(texts(&p), ["Hello", "fox Hello"]);
+    for o in &objs {
+        let Some(together) = &all[o.id] else {
+            assert_ne!(o.kind, ObjectKind::Text);
+            continue;
+        };
+        let alone = p.line_fonts(0, o.id).unwrap();
+        assert_eq!(together.len(), alone.len());
+        for (a, b) in together.iter().zip(&alone) {
+            assert_eq!(a.refused(), b.refused());
+            assert_eq!(a.preview_key(), b.preview_key());
+            for c in "Helo fxXé€ß".chars() {
+                assert_eq!(a.code(c), b.code(c), "{c:?}");
+            }
+        }
+    }
+}
+
 /// A line in several parts is written on top of the page, its old shows taken out and the
 /// rest of the page as it was; each part in its own font, the changed one through its codes.
 #[test]

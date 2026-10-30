@@ -350,6 +350,57 @@ typing and search rows, run again on the batch's build, are as before and within
 26.3 ms median shown and none over 50 ms (built 1.4 to 2.1 ms median, 22.2 ms at worst); search as you type 249 to
 261 ms in total at the median, 265 ms at worst (processing 40 to 49 ms).
 
+## Editing in a line's own font
+
+Batch 31 (ENH-31) writes an edited line in its own fonts. On the window's thread: the fonts of a page's lines,
+read when one of them is first selected (`Pdf::page_line_fonts`, kept by the editor until the document changes),
+and the edit itself; the preview font that draws a kept font while typing (`LineFont::preview`) is made on the
+typing fonts' loader thread. Measured on 29 October 2026 on the machine above with a throwaway release-built probe
+(`target/b31s3/`, built at opt-level 3 without the shipped build's link-time optimisation), core alone, best of
+three with nothing else running. Made-up pages: 40 lines of Chinese in a whole embedded WenQuanYi Zen Hei (11.7 MB,
+TrueType; with a ToUnicode map, and without one, read through the program) and in a whole Noto Sans CJK JP (16.5
+MB, CID-keyed CFF); a 10,000-page document sharing one embedded Liberation Sans; 1,000 pages sharing the Zen Hei
+font; and the corpus pages slowest in the edit run below.
+
+| Page | Its objects read | All its lines' fonts (the first line selected) | One line's fonts | Preview font |
+| --- | --- | --- | --- | --- |
+| Zen Hei, 40 lines | 5.5 ms | 10 ms | 9.8 ms | 17 to 18 ms (423 KB) |
+| Zen Hei, no ToUnicode map | 83 ms | 21 ms | 23 ms | 52 to 56 ms (1.3 MB) |
+| Noto Sans CJK JP, 40 lines | 5.4 ms | 12 ms | 12 ms | 20 to 21 ms (297 KB) |
+| 10,000 pages, page 1 / page 10,000 | 8.0 / 7.1 ms | 7.9 / 7.8 ms | 8.3 / 8.4 ms | – |
+| 1,000 pages of Zen Hei, page 1 / page 1,000 | 7.4 / 7.4 ms | 9.9 / 9.7 ms | 12 / 12 ms | – |
+| `pdfjs/issue2618.pdf` (heavy content, 3 unembedded fonts) | 365 ms | 307 ms | 305 ms | – |
+| `pdfbox/5134.pdf` (heavy content) | 370 ms | 289 ms | 276 ms | – |
+| `pdfbox/2957.pdf` | 116 ms | 260 ms | 149 ms | 175 ms (66 KB) |
+| `pdfjs/issue2956.pdf` (two CID subsets) | 61 ms | 131 ms | 95 ms | 19 ms |
+| `pdfjs/ichiji.pdf` (15 fonts) | 6.9 ms | 51 ms | 8.0 ms | 613 ms (104 KB) |
+
+In the corpus edit run (testing.md; 489 files' first text page, two processes at once, so rough): one line's fonts
+took 1.4 ms at the median, 22 ms at the 95th percentile and over 100 ms on 12 pages (2.5 %), 360 ms at most; a
+preview font 0.4 ms at the median, over 100 ms for 4 fonts, 625 ms at most; an edit 3.3 ms at the median against
+6e454fb's 2.4 ms (the deleted and reordered words, 956 edits), 23 ms more at the 95th percentile and 400 ms more
+at most (`pdfbox/5134.pdf`'s heavy page: 1,086 ms against 688 ms).
+
+What the figures show:
+
+- The length of a document doesn't matter: page 1 and page 10,000 cost the same. A whole embedded CJK font costs
+  8 to 23 ms to read, its preview 17 to 56 ms, off the window's thread.
+- Before stage 3 each line selected read the page and the line's fonts again, a tenth to a third of a second a
+  click on the slowest pages. Now the first line selected on a page reads all its lines' fonts, and later
+  selections on that page read nothing until the document changes. That first selection reads every font of the
+  page, not just the line's, so on a page with several two-byte (CID) fonts it costs more than one line did (131
+  against 95 ms on `issue2956`, 51 against 8 ms on `ichiji`), and on the slowest pages it is still over REL-07's
+  100 ms for a click's response, once a page (PB-52).
+- Where the time goes: parsing the page, as reading its objects does (365 ms on `issue2618`'s heavy page), and for
+  each CID font its decoding context (its ToUnicode map read twice, by LimarePDF and by lopdf: 15 to 20 ms for each
+  of `issue2956`'s DejaVu subsets) and its codes (all 65,536 walked, about 15 ms). Stage 3 builds each font's
+  decoding context once instead of twice (`OwnFont::read` takes the page's), which took about 20 ms off a line's
+  fonts there.
+- An edit keeping the line's font asks for the installed fonts for the words that might not keep it
+  (`FontChoice::of_font`) before knowing whether any needs them: the app reads them on another thread from its
+  start (`font_list::warm`), so only an edit in the first second or so could wait for it; the probe's first edit
+  of each file paid it (1.1 to 1.2 s) and is left out of the edit figures above.
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted
