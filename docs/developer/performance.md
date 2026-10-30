@@ -401,6 +401,47 @@ What the figures show:
   start (`font_list::warm`), so only an edit in the first second or so could wait for it; the probe's first edit
   of each file paid it (1.1 to 1.2 s) and is left out of the edit figures above.
 
+## Setting new text
+
+Batch 45 (NEW-02) sets all new text through one pipeline (`layout.rs`: fonts a word at a time, shaping, line
+breaks; architecture.md) and the app draws typing as it lays it out. The text design's budget (section 9):
+shaping and breaking 2,000 characters within 2 ms, so typing stays within REL-07's rows; fonts and fallback
+choices kept per face and word for the run; a search of installed fonts off the window's thread where it reads
+files. Measured on 30 October 2026 on the machine above (its locale `en_CA`, so not a Chinese, Japanese or
+Korean system), with the page cache warm unless said.
+
+- **A paragraph:** `layout.rs`'s `speed_of_a_paragraph` (opt-in, release build: `cargo test --release -p
+  limarepdf-core --lib -- --ignored speed_of`) breaks 2,000 characters of Latin, Polish, Greek and Cyrillic text
+  with kerning pairs into 300-point lines at 12 points in Helvetica, its words' fonts known and its shaping not, as
+  each keystroke would: median 1.18 ms over 30 runs, the first 4.5 ms (it fails over 2 ms at the median, or 50 ms
+  the first time).
+- **A text box's lines while typing** (`BoxSetting::lines`, which the typing box takes its rows from): 200
+  characters, 0.15 ms a keystroke at the median, the first 3.2 ms.
+- **Fallback fonts**, measured with a throwaway checker crate (`target/fontwarm/`, core as a path dependency, built
+  with the release-like `ci-test` profile): the list of installed fonts read in 24 to 26 ms; `warm_fallbacks`
+  23 ms (on this system only 😀 is warmed, in each standard font); a character no installed font has 3.5 to 3.9 ms
+  the first time (every family's character map is asked), then nothing (the answer is kept); an Ol Chiki letter
+  0.2 ms (a small font for its script). The first ideograph in Times on a non-CJK system took 105 to 107 ms after
+  warming, as warming reads only the system language's faces and 漢 in a serif font reads Noto Serif CJK (26 MB;
+  PB-61), 133 ms with nothing read before, and 1.16 s on the first run after a build (a cold cache).
+- **The interface's fallback fonts** (ENH-33): `fallback_faces("漢あ한😀")`, which the app's start-up thread asks
+  for the faces it adds to the interface's fonts, took 120 ms warm and 1.18 s on the first run after a build; 漢,
+  あ and 한 82 to 87 ms each (each reads the 19 MB Noto Sans CJK collection) and 😀 15 ms (Symbola).
+
+What they show:
+
+- A paragraph is set within the budget, a text box's lines in a fraction of a millisecond: typing's cost is the
+  frame, not the layout (REL-07's rows below).
+- Typing never waits for the list of installed fonts for text its font has: the fonts kept for each word are
+  checked against the count of families found so far (`typefaces::typeface_count`), which doesn't start reading
+  the list, and `tests/font_scan.rs` (a test binary of its own, so nothing has read the list before it) fails if
+  that changes. Text its font lacks needs the list and the fallback face's file: the app reads the list on its
+  start-up thread (`font_list::warm`) and then `warm_fallbacks` sets 漢 (and あ or 한) on a Chinese, Japanese or
+  Korean system, and 😀 everywhere, in Helvetica, Times and Courier, so the first such character typed doesn't
+  wait for the faces. What still waits once is a character whose face that didn't read: about a tenth of a second
+  for the first ideograph in a serif font on another system (PB-61), a few milliseconds for a character no font
+  has.
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted
@@ -481,6 +522,25 @@ Each key sent alone, 60 to 120 ms after the last one's frame, 200 a script.
 "Shown" covers only the keys whose characters landed in the captured area: past it, the box and the line ran on
 to the page's edge. In the worst built times (23 ms), the key reached the app's frame 23 ms after it was sent and
 the frame then took about a millisecond; why it waited was not looked into.
+
+Run again on 30 October 2026 for batch 45 (typing drawn as core sets it: each word's face, clusters, input methods,
+wrapping boxes), on the release build of 473edaa, the same way (Xvfb, one run at a time, nothing building beside
+it; `PERF_BIN=… python3 -I drive.py typing KIND` in `target/perf/`). "Shown" is given for the keys typed inside
+the captured area (the first 51):
+
+| Where | Built | Shown, keys 0 to 50 | Over 50 ms shown | Over 100 ms shown |
+| --- | --- | --- | --- | --- |
+| A form field (form.pdf) | 1.2 / 5.0 ms | 26.0 / 45.6 ms | 0 | 0 |
+| Add text, a new box (letter.pdf), two runs | 3.6 / 22.4 and 3.2 / 23.3 ms | 26.7 / 46.9 and 26.4 / 46.0 ms | 0 | 0 |
+| Editing a line (letter.pdf) | 3.2 / 23.6 ms | 27.5 / 49.1 ms | 0 | 0 |
+
+All within the accepted thresholds; built is a millisecond or so above 26 October's (1.1 / 4.4, 2.4 / 23.1, 2.4 /
+23.0 ms). Over the whole run, Add text's shown worst was 834 and 780 ms: that is the poller's, not the app's. The
+new text passes the captured area's right edge (920 pixels) at about key 51 and the page's edge at key 57, where
+its outline turns to the caution colour; that change is the first the poller sees after keys 51 to 56, so it
+credits them with it (834, 702, 600, 470, 322 and 193 ms in the first run, falling as later keys were sent
+closer to it), each of which the app built in 0.7 to 3.2 ms. The line's whole run had 4 keys shown in 52 to 71 ms, past key 105, none
+over 100 ms.
 
 ### Working while something runs
 

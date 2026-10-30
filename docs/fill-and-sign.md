@@ -85,10 +85,12 @@ or resize it. To sign several places in a row, pin the tool (see [Keep tool acti
 - **Date:** today's date on your computer, in the style picked beside it: 2026-10-16, 16 October 2026 or
   October 16, 2026. The date is a text box: double-click it to change it.
 - **Name:** your name for comments (the same as ☰ > Edit > Your name for comments). A name with characters
-  beyond Latin, Greek and Cyrillic (or with emoji) can't be put down: a message says which.
+  LimarePDF can't write (Hebrew or Arabic, say, an emoji made of several characters, or characters no installed
+  font has) can't be put down: a message says which.
 - **Text:** type in the box, then click on the page; for anything else a form asks for. Like the name and date,
-  it is a text box in Helvetica, so it takes Latin, Greek and Cyrillic characters; others (Chinese, emoji and so
-  on) aren't typed, and a note at the caret says so.
+  it is a text box in Helvetica: Chinese, Japanese, Korean and single emoji go in an installed font that has them,
+  as in [text boxes](comments-and-markup.md#add-a-note-or-a-text-box). Characters LimarePDF can't write aren't
+  typed, and a note at the caret says so.
 - **Tick, cross and dot:** for boxes that aren't real form fields.
 - **Ink:** black or blue, for what is put down next.
 

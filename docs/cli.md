@@ -68,9 +68,11 @@ with the status it would have had otherwise.
 
 Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
 break in a single-line field, or an option the field doesn't have stops it before anything is written. LimarePDF draws
-each filled field itself, so the values show in every reader. Field text must be Latin, Greek or Cyrillic for
-now; other characters are refused rather than written wrongly. When the field's own font can't show the text, LimarePDF
-uses the closest standard font (Helvetica, Times or Courier), or for characters those lack, its Liberation face,
+each filled field itself, so the values show in every reader. Field text can be Latin, Greek, Cyrillic, Chinese,
+Japanese, Korean or single emoji; Hebrew, Arabic and other right-to-left or shaped scripts, emoji made of several
+characters and characters no installed font has are refused rather than written wrongly. When the field's own
+font can't show the text, LimarePDF uses the closest standard font (Helvetica, Times or Courier), for characters
+those lack its Liberation face, and for Chinese, Japanese, Korean and emoji an installed font that has them, each
 embedded in the file; the field keeps naming its own font, which other apps use when they draw it themselves. Password fields are drawn as `*` and their value is
 not kept in the file, as the PDF standard asks. Forms that need JavaScript to calculate or check values are filled,
 but their scripts don't run.
@@ -181,8 +183,10 @@ See [Scans and OCR](scanning-and-ocr.md) for what these do.
 | `limarepdf-cli bates in.pdf -o out.pdf --prefix ACME- --digits 6` | Bates-number the pages |
 
 Watermark, header, footer and Bates text is Helvetica, and stamp wording Helvetica Bold; characters they lack
-(Polish, Czech, Vietnamese, Greek, Cyrillic and so on) are written in the matching Liberation face, embedded in
-the file. Other scripts (Hebrew, Arabic, Chinese and so on) are refused, with nothing written.
+(Polish, Czech, Vietnamese, Greek, Cyrillic and so on) are written in the matching Liberation face, and Chinese,
+Japanese, Korean and single emoji in an installed font that has them, each embedded in the file. Hebrew, Arabic
+and other right-to-left or shaped scripts, emoji made of several characters and characters no installed font has
+are refused, with nothing written.
 
 ## Redaction
 

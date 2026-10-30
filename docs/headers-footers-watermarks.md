@@ -82,9 +82,11 @@ delete](content-editing.md#move-resize-or-delete)).
 
 ## Characters
 
-Header, footer, Bates and watermark text is written in Helvetica, and characters it lacks (Polish, Czech,
-Vietnamese, Greek, Cyrillic and so on) in its Liberation Sans face, embedded in the file. Other scripts (Chinese,
-Hebrew, Arabic and so on) and emoji can't be typed or pasted: a note at the caret says so.
+Header, footer, Bates and watermark text is written in Helvetica, characters it lacks (Polish, Czech, Vietnamese,
+Greek, Cyrillic and so on) in its Liberation Sans face, and Chinese, Japanese, Korean and single emoji in an
+installed font that has them, a word at a time, as in [Add text](content-editing.md#add-text); each is embedded in
+the file. Hebrew, Arabic and other right-to-left or shaped scripts, emoji made of several characters and
+characters no installed font has can't be typed or pasted: a note at the caret says so.
 
 While you change a setting in one of these tools, the pages show its text drawn in Liberation Sans, which has
 Helvetica's widths, over the content even when it is set to go behind it. Once the setting stops changing, and once
@@ -114,16 +116,16 @@ The inspector offers:
 - **Your own wording:** pick green, red or blue, type the wording in the box under the ready-made stamps, then click
   on the page. It is shown in capitals, and goes into the list above when you leave the box (Enter or a click
   elsewhere). Picking a colour also recolours the picked wording of your own. The last five wordings are remembered
-  with their colours (right-click one to take it off the list). The stamp's font covers Latin, Greek and Cyrillic,
-  so wording with other characters (Chinese, Hebrew and so on) can't be used yet; the pane says which characters.
+  with their colours (right-click one to take it off the list). The wording takes the characters header text
+  does; what LimarePDF can't write (Hebrew, Arabic and so on) isn't typed, and the pane says why.
 - **Pictures:** **Choose a picture…** takes a PNG or JPEG file; it is put down with its longer side 160 points.
   The last five pictures are remembered by where they are (right-click one to take it off the list). Transparent
   parts of a PNG stay transparent.
 
 Stamps are annotations: other readers list them as comments. Select one to change its opacity and comment (its
 colours are part of the stamp), or press Delete to remove it. A stamp reads upright on a turned page. The text is
-Helvetica Bold, or its Liberation face, embedded in the file, for characters it lacks; a name it can't show (in
-Chinese, say) is left off the name-and-date line. To make stamps part of the page, flatten them with the other
+Helvetica Bold, or for characters it lacks its Liberation face or an installed font that has them, embedded in the
+file; a name LimarePDF can't write (in Hebrew, say) is left off the name-and-date line. To make stamps part of the page, flatten them with the other
 comments ([Flatten](comments-and-markup.md#flatten-comments-into-the-pages)).
 
 ## From the command line

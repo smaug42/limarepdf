@@ -50,8 +50,9 @@ certificate (see Trust list). Different from a picture of your signature (see Fi
 **Embedded font.** A font stored inside the PDF, so the text looks the same on any computer. Text LimarePDF writes in
 Helvetica, Times or Courier with only Western European characters uses the PDF standard font of that name, which
 every reader has and which isn't embedded. Other text is written in an embedded font, cut down to the characters
-used: Liberation (for characters the standard fonts lack), or the installed font it is typed in (which Chinese,
-Japanese, Korean and emoji always are).
+used: Liberation (for characters the standard fonts lack), or an installed font: the one it is typed in, or one
+that has the characters the chosen font lacks (Chinese, Japanese, Korean and emoji are always in an installed
+font).
 
 **Fill and sign.** Putting your signature, initials, the date or a tick on a document as pictures and text, as you
 would with a pen on paper. Not a digital signature: it doesn't prove who signed.

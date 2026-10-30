@@ -69,12 +69,14 @@ without one but have a permissions password, which limits printing, copying or c
 
 ## Typing and editing
 
-### "LimarePDF can't add this character yet"
+### "No font on this computer has this character"
 
-New and edited text can be in Latin (Vietnamese included), Greek and Cyrillic, and Chinese, Japanese, Korean and
-single emoji in an installed font that has them. Text boxes, headers, footers, watermarks and fill-and-sign text are
-written in Helvetica, so they take only Latin, Greek and Cyrillic: for Chinese, Japanese, Korean or single emoji,
-use the Add text tool in an installed font that has them. [What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet) has the details.
+LimarePDF writes each word in the font you chose, or, when that font lacks a character, in an installed font that
+has it ([Add text](content-editing.md#add-text) says which it looks for). No font installed on this computer has
+this character. Install one that does, such as Noto Sans CJK for Chinese, Japanese and Korean, Noto Emoji or
+Symbola for emoji, or the Noto Sans font for the script, then quit and restart LimarePDF, which reads the
+installed fonts once per run.
+[What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet) has the details.
 
 ### "LimarePDF can't add this script yet"
 
@@ -86,37 +88,33 @@ wrong order or unjoined.
 
 Emoji made of several characters can't be written yet, in any font: flags, emoji with a skin tone, keycaps (1️⃣)
 and joined emoji such as families. An emoji picker or phone often adds an invisible mark that asks for the
-colourful look (the emoji variation selector); that counts too. A single emoji without these can be typed in an
-installed font that has it, such as Symbola or DejaVu Sans.
+colourful look (the emoji variation selector); that counts too. A single emoji without these can be typed in any
+font when an installed font draws it in outline, such as Noto Emoji, Symbola or DejaVu Sans; colour emoji fonts
+can't be written into a PDF.
 
-### "Helvetica can't write this character; choose an installed font that has it"
+### A word is in a different font from the rest
 
-Helvetica, Times and Courier have no Chinese, Japanese or Korean, and no emoji (and lack some other characters).
-Choose an installed font that has them in the font list in **Edit > Font**, such as Noto Sans CJK, or Symbola for
-emoji, then type again.
-
-### "… has no …; choose another font"
-
-The installed font you chose doesn't have that character, or draws it only in colour (some fonts have colour
-emoji), which LimarePDF can't write into a PDF. Choose another font in the font list in **Edit > Font**.
+The font you are typing in doesn't have that word's characters, so LimarePDF writes the word in an installed font
+that has them, as word processors do. The inspector names those words and the font they use ("Not in Calibri: 漢字.
+Those characters use Noto Sans CJK JP."); point at it to see which word uses which font. To have the whole text
+in one font, choose one that has every character in the font list in **Edit > Font**.
 
 ### "LimarePDF can't draw this text box again"
 
-The text box was made by another app and has characters Helvetica can't write (Chinese, Hebrew and so on).
-LimarePDF draws text boxes in Helvetica, so it keeps the box's own drawing and refuses a new colour, opacity,
-style, size or text rather than draw those characters as `?`. You can still move or delete it. To change its
-look, edit it in the app that made it. Chinese, Japanese, Korean and single emoji can also be written with the
-Add text tool in an installed font that has them; Hebrew, Arabic and other right-to-left or shaped scripts, emoji
-made of several characters and emoji drawn only in colour can't be written yet. Add the new text first and check
-it, then delete the old box, so nothing is lost if some characters can't be written.
+The text box was made by another app and has characters LimarePDF can't write (Hebrew, Arabic and so on, or ones
+no installed font has). LimarePDF would have to draw the box again, so it keeps the box's own drawing and refuses
+a new colour, opacity, style, size or text rather than draw those characters as `?`. You can still move or delete
+it. To change its look, edit it in the app that made it. Hebrew, Arabic and other right-to-left or shaped scripts,
+emoji made of several characters and characters no installed font has can't be written yet. Add the new text
+first and check it, then delete the old box, so nothing is lost if some characters can't be written.
 
 ### A text box shows `?` instead of some characters
 
-A text box made by another app without a drawing of its own is drawn by LimarePDF in Helvetica, on screen, when
-printed and in exported images, so characters Helvetica can't write come out as `?` there. The file isn't
-changed, and other readers may show the box as its app made it. Flattening comments refuses such a box, naming its
-page ("LimarePDF can't draw the text box on page …"), rather than draw `?` into the page for good. Text boxes made
-in LimarePDF never show `?`: what Helvetica can't write isn't typed.
+A text box made by another app without a drawing of its own is drawn by LimarePDF in Helvetica, words it lacks in
+other fonts, on screen, when printed and in exported images, so characters LimarePDF can't write come out as `?`
+there. The file isn't changed, and other readers may show the box as its app made it. Flattening comments refuses
+such a box, naming its page ("LimarePDF can't draw the text box on page …"), rather than draw `?` into the page
+for good. Text boxes made in LimarePDF never show `?`: what can't be written isn't typed.
 
 ### An edited line looks different
 

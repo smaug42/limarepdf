@@ -42,8 +42,8 @@ When LimarePDF draws the pages, annotations not flagged for printing are left ou
 
 A filled form field with no drawing of its own is drawn by LimarePDF when printed, however the pages are sent (as a
 PDF, as images, or on Windows). On every system, a filled field meant for printing that has no drawing of its own,
-and whose text LimarePDF can't draw (characters beyond Latin, Greek and Cyrillic, filled in by an app that left the
-drawing to the reader), would come out empty. Print names those fields and asks first (Print anyway);
+and whose text LimarePDF can't draw (Hebrew or Arabic, say, or characters no installed font has, filled in by an
+app that left the drawing to the reader), would come out empty. Print names those fields and asks first (Print anyway);
 `limarepdf-cli print` names them and sends nothing (it has no way to print anyway: open the file in the app for
 that).
 
@@ -68,7 +68,7 @@ bounds the memory a complex page takes but makes some pages slower to export
 
 On the command line: `limarepdf-cli render --format png|jpeg`. Like the app, it draws a filled form field that has
 no drawing of its own (some apps leave drawing it to the reader). A field whose text LimarePDF can't draw
-(characters beyond Latin, Greek and Cyrillic) comes out empty: the images are still written, with a warning naming
+(Hebrew or Arabic, say, or characters no installed font has) comes out empty: the images are still written, with a warning naming
 those fields.
 
 ## Text
