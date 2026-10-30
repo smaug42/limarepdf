@@ -1,9 +1,9 @@
 //! Drawing form fields' appearance streams: the small drawings that show a field's value.
 //! This module lays out and draws; `form_write` picks the font and puts the result in
-//! the file.
+//! the file, the text written by a pen made for the lines laid out (`layout.rs`).
 
-use crate::embed::{Codes, Pen};
 use crate::fonts::winansi_bytes;
+use crate::layout::{break_lines, Setter};
 use lopdf::content::{Content, Operation};
 use lopdf::{Object, StringFormat};
 
@@ -17,45 +17,80 @@ const LEADING: f32 = 1.15;
 /// The highlight behind chosen options in a list box (Acrobat's colour).
 const HIGHLIGHT: [f32; 3] = [0.6, 0.757, 0.855];
 
-/// How text is measured and written in the appearance's font.
+/// How text is measured in the appearance's font.
 pub(crate) enum Metrics {
     /// A font with one byte per character (WinAnsi, or ZapfDingbats' own codes): its
-    /// widths by code, in 1/1000 em.
+    /// widths by code, in 1/1000 em. Written as it is: the field's own font, kept.
     Bytes(Box<[f32; 256]>),
-    /// An embedded face, grown for the text drawn.
-    Embedded(Codes),
+    /// Set by the text pipeline: a standard font or its embedded face, or an installed
+    /// family's, and the fonts it falls back to.
+    Set(Setter),
 }
 
 impl Metrics {
-    /// The metrics a pen writes with.
-    pub(crate) fn of(pen: Pen) -> Metrics {
-        match pen {
-            Pen::Standard(f) => crate::form_write::standard_metrics(f.base_font()),
-            Pen::Embedded(c) => Metrics::Embedded(c),
-        }
-    }
-
     /// Width of text written in one-byte codes at `size`.
     fn byte_width(&self, bytes: &[u8], size: f32) -> f32 {
         match self {
             Metrics::Bytes(w) => bytes.iter().map(|&b| w[b as usize]).sum::<f32>() * size / 1000.0,
-            Metrics::Embedded(_) => 0.0,
+            Metrics::Set(_) => 0.0,
         }
     }
 
     pub(crate) fn text_width(&self, s: &str, size: f32) -> f32 {
         match self {
             Metrics::Bytes(_) => self.byte_width(&winansi_bytes(s), size),
-            Metrics::Embedded(c) => c.width(s, size),
+            Metrics::Set(set) => set.width(s, size),
         }
     }
 
-    /// The string that shows `s`.
-    fn string(&self, s: &str) -> Object {
-        match self {
-            Metrics::Bytes(_) => bytes_obj(winansi_bytes(s)),
-            Metrics::Embedded(c) => Object::String(c.bytes(s), StringFormat::Hexadecimal),
+    /// `text` in lines no wider than `max` at `size`, broken as every wrapper breaks them
+    /// (`layout.rs`).
+    pub(crate) fn lines(&self, text: &str, max: f32, size: f32) -> Vec<String> {
+        break_lines(text, max, |l| self.text_width(l, size))
+    }
+}
+
+/// An appearance as [`draw`] lays it out: everything but its text's lines, which are
+/// written with the appearance's font ([`Drawn::content`]).
+pub(crate) struct Drawn {
+    /// What goes before the text: the background, the border, and the text's clip.
+    before: Vec<Operation>,
+    /// The text's lines: what each shows, and where its baseline starts.
+    pub lines: Vec<(String, f32, f32)>,
+    /// The text's size.
+    pub size: f32,
+    /// Its font's name in the resources, and its colour.
+    font: Vec<u8>,
+    color: Option<Operation>,
+    /// Whether it shows text (a mark, or only the background and border, don't).
+    text: bool,
+}
+
+impl Drawn {
+    /// The appearance's content, each line written by `write` (from its number and text,
+    /// with the font, size and colour set and the text matrix at its start).
+    pub(crate) fn content(&self, write: impl Fn(usize, &str) -> Vec<Operation>) -> Vec<u8> {
+        let mut ops = self.before.clone();
+        if !self.text {
+            return encode(ops);
         }
+        let font = Object::Name(self.font.clone());
+        ops.push(op("BT", vec![]));
+        ops.push(op("Tf", vec![font, nums(&[self.size])[0].clone()]));
+        ops.extend(self.color.clone());
+        for (i, (s, x, y)) in self.lines.iter().enumerate() {
+            ops.push(op("Tm", nums(&[1.0, 0.0, 0.0, 1.0, *x, *y])));
+            ops.extend(write(i, s));
+        }
+        ops.push(op("ET", vec![]));
+        ops.push(op("Q", vec![]));
+        ops.push(op("EMC", vec![]));
+        encode(ops)
+    }
+
+    /// [`Drawn::content`] with each line in one-byte codes, as [`Metrics::Bytes`] writes.
+    pub(crate) fn bytes_content(&self) -> Vec<u8> {
+        self.content(|_, s| vec![op("Tj", vec![bytes_obj(winansi_bytes(s))])])
     }
 }
 
@@ -118,8 +153,8 @@ impl Look {
     }
 }
 
-/// The appearance stream's content for `body`.
-pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
+/// The appearance for `body`, laid out: its text's lines are written by [`Drawn::content`].
+pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Drawn {
     let mut ops = Vec::new();
     let (w, h) = (look.w, look.h);
     if let Some(bg) = look.bg.as_ref().and_then(|c| fill_color(c)) {
@@ -148,8 +183,16 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
             ops.push(op("Q", vec![]));
         }
     }
+    let alone = |before| Drawn {
+        before,
+        lines: Vec::new(),
+        size: 0.0,
+        font: look.font.clone(),
+        color: None,
+        text: false,
+    };
     if matches!(body, Body::Empty) {
-        return encode(ops);
+        return alone(ops);
     }
     let inset = look.inset();
     let (iw, ih) = ((w - 2.0 * inset).max(0.0), (h - 2.0 * inset).max(0.0));
@@ -170,7 +213,7 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
         ops.push(op("Tj", vec![bytes_obj(vec![*c])]));
         ops.push(op("ET", vec![]));
         ops.push(op("Q", vec![]));
-        return encode(ops);
+        return alone(ops);
     }
     ops.push(op("BMC", vec![Object::Name(b"Tx".to_vec())]));
     ops.push(op("q", vec![]));
@@ -179,13 +222,13 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
     ops.push(op("n", vec![]));
     let avail = iw - 2.0 * PAD;
     // Each line: its text and its baseline's x and y.
-    let mut lines: Vec<(Object, f32, f32)> = Vec::new();
+    let mut lines: Vec<(String, f32, f32)> = Vec::new();
     let size;
     match body {
         Body::Line(text) => {
             size = auto(look.size, || line_size(ih, avail, m.text_width(text, 1.0)));
             let x = align(look.q, inset + PAD, avail, m.text_width(text, size));
-            lines.push((m.string(text), x, centred_baseline(h, size)));
+            lines.push((text.to_string(), x, centred_baseline(h, size)));
         }
         Body::Comb(text, n) => {
             let cell = iw / (*n).max(1) as f32;
@@ -196,14 +239,14 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
             for (i, c) in text.chars().take(*n).enumerate() {
                 let c = c.to_string();
                 let x = inset + i as f32 * cell + (cell - m.text_width(&c, size)) / 2.0;
-                lines.push((m.string(&c), x, y));
+                lines.push((c, x, y));
             }
         }
         Body::Lines(text) => {
             size = auto(look.size, || {
                 let mut s = AUTO_MAX;
                 while s > AUTO_MIN
-                    && wrap(text, avail, s, m).len() as f32 * LEADING * s > ih - 2.0 * PAD
+                    && m.lines(text, avail, s).len() as f32 * LEADING * s > ih - 2.0 * PAD
                 {
                     s -= 0.5;
                 }
@@ -211,9 +254,9 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
             });
             // The first baseline sits one ascent (about 0.8 em) below the padding.
             let mut y = h - inset - PAD - 0.8 * size;
-            for l in wrap(text, avail, size, m) {
+            for l in m.lines(text, avail, size) {
                 let x = align(look.q, inset + PAD, avail, m.text_width(&l, size));
-                lines.push((m.string(&l), x, y));
+                lines.push((l, x, y));
                 y -= LEADING * size;
             }
         }
@@ -233,23 +276,20 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
                     ops.push(op("Q", vec![]));
                 }
                 let x = align(look.q, inset + PAD, avail, m.text_width(item, size));
-                lines.push((m.string(item), x, centred_baseline(lh, size) + row_top - lh));
+                lines.push((item.clone(), x, centred_baseline(lh, size) + row_top - lh));
                 row_top -= lh;
             }
         }
         Body::Mark(_) | Body::Empty => unreachable!(),
     }
-    ops.push(op("BT", vec![]));
-    ops.push(font_op(look, size));
-    ops.extend(look.color.clone());
-    for (s, x, y) in lines {
-        ops.push(op("Tm", nums(&[1.0, 0.0, 0.0, 1.0, x, y])));
-        ops.push(op("Tj", vec![s]));
+    Drawn {
+        before: ops,
+        lines,
+        size,
+        font: look.font.clone(),
+        color: look.color.clone(),
+        text: true,
     }
-    ops.push(op("ET", vec![]));
-    ops.push(op("Q", vec![]));
-    ops.push(op("EMC", vec![]));
-    encode(ops)
 }
 
 /// The size to use: `size`, or the computed one when it is 0 (auto).
@@ -286,48 +326,11 @@ fn align(q: i64, x0: f32, avail: f32, tw: f32) -> f32 {
     }
 }
 
-/// Split text into lines no wider than `max` at `size`: at line breaks, then at spaces,
-/// and inside a word only when the word alone is too wide.
-pub(crate) fn wrap(text: &str, max: f32, size: f32, m: &Metrics) -> Vec<String> {
-    let text = text.replace("\r\n", "\n").replace('\r', "\n");
-    let fits = |s: &str| m.text_width(s, size) <= max;
-    let mut out = Vec::new();
-    for para in text.split('\n') {
-        let mut line = String::new();
-        for word in para.split(' ') {
-            let candidate = if line.is_empty() {
-                word.to_string()
-            } else {
-                format!("{line} {word}")
-            };
-            if fits(&candidate) {
-                line = candidate;
-                continue;
-            }
-            if !line.is_empty() {
-                out.push(std::mem::take(&mut line));
-            }
-            // A word too wide for a line of its own is broken where it fills one.
-            for c in word.chars() {
-                let mut next = line.clone();
-                next.push(c);
-                if !fits(&next) && !line.is_empty() {
-                    out.push(std::mem::take(&mut line));
-                    next = c.to_string();
-                }
-                line = next;
-            }
-        }
-        out.push(line);
-    }
-    out
-}
-
 /// The height a box `w` wide, with a solid border `border` wide, needs to show all of
 /// `text` in lines at `size`, as [`draw`] lays them out.
 pub(crate) fn lines_height(text: &str, w: f32, size: f32, border: f32, m: &Metrics) -> f32 {
     let avail = (w - 2.0 * border).max(0.0) - 2.0 * PAD;
-    let n = wrap(text, avail, size, m).len().max(1) as f32;
+    let n = m.lines(text, avail, size).len().max(1) as f32;
     // The first line's ascent, the lines below it, and the last line's descent.
     2.0 * (border + PAD) + 0.8 * size + (n - 1.0) * LEADING * size + 0.25 * size
 }
@@ -422,28 +425,35 @@ mod tests {
         out
     }
 
+    /// The content for `body`, its text in one-byte codes.
+    fn drawn(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
+        draw(look, body, m).bytes_content()
+    }
+
     #[test]
     fn wraps_at_spaces_and_breaks_long_words() {
         // At size 10 each character is 5 points: 20 points take 4 characters.
         let m = even();
-        assert_eq!(wrap("ab cd ef", 25.0, 10.0, &m), ["ab cd", "ef"]);
-        assert_eq!(wrap("abcdefghij", 20.0, 10.0, &m), ["abcd", "efgh", "ij"]);
-        assert_eq!(wrap("a\r\n\nb", 20.0, 10.0, &m), ["a", "", "b"]);
-        assert_eq!(wrap("", 20.0, 10.0, &m), [""]);
+        assert_eq!(m.lines("ab cd ef", 25.0, 10.0), ["ab cd", "ef"]);
+        assert_eq!(m.lines("abcdefghij", 20.0, 10.0), ["abcd", "efgh", "ij"]);
+        assert_eq!(m.lines("a\r\n\nb", 20.0, 10.0), ["a", "", "b"]);
+        assert_eq!(m.lines("", 20.0, 10.0), [""]);
+        // After a hyphen, as Unicode's line-breaking rule allows.
+        assert_eq!(m.lines("well-known", 25.0, 10.0), ["well-", "known"]);
     }
 
     #[test]
     fn auto_size_fits_the_box() {
         let m = even();
         // Tall box, short text: capped at 12.
-        let s = shown(&draw(&look(200.0, 40.0, 0.0), &Body::Line("abc"), &m));
+        let s = shown(&drawn(&look(200.0, 40.0, 0.0), &Body::Line("abc"), &m));
         assert_eq!(s[0].3, 12.0);
         // Long text: shrunk to the width (100 chars × 0.5 em in 196 points ≈ 3.9, so 4).
         let long = "x".repeat(100);
-        let s = shown(&draw(&look(200.0, 40.0, 0.0), &Body::Line(&long), &m));
+        let s = shown(&drawn(&look(200.0, 40.0, 0.0), &Body::Line(&long), &m));
         assert_eq!(s[0].3, 4.0);
         // A fixed size is kept.
-        let s = shown(&draw(&look(200.0, 40.0, 9.0), &Body::Line(&long), &m));
+        let s = shown(&drawn(&look(200.0, 40.0, 9.0), &Body::Line(&long), &m));
         assert_eq!(s[0].3, 9.0);
     }
 
@@ -452,7 +462,7 @@ mod tests {
         let m = even();
         let mut l = look(100.0, 20.0, 10.0);
         // "abcd" is 20 points wide; the text area runs from 2 to 98.
-        let x = |l: &Look| shown(&draw(l, &Body::Line("abcd"), &m))[0].1;
+        let x = |l: &Look| shown(&drawn(l, &Body::Line("abcd"), &m))[0].1;
         assert_eq!(x(&l), 2.0);
         l.q = 1;
         assert_eq!(x(&l), 40.0);
@@ -463,7 +473,7 @@ mod tests {
     #[test]
     fn comb_puts_one_character_in_each_cell() {
         let m = even();
-        let s = shown(&draw(&look(100.0, 20.0, 10.0), &Body::Comb("abc", 5), &m));
+        let s = shown(&drawn(&look(100.0, 20.0, 10.0), &Body::Comb("abc", 5), &m));
         // Cells are 20 wide; each 5-point character is centred in its own.
         let xs: Vec<f32> = s.iter().map(|t| t.1).collect();
         assert_eq!(xs, [7.5, 27.5, 47.5]);
@@ -472,7 +482,7 @@ mod tests {
     #[test]
     fn multiline_text_runs_down_from_the_top() {
         let m = even();
-        let s = shown(&draw(
+        let s = shown(&drawn(
             &look(100.0, 60.0, 10.0),
             &Body::Lines("one\ntwo"),
             &m,
@@ -483,13 +493,13 @@ mod tests {
         assert!((s[0].2 - s[1].2 - 11.5).abs() < 0.01);
         // Auto size shrinks until all the lines fit.
         let many = "a\n".repeat(5);
-        let s = shown(&draw(&look(100.0, 60.0, 0.0), &Body::Lines(&many), &m));
+        let s = shown(&drawn(&look(100.0, 60.0, 0.0), &Body::Lines(&many), &m));
         let size = s[0].3;
         assert!(size < 12.0);
         assert!(6.0 * LEADING * size <= 60.0 - 2.0 * PAD);
         // Too many lines for the smallest size: stays at the smallest, and is clipped.
         let lots = "a\n".repeat(40);
-        let s = shown(&draw(&look(100.0, 60.0, 0.0), &Body::Lines(&lots), &m));
+        let s = shown(&drawn(&look(100.0, 60.0, 0.0), &Body::Lines(&lots), &m));
         assert_eq!(s[0].3, AUTO_MIN);
     }
 
@@ -497,7 +507,7 @@ mod tests {
     fn list_highlights_the_chosen_option() {
         let m = even();
         let items = ["a".to_string(), "b".to_string(), "c".to_string()];
-        let c = draw(
+        let c = drawn(
             &look(100.0, 60.0, 10.0),
             &Body::List {
                 items: &items,
@@ -522,7 +532,7 @@ mod tests {
             width: 1.0,
             style: b'S',
         });
-        let c = draw(&l, &Body::Line("café"), &m);
+        let c = drawn(&l, &Body::Line("café"), &m);
         let ops = Content::decode(&c).unwrap().operations;
         let names: Vec<&str> = ops.iter().map(|o| o.operator.as_str()).collect();
         assert!(names.starts_with(&["q", "g", "re", "f", "Q", "q", "RG", "w", "re", "S", "Q"]));

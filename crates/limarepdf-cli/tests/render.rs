@@ -77,8 +77,8 @@ fn filled_fields_without_a_drawing_are_drawn() {
 #[test]
 fn fields_that_cant_be_drawn_are_named() {
     let dir = folder("named");
-    // Japanese, which LimarePDF can't draw in a form field yet.
-    let file = make_pdf(&dir, "form.pdf", "<FEFF65E5672C8A9E>");
+    // Hebrew, which LimarePDF can't draw yet (right to left).
+    let file = make_pdf(&dir, "form.pdf", "<FEFF05E905DC05D505DD>");
     let out = render(&file);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{err}");

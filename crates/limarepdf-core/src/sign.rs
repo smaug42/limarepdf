@@ -8,9 +8,9 @@ use crate::annot_write::simplify;
 use crate::form_ap::nums;
 use crate::form_flatten::Flat;
 use crate::imgs::{decode, first, orient_matrix, stored_point, swaps_axes, Pixels, Raster};
-use crate::overlay::{escape, local_today, text_width};
+use crate::overlay::{local_today, text_width};
 use crate::stamps::KAPPA;
-use crate::{Pdf, Result, TextStyle};
+use crate::{FontChoice, Pdf, Result, TextStyle};
 use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, ObjectId, Stream};
 use skrifa::outline::{DrawSettings, OutlinePen};
@@ -860,10 +860,11 @@ pub(crate) fn signature_art(
         ty = n(below - y0 * k),
     );
     if let Some(l) = &line {
+        let shows = crate::layout::standard_tj(FontChoice::default(), l)
+            .ok_or_else(|| anyhow!("the date can't be written in Helvetica"))?;
         s += &format!(
-            "BT /{FONT} {DATE_SIZE} Tf 0 {} Td ({}) Tj ET\n",
+            "BT /{FONT} {DATE_SIZE} Tf 0 {} Td {shows}\nET\n",
             n(DATE_SIZE * DESCENT),
-            escape(l)
         );
     }
     s += "Q\n";

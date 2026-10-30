@@ -35,7 +35,10 @@ pub struct PageObject {
     pub has_stroke: bool,
     /// True for inline images, which cannot be replaced (only moved, resized or deleted).
     pub inline: bool,
-    /// For text: the font can be reused for plain ASCII edits (otherwise edits are re-set in a standard font).
+    /// For text: the font is a simple one with a standard encoding, not a subset, so plain
+    /// ASCII can be encoded for it anew ([`crate::fonts::FontCtx::reusable`]). Edits don't
+    /// depend on it: each character keeps the line's own font where it has a verified code
+    /// ([`PageObject::kept_pieces`]).
     pub font_reusable: bool,
     /// Invisible text (render mode 3 or 7), such as an OCR layer. It is not drawn, but it
     /// is searched and can be selected and copied in viewers.
@@ -66,7 +69,7 @@ pub struct TextSpan {
     pub font_name: String,
     pub font_size: f32,
     pub fill: Option<[f32; 3]>,
-    /// The font can be reused for plain ASCII edits ([`PageObject::font_reusable`]).
+    /// The font is a simple one with a standard encoding ([`PageObject::font_reusable`]).
     pub font_reusable: bool,
     /// How far the part is raised above the line's baseline, in points (lowered when
     /// below zero), as a superscript is.

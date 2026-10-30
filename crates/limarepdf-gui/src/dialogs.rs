@@ -761,8 +761,9 @@ impl Layout {
                  shows too."
             }
             Layout::Plain => {
-                "Just the selected words, set in Helvetica. Fonts and pictures are lost, and \
-                 characters outside Latin, Greek and Cyrillic come out as ?."
+                "Just the selected words, set in Helvetica, or another installed font where \
+                 it lacks a character. Fonts and pictures are lost, and characters no font \
+                 has come out as ?."
             }
             Layout::TextFile => "Just the selected words, as plain text.",
         }

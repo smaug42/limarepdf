@@ -10,7 +10,7 @@ use lopdf::{Dictionary, Document, Object};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Family {
     Helvetica,
     Times,
@@ -21,7 +21,7 @@ pub enum Family {
 
 /// The font text is written in: one of the 12 standard PDF fonts (no embedding needed), or
 /// an installed family's face (embedded).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FontChoice {
     pub family: Family,
     pub bold: bool,

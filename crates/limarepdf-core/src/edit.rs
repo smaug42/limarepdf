@@ -1,9 +1,10 @@
 //! Editing page content: move/resize, delete, change text, restyle paths, replace images, insert objects.
 
-use crate::embed::Pen;
+use crate::embed::unwritten_script;
 use crate::fonts::{FontChoice, FontCtx};
 use crate::imgs::orient_matrix;
 use crate::inline::Inline;
+use crate::layout::{Pen, Setter};
 use crate::matrix::{self as mx, mul, M};
 use crate::objects::{Obj, ObjectKind, Parsed, Run, Show, Span, TextData};
 use crate::own_font::{LineFont, PageFonts};
@@ -13,6 +14,8 @@ use image::metadata::Orientation;
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
 use std::collections::HashMap;
+use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextEdit {
@@ -249,6 +252,9 @@ fn plan(
                 (Way::Own(o), *n)
             }
             Some((o, Ink::Move(_))) => (Way::Own(o), 1),
+            // A script written right to left, or whose letters join, isn't written one
+            // code a character (PB-53): it goes where it is refused, with its reason.
+            _ if unwritten_script(c) => (Way::Missing, 1),
             _ if font.is_some_and(|f| f.code(c).is_ok()) => (Way::Code, 1),
             _ if c.is_whitespace() => (Way::Space, 1),
             _ => (Way::Missing, 1),
@@ -261,21 +267,21 @@ fn plan(
 }
 
 /// `text`'s characters in pieces kept in the line's font or not, by how they are written
-/// (`ways`, [`plan`]): a word with a character the font can't write goes to another font,
-/// with the spaces between two such words.
+/// (`ways`, [`plan`]): a word, as Unicode's word rule finds it (UAX #29: each Chinese or
+/// Japanese ideograph is one, and punctuation stands apart), with a character the font
+/// can't write goes to another font, with the spaces between two such words.
 fn pieces(text: &[char], ways: &[Way]) -> Vec<KeptPiece> {
     let n = text.len();
     // Whether each character's word goes to another font; spaces belong to none.
     let mut lost = vec![false; n];
+    let joined: String = text.iter().collect();
     let mut j = 0;
-    while j < n {
-        if text[j].is_whitespace() {
-            j += 1;
-            continue;
+    for word in joined.split_word_bounds() {
+        let end = j + word.chars().count();
+        if !word.chars().all(char::is_whitespace) {
+            let gone = ways[j..end].contains(&Way::Missing);
+            lost[j..end].fill(gone);
         }
-        let end = (j..n).find(|&k| text[k].is_whitespace()).unwrap_or(n);
-        let gone = ways[j..end].contains(&Way::Missing);
-        lost[j..end].fill(gone);
         j = end;
     }
     // Spaces between two words that go go with them.
@@ -1088,16 +1094,18 @@ impl Pdf {
         Ok(nm)
     }
 
-    /// The font to write `text` in `f` with, added to the page's resources: its name there,
-    /// and the pen that writes the text (the standard font, or its embedded face when the
-    /// text needs it).
-    fn text_font(&mut self, page: ObjectId, f: FontChoice, text: &str) -> Result<(String, Pen)> {
-        let pen = self.pen(f, text)?;
-        let font = self.pen_font(&pen);
-        Ok((
-            self.add_resource(page, "Font", "LimareEd", font.into())?,
-            pen,
-        ))
+    /// The pen that writes `texts` as `setter` sets them ([`Pdf::pen_with`]: the standard
+    /// font, or its embedded face when the text needs it, and the fonts it falls back to),
+    /// its fonts added to the page's resources: their names there, and the pen.
+    fn text_pen(
+        &mut self,
+        page: ObjectId,
+        setter: &Setter,
+        texts: &[&str],
+    ) -> Result<(Vec<String>, Pen)> {
+        let pen = self.pen_with(setter, texts)?;
+        let names = self.font_names(page, "LimareEd", pen.fonts())?;
+        Ok((names, pen))
     }
 
     /// D in user space for a displayed-page (y down) delta.
@@ -1320,10 +1328,12 @@ impl Pdf {
         self.commit(page, out, parsed.depth_left, &parsed.inline)
     }
 
-    /// Change the text of a text object. Keeps the original font when it can be reused for plain ASCII;
-    /// otherwise the line is replaced by new text in a standard font at the same position, or its
-    /// embedded face for characters the standard font lacks. A line in parts
-    /// ([`TextEdit::parts`]) is written as one line on top, each part in its style.
+    /// Change the text of a text object. Its characters keep the line's own font where it
+    /// has a verified code for each ([`PageObject::kept_pieces`]); a word it can't write goes
+    /// to the installed family the font is from or the nearest standard font (or its
+    /// embedded face), which fall back to other fonts for characters they lack
+    /// (`layout.rs`). A line in parts ([`TextEdit::parts`]) is written as one line, each
+    /// part in its style; a line changed in words alone, all in its own font, in place.
     pub fn edit_text(&mut self, page_index: usize, id: usize, e: &TextEdit) -> Result<()> {
         self.edit_texts(page_index, &[(id, e.clone())]).map(|_| ())
     }
@@ -1414,20 +1424,20 @@ impl Pdf {
                     let (s, f) = (first.corners[0], last.corners[1]);
                     let width = ((f.0 - s.0) * dx + (f.1 - s.1) * dy).max(0.1);
                     let size = t.size.max(1.0);
-                    let (fname, pen) = self.text_font(page, FontChoice::default(), &e.text)?;
-                    let tz =
-                        (100.0 * width / pen.width(&e.text, size).max(0.1)).clamp(1.0, 10_000.0);
+                    let setter = self.setter(FontChoice::default(), &e.text);
+                    let (names, pen) = self.text_pen(page, &setter, &[&e.text])?;
+                    let wide = setter.width(&e.text, size).max(0.1);
+                    let tz = (100.0 * width / wide).clamp(1.0, 10_000.0);
                     ops.extend([
                         op("q", vec![]),
                         op("BT", vec![]),
                         op("Tr", vec![Object::Integer(3)]),
-                        op("Tf", vec![name(&fname), r(size)]),
+                        op("Tf", vec![name(&names[0]), r(size)]),
                         op("Tz", vec![r(tz)]),
                         at,
-                        op("Tj", vec![pen.string(&e.text)]),
-                        op("ET", vec![]),
-                        op("Q", vec![]),
                     ]);
+                    ops.extend(pen.ops(0, size, 0.0, &names));
+                    ops.extend([op("ET", vec![]), op("Q", vec![])]);
                 }
                 Plan::OnTop(ops)
             } else if let Some(parts) = &parts[k] {
@@ -1450,22 +1460,25 @@ impl Pdf {
                         Plan::OnTop(ops)
                     }
                 }
+            } else if e.text.is_empty() {
+                Plan::OnTop(Vec::new())
             } else {
                 // Restyled in one style: the new text on top.
                 let font = e.font.unwrap_or_else(|| FontChoice::of_font(&t.base));
                 let size = e.size.unwrap_or(t.size).max(1.0);
                 let color = e.color.or(t.fill).unwrap_or([0.0; 3]);
-                let (fname, pen) = self.text_font(page, font, &e.text)?;
-                Plan::OnTop(vec![
+                let setter = self.setter(font, &e.text);
+                let (names, pen) = self.text_pen(page, &setter, &[&e.text])?;
+                let mut ops = vec![
                     op("q", vec![]),
                     op("BT", vec![]),
-                    op("Tf", vec![name(&fname), r(size)]),
+                    op("Tf", vec![name(&names[0]), r(size)]),
                     rgb("rg", color),
                     at,
-                    op("Tj", vec![pen.string(&e.text)]),
-                    op("ET", vec![]),
-                    op("Q", vec![]),
-                ])
+                ];
+                ops.extend(pen.ops(0, size, 0.0, &names));
+                ops.extend([op("ET", vec![]), op("Q", vec![])]);
+                Plan::OnTop(ops)
             };
             plans.push(plan);
         }
@@ -1545,9 +1558,11 @@ impl Pdf {
         let bytes = (inline.encode(ops.to_vec()))
             .map_err(|e| anyhow!("cannot encode the page content: {e}"))?;
         let parsed = self.parse_as_page(page, &bytes)?;
-        // A ligature character typed reads back as its letters, as the page is read.
+        // A ligature character typed reads back as its letters, as the page is read; and
+        // accents typed apart, which the writer puts together (NFC), are compared so.
         let words = |s: &str| {
-            let s: String = s.chars().map(crate::fonts::unligature).collect();
+            let s: String = s.chars().map(crate::fonts::unligature).collect::<String>();
+            let s: String = s.nfc().collect();
             s.split_whitespace().map(str::to_string).collect::<Vec<_>>()
         };
         let read = |keep: &dyn Fn(&Obj) -> bool| -> String {
@@ -1674,56 +1689,75 @@ impl Pdf {
             hows.push((line_hows, used));
         }
         drop(page_fonts);
-        // One font added for each one chosen, holding all the text written in it.
-        let mut texts: Vec<(FontChoice, String)> = Vec::new();
+        // One pen for each font chosen, writing every piece set in it, its fonts (the one
+        // chosen and those it falls back to) added to the page once.
+        let mut texts: Vec<(FontChoice, Vec<&str>)> = Vec::new();
         for (p, how, _) in hows.iter().flat_map(|(h, _)| h) {
             if let How::New(c) = how {
                 match texts.iter_mut().find(|(f, _)| f == c) {
-                    Some((_, text)) => text.push_str(&p.text),
-                    None => texts.push((*c, p.text.clone())),
+                    Some((_, list)) => list.push(&p.text),
+                    None => texts.push((*c, vec![&p.text])),
                 }
             }
         }
-        let mut fonts = Vec::new();
-        for (c, text) in texts {
-            let (name, pen) = self.text_font(page, c, &text)?;
-            fonts.push((c, name, pen));
+        let mut pens = Vec::new();
+        for (c, list) in &texts {
+            let setter = self.setter(*c, &list.concat());
+            let (names, pen) = self.text_pen(page, &setter, list)?;
+            pens.push((*c, names, pen));
         }
-        let write = |(p, how, tail): (TextPart, How, Tail)| {
+        // How many pieces each pen has written so far.
+        let mut done = vec![0; pens.len()];
+        let mut write = |(p, how, tail): (TextPart, How, Tail)| -> Vec<Written> {
             let size = p.size.max(1.0);
-            let (font, mut shows) = match how {
-                How::Own(font, shows) => (font, shows),
+            let mut out: Vec<Written> = match how {
+                How::Own(font, shows) => vec![Written {
+                    font,
+                    size,
+                    color: p.color,
+                    rise: p.rise,
+                    shows,
+                }],
                 How::New(c) => {
-                    let (_, name, pen) = fonts.iter().find(|(f, ..)| *f == c).expect("added");
-                    let show = op("Tj", vec![pen.string(&p.text)]);
-                    (name.as_bytes().to_vec(), vec![([0.0, 0.0, 1.0], show)])
+                    let k = pens.iter().position(|(f, ..)| *f == c).expect("made");
+                    let (_, names, pen) = &pens[k];
+                    let shows = pen.shows(done[k]);
+                    done[k] += 1;
+                    (shows.iter())
+                        .map(|s| Written {
+                            font: names[s.font].as_bytes().to_vec(),
+                            size,
+                            color: p.color,
+                            rise: p.rise + s.rise * size / 1000.0,
+                            shows: vec![([0.0, 0.0, 1.0], tj(s.items.clone()))],
+                        })
+                        .collect()
                 }
             };
             let mut items = tail.items;
-            if let Some((x, units)) = tail.space {
-                let th = shows.last().map_or(1.0, |(sp, _)| sp[2]);
-                let here = (size * th).max(1e-3);
-                items.push(r(if units == here { x } else { x * units / here }));
+            if let Some(last) = out.last_mut() {
+                let shows = &mut last.shows;
+                if let Some((x, units)) = tail.space {
+                    let th = shows.last().map_or(1.0, |(sp, _)| sp[2]);
+                    let here = (size * th).max(1e-3);
+                    items.push(r(if units == here { x } else { x * units / here }));
+                }
+                match shows.last_mut() {
+                    _ if items.is_empty() => {}
+                    Some((_, show)) => then_move(show, items),
+                    None => shows.push(([0.0, 0.0, 1.0], tj(items))),
+                }
             }
-            match shows.last_mut() {
-                _ if items.is_empty() => {}
-                Some((_, show)) => then_move(show, items),
-                None => shows.push(([0.0, 0.0, 1.0], tj(items))),
-            }
-            Written {
-                font,
-                size,
-                color: p.color,
-                rise: p.rise,
-                shows,
-            }
+            out
         };
         // A piece with nothing to show (a space that went to the piece before) is left out.
         let shown = |w: &Written| !w.shows.is_empty();
-        Ok(hows
-            .into_iter()
-            .map(|(h, used)| (h.into_iter().map(write).filter(shown).collect(), used))
-            .collect())
+        let mut lines = Vec::with_capacity(hows.len());
+        for (h, used) in hows {
+            let written: Vec<Written> = h.into_iter().flat_map(&mut write).filter(shown).collect();
+            lines.push((written, used));
+        }
+        Ok(lines)
     }
 
     pub fn set_path_style(&mut self, page_index: usize, id: usize, st: &PathStyle) -> Result<()> {

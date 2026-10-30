@@ -8351,14 +8351,14 @@ mod tests {
             (r.min.y - (click_y - 0.905 * 14.0 * k)).abs() < 1.5,
             "{r:?}"
         );
-        // Ctrl+B, then typing, Enter for a second line, and a character that can't be
-        // written yet: all in bold. Nothing is in the document yet.
+        // Ctrl+B, then typing, Enter for a second line, and a character no font has: all in
+        // bold. Nothing is in the document yet.
         let none = egui::Modifiers::NONE;
         let typed = vec![
             key(Key::B, egui::Modifiers::COMMAND),
             egui::Event::Text("Walrus".into()),
             key(Key::Enter, none),
-            egui::Event::Text("Seal 中".into()),
+            egui::Event::Text("Seal \u{2FFFE}".into()),
         ];
         window(&mut app, &ctx, 1400.0, typed);
         let t = &app.tabs[0];
@@ -8375,7 +8375,7 @@ mod tests {
         };
         assert!(lines(&app).is_empty());
         tree = window(&mut app, &ctx, 1400.0, vec![]);
-        let note = "Helvetica can't write this character; choose an installed font that has it";
+        let note = page_text::REFUSED;
         assert!(
             tree.nodes.iter().any(|(_, n)| n.value() == Some(note)),
             "no note about the refused character"
@@ -8524,27 +8524,26 @@ mod tests {
         };
         window(&mut app, &ctx, 1400.0, click(at(100.0, 200.0)));
         settled_at(&mut app, &ctx, 1400.0);
+        // A word with a letter it lacks (Ŧ) is typed too, and written whole in a font that
+        // has it.
         window(
             &mut app,
             &ctx,
             1400.0,
-            vec![egui::Event::Text("Zażółć 中".into())],
-        );
-        let tree = window(&mut app, &ctx, 1400.0, vec![]);
-        let note = limarepdf_core::refusal(app.tabs[0].ed.tfont, "中");
-        assert!(note.starts_with("Source Serif 4 has no"), "{note}");
-        assert!(
-            tree.nodes
-                .iter()
-                .any(|(_, n)| n.value() == Some(note.as_str())),
-            "no note naming the font"
+            vec![egui::Event::Text("Zażółć Ŧest".into())],
         );
         window(&mut app, &ctx, 1400.0, click(at(300.0, 300.0)));
         settled_at(&mut app, &ctx, 1400.0);
         let objs = app.tabs[0].pdf.page_objects(0).unwrap();
-        let line = objs.iter().find(|o| o.text.as_deref() == Some("Zażółć"));
-        let font = line.and_then(|o| o.font_name.clone()).unwrap_or_default();
-        assert!(font.ends_with("+SourceSerif4-Regular"), "{font:?}");
+        let typed = Some("Zażółć Ŧest");
+        let line = objs.iter().find(|o| o.text.as_deref() == typed);
+        let spans = &line.expect("the line").spans;
+        let fonts: Vec<(&str, (usize, usize))> = (spans.iter())
+            .map(|s| (s.font_name.as_str(), s.chars))
+            .collect();
+        assert_eq!(fonts.len(), 2, "{fonts:?}");
+        assert!(fonts[0].0.ends_with("+SourceSerif4-Regular"), "{fonts:?}");
+        assert!(!fonts[1].0.ends_with("+SourceSerif4-Regular") && fonts[1].1 == (7, 11));
     }
 
     #[test]
@@ -8800,10 +8799,10 @@ mod tests {
             .cover
             .expect("no colour to hide the line with");
         assert!(c.r() < 8 && c.g() < 8 && c.b() > 247, "{c:?}");
-        // Typing, a character that can't be written, and Ctrl+B for the word at the caret,
-        // here the whole line.
+        // Typing, a character no font has, and Ctrl+B for the word at the caret, here the
+        // whole line.
         let typed = vec![
-            egui::Event::Text("X中".into()),
+            egui::Event::Text("X\u{2FFFE}".into()),
             key(Key::B, egui::Modifiers::COMMAND),
         ];
         window(&mut app, &ctx, 1400.0, typed);
@@ -8813,7 +8812,7 @@ mod tests {
             n.and_then(|(_, n)| n.value().map(str::to_string))
         };
         assert_eq!(value(&tree).as_deref(), Some("WalXrus"));
-        let note = "Courier can't write this character; choose an installed font that has it";
+        let note = page_text::REFUSED;
         assert!(
             tree.nodes.iter().any(|(_, n)| n.value() == Some(note)),
             "no note about the refused character"
@@ -11853,7 +11852,8 @@ mod tests {
         app.act(&ctx, Act::Tool(Tool::TextBox));
         window(&mut app, &ctx, 1400.0, click_at(at(100.0, 100.0)));
         window(&mut app, &ctx, 1400.0, vec![]);
-        let tree = typed(&mut app, "Walrus😀中");
+        // A character no font has (a noncharacter).
+        let tree = typed(&mut app, "Walrus\u{2FFFE}");
         assert!(noted(&tree, page_text::REFUSED), "no note at the caret");
         let tree = typed(&mut app, "👍🏽");
         assert!(noted(&tree, sequence), "no note for the sequence");
@@ -11870,7 +11870,7 @@ mod tests {
         t.ed.annots(&t.pdf, 0);
         t.ed.selection = Selection::Annot { page: 0, id };
         click_named(&mut app, &ctx, "Text");
-        let tree = typed(&mut app, "😀");
+        let tree = typed(&mut app, "\u{2FFFE}");
         assert!(noted(&tree, page_text::REFUSED), "no note in the inspector");
         typed(&mut app, " ate fish");
         app.tabs[0].ed.keep(crate::editor::Typed::Comment);
@@ -11880,7 +11880,7 @@ mod tests {
         // Fill and sign's text.
         app.act(&ctx, Act::Tool(Tool::Sign));
         click_named(&mut app, &ctx, "Text to place");
-        let tree = typed(&mut app, "Seal😀");
+        let tree = typed(&mut app, "Seal\u{2FFFE}");
         assert!(noted(&tree, page_text::REFUSED), "no note in Fill and sign");
         assert_eq!(app.tabs[0].ed.sign.text, "Seal");
         // Alike when pasted with the middle button (X11 and Wayland's PRIMARY selection,
@@ -11888,7 +11888,7 @@ mod tests {
         let p = middle(&tree, "Text to place");
         let paste = egui::Event::MiddleClickPaste {
             pos: p,
-            text: "中 ate".into(),
+            text: "\u{2FFFE} ate".into(),
         };
         window(
             &mut app,
@@ -11950,9 +11950,10 @@ mod tests {
         let mut pdf = Pdf::new();
         pdf.insert_blank(0, 612.0, 792.0).unwrap();
         let page = pdf.page_ids()[0];
+        // Hebrew: no font writes it yet (right to left).
         let utf16: Vec<u8> = [0xFE, 0xFF]
             .into_iter()
-            .chain("中文".encode_utf16().flat_map(u16::to_be_bytes))
+            .chain("שלום".encode_utf16().flat_map(u16::to_be_bytes))
             .collect();
         let rect: Vec<Object> = [100, 600, 300, 640].iter().map(|&v| v.into()).collect();
         let id = pdf.doc.add_object(dictionary! {
@@ -11968,8 +11969,9 @@ mod tests {
         assert!(app.add_tab(&ctx, pdf, None, None, false));
         let a = app.tabs[0].pdf.annotations()[0].clone();
         let state = app.tabs[0].state();
-        let why = "LimarePDF can't draw this text box again: it has \"中文\", which LimarePDF \
-                   can't write yet (Latin, Greek and Cyrillic characters are supported)";
+        let why = "LimarePDF can't draw this text box again: it has \"שלום\", in a script \
+                   LimarePDF can't write yet (right-to-left writing, and scripts whose letters \
+                   join, aren't supported)";
         let red = crate::editor::AnnotEdit {
             color: Some([1.0, 0.0, 0.0]),
             opacity: a.opacity,
@@ -12175,9 +12177,7 @@ mod tests {
             window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
             window(app, &ctx, 1400.0, vec![])
         };
-        let tree = typed(&mut app, "Walrus 😀😎");
-        let note = "Limare Emoji Test has no \"😎\"; choose another font";
-        assert!(noted(&tree, note), "no note naming the font");
+        typed(&mut app, "Walrus 😀");
         let tree = typed(&mut app, "👍🏽");
         let sequence = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and joined \
                         emoji aren't supported";
@@ -13013,11 +13013,11 @@ mod tests {
         use lopdf::{dictionary, Object, StringFormat};
         let ctx = egui::Context::default();
         let mut app = app_with(&ctx, 1);
-        // A printed text field filled in another app with text LimarePDF can't draw, and
-        // no drawing of its own.
+        // A printed text field filled in another app with text LimarePDF can't draw
+        // (Hebrew, written right to left), and no drawing of its own.
         assert!(app.tabs[0].edit(&ctx, |p| {
             let mut v = vec![0xFE, 0xFF];
-            v.extend("日本語".encode_utf16().flat_map(u16::to_be_bytes));
+            v.extend("שלום".encode_utf16().flat_map(u16::to_be_bytes));
             let rect: Vec<Object> = [20, 20, 280, 50].map(Object::from).to_vec();
             let w = p.doc.add_object(dictionary! {
                 "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "F" => 4,
@@ -13401,11 +13401,11 @@ mod tests {
             objs.into_iter().filter_map(|o| o.text).collect()
         };
         assert!(lines(&app).is_empty());
-        // A character Helvetica can't write isn't typed, and as a watermark can't be set
-        // in an installed font, the note doesn't point to one.
+        // A character no font has isn't typed, and the note says so.
         ctx.memory_mut(|m| m.request_focus(field));
         window(&mut app, &ctx, 1400.0, vec![]);
-        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("中".into())]);
+        let none = egui::Event::Text("\u{2FFFE}".into());
+        window(&mut app, &ctx, 1400.0, vec![none]);
         let typed = window(&mut app, &ctx, 1400.0, vec![]);
         assert!(
             typed
@@ -17399,9 +17399,9 @@ mod tests {
         form_file(&own, "Grace");
         undrawn_form_file(&filled, lopdf::Object::string_literal("Ada Lovelace"));
         pages_file(&plain, 100.0, 1, None);
-        // Text in characters LimarePDF can't write in a field yet.
+        // Text in characters LimarePDF can't write in a field yet (Hebrew, right to left).
         let mut utf16 = vec![0xFE, 0xFF];
-        utf16.extend("日本語".encode_utf16().flat_map(u16::to_be_bytes));
+        utf16.extend("שלום".encode_utf16().flat_map(u16::to_be_bytes));
         undrawn_form_file(
             &foreign,
             lopdf::Object::String(utf16, lopdf::StringFormat::Hexadecimal),

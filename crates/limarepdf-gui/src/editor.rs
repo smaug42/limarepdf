@@ -2439,7 +2439,7 @@ impl Editor {
             page_text::undo_redo(&ctx, id, &t, &mut insp.history, &mut insp.text);
             page_text::switch_styles(&ctx, &t, &mut insp.text, sel, font, &mut le.refused);
             if let Some(c) = t.refused {
-                le.refused.mark(&ctx, page_text::note(font, &c));
+                le.refused.mark(&ctx, page_text::note(&c).to_string());
             }
         }
         let b = o.bbox;
@@ -2706,7 +2706,7 @@ impl Editor {
             if ui.ctx().memory(|m| m.has_focus(id)) {
                 let helvetica = FontChoice::default();
                 if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
-                    let note = page_text::fixed_note(&c).to_string();
+                    let note = page_text::note(&c).to_string();
                     w.refused.mark(ui.ctx(), note);
                 }
             }
@@ -5483,7 +5483,7 @@ impl Editor {
                 if e.text.is_some() && ui.ctx().memory(|m| m.has_focus(id)) {
                     let helvetica = FontChoice::default();
                     if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
-                        let note = page_text::fixed_note(&c).to_string();
+                        let note = page_text::note(&c).to_string();
                         self.text_refused.mark(ui.ctx(), note);
                     }
                 }

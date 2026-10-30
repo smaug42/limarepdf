@@ -376,18 +376,15 @@ fn headers_footers_and_bates_numbers_share_one_embedded_font() {
             assert!(text.contains(t), "{t} on page {i}: {text:?}");
         }
     }
-    // Characters beyond Latin, Greek and Cyrillic are refused, with nothing changed.
+    // Scripts no font writes yet are refused, with nothing changed.
     let mut p = page();
     let before = objects(&p);
-    let cjk = HeaderFooter {
-        header: ["日本".into(), String::new(), String::new()],
+    let hebrew = HeaderFooter {
+        header: ["שלום".into(), String::new(), String::new()],
         ..HeaderFooter::default()
     };
-    let e = p.add_header_footer(&[0], &cjk).unwrap_err().to_string();
-    assert!(
-        e.contains("日本") && e.contains("Latin, Greek and Cyrillic"),
-        "{e}"
-    );
+    let e = p.add_header_footer(&[0], &hebrew).unwrap_err().to_string();
+    assert!(e.contains("שלום") && e.contains("right-to-left"), "{e}");
     assert_eq!(objects(&p), before);
 }
 
@@ -421,23 +418,21 @@ fn stamps_show_wording_and_names_beyond_western_european() {
     };
     p.add_stamp(0, &stamp, StampPlace::Centre(200.0, 100.0), "Łukasz")
         .unwrap();
-    // A name the font can't show is left off the line, and the stamp is still put down.
-    p.add_stamp(0, &stamp, StampPlace::Centre(200.0, 220.0), "山田")
+    // A name no font can show is left off the line, and the stamp is still put down.
+    p.add_stamp(0, &stamp, StampPlace::Centre(200.0, 220.0), "שרה")
         .unwrap();
     let mut back = reopened(&mut p);
     assert_eq!(embedded(&back), ["LiberationSans-Bold"]);
     back.flatten_annotations(None).unwrap();
     let text = reopened(&mut back).page_text(0);
     assert_eq!(text.matches("ОПЛАЧЕНО").count(), 2, "{text:?}");
-    assert!(
-        text.contains("Łukasz,") && !text.contains("山田"),
-        "{text:?}"
-    );
+    assert!(text.contains("Łukasz,"), "{text:?}");
+    assert!(!text.contains("שרה"), "{text:?}");
 }
 
 #[test]
 fn selected_text_as_a_plain_page_keeps_what_it_can_write() {
-    let mut p = Pdf::from_text(&format!("{POLISH}\n{GREEK} 日本"), (W, H)).unwrap();
+    let mut p = Pdf::from_text(&format!("{POLISH}\n{GREEK} {NONE}{NONE}"), (W, H)).unwrap();
     let back = reopened(&mut p);
     assert_eq!(embedded(&back), ["LiberationSans"]);
     let text = back.page_text(0);
@@ -573,20 +568,30 @@ fn characters_it_cant_write_are_refused_with_nothing_changed() {
     let before = objects(&p);
     let helvetica = FontChoice::default();
     // Right-to-left scripts aren't written yet, though the face has Hebrew.
-    for t in ["日本", "שלום", "Zażółć 日"] {
+    for t in ["שלום", "Zażółć ש"] {
         let e = p
             .add_text(0, (20.0, 40.0), t, helvetica, 12.0, [0.0; 3])
             .unwrap_err()
             .to_string();
-        assert!(e.contains("Latin, Greek and Cyrillic"), "{t}: {e}");
+        assert!(e.contains("right-to-left"), "{t}: {e}");
     }
+    // Nor what no font has.
+    let seal = format!("Seal {NONE}");
+    let e = p
+        .add_text(0, (20.0, 40.0), &seal, helvetica, 12.0, [0.0; 3])
+        .unwrap_err();
+    let none = format!("No font on this computer has \"{NONE}\"");
+    assert_eq!(e.to_string(), none);
     let wm = Watermark {
-        text: "草稿".into(),
+        text: "שלום".into(),
         ..Watermark::default()
     };
     assert!(p.add_watermark(&[0], &wm).is_err());
     assert_eq!(objects(&p), before);
 }
+
+/// A character no font has: a noncharacter (some fonts map unassigned ones).
+const NONE: char = '\u{2FFFE}';
 
 // ---------------------------------------------------------------- emoji (BUG-24)
 
@@ -642,13 +647,9 @@ fn new_and_edited_lines_write_single_emoji_in_a_font_that_has_them() {
     // The emoji after "Seal" is drawn: a box about 13 points square.
     assert!(ink(&mut again, [60, 65, 90, 85]) > 100);
 
-    // Drawn only in colour, or a sequence: refused, with nothing changed.
+    // A sequence: refused, with nothing changed. (One drawn only in colour goes to another
+    // font with its outline, when one is installed: `embed.rs`'s tests.)
     let before = objects(&again);
-    let e = again
-        .add_text(0, (20.0, 120.0), "Cool 😎", emoji, 14.0, [0.0; 3])
-        .unwrap_err()
-        .to_string();
-    assert_eq!(e, "Limare Emoji Test has no \"😎\"; choose another font");
     let walrus = again.page_objects(0).unwrap();
     let walrus = walrus
         .iter()
@@ -669,28 +670,33 @@ fn new_and_edited_lines_write_single_emoji_in_a_font_that_has_them() {
 
 #[test]
 fn text_boxes_and_fill_and_sign_text_refuse_what_they_cant_write() {
-    // Set in Helvetica, or its embedded face, which has no emoji or Chinese.
+    // Set in Helvetica, or its embedded face, and the fonts it falls back to: no font
+    // writes Hebrew or emoji sequences yet, and none has a noncharacter.
     let mut p = page();
     let style = TextStyle::default();
     let before = objects(&p);
-    for t in ["Walrus 😀", "Seal 中", "Seal 👍🏽"] {
+    let none = format!("Walrus {NONE}");
+    for t in ["Seal שלום", "Seal 👍🏽", none.as_str()] {
+        let refused = |e: String| {
+            e.starts_with("LimarePDF can't write") || e.starts_with("No font on this computer")
+        };
         let e = p
             .add_text_box(0, [20.0, 20.0, 380.0, 60.0], t, &style, "Sam")
             .unwrap_err()
             .to_string();
-        assert!(e.starts_with("LimarePDF can't write"), "{t}: {e}");
+        assert!(refused(e.clone()), "{t}: {e}");
         let e = p
             .add_sign_text(0, (200.0, 200.0), t, InkColor::Blue, "Sam")
             .unwrap_err()
             .to_string();
-        assert!(e.starts_with("LimarePDF can't write"), "{t}: {e}");
+        assert!(refused(e.clone()), "{t}: {e}");
     }
     let e = p
-        .add_text_box(0, [20.0, 20.0, 380.0, 60.0], "Walrus 😀", &style, "")
+        .add_text_box(0, [20.0, 20.0, 380.0, 60.0], &none, &style, "")
         .unwrap_err();
     assert_eq!(
         e.to_string(),
-        "LimarePDF can't write \"😀\" yet; Latin, Greek and Cyrillic characters are supported"
+        format!("No font on this computer has \"{NONE}\"")
     );
     assert_eq!(objects(&p), before);
 
@@ -701,7 +707,7 @@ fn text_boxes_and_fill_and_sign_text_refuse_what_they_cant_write() {
         .unwrap();
     let before = objects(&p);
     let a = p.annotations()[0].clone();
-    for t in ["Walrus 😀", "Seal 👍🏽"] {
+    for t in ["Seal שלום", "Seal 👍🏽"] {
         assert!(p.set_annotation(id, a.color, a.opacity, t).is_err(), "{t}");
     }
     assert_eq!(objects(&p), before);
@@ -709,11 +715,12 @@ fn text_boxes_and_fill_and_sign_text_refuse_what_they_cant_write() {
 }
 
 #[test]
-fn writers_in_the_standard_fonts_refuse_emoji_with_nothing_changed() {
+fn writers_in_the_standard_fonts_refuse_what_no_font_writes_with_nothing_changed() {
     let mut p = page();
     form(&mut p);
     let before = objects(&p);
-    for t in ["Walrus 😀", "Seal 👍🏽"] {
+    let none = format!("Walrus {NONE}");
+    for t in [none.as_str(), "Seal 👍🏽"] {
         let field = p.set_field("one", FieldValue::Text(t.into()));
         assert!(field.is_err(), "{t}");
         let hf = HeaderFooter {
@@ -742,8 +749,11 @@ fn writers_in_the_standard_fonts_refuse_emoji_with_nothing_changed() {
         };
         let e = p
             .add_stamp(0, &stamp, StampPlace::Centre(200.0, 100.0), "")
-            .unwrap_err();
-        assert!(e.to_string().starts_with("a stamp can't show"), "{e}");
+            .unwrap_err()
+            .to_string();
+        let refused =
+            e.starts_with("LimarePDF can't write") || e.starts_with("No font on this computer");
+        assert!(refused, "{e}");
         for style in SignStyle::ALL {
             assert!(typed_signature(t, style).is_err(), "{t} {style:?}");
         }
@@ -755,7 +765,8 @@ fn writers_in_the_standard_fonts_refuse_emoji_with_nothing_changed() {
         color: StampColor::Green,
         name_and_date: true,
     };
-    p.add_stamp(0, &stamp, StampPlace::Centre(200.0, 100.0), "Sam 😀")
+    let sam = format!("Sam {NONE}");
+    p.add_stamp(0, &stamp, StampPlace::Centre(200.0, 100.0), &sam)
         .unwrap();
     p.flatten_annotations(None).unwrap();
     let text = reopened(&mut p).page_text(0);
@@ -794,12 +805,13 @@ fn their_text_box(p: &mut Pdf, words: &str, rect: [i64; 4], drawn: bool) -> Obje
 
 #[test]
 fn another_apps_text_box_is_never_redrawn_with_question_marks() {
-    // BUG-39: Helvetica has no Chinese, so drawn again the text would be `?`.
+    // BUG-39: no font writes Hebrew yet, so drawn again the text would be `?`.
     let mut p = page();
-    let id = their_text_box(&mut p, "中文 notes", [20, 200, 200, 240], true);
+    let id = their_text_box(&mut p, "שלום notes", [20, 200, 200, 240], true);
     let before = objects(&p);
-    let again = "LimarePDF can't draw this text box again: it has \"中文\", which LimarePDF can't \
-                 write yet (Latin, Greek and Cyrillic characters are supported)";
+    let again = "LimarePDF can't draw this text box again: it has \"שלום\", in a script \
+                 LimarePDF can't write yet (right-to-left writing, and scripts whose letters \
+                 join, aren't supported)";
     let a = p.annotations()[0].clone();
     let e = p.set_annotation(id, Some([1.0, 0.0, 0.0]), a.opacity, &a.contents);
     assert_eq!(e.unwrap_err().to_string(), again);
@@ -822,13 +834,14 @@ fn another_apps_text_box_is_never_redrawn_with_question_marks() {
 
     // Without a drawing, flattening refuses rather than draw it into the page as `?`.
     let mut p = page();
-    their_text_box(&mut p, "中文 notes", [20, 200, 200, 240], false);
+    their_text_box(&mut p, "שלום notes", [20, 200, 200, 240], false);
     let before = objects(&p);
     let e = p.flatten_annotations(None).unwrap_err();
     assert_eq!(
         e.to_string(),
-        "LimarePDF can't draw the text box on page 1: it has \"中文\", which LimarePDF can't \
-         write yet (Latin, Greek and Cyrillic characters are supported); nothing was flattened"
+        "LimarePDF can't draw the text box on page 1: it has \"שלום\", in a script LimarePDF \
+         can't write yet (right-to-left writing, and scripts whose letters join, aren't \
+         supported); nothing was flattened"
     );
     assert_eq!(objects(&p), before);
     // One whose text it can write is drawn, and flattened, as before.

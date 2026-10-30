@@ -2,7 +2,9 @@
 //! the families whose fonts allow embedding and have the Latin letters, each with up to four
 //! faces (regular, bold, italic and bold italic). A face is a face of a font file, or a
 //! variable font set at a weight. LimarePDF embeds them cut down to the characters used
-//! (`embed.rs`), so a document set in one opens anywhere.
+//! (`embed.rs`), so a document set in one opens anywhere. Families without the Latin
+//! letters (emoji fonts, some fonts for one script) aren't offered, but characters a chosen
+//! font lacks may fall back to them (`layout.rs`).
 //!
 //! The list is read the first time it is needed (every installed font is opened, which
 //! takes a moment) and kept for the rest of the run. It only grows, so the number in a
@@ -31,6 +33,9 @@ pub struct Typeface {
     faces: [Option<FaceFile>; 4],
     /// The standard font family nearest it: sans, serif or monospaced.
     standard: Family,
+    /// Whether font lists offer it: it has the Latin letters. Others are only fallbacks for
+    /// characters a chosen font lacks.
+    listed: bool,
 }
 
 /// Where a face of a [`Typeface`] is, to read or draw it.
@@ -135,10 +140,18 @@ static LIST: RwLock<Vec<Arc<Typeface>>> = RwLock::new(Vec::new());
 /// Whether the installed fonts have been read into [`LIST`].
 static SYSTEM: Once = Once::new();
 
-/// The installed families LimarePDF can embed, by label, each with its number for
-/// [`Family::Installed`]. The first call reads every installed font, which takes a moment;
-/// see [`typefaces_ready`].
+/// The installed families LimarePDF can embed and font lists offer, by label, each with its
+/// number for [`Family::Installed`]. The first call reads every installed font, which takes
+/// a moment; see [`typefaces_ready`].
 pub fn typefaces() -> Vec<(u16, Arc<Typeface>)> {
+    let mut out = every_typeface();
+    out.retain(|(_, t)| t.listed);
+    out
+}
+
+/// Every installed family LimarePDF can embed, by label: those [`typefaces`] offers, and
+/// those without the Latin letters, which characters a chosen font lacks may fall back to.
+pub(crate) fn every_typeface() -> Vec<(u16, Arc<Typeface>)> {
     SYSTEM.call_once(|| {
         append(scan(InstalledFonts::system().database()));
     });
@@ -150,6 +163,26 @@ pub fn typefaces() -> Vec<(u16, Arc<Typeface>)> {
         .collect();
     by_label(&mut out, |(_, t)| t);
     out
+}
+
+/// How many families have been found so far, offered or not, without reading the installed
+/// fonts when they haven't been: it changes only when more are found or added
+/// ([`add_font_files`]), so what is kept about them (`layout.rs`) is kept while it stays.
+pub(crate) fn typeface_count() -> usize {
+    LIST.read().unwrap_or_else(|e| e.into_inner()).len()
+}
+
+/// The number of the installed family named `name` (any case, spaces aside), offered or
+/// not.
+pub(crate) fn family_named(name: &str) -> Option<u16> {
+    SYSTEM.call_once(|| {
+        append(scan(InstalledFonts::system().database()));
+    });
+    let k = key(name);
+    let list = LIST.read().unwrap_or_else(|e| e.into_inner());
+    list.iter()
+        .position(|t| key(&t.name) == k)
+        .map(|n| n as u16)
 }
 
 /// Whether [`typefaces`] has read the installed fonts, so it answers at once.
@@ -320,6 +353,8 @@ struct Found {
     instances: Vec<Instance>,
     /// The font's own PostScript name prefix for instances (name 25), else its family's.
     ps_prefix: String,
+    /// Whether it has the Latin letters, so font lists offer its family.
+    latin: bool,
 }
 
 /// Whether a font's `OS/2 fsType` forbids embedding it as LimarePDF does: a restricted
@@ -358,6 +393,7 @@ fn scan(db: &Database) -> Vec<Typeface> {
                 slant: None,
                 instances: Vec::new(),
                 ps_prefix: family.chars().filter(|c| !c.is_whitespace()).collect(),
+                latin: true,
             };
             db.with_face_data(f.id, |data, index| read(data, index, base))
                 .flatten()
@@ -372,6 +408,7 @@ fn scan(db: &Database) -> Vec<Typeface> {
         .filter_map(|(name, mut faces)| {
             // The same order whatever order the files were read in.
             faces.sort_by(|a, b| (&a.path, a.index).cmp(&(&b.path, b.index)));
+            let listed = faces.iter().any(|f| f.latin);
             let standard = match FontChoice::from_name(&name).family {
                 _ if faces.iter().any(|f| f.mono) => Family::Courier,
                 f => f,
@@ -385,6 +422,7 @@ fn scan(db: &Database) -> Vec<Typeface> {
                 name,
                 faces,
                 standard,
+                listed,
             })
         })
         .collect();
@@ -403,12 +441,9 @@ fn read(data: &[u8], index: u32, mut f: Found) -> Option<Found> {
         return None;
     }
     let charmap = font.charmap();
-    if !('A'..='Z')
+    f.latin = ('A'..='Z')
         .chain('a'..='z')
-        .all(|c| charmap.map(c).is_some())
-    {
-        return None;
-    }
+        .all(|c| charmap.map(c).is_some());
     f.mono |= font
         .metrics(Size::unscaled(), LocationRef::default())
         .is_monospace;
@@ -614,6 +649,7 @@ mod tests {
             name: name.into(),
             faces: Default::default(),
             standard: Family::Times,
+            listed: true,
         };
         assert_eq!(family("C059").label(), "New Century Schoolbook (C059)");
         assert_eq!(family("Nimbus Mono PS").label(), "Courier (Nimbus Mono PS)");

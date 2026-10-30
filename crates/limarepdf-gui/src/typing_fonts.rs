@@ -604,9 +604,11 @@ mod tests {
                 laid.size().x
             })
         };
-        // Its letters as wide as the PDF writes them: the line's own and others typed.
+        // Its letters as wide as the PDF writes them: the line's own and others typed, each
+        // its width (text kept in a PDF's own font isn't kerned anew).
         for s in ["Walrus", "Hello, World!"] {
-            let pdf = limarepdf_core::text_width(s, 100.0);
+            let one = |c: char| limarepdf_core::text_width(&c.to_string(), 100.0);
+            let pdf: f32 = s.chars().map(one).sum();
             let drawn = width(s, want.clone());
             assert!((drawn - pdf).abs() < 0.01 * pdf, "{s}: {drawn} vs {pdf}");
         }

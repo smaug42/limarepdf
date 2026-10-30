@@ -11,9 +11,7 @@ use crate::typing_fonts::{self, Wanted};
 use eframe::egui::epaint::text::{ByteIndex, VariationCoords};
 use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::{
-    emoji_sequence, installed_could_write, unwritten_script, writable, FontChoice, TextPart,
-};
+use limarepdf_core::{emoji_sequence, unwritten_script, writable, FontChoice, TextPart};
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -26,9 +24,9 @@ pub const LEADING: f32 = 1.2;
 pub fn line_gap(above: f32, below: f32) -> f32 {
     LEADING * (0.25 * above + 0.75 * below)
 }
-/// Shown at the caret when a character typed or pasted can't be written.
-pub const REFUSED: &str =
-    "LimarePDF can't add this character yet: Latin, Greek and Cyrillic characters work";
+/// Shown at the caret when a character typed or pasted can't be written: no installed font
+/// has it.
+pub const REFUSED: &str = "No font on this computer has this character";
 /// Shown at the caret when an emoji made of several characters is typed or pasted
 /// ([`limarepdf_core::emoji_sequence`]).
 pub const SEQUENCE: &str = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and \
@@ -134,30 +132,15 @@ fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<Stri
     (kept, refused)
 }
 
-/// The note at the caret of a text editor for `refused`, a character (grapheme cluster)
-/// refused in `font`: the font is named when an installed font that has it could write it
-/// (Chinese in Helvetica, or what an installed family lacks), as choosing another font may
-/// help; a script no font is written in yet ([`SCRIPT`]) has a note of its own.
-pub fn note(font: FontChoice, refused: &str) -> String {
-    if !emoji_sequence(refused) && refused.chars().any(unwritten_script) {
-        SCRIPT.to_string()
-    } else if emoji_sequence(refused) || !refused.chars().all(installed_could_write) {
-        fixed_note(refused).to_string()
-    } else if font.is_standard() {
-        format!(
-            "{} can't write this character; choose an installed font that has it",
-            font.family_name()
-        )
-    } else {
-        limarepdf_core::refusal(font, refused)
-    }
-}
-
-/// The note at the caret for `refused` where the font can't be chosen (text boxes and
-/// stamps, set in Helvetica): no font is pointed to.
-pub fn fixed_note(refused: &str) -> &'static str {
+/// The note at the caret of a text editor for `refused`, a character (grapheme cluster) no
+/// font can write: the typing's font, and every installed font it falls back to, lack it
+/// ([`REFUSED`]), or it is an emoji sequence ([`SEQUENCE`]) or of a script no font is
+/// written in yet ([`SCRIPT`]), which no font helps with.
+pub fn note(refused: &str) -> &'static str {
     if emoji_sequence(refused) {
         SEQUENCE
+    } else if refused.chars().any(unwritten_script) {
+        SCRIPT
     } else {
         REFUSED
     }
@@ -853,7 +836,7 @@ impl PageText {
             undo_redo(&ctx, id, &t, &mut self.history, &mut self.text);
             switch_styles(&ctx, &t, &mut self.text, sel, font, &mut self.refused);
             if let Some(c) = t.refused {
-                self.refused.mark(&ctx, note(font, &c));
+                self.refused.mark(&ctx, note(&c).to_string());
             }
         }
         let text = &self.text;
@@ -1119,13 +1102,10 @@ mod tests {
             keep_typable("Łódź Ωmega Жук", false, sans),
             ("Łódź Ωmega Жук".into(), None)
         );
+        // What no installed font has (a noncharacter here) is left out.
         assert_eq!(
-            keep_typable("Seal\r\n中\tfish", false, sans),
-            ("Seal\n fish".into(), Some("中".into()))
-        );
-        assert_eq!(
-            keep_typable("中文", false, sans),
-            (String::new(), Some("中".into()))
+            keep_typable("Seal\r\n\u{2FFFE}\tfish", false, sans),
+            ("Seal\n fish".into(), Some("\u{2FFFE}".into()))
         );
         // Right-to-left scripts aren't written yet, though the face has Hebrew.
         assert_eq!(
@@ -1137,34 +1117,16 @@ mod tests {
             keep_typable("Seal\r\nfish", true, sans),
             ("Seal fish".into(), None)
         );
-        // The note points to installed fonts for what one could write (single emoji too),
-        // not for right-to-left or shaped scripts, emoji sequences or control characters.
-        assert_eq!(
-            note(sans, "中"),
-            "Helvetica can't write this character; choose an installed font that has it"
-        );
-        let times = FontChoice::from_name("Times-Bold");
-        assert_eq!(
-            note(times, "한"),
-            "Times can't write this character; choose an installed font that has it"
-        );
-        assert_eq!(
-            note(sans, "😀"),
-            "Helvetica can't write this character; choose an installed font that has it"
-        );
-        // Right-to-left and shaped scripts have a note of their own: the general one says
-        // what works in a standard font, and Chinese and emoji work in installed ones.
+        // Every installed font was tried, so the note points to none: what no font has,
+        // right-to-left and shaped scripts and emoji sequences each have a note of their own.
+        assert_eq!(note("\u{2FFFE}"), REFUSED);
+        assert_eq!(note("\u{7}"), REFUSED);
         for c in ["ש", "مرحبا", "क", "ไทย"] {
-            assert_eq!(note(sans, c), SCRIPT, "{c:?}");
+            assert_eq!(note(c), SCRIPT, "{c:?}");
         }
-        assert_eq!(note(sans, "\u{7}"), REFUSED);
         for s in ["👍🏽", "🇬🇧", "👨\u{200D}👩"] {
-            assert_eq!(note(sans, s), SEQUENCE, "{s:?}");
+            assert_eq!(note(s), SEQUENCE, "{s:?}");
         }
-        // Where the font can't be chosen, none is pointed to.
-        assert_eq!(fixed_note("中"), REFUSED);
-        assert_eq!(fixed_note("😀"), REFUSED);
-        assert_eq!(fixed_note("🇬🇧"), SEQUENCE);
     }
 
     fn installed(name: &str) -> FontChoice {
@@ -1176,31 +1138,20 @@ mod tests {
 
     #[test]
     fn installed_fonts_type_what_they_have() {
+        // Caveat has no Greek: Greek words are typed, and written in a font that has them.
         let caveat = installed("Caveat");
         assert_eq!(
             keep_typable("Жук Ωmega", false, caveat),
-            ("Жук mega".into(), Some("Ω".into()))
+            ("Жук Ωmega".into(), None)
         );
-        assert_eq!(
-            note(caveat, "Ω"),
-            "Caveat has no \"Ω\"; choose another font"
-        );
-        // Single emoji in a font with their outlines; one it draws only in colour is
-        // refused, and a sequence goes whole though the font has every part.
+        // Single emoji in a font with their outlines; a sequence goes whole though the font
+        // has every part.
         let emoji = installed("Limare Emoji Test");
         assert_eq!(
-            keep_typable("Seal 😀😎 👍🏽 fish", false, emoji),
-            ("Seal 😀  fish".into(), Some("😎".into()))
+            keep_typable("Seal 😀 👍🏽 fish", false, emoji),
+            ("Seal 😀  fish".into(), Some("👍🏽".into()))
         );
-        assert_eq!(
-            note(emoji, "😎"),
-            "Limare Emoji Test has no \"😎\"; choose another font"
-        );
-        assert_eq!(
-            keep_typable("👍🏽👍", false, emoji),
-            ("👍".into(), Some("👍🏽".into()))
-        );
-        assert_eq!(note(emoji, "👍🏽"), SEQUENCE);
+        assert_eq!(note("👍🏽"), SEQUENCE);
         // Ctrl+B and Ctrl+I switch only to faces the family has.
         let bold = switched(caveat, true, false);
         assert!(bold.bold && !bold.italic);

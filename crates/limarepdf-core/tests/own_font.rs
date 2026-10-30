@@ -1719,6 +1719,26 @@ fn a_word_the_subset_can_t_write_goes_alone_to_another_font() {
     }
 }
 
+/// PB-53: a right-to-left or shaped character is never written in a line's own font, one code
+/// a character, unshaped and in typed order, though the font has a code for it (the whole of
+/// Liberation Sans has Hebrew): the edit is refused, and says why.
+#[test]
+fn scripts_not_written_yet_are_refused_in_a_line_s_own_font_too() {
+    // A font with Hebrew in its map, as a document with Hebrew elsewhere has.
+    let font = sans_type0("Shalomשלום", true);
+    for typed in ["Shalom שלום", "Shalom ש"] {
+        let mut p = one(&font, &hex2(&sans_codes("Shalom")));
+        let c = typed.chars().last().unwrap();
+        let code = only_font(&p).code(c);
+        assert!(code.is_ok(), "the font has a code for {c:?}");
+        let before = format!("{:?}", p.doc.objects);
+        let o = line_of(&p, "Shalom");
+        let e = p.edit_text(0, o.id, &words(typed)).unwrap_err().to_string();
+        assert!(e.contains("right-to-left"), "{typed}: {e}");
+        assert_eq!(format!("{:?}", p.doc.objects), before, "nothing changed");
+    }
+}
+
 /// A font that can't take new text (Type 3, a subset that isn't embedded) keeps the words
 /// left as they were, each letter with its own code; the changed words go to another font.
 #[test]

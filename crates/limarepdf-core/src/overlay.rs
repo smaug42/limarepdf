@@ -1,50 +1,20 @@
 //! Page overlays: watermarks, headers/footers, page numbers and Bates numbering.
 //! All text uses the PDF standard Helvetica font (WinAnsi), or its embedded face
-//! (Liberation Sans) for characters Helvetica lacks.
+//! (Liberation Sans) for characters Helvetica lacks, and the fonts it falls back to
+//! (`layout.rs`).
 
-use crate::embed::Face;
-use crate::fonts::winansi_byte;
 use crate::imgs::orient_matrix;
-use crate::{std14, FontChoice, Pdf, Result};
+use crate::layout::Setter;
+use crate::{FontChoice, Pdf, Result};
 use anyhow::bail;
 use lopdf::dictionary;
 use lopdf::{Dictionary, Object, ObjectId, Stream};
 
-/// Width in points of `s` in Helvetica at `size`; characters Helvetica lacks are measured
-/// in its embedded face, which has the same widths for the rest.
+/// Width in points of `s` in Helvetica at `size`, as LimarePDF writes it: kerned, and in
+/// its embedded face where `s` has characters Helvetica lacks, which falls back to other
+/// fonts for those it lacks too.
 pub fn text_width(s: &str, size: f32) -> f32 {
-    s.chars()
-        .map(|c| {
-            std14::width("Helvetica", c).unwrap_or_else(|| {
-                let face = Face::liberation(FontChoice::default());
-                if face.covers(c) {
-                    face.width(&c.to_string(), 1000.0)
-                } else {
-                    556.0
-                }
-            })
-        })
-        .sum::<f32>()
-        * size
-        / 1000.0
-}
-
-/// `s` as the inside of a literal string for a WinAnsi font; characters it can't write
-/// become `?`.
-pub(crate) fn escape(s: &str) -> String {
-    let mut o = String::new();
-    for c in s.chars() {
-        match (c, winansi_byte(c)) {
-            ('(' | ')' | '\\', _) => {
-                o.push('\\');
-                o.push(c);
-            }
-            (_, Some(b)) if b < 0x80 => o.push(c),
-            (_, Some(b)) => o.push_str(&format!("\\{b:03o}")),
-            (_, None) => o.push('?'),
-        }
-    }
-    o
+    Setter::new(FontChoice::default(), s, None).width(s, size)
 }
 
 #[derive(Clone, Debug)]
@@ -347,28 +317,28 @@ impl Pdf {
         if let Some(&bad) = idx.iter().find(|&&i| i >= ids.len()) {
             bail!("page {} does not exist", bad + 1);
         }
-        let pen = self.pen(FontChoice::default(), &wm.text)?;
-        let font = self.pen_font(&pen);
+        let pen = self.pen(FontChoice::default(), &[&wm.text])?;
         let gs = self.make_gs(wm.opacity);
         for &i in idx {
             let page = ids[i];
             let (m, vw, vh) = self.visual_matrix(page);
             let (s, c) = wm.rotation.to_radians().sin_cos();
             let (tx, ty) = wm.text_start();
-            let font_nm = self.add_resource(page, "Font", "LimareWf", font.into())?;
+            let names = self.font_names(page, "LimareWf", pen.fonts())?;
             let gs_nm = self.add_resource(page, "ExtGState", "LimareGS", gs.into())?;
             let stream = format!(
                 "q\n{}\n/{gs_nm} gs\n{:.3} {:.3} {:.3} rg\n{}\n\
-                 BT /{font_nm} {:.2} Tf {:.3} {:.3} Td {} Tj ET\nQ\n",
+                 BT /{} {:.2} Tf {:.3} {:.3} Td {}\nET\nQ\n",
                 matrix(m),
                 wm.color.0,
                 wm.color.1,
                 wm.color.2,
                 matrix([c, s, -s, c, vw / 2.0, vh / 2.0]),
+                names[0],
                 wm.font_size,
                 tx,
                 ty,
-                pen.token(&wm.text),
+                pen.content(0, wm.font_size, &names),
             );
             self.add_overlay(page, stream, wm.foreground)?;
         }
@@ -442,24 +412,25 @@ impl Pdf {
                 hf.lines(i, seq, total, (vw, vh), &date)
             })
             .collect();
-        let all: String = lines.iter().flatten().map(|l| l.text.as_str()).collect();
+        let all: Vec<&str> = lines.iter().flatten().map(|l| l.text.as_str()).collect();
         let pen = self.pen(FontChoice::default(), &all)?;
-        let font = self.pen_font(&pen);
+        let mut shown = 0;
         for (&i, lines) in idx.iter().zip(lines) {
             let page = ids[i];
             let (m, _, _) = self.visual_matrix(page);
-            let font_nm = self.add_resource(page, "Font", FONT_PREFIX, font.into())?;
+            let names = self.font_names(page, FONT_PREFIX, pen.fonts())?;
             let mut s = format!(
-                "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{font_nm} {:.2} Tf\n",
-                m[0], m[1], m[2], m[3], m[4], m[5], hf.color.0, hf.color.1, hf.color.2, hf.font_size
+                "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{} {:.2} Tf\n",
+                m[0], m[1], m[2], m[3], m[4], m[5], hf.color.0, hf.color.1, hf.color.2, names[0], hf.font_size
             );
             for l in lines {
                 s.push_str(&format!(
-                    "1 0 0 1 {:.3} {:.3} Tm {} Tj\n",
+                    "1 0 0 1 {:.3} {:.3} Tm {}\n",
                     l.x,
                     l.y,
-                    pen.token(&l.text)
+                    pen.content(shown, hf.font_size, &names)
                 ));
+                shown += 1;
             }
             s.push_str("ET\nQ\n");
             self.wrap_contents(page, None, Some(s.into_bytes()))?;
@@ -509,12 +480,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn widths_and_escape() {
+    fn widths_are_helvetica_s_kerned() {
         assert!((text_width("Hello", 10.0) - 22.78).abs() < 0.01);
-        assert_eq!(escape("a(b)\\"), "a\\(b\\)\\\\");
-        // WinAnsi, its codes 128 to 159 included; other characters can't be written.
-        assert_eq!(escape("é€Š“"), "\\351\\200\\212\\223");
-        assert_eq!(escape("Ω中"), "??");
+        // "AV" is kerned closer than its widths alone (667 + 667 at 1,000 units).
+        assert!(text_width("AV", 1000.0) < 1334.0 - 1.0);
     }
 
     #[test]
@@ -551,10 +520,9 @@ mod tests {
         let bytes = p.to_bytes().unwrap();
         let re = Pdf::from_bytes(&bytes, None).unwrap();
         assert_eq!(re.page_count(), 3);
-        let content =
-            String::from_utf8_lossy(&re.doc.get_page_content(re.page_ids()[2])).to_string();
-        assert!(content.contains("Page 3 of 3"));
-        assert!(content.contains("ABC0003"));
-        assert!(content.contains("DRAFT"));
+        let text = re.page_text(2);
+        assert!(text.contains("Page 3 of 3"), "{text:?}");
+        assert!(text.contains("ABC0003"), "{text:?}");
+        assert!(text.contains("DRAFT"), "{text:?}");
     }
 }

@@ -1455,7 +1455,7 @@ fn stamp_text(ui: &mut Ui, scope: egui::Id, label: &str, text: &mut String, p: &
         .then(|| page_text::leave_out_untypable(ui, true, helvetica))
         .flatten()
     {
-        refused.mark(&ctx, page_text::fixed_note(&c).to_string());
+        refused.mark(&ctx, page_text::note(&c).to_string());
     }
     let field = egui::TextEdit::singleline(text)
         .id(id)

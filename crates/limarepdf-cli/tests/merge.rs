@@ -76,8 +76,8 @@ fn merge_draws_the_form_fields_of_later_inputs_only_when_asked() {
     let _ = std::fs::remove_file(&out);
     let plain = make_pdf(&dir, "plain.pdf", "", "", &[]);
     let form = form_pdf(&dir, "form.pdf", "(Ada Lovelace)");
-    // 日本語, which LimarePDF can't write in a field yet.
-    let foreign = form_pdf(&dir, "foreign.pdf", "<FEFF65E5672C8A9E>");
+    // שלום, which LimarePDF can't write in a field yet (right to left).
+    let foreign = form_pdf(&dir, "foreign.pdf", "<FEFF05E905DC05D505DD>");
 
     let r = merge(&dir, &[&plain, &form], &[]);
     let err = String::from_utf8_lossy(&r.stderr);

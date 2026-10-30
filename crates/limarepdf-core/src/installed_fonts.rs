@@ -16,7 +16,7 @@ use hayro::hayro_interpret::hayro_cmap::{self, CMapName, CidFamily};
 use skrifa::prelude::{FontRef, MetadataProvider};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
 
 /// Fonts to look in for fonts that aren't embedded.
 pub struct InstalledFonts {
@@ -74,6 +74,32 @@ impl Language {
         self.families(false)[0]
     }
 
+    /// The language a language tag names, when it is one of these ("ja", "zh-Hant-TW",
+    /// "ko_KR.UTF-8"): Chinese is Traditional for Taiwan, Hong Kong and Macao and where the
+    /// tag says so, else Simplified.
+    pub(crate) fn of_tag(tag: &str) -> Option<Language> {
+        let tag = tag.to_ascii_lowercase().replace('_', "-");
+        let mut parts = tag.split(['-', '.', '@']);
+        Some(match parts.next()? {
+            "ja" => Language::Japanese,
+            "ko" => Language::Korean,
+            "zh" => match parts.any(|p| matches!(p, "hant" | "tw" | "hk" | "mo")) {
+                true => Language::TraditionalChinese,
+                false => Language::SimplifiedChinese,
+            },
+            _ => return None,
+        })
+    }
+
+    /// The four, in the order fonts for Chinese, Japanese and Korean are tried when nothing
+    /// says which the text is.
+    pub(crate) const ALL: [Language; 4] = [
+        Language::SimplifiedChinese,
+        Language::TraditionalChinese,
+        Language::Japanese,
+        Language::Korean,
+    ];
+
     /// A character any font for the language has, and fonts for the others usually don't.
     fn sample(self) -> char {
         match self {
@@ -85,7 +111,7 @@ impl Language {
     }
 
     /// The usual fonts for the language on Linux, Windows and macOS, best first.
-    fn families(self, serif: bool) -> &'static [&'static str] {
+    pub(crate) fn families(self, serif: bool) -> &'static [&'static str] {
         match (self, serif) {
             (Language::Japanese, false) => &[
                 "Noto Sans CJK JP",
@@ -485,6 +511,64 @@ impl InstalledFonts {
         data.insert(id, Arc::downgrade(&d));
         Some(d)
     }
+}
+
+/// The installed faces' answers to [`maps_all`], by font file and index, then character.
+type Mapped = HashMap<(std::path::PathBuf, u32), HashMap<char, bool>>;
+
+/// Font files [`maps_all`] read itself, not being in the system's font list: kept, or
+/// `None` where they can't be read.
+type Others = HashMap<std::path::PathBuf, Option<Arc<Vec<u8>>>>;
+
+/// Whether the face at `index` in the font file `path` maps every one of `chars` to a glyph:
+/// read through the system's font list, which maps the file into memory only while it is
+/// read, so looking through every installed font keeps none of them; a file not in the list
+/// (the tests' fonts) is read once and kept. The answers are kept for the rest of the run.
+pub(crate) fn maps_all(path: &Path, index: u32, chars: &[char]) -> bool {
+    static ANSWERS: LazyLock<Mutex<Mapped>> = LazyLock::new(Mutex::default);
+    static IDS: OnceLock<HashMap<(std::path::PathBuf, u32), ID>> = OnceLock::new();
+    static OTHERS: LazyLock<Mutex<Others>> = LazyLock::new(Mutex::default);
+    let key = (path.to_path_buf(), index);
+    let mut answers = ANSWERS.lock().unwrap_or_else(|e| e.into_inner());
+    let known = answers.entry(key.clone()).or_default();
+    let ask: Vec<char> = (chars.iter().copied())
+        .filter(|c| !known.contains_key(c))
+        .collect();
+    if !ask.is_empty() {
+        let read = |data: &[u8], index: u32| -> Vec<bool> {
+            match FontRef::from_index(data, index) {
+                Ok(f) => {
+                    let map = f.charmap();
+                    ask.iter().map(|&c| map.map(c).is_some()).collect()
+                }
+                Err(_) => vec![false; ask.len()],
+            }
+        };
+        let system = InstalledFonts::system();
+        let ids = IDS.get_or_init(|| {
+            (system.db.faces())
+                .filter_map(|f| match &f.source {
+                    fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => {
+                        Some(((p.clone(), f.index), f.id))
+                    }
+                    fontdb::Source::Binary(_) => None,
+                })
+                .collect()
+        });
+        let got = match ids.get(&key) {
+            Some(&id) => system.db.with_face_data(id, read),
+            None => {
+                let mut others = OTHERS.lock().unwrap_or_else(|e| e.into_inner());
+                let data = others
+                    .entry(key.0.clone())
+                    .or_insert_with(|| std::fs::read(path).ok().map(Arc::new));
+                data.as_ref().map(|d| read(d, index))
+            }
+        }
+        .unwrap_or_else(|| vec![false; ask.len()]);
+        known.extend(ask.into_iter().zip(got));
+    }
+    chars.iter().all(|c| known.get(c) == Some(&true))
 }
 
 #[cfg(test)]

@@ -31,6 +31,15 @@ unicode-normalization = "0.1.25"
 # Emoji made of several characters (skin tones, flags, families) refused whole (embed.rs);
 # egui already uses it.
 unicode-segmentation = "1.13"
+# Shaping new text in installed fonts and Liberation (layout.rs): kerning, standard ligatures
+# and marks placed as the font places them. It reads fonts through the `read-fonts` version
+# `skrifa` uses, so core keeps one font reader.
+harfrust = "0.13.3"
+# Where lines may break, by Unicode's line-breaking rule (UAX #14), for every wrapper
+# (layout.rs).
+unicode-linebreak = "0.1.5"
+# Each character's script, so text is given fonts and shaped by script (layout.rs).
+unicode-script = "0.5.8"
 ocrs = { version = "0.13", default-features = false, features = ["rten"] }
 rten = { version = "0.26", default-features = false, features = ["rten_format"] }
 rten-imageproc = "0.26"

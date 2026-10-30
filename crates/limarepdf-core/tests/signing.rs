@@ -266,11 +266,18 @@ fn the_look_and_the_dates_follow_acrobat() {
     // Printed and locked, as Acrobat writes signed widgets.
     assert_eq!(w.get(b"F").unwrap().as_i64().unwrap(), 4 | 128);
     let (dict, text) = appearance(&s.bytes, "Signature1");
-    assert!(
-        text.contains("(Digitally) Tj") || text.contains("(Digitally signed"),
-        "{text}"
-    );
-    assert!(text.contains("(Date: "), "{text}");
+    // What the shows show, in Helvetica's one-byte codes: kerning splits a line's strings.
+    let content = lopdf::content::Content::decode(text.as_bytes()).unwrap();
+    let shown: Vec<String> = (content.operations.iter())
+        .filter(|o| o.operator == "TJ")
+        .map(|o| {
+            let items = o.operands[0].as_array().unwrap();
+            let strings = items.iter().filter_map(|i| i.as_str().ok());
+            strings.map(String::from_utf8_lossy).collect()
+        })
+        .collect();
+    assert!(shown[0].starts_with("Digitally signed"), "{shown:?}");
+    assert!(shown.iter().any(|l| l.starts_with("Date: ")), "{shown:?}");
     assert!(text.contains("/Sig Do"), "the name in handwriting: {text}");
     let bbox = dict.get(b"BBox").unwrap().as_array().unwrap();
     assert_eq!(bbox.len(), 4);

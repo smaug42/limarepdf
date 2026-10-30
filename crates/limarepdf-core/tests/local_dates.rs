@@ -47,13 +47,30 @@ fn dates_made_now() -> Vec<(&'static str, String)> {
         p.insert_blank(0, 300.0, 200.0).unwrap();
         p.add_stamp(0, stamp, StampPlace::Centre(150.0, 100.0), "Sam")
             .unwrap();
-        // The appearance streams' text, where the date line is written.
+        // The strings the appearance streams show, where the date line is written: each
+        // show's strings joined (kerning splits them), in a standard font's one-byte codes.
+        let shown = |b: &[u8]| -> String {
+            let ops = lopdf::content::Content::decode(b).map_or(Vec::new(), |c| c.operations);
+            let mut out = String::new();
+            for o in &ops {
+                let items = match (o.operator.as_str(), o.operands.first()) {
+                    ("TJ", Some(lopdf::Object::Array(a))) => a.clone(),
+                    ("Tj", _) => o.operands.clone(),
+                    _ => continue,
+                };
+                for s in items.iter().filter_map(|i| i.as_str().ok()) {
+                    out.push_str(&String::from_utf8_lossy(s));
+                }
+                out.push('\n');
+            }
+            out
+        };
         p.doc
             .objects
             .values()
             .filter_map(|o| o.as_stream().ok())
             .map(|s| s.decompressed_content().unwrap_or(s.content.clone()))
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .map(|b| shown(&b))
             .collect::<String>()
     };
     let (stamp, signature) = (drawn(&stamp), drawn(&signature));

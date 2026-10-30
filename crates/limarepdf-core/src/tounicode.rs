@@ -226,8 +226,12 @@ fn units(b: &[u8]) -> Vec<u16> {
         .collect()
 }
 
+/// The text of UTF-16 units, a CJK radical read as the ideograph it looks like (PB-57,
+/// `radicals.rs`).
 fn text(u: &[u16]) -> String {
-    String::from_utf16_lossy(u)
+    (String::from_utf16_lossy(u).chars())
+        .map(crate::radicals::ideograph)
+        .collect()
 }
 
 #[cfg(test)]
