@@ -2,10 +2,12 @@
 //! This module lays out and draws; `form_write` picks the font and puts the result in
 //! the file, the text written by a pen made for the lines laid out (`layout.rs`).
 
-use crate::fonts::winansi_bytes;
-use crate::layout::{break_lines, Setter};
+use crate::fonts::{winansi_byte, winansi_bytes};
+use crate::layout::{break_lines, break_ranges, shown, Setter};
+use crate::FontChoice;
 use lopdf::content::{Content, Operation};
 use lopdf::{Object, StringFormat};
+use std::ops::Range;
 
 /// Largest and smallest size picked for text whose size is "auto" (`0 Tf`).
 const AUTO_MAX: f32 = 12.0;
@@ -47,6 +49,96 @@ impl Metrics {
     /// (`layout.rs`).
     pub(crate) fn lines(&self, text: &str, max: f32, size: f32) -> Vec<String> {
         break_lines(text, max, |l| self.text_width(l, size))
+    }
+}
+
+/// A field's own font, the one its `/DA` names, as [`Metrics::Bytes`] writes in it: its
+/// widths by code, whether its encoding is WinAnsi, and whether LimarePDF can write in it.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnFont {
+    pub widths: Box<[f32; 256]>,
+    pub winansi: bool,
+    pub reusable: bool,
+}
+
+impl OwnFont {
+    /// Whether `text` is written in it as it is: each character has a code in it, with a
+    /// width. A zero width is how some makers (LibreOffice, for one) mark a character the
+    /// font in the file doesn't have.
+    pub(crate) fn takes(&self, text: &str) -> bool {
+        self.reusable
+            && (text.is_ascii() || self.winansi)
+            && (text.chars().filter(|c| !c.is_control())).all(|c| {
+                winansi_byte(c).is_some_and(|b| b <= b' ' || self.widths[b as usize] > 0.0)
+            })
+    }
+}
+
+/// How text is set in a box LimarePDF writes it in, a text box's or a multi-line form
+/// field's ([`BoxSetting::text_box`], [`crate::Pdf::field_setting`]): to lay text out while
+/// it is typed as it will be written.
+#[derive(Clone, Debug)]
+pub struct BoxSetting {
+    look: Look,
+    /// A field's own font, which writes the text when it takes it.
+    own: Option<OwnFont>,
+    /// The font the text is set in otherwise, falling back where it lacks a character.
+    font: FontChoice,
+}
+
+impl BoxSetting {
+    /// A text box `width` points wide as its text reads, with a border `border` points
+    /// wide, its text `size` points: set in Helvetica, as text boxes are.
+    pub fn text_box(width: f32, border: f32, size: f32) -> Self {
+        let border = (border > 0.0).then(|| Border {
+            color: vec![0.0],
+            width: border,
+            style: b'S',
+        });
+        let look = Look {
+            w: width,
+            h: f32::INFINITY,
+            bg: None,
+            border,
+            font: Vec::new(),
+            size,
+            color: None,
+            q: 0,
+        };
+        Self {
+            look,
+            own: None,
+            font: FontChoice::default(),
+        }
+    }
+
+    /// A field's widget that looks as `look` says, its text written in `own` when that takes
+    /// it, else set in `font`.
+    pub(crate) fn field(look: Look, own: Option<OwnFont>, font: FontChoice) -> Self {
+        Self { look, own, font }
+    }
+
+    /// `text` as it is written in the box, in a document whose language is `lang` (its
+    /// `/Lang`, [`crate::Pdf::language`]): its size in points (a field fitting its text to
+    /// its box gets the size that fits) and each line's bytes in `text`, the spaces it ends
+    /// with among them, a line break between lines not.
+    pub fn lines(&self, text: &str, lang: Option<&str>) -> (f32, Vec<Range<usize>>) {
+        let m = match &self.own {
+            Some(own) if own.takes(text) => Metrics::Bytes(own.widths.clone()),
+            _ => Metrics::Set(Setter::new(self.font, text, lang)),
+        };
+        wrapped(&self.look, text, &m)
+    }
+
+    /// How far in from the box's sides and top its text is, in points: its border and the
+    /// padding inside it. The first line's baseline is 0.8 times the size below that.
+    pub fn margin(&self) -> f32 {
+        self.look.inset() + PAD
+    }
+
+    /// How far apart its lines' baselines are, as a multiple of its text's size.
+    pub fn leading(&self) -> f32 {
+        LEADING
     }
 }
 
@@ -243,18 +335,11 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Drawn {
             }
         }
         Body::Lines(text) => {
-            size = auto(look.size, || {
-                let mut s = AUTO_MAX;
-                while s > AUTO_MIN
-                    && m.lines(text, avail, s).len() as f32 * LEADING * s > ih - 2.0 * PAD
-                {
-                    s -= 0.5;
-                }
-                s
-            });
+            let laid;
+            (size, laid) = wrapped(look, text, m);
             // The first baseline sits one ascent (about 0.8 em) below the padding.
             let mut y = h - inset - PAD - 0.8 * size;
-            for l in m.lines(text, avail, size) {
+            for l in laid.into_iter().map(|line| shown(&text[line])) {
                 let x = align(look.q, inset + PAD, avail, m.text_width(&l, size));
                 lines.push((l, x, y));
                 y -= LEADING * size;
@@ -290,6 +375,24 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Drawn {
         color: look.color.clone(),
         text: true,
     }
+}
+
+/// A multi-line text's size in `look` (its own, or when it asks for "auto" the largest from
+/// 12 points down by half a point whose lines fit the box's height) and each of its lines'
+/// bytes in `text`, as [`draw`] lays it out.
+fn wrapped(look: &Look, text: &str, m: &Metrics) -> (f32, Vec<Range<usize>>) {
+    let inset = look.inset();
+    let iw = (look.w - 2.0 * inset).max(0.0);
+    let ih = (look.h - 2.0 * inset).max(0.0);
+    let lines = |size: f32| break_ranges(text, iw - 2.0 * PAD, |l| m.text_width(l, size));
+    let size = auto(look.size, || {
+        let mut s = AUTO_MAX;
+        while s > AUTO_MIN && lines(s).len() as f32 * LEADING * s > ih - 2.0 * PAD {
+            s -= 0.5;
+        }
+        s
+    });
+    (size, lines(size))
 }
 
 /// The size to use: `size`, or the computed one when it is 0 (auto).

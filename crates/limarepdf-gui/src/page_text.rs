@@ -13,8 +13,10 @@ use eframe::egui::text::{CCursor, CCursorRange};
 use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    emoji_sequence, unwritten_script, writable, FontChoice, LineFont, PartFont, TextPart,
+    emoji_sequence, unwritten_script, writable, BoxSetting, FontChoice, LineFont, PartFont,
+    TextPart,
 };
+use std::ops::Range;
 use std::sync::Arc;
 use unicode_normalization::char::is_combining_mark;
 use unicode_segmentation::UnicodeSegmentation;
@@ -764,17 +766,18 @@ pub fn runs(
 
 /// Text typed in a box of its own, a form field's or a text box's, laid out in the fonts it
 /// is written in: `font` at `px` pixels, the words it lacks in the fonts core writes them in
-/// ([`runs`]), in `color`, wrapped by egui's rule at `wrap` (infinite for one line), in a
-/// document whose language is `lang`.
+/// ([`runs`]), in `color`, in a document whose language is `lang`; on one line, or on the
+/// `lines` core breaks it into (each line's bytes, [`limarepdf_core::BoxSetting::lines`])
+/// `leading` times `px` apart. Also returns how far its first baseline is below the top.
 pub fn boxed_galley(
     ctx: &egui::Context,
     text: &str,
     font: FontChoice,
     px: f32,
     color: Color32,
-    wrap: f32,
+    lines: Option<(&[Range<usize>], f32)>,
     lang: Option<&str>,
-) -> Arc<Galley> {
+) -> (Arc<Galley>, f32) {
     let part = TextPart {
         text: text.to_string(),
         font: PartFont::Choice(font),
@@ -784,32 +787,90 @@ pub fn boxed_galley(
         from: None,
         origins: Vec::new(),
     };
-    let runs = runs(ctx, &[(part, Wanted::Standard(font))], 1.0, |_| color, lang);
-    let mut job = egui::text::LayoutJob {
-        text: text.to_string(),
-        ..Default::default()
+    let mut runs = runs(ctx, &[(part, Wanted::Standard(font))], 1.0, |_| color, lang);
+    let Some((lines, leading)) = lines else {
+        return galley(ctx, text, &runs);
     };
-    job.wrap.max_width = wrap;
-    // Where each character starts, in bytes, and the end.
-    let starts: Vec<usize> = (text.char_indices().map(|(b, _)| b))
-        .chain([text.len()])
-        .collect();
-    let mut at = 0;
-    for r in runs {
-        let to = (at + r.chars).min(starts.len() - 1);
-        job.sections.push(egui::text::LayoutSection {
-            leading_space: 0.0,
-            byte_range: ByteIndex(starts[at])..ByteIndex(starts[to]),
-            format: egui::TextFormat {
-                font_id: r.font,
-                coords: r.coords,
-                color: r.color,
-                ..Default::default()
-            },
-        });
-        at = to;
+    // Each line a row of its own: a line break goes after each line core broke that doesn't
+    // end with one, in the run of the character before it. Where they go, in bytes.
+    let mut broken = String::with_capacity(text.len() + lines.len());
+    let mut added: Vec<usize> = Vec::new();
+    let mut soft: Vec<bool> = Vec::new();
+    let mut from = 0;
+    for i in 0..lines.len() {
+        let to = lines.get(i + 1).map_or(text.len(), |next| next.start);
+        broken.push_str(&text[from..to]);
+        from = to;
+        let made = i + 1 < lines.len() && !broken.ends_with('\n');
+        if made {
+            // The characters before it, those added before among them.
+            let mut before = text[..to].chars().count() + added.len();
+            added.push(broken.len());
+            broken.push('\n');
+            if let Some(r) = runs.iter_mut().find(|r| {
+                let first = before <= r.chars;
+                before = before.saturating_sub(r.chars);
+                first
+            }) {
+                r.chars += 1;
+            }
+        }
+        soft.push(made);
     }
-    ctx.fonts_mut(|f| f.layout_job(job))
+    broken.push_str(&text[from..]);
+    let (laid, base) = galley_spaced(ctx, &broken, &runs, leading);
+    // Laid out, those line breaks take no character, and the text is as typed: what the
+    // caret, selection and double-click go by.
+    let mut g = (*laid).clone();
+    for (row, &made) in g.rows.iter_mut().zip(&soft) {
+        if made {
+            row.ends_with_newline = false;
+        }
+    }
+    let typed = |b: usize| ByteIndex(b - added.iter().filter(|&&a| a < b).count());
+    let mut job = (*g.job).clone();
+    job.text = text.to_string();
+    for s in &mut job.sections {
+        s.byte_range = typed(s.byte_range.start.0)..typed(s.byte_range.end.0);
+    }
+    g.job = Arc::new(job);
+    (Arc::new(g), base)
+}
+
+/// Text typed in a box that wraps it, laid out as it is written ([`set_in_box`]).
+pub struct Boxed {
+    pub galley: Arc<Galley>,
+    /// What puts it where it is written in the box: as far in from the box's sides as its
+    /// border and padding, its first baseline 0.8 times its size below that.
+    pub margin: egui::Margin,
+    /// Its size, in pixels.
+    pub px: f32,
+}
+
+/// `text` typed in a box that wraps it, set as `set` sets it ([`boxed_galley`]): in `font`,
+/// at `k` pixels a point, in `color`, in a document whose language is `lang`.
+pub fn set_in_box(
+    ctx: &egui::Context,
+    set: &BoxSetting,
+    text: &str,
+    font: FontChoice,
+    k: f32,
+    color: Color32,
+    lang: Option<&str>,
+) -> Boxed {
+    let (size, lines) = set.lines(text, lang);
+    let px = (size * k).max(1.0);
+    let lines = Some((&lines[..], set.leading()));
+    let (galley, base) = boxed_galley(ctx, text, font, px, color, lines, lang);
+    let side = set.margin() * k;
+    let at = |v: f32| v.round().clamp(-128.0, 127.0) as i8;
+    let margin = egui::Margin {
+        left: at(side),
+        right: at(side),
+        top: at(side + 0.8 * px - base),
+        bottom: at(side),
+    };
+    Boxed { galley, margin, px }
 }
 
 /// How text being typed on the page is drawn this frame.
@@ -834,20 +895,35 @@ pub struct Field {
     pub outline: Rect,
 }
 
-/// `text` laid out as [`job`] lays it out in `runs`, and how far its first baseline is
-/// below the top.
+/// `text` laid out as [`job`] lays it out in `runs`, its lines [`LEADING`] times their size
+/// apart, and how far its first baseline is below the top.
 pub fn galley(ctx: &egui::Context, text: &str, runs: &[Run]) -> (Arc<Galley>, f32) {
+    galley_spaced(ctx, text, runs, LEADING)
+}
+
+/// [`galley`] with its lines `leading` times their size apart.
+fn galley_spaced(
+    ctx: &egui::Context,
+    text: &str,
+    runs: &[Run],
+    leading: f32,
+) -> (Arc<Galley>, f32) {
     ctx.fonts_mut(|f| {
-        let (j, ascent) = job(f, text, runs);
+        let (j, ascent) = job(f, text, runs, leading);
         (f.layout_job(j), ascent)
     })
 }
 
 /// `text` laid out as it is drawn in `runs` (the last one takes any characters left over):
-/// never wrapped, each line's baseline [`line_gap`] below the one before, the runs of a
-/// line on one baseline and raised ones above it. Also returns how far the first baseline
-/// is below the top.
-fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text::LayoutJob, f32) {
+/// never wrapped, each line's baseline [`line_gap`] below the one before (scaled from
+/// [`LEADING`] to `leading`), the runs of a line on one baseline and raised ones above it.
+/// Also returns how far the first baseline is below the top.
+fn job(
+    f: &mut egui::epaint::FontsView,
+    text: &str,
+    runs: &[Run],
+    leading: f32,
+) -> (egui::text::LayoutJob, f32) {
     // Each line's pieces: their bytes, and their run.
     let mut lines: Vec<Vec<(std::ops::Range<usize>, usize)>> = vec![Vec::new()];
     let (mut run, mut left) = (0, runs.first().map_or(0, |r| r.chars));
@@ -931,9 +1007,10 @@ fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text
         let (size, k) = biggest[j];
         let r = run_of(k);
         let (ascent, own) = metric(f, &r.font);
+        let gap = |below| line_gap(size, below) * leading / LEADING;
         let height = match next {
-            Some((below, base)) => 2.0 * (line_gap(size, below) + ascent + r.rise - base) - own,
-            None => LEADING * size,
+            Some((below, base)) => 2.0 * (gap(below) + ascent + r.rise - base) - own,
+            None => leading * size,
         }
         .round()
         .max(1.0);
@@ -1383,7 +1460,7 @@ mod tests {
             run(2, 10.0, 0.0),
         ];
         let (galley, top) = ctx.fonts_mut(|f| {
-            let (j, top) = job(f, "abcdef\ngh", &runs);
+            let (j, top) = job(f, "abcdef\ngh", &runs, LEADING);
             (f.layout_job(j), top)
         });
         let row = &galley.rows[0];
@@ -1705,5 +1782,148 @@ mod tests {
         }
         // Black text on dark paper is light.
         assert!(shown(PageColours::Dark, [0.0; 3]).r() > 200);
+    }
+
+    /// Kerning pairs (AV, To, Te, WA), a ligature (fi) and an accented letter.
+    const SET: &str = "AVATAR To Te fine WAVE café";
+
+    /// Helvetica (drawn in its Liberation face, written kerned with its pairs) and installed
+    /// fonts: Source Serif 4 (CFF, with ligatures) and Caveat (TrueType, variable).
+    fn half_pixel_fonts() -> [FontChoice; 3] {
+        [
+            FontChoice::default(),
+            installed("Source Serif 4"),
+            installed("Caveat"),
+        ]
+    }
+
+    /// [`SET`] written in `f` at 12 points from (20, 40) on a page of its own: the document's
+    /// bytes, and where each character starts along the line, in points, as LimarePDF reads it
+    /// back (and where the last one ends).
+    fn written(f: FontChoice) -> (Vec<u8>, Vec<f32>) {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 600.0, 200.0).unwrap();
+        (pdf.add_text(0, (20.0, 40.0), SET, f, 12.0, [0.0; 3])).unwrap();
+        let bytes = pdf.to_bytes().unwrap();
+        let back = limarepdf_core::Pdf::from_bytes(&bytes, None).unwrap();
+        let line = (back.page_objects(0).unwrap().into_iter())
+            .find(|o| o.text.as_deref() == Some(SET))
+            .expect("the line written");
+        (bytes, line.stops)
+    }
+
+    /// Where the typing box draws each character of [`SET`] in `f` at 12 points, `k` pixels a
+    /// point, that starts a glyph, once its face has loaded (a minute at most): its index, and
+    /// how far along the line it starts, in pixels.
+    fn drawn(ctx: &egui::Context, f: FontChoice, k: f32) -> Vec<(usize, f32)> {
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
+        let part = TextPart {
+            text: SET.into(),
+            font: limarepdf_core::PartFont::Choice(f),
+            size: 12.0,
+            color: [0.0; 3],
+            rise: 0.0,
+            from: None,
+            origins: Vec::new(),
+        };
+        let parts = [(part, Wanted::Standard(f))];
+        let done = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let runs = runs(ctx, &parts, k, |_| Color32::BLACK, None);
+            // In the face's own file, or Helvetica's Liberation face, not a stand-in.
+            let loaded = (runs.iter()).all(|r| match &r.font.family {
+                egui::FontFamily::Name(n) if f.is_standard() => &**n == "Liberation Sans",
+                egui::FontFamily::Name(n) => n.starts_with("file "),
+                _ => false,
+            });
+            if loaded || std::time::Instant::now() > done {
+                assert!(loaded, "{runs:?}");
+                let (g, _) = galley(ctx, SET, &runs);
+                let row = &g.rows[0];
+                let (mut pen, mut out) = (0.0, Vec::new());
+                for (i, g) in row.glyphs.iter().enumerate() {
+                    if g.advance_width > 0.0 {
+                        // epaint draws a glyph at its pen position to the nearest quarter
+                        // pixel (its sub-pixel bins), the whole pixel in `pos`.
+                        let at = (pen * 4.0_f32).round() / 4.0;
+                        assert_eq!(g.pos.x, at.floor(), "character {i}'s pen at {pen}");
+                        out.push((i, row.pos.x + at));
+                    }
+                    pen += g.advance_width;
+                }
+                return out;
+            }
+            ctx.run_ui(Default::default(), |_| {})
+                .textures_delta
+                .clear();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The typing box draws text where it will be written (the text design's acceptance,
+    /// 10): at 2 pixels a point, each character starting a glyph starts within half a pixel
+    /// of where LimarePDF reads it back from the line written.
+    #[test]
+    fn each_character_is_drawn_within_half_a_pixel_of_where_it_is_written() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let k = 2.0;
+        for f in half_pixel_fonts() {
+            let (_, stops) = written(f);
+            let at: Vec<(usize, f32, f32)> = (drawn(&ctx, f, k).into_iter())
+                .map(|(i, x)| (i, x, stops[i] * k))
+                .collect();
+            assert!(
+                at.iter().all(|&(_, x, want)| (x - want).abs() <= 0.5),
+                "{} {SET:?}: each character's drawn and written place, in pixels: {at:?}",
+                f.family_name()
+            );
+        }
+    }
+
+    /// The typing box's word starts against Poppler's reading of the line written: each
+    /// word's start, as `pdftotext -bbox` gives it, within half a pixel at 2 pixels a point
+    /// of where the typing box draws it. Opt-in: `cargo test -p limarepdf-gui --bin limarepdf
+    /// -- --ignored cross_check`.
+    #[test]
+    #[ignore]
+    fn cross_check_word_starts_with_pdftotext() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let k = 2.0;
+        let dir = std::env::temp_dir().join(format!("limarepdf-half-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Where each word starts in `SET`, by character.
+        let starts: Vec<usize> = (SET.split_word_bound_indices())
+            .filter(|(_, w)| !w.trim().is_empty())
+            .map(|(b, _)| SET[..b].chars().count())
+            .collect();
+        for f in half_pixel_fonts() {
+            let (bytes, _) = written(f);
+            let path = dir.join("line.pdf");
+            std::fs::write(&path, bytes).unwrap();
+            let out = std::process::Command::new("pdftotext")
+                .args(["-bbox".as_ref(), path.as_os_str(), "-".as_ref()])
+                .output()
+                .expect("pdftotext (Poppler) installed");
+            let html = String::from_utf8_lossy(&out.stdout);
+            let mins: Vec<f32> = (html.split("<word xMin=\"").skip(1))
+                .map(|w| w.split('"').next().unwrap().parse().unwrap())
+                .collect();
+            assert_eq!(mins.len(), starts.len(), "{}: {html}", f.family_name());
+            let drawn = drawn(&ctx, f, k);
+            for (&i, x_min) in starts.iter().zip(mins) {
+                let (_, x) = drawn.iter().find(|d| d.0 == i).expect("its first glyph");
+                let want = (x_min - 20.0) * k;
+                assert!(
+                    (x - want).abs() <= 0.5,
+                    "{}: the word at {i} drawn at {x}, Poppler's at {want}",
+                    f.family_name()
+                );
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

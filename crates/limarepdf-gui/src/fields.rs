@@ -3,7 +3,8 @@
 
 use crate::editor::Action;
 use eframe::egui::{self, Color32, CursorIcon, Key, Rect, Stroke, StrokeKind};
-use limarepdf_core::{Field, FieldKind, FieldValue, Pdf};
+use limarepdf_core::{BoxSetting, Field, FieldKind, FieldValue, Pdf};
+use std::cell::OnceCell;
 
 /// Required fields' outline while fields are highlighted.
 const REQUIRED: Color32 = Color32::from_rgb(220, 50, 50);
@@ -27,6 +28,8 @@ enum Edit {
         original: String,
         fresh: bool,
         back: bool,
+        /// How a multi-line field's value is set, read when the box is first drawn.
+        set: OnceCell<Option<Box<BoxSetting>>>,
     },
     /// A choice's options in a list below the field; `text` is what's typed in an
     /// editable drop-down.
@@ -196,6 +199,7 @@ impl FormUi {
                 original: t.clone(),
                 fresh: true,
                 back: false,
+                set: OnceCell::new(),
             },
             (FieldKind::Choice { .. }, v) if open => Edit::Options {
                 text: match v {
@@ -313,6 +317,7 @@ impl FormUi {
                 original: l.original,
                 fresh: false,
                 back: true,
+                set: OnceCell::new(),
             },
         });
     }
@@ -399,7 +404,7 @@ impl FormUi {
         }
         if let Some((fi, wi)) = focused.filter(|f| here.iter().any(|h| (h.0, h.1) == *f)) {
             let rect = screen(self.fields()[fi].widgets[wi].bbox);
-            self.text_box(ui, fi, rect, k, pdf.language().as_deref(), acts);
+            self.text_box(ui, pdf, fi, rect, k, acts);
             self.options(ui, fi, rect, acts);
         }
         let Some((fi, wi, _)) = over.filter(|_| active) else {
@@ -448,18 +453,20 @@ impl FormUi {
         true
     }
 
-    /// The text box over a text field being typed in, its value drawn in the font it is
-    /// written in, the words that lacks in the fonts core writes them in, for a document
-    /// whose language is `lang`.
+    /// The text box over a text field of `pdf` being typed in, its value drawn in the font it
+    /// is written in, the words that lacks in the fonts core writes them in; a multi-line
+    /// field's on the lines core breaks it into, where it writes them in the field.
     fn text_box(
         &mut self,
         ui: &mut egui::Ui,
+        pdf: &Pdf,
         fi: usize,
         rect: Rect,
         k: f32,
-        lang: Option<&str>,
         acts: &mut Vec<Action>,
     ) {
+        let lang = pdf.language();
+        let lang = lang.as_deref();
         let f = &self.fields()[fi];
         let FieldKind::Text {
             multiline,
@@ -479,6 +486,7 @@ impl FormUi {
                     original,
                     fresh,
                     back,
+                    set: setting,
                 },
             ..
         }) = &mut self.focus
@@ -486,23 +494,33 @@ impl FormUi {
             return;
         };
         let id = self.scope.with(("field-text", &field.name, *widget));
-        // The size the field is saved with, so typing looks like the result; a field that
-        // fits its text to the box gets about what that gives.
-        let size = if field.text_size > 0.0 {
-            field.text_size * k
-        } else if multiline {
-            12.0 * k
-        } else {
-            (rect.height() * 0.6).min(12.0 * k)
-        }
-        .clamp(8.0, 48.0);
+        let setting = (setting.get_or_init(|| {
+            let w = field.widgets.get(*widget)?;
+            multiline.then(|| pdf.field_setting(&field.name, w.id).map(Box::new))?
+        }))
+        .as_deref();
         // In the field's font, as its value is written, not the interface's; a password's
         // dots in the interface's.
         let font = field.font;
-        let mut layouter = |ui: &egui::Ui, t: &dyn egui::TextBuffer, wrap: f32| {
-            let wrap = if multiline { wrap } else { f32::INFINITY };
-            let color = ui.visuals().text_color();
-            crate::page_text::boxed_galley(ui.ctx(), t.as_str(), font, size, color, wrap, lang)
+        let color = egui::Visuals::light().text_color();
+        let set_in = |ctx: &egui::Context, s: &BoxSetting, t: &str| {
+            crate::page_text::set_in_box(ctx, s, t, font, k, color, lang)
+        };
+        let now = setting.as_ref().map(|s| set_in(ui.ctx(), s, text));
+        // One line in the size the field is saved with, so typing looks like the result; a
+        // field that fits its text to the box gets about what that gives.
+        let size = match &now {
+            Some(now) => now.px,
+            None if field.text_size > 0.0 => (field.text_size * k).clamp(8.0, 48.0),
+            None => (rect.height() * 0.6).min(12.0 * k).clamp(8.0, 48.0),
+        };
+        let mut layouter = |ui: &egui::Ui, t: &dyn egui::TextBuffer, _: f32| match (setting, &now) {
+            (Some(_), Some(now)) if t.as_str() == now.galley.text() => now.galley.clone(),
+            (Some(s), _) => set_in(ui.ctx(), s, t.as_str()).galley,
+            (None, _) => {
+                let t = t.as_str();
+                crate::page_text::boxed_galley(ui.ctx(), t, font, size, color, None, lang).0
+            }
         };
         // A multi-line box would otherwise be four rows high, whatever the field's size.
         let held = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
@@ -517,7 +535,7 @@ impl FormUi {
         .id(id)
         .font(egui::FontId::proportional(size))
         .desired_width(rect.width())
-        .margin(egui::Margin::same(2))
+        .margin(now.as_ref().map_or(egui::Margin::same(2), |now| now.margin))
         .password(password);
         if let Some(n) = max_len {
             te = te.char_limit(n);
@@ -914,7 +932,7 @@ mod tests {
         };
         let rect = Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(90.0, 20.0));
         let mut out = ctx.run_ui(raw, |eui| {
-            ui.text_box(eui, fi, rect, 1.0, None, acts);
+            ui.text_box(eui, &Pdf::new(), fi, rect, 1.0, acts);
             ui.options(eui, fi, rect, acts);
         });
         out.textures_delta.clear();

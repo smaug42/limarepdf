@@ -10,9 +10,9 @@ mod common;
 
 use common::saved::tools;
 use limarepdf_core::{
-    add_font_files, bundled_face, fallbacks, typeface, FieldValue, FontChoice, HeaderFooter,
-    InkColor, ObjectKind, PageObject, Pdf, Stamp, StampColor, StampPlace, TextEdit, TextStyle,
-    Watermark,
+    add_font_files, bundled_face, fallbacks, typeface, BoxSetting, FieldValue, FontChoice,
+    HeaderFooter, InkColor, ObjectKind, PageObject, Pdf, Stamp, StampColor, StampPlace, TextEdit,
+    TextStyle, Watermark,
 };
 use lopdf::{dictionary, Object, Stream};
 use std::sync::OnceLock;
@@ -311,6 +311,90 @@ fn a_word_goes_whole_to_a_font_that_has_it_and_an_ideograph_alone() {
     let none = format!("No font on this computer has \"{NONE}\"");
     assert_eq!(e.to_string(), none);
     assert_eq!(format!("{:?}", p.doc.objects), before);
+}
+
+/// A form with one multi-line text field, "one", 200 points wide and 74 high with a border
+/// a point wide, its text fitted to it in the form's Helvetica (`/Helv`).
+fn box_form(p: &mut Pdf) {
+    let page = p.page_ids()[0];
+    let rect: Vec<Object> = [20, 200, 220, 274].map(Object::from).into();
+    let field = dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "P" => page,
+        "T" => Object::string_literal("one"), "Rect" => rect, "Ff" => 4096,
+        "MK" => dictionary! { "BC" => vec![Object::from(0)] },
+        "BS" => dictionary! { "W" => 1 },
+    };
+    let id = p.doc.add_object(field);
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", vec![id.into()]);
+    let helv = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let form = p.doc.add_object(dictionary! {
+        "Fields" => vec![id.into()], "DA" => Object::string_literal("/Helv 0 Tf 0 g"),
+        "DR" => dictionary! { "Font" => dictionary! { "Helv" => helv } },
+    });
+    p.doc.catalog_mut().unwrap().set("AcroForm", form);
+}
+
+/// Text typed in a box is laid out as it will be written ([`BoxSetting::lines`]), so its
+/// lines break where the written box's do: a text box's, and a multi-line field's, in its
+/// own font (Helvetica, written as it is) and, where that lacks a character, in the font
+/// that replaces it and those it falls back to; the field's size fitted to its box.
+#[test]
+fn a_box_s_lines_as_typed_are_its_lines_as_written() {
+    installed("Limare Han Test");
+    let latin = "The walrus and the carpenter were walking close at hand; they wept like \
+                 anything to see such quantities of sand.\nIf this were only cleared away, \
+                 they said, it would be grand!";
+    let han = "The walrus 漢字 and the carpenter 日本語 were walking close at hand 한국어 \
+               and they wept like anything to see such quantities of sand: if seven maids \
+               with seven mops swept it for half a year, do you suppose 漢字 they could get it \
+               clear?";
+    // The lines of `text` as `set` lays them out and as read back from `p`'s first page.
+    let compare = |what: &str, text: &str, set: &BoxSetting, p: &mut Pdf| {
+        let (_, lines) = set.lines(text, None);
+        let typed: Vec<String> = lines.into_iter().map(|r| plain(&text[r])).collect();
+        let read = reopened(p).page_text(0);
+        let written: Vec<String> = (read.lines().map(plain))
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert!(typed.len() > 3, "{what}: {typed:?}");
+        assert_eq!(typed, written, "{what}");
+    };
+    for text in [latin, han] {
+        let mut p = page();
+        let style = TextStyle {
+            border: 1.5,
+            ..TextStyle::default()
+        };
+        (p.add_text_box(0, [20.0, 20.0, 220.0, 60.0], text, &style, "Sam")).unwrap();
+        p.flatten_annotations(None).unwrap();
+        let set = BoxSetting::text_box(200.0, 1.5, 12.0);
+        compare(&format!("a text box: {text}"), text, &set, &mut p);
+
+        let mut p = page();
+        box_form(&mut p);
+        p.set_field("one", FieldValue::Text(text.into())).unwrap();
+        let widget = p.form_fields()[0].widgets[0].id;
+        let set = p.field_setting("one", widget).expect("the field's setting");
+        // The Latin text is written in the field's own font as it is, unkerned; the other in
+        // Helvetica's face and the fonts it falls back to.
+        let ap = p.doc.get_dictionary(widget).unwrap().get(b"AP").unwrap();
+        let n = ap.as_dict().unwrap().get(b"N").unwrap();
+        let drawn = p.doc.get_object(n.as_reference().unwrap()).unwrap();
+        let drawn = drawn.as_stream().unwrap();
+        let own = String::from_utf8_lossy(&drawn.content).contains("/Helv ");
+        assert_eq!(own, text == latin, "{text}");
+        // Fitted: smaller than the 12 points it would be in a taller box.
+        let (size, lines) = set.lines(text, None);
+        assert!(size < 12.0, "{text}: {size} {lines:?}");
+        p.flatten_form(None).unwrap();
+        compare(&format!("a field: {text}"), text, &set, &mut p);
+    }
 }
 
 /// The font objects LimarePDF wrote in `p`, by their names without the subset tag.

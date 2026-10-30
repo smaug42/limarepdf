@@ -14,12 +14,15 @@ use limarepdf_core::{Family, FontChoice, Typeface};
 use std::sync::Arc;
 
 /// Starts reading the installed fonts on another thread, so the list has them when it is
-/// first opened; a repaint follows.
+/// first opened (a repaint follows), and then the fonts typing falls back to for the
+/// system's language and emoji, so typing doesn't wait for them
+/// ([`limarepdf_core::warm_fallbacks`]).
 pub fn warm(ctx: &egui::Context) {
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         limarepdf_core::typefaces();
         ctx.request_repaint();
+        limarepdf_core::warm_fallbacks();
     });
 }
 

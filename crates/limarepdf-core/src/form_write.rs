@@ -2,14 +2,14 @@
 
 use crate::doc::encode_text;
 use crate::embed::{cant_write, unwritable};
-use crate::fonts::{winansi_byte, FontChoice, FontCtx};
-use crate::form_ap::{self, Body, Border, Look, Metrics};
+use crate::fonts::{FontChoice, FontCtx};
+use crate::form_ap::{self, Body, Border, BoxSetting, Look, Metrics, OwnFont};
 use crate::forms::{button_export, Node, MAX_DEPTH};
 use crate::layout::SetIn;
 use crate::{std14, Field, FieldKind, FieldValue, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
-use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream, StringFormat};
+use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream, StringFormat};
 
 /// The check mark in ZapfDingbats, drawn when a checkbox has no appearance of its own.
 const CHECK: u8 = b'4';
@@ -648,6 +648,31 @@ impl Pdf {
             .and_then(|(_, o)| o.as_dict().ok())
     }
 
+    /// How the text field `name`'s value is set in its widget `widget` ([`Widget::id`]), to
+    /// lay text out while it is typed as it will be written ([`BoxSetting::lines`]): in the
+    /// font its `/DA` names when that takes the text, as [`Pdf::set_field`] writes it; `None`
+    /// when it isn't a text field or has no such widget.
+    ///
+    /// [`Widget::id`]: crate::Widget::id
+    pub fn field_setting(&self, name: &str, widget: (u32, u16)) -> Option<BoxSetting> {
+        let (field, node) = (self.form_nodes().into_iter()).find(|(f, _)| f.name == name)?;
+        if !matches!(field.kind, FieldKind::Text { .. }) || !node.widgets.contains(&widget) {
+            return None;
+        }
+        let (font, size, _) = parse_da(&self.widget_da(widget, &node));
+        let (mut look, _) = self.widget_look(widget).ok()?;
+        look.size = size;
+        let found = font.and_then(|n| self.dr_font(&n));
+        let (own, base) = match found.as_ref().and_then(|o| self.dict_of(o)) {
+            Some(dict) => {
+                let (own, base) = own_font(&self.doc, dict);
+                (Some(own), base)
+            }
+            None => (None, String::from("Helvetica")),
+        };
+        Some(BoxSetting::field(look, own, FontChoice::from_name(&base)))
+    }
+
     /// The widget's own `/DA`, else the field's (inherited, or the form's).
     fn widget_da(&self, widget: ObjectId, node: &Node) -> Vec<u8> {
         self.doc
@@ -674,30 +699,19 @@ impl Pdf {
                 _ => (None, None),
             };
             if let Some(dict) = dict {
-                let ctx = FontCtx::new(&self.doc, dict);
-                let winansi = dict
-                    .get(b"Encoding")
-                    .ok()
-                    .and_then(|o| o.as_name().ok())
-                    .is_some_and(|n| n == b"WinAnsiEncoding");
-                let widths: [f32; 256] = std::array::from_fn(|c| ctx.width(c as u32, 1));
-                // A zero width is how some makers (LibreOffice, for one) mark a character
-                // the font in the file doesn't have.
-                let has_all = text.chars().filter(|c| !c.is_control()).all(|c| {
-                    winansi_byte(c).is_some_and(|b| b <= b' ' || widths[b as usize] > 0.0)
-                });
-                if ctx.reusable() && (text.is_ascii() || winansi) && has_all {
+                let (own, nearest) = own_font(&self.doc, dict);
+                if own.takes(text) {
                     let dict = dict.clone();
                     let id = id.unwrap_or_else(|| self.doc.add_object(dict));
                     return Ok(Picked {
                         name: name.clone(),
                         font: Some(id),
-                        metrics: Metrics::Bytes(Box::new(widths)),
+                        metrics: Metrics::Bytes(own.widths),
                         replaced: false,
                         choice: FontChoice::default(),
                     });
                 }
-                base = ctx.base.clone();
+                base = nearest;
             }
         }
         let choice = FontChoice::from_name(&base);
@@ -792,6 +806,21 @@ impl Pdf {
         self.doc.get_dictionary_mut(parent)?.set(key, id);
         Ok(id)
     }
+}
+
+/// The font `dict` (in `doc`) as a field's own font, and the name of the standard font
+/// nearest it, which sets the text it doesn't take.
+fn own_font(doc: &Document, dict: &Dictionary) -> (OwnFont, String) {
+    let ctx = FontCtx::new(doc, dict);
+    let winansi = (dict.get(b"Encoding").ok())
+        .and_then(|o| o.as_name().ok())
+        .is_some_and(|n| n == b"WinAnsiEncoding");
+    let own = OwnFont {
+        widths: Box::new(std::array::from_fn(|c| ctx.width(c as u32, 1))),
+        winansi,
+        reusable: ctx.reusable(),
+    };
+    (own, ctx.base.clone())
 }
 
 /// Text, choice and list fields are drawn by LimarePDF; buttons have drawings of their own.

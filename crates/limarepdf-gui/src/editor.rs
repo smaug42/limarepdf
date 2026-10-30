@@ -15,9 +15,9 @@ use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    words_text, Annot, AnnotKind, FieldValue, FontChoice, FontRefusal, LineFont, Link, LinkTarget,
-    ObjectKind, PageObject, PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor,
-    StampKind, StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
+    words_text, Annot, AnnotKind, BoxSetting, FieldValue, FontChoice, FontRefusal, LineFont, Link,
+    LinkTarget, ObjectKind, PageObject, PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace,
+    StampColor, StampKind, StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -258,6 +258,8 @@ pub struct Writing {
     original: String,
     /// A text box's text size in points.
     size: f32,
+    /// A text box's border's width in points.
+    border: f32,
     /// Takes the keyboard on the next frame.
     fresh: bool,
     /// Takes the keyboard back once a change in the inspector is finished.
@@ -294,6 +296,7 @@ impl Writing {
             text: String::new(),
             original: String::new(),
             size,
+            border: 0.0,
             fresh: true,
             refocus: false,
             picking: false,
@@ -1991,6 +1994,7 @@ impl Editor {
             id: Some(a.id),
             text: a.contents.clone(),
             original: a.contents,
+            border: a.text_style.map_or(0.0, |s| s.border),
             ..Writing::new(
                 a.page,
                 a.kind == AnnotKind::Note,
@@ -2739,10 +2743,11 @@ impl Editor {
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
         };
-        // A new text box shows the Text box tool's size, which it is kept with, as the
-        // inspector changes it.
+        // A new text box shows the Text box tool's size and border, which it is kept with,
+        // as the inspector changes them.
         if w.id.is_none() && !w.note {
             w.size = self.box_style.size;
+            w.border = self.box_style.border;
         }
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let b = shown_box(w.note, w.rect, k);
@@ -2801,21 +2806,26 @@ impl Editor {
                 }
             }
             // In Helvetica, as the box is written, the words it lacks in the fonts core
-            // writes them in, not the interface's font.
-            let px = (w.size * k).clamp(6.0, 96.0);
+            // writes them in, not the interface's font; on the lines core breaks it into,
+            // where it writes them in the box.
+            let set = BoxSetting::text_box(w.rect[2] - w.rect[0], w.border, w.size);
             let lang = self.lang.as_deref();
-            let mut layouter = |ui: &egui::Ui, t: &dyn egui::TextBuffer, wrap: f32| {
-                let (helvetica, color) = (FontChoice::default(), ui.visuals().text_color());
-                page_text::boxed_galley(ui.ctx(), t.as_str(), helvetica, px, color, wrap, lang)
+            let (helvetica, color) = (FontChoice::default(), egui::Visuals::light().text_color());
+            let now = page_text::set_in_box(ui.ctx(), &set, &w.text, helvetica, k, color, lang);
+            let mut layouter = |ui: &egui::Ui, t: &dyn egui::TextBuffer, _: f32| {
+                if t.as_str() == now.galley.text() {
+                    return now.galley.clone();
+                }
+                page_text::set_in_box(ui.ctx(), &set, t.as_str(), helvetica, k, color, lang).galley
             };
             let mut buffer = page_text::Clusters(&mut w.text);
             let te = egui::TextEdit::multiline(&mut buffer)
                 .id(id)
-                .font(egui::FontId::proportional(px))
+                .font(egui::FontId::proportional(now.px))
                 .desired_rows(1)
                 .min_size(area.size())
                 .desired_width(area.width())
-                .margin(egui::Margin::same(2))
+                .margin(now.margin)
                 .layouter(&mut layouter);
             *ui.visuals_mut() = egui::Visuals::light();
             // As `Ui::put` lays it out, keeping the output for the note at the caret.

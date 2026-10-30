@@ -25,6 +25,7 @@ use lopdf::content::Operation;
 use lopdf::{dictionary, Object, ObjectId, StringFormat};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
@@ -477,6 +478,30 @@ pub fn fallback_faces(samples: &str) -> Vec<crate::FaceFile> {
     out
 }
 
+/// Finds, once, the fonts each standard font's text falls back to for the system's language,
+/// when it is Chinese, Japanese or Korean (by its locale), and for emoji: reading the
+/// installed fonts' list and those fonts' files, so the first such character typed doesn't
+/// wait for them. A character of another script is found when first typed (its font is
+/// small); one no script's font has, by looking through every installed font. Slow: asked
+/// off the window's thread, at start.
+pub fn warm_fallbacks() {
+    let samples: &[&str] = match system_language() {
+        Some(Language::Japanese) => &["漢", "あ", "😀"],
+        Some(Language::Korean) => &["한", "漢", "😀"],
+        Some(_) => &["漢", "😀"],
+        None => &["😀"],
+    };
+    for family in [Family::Helvetica, Family::Times, Family::Courier] {
+        let f = FontChoice {
+            family,
+            ..FontChoice::default()
+        };
+        for s in samples {
+            Setter::new(f, s, None).unit_font(s);
+        }
+    }
+}
+
 /// `text` in the stretches LimarePDF writes it in when it is set in `f`, in a document whose
 /// language is `lang` (its `/Lang`, [`Pdf::language`]): each stretch's characters (from,
 /// to) and its font, `f` or one it falls back to ([`fallbacks`]), `None` for what no font
@@ -662,46 +687,59 @@ fn system_language() -> Option<Language> {
 /// `text` broken into lines no wider than `width` as `measure` measures a line as it shows
 /// ([`Setter::lines`]).
 pub(crate) fn break_lines(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
-    let fits = |line: &str| measure(&shown(line)) <= width + 1e-3;
+    (break_ranges(text, width, measure).into_iter())
+        .map(|line| shown(&text[line]))
+        .collect()
+}
+
+/// Where [`break_lines`] breaks `text`: each line's bytes in it, the spaces it ends with
+/// among them, the line breaks between paragraphs not.
+pub(crate) fn break_ranges(
+    text: &str,
+    width: f32,
+    measure: impl Fn(&str) -> f32,
+) -> Vec<Range<usize>> {
+    let fits = |line: &Range<usize>| measure(&shown(&text[line.clone()])) <= width + 1e-3;
     let mut out = Vec::new();
     for para in paragraphs(text) {
-        let mut line = String::new();
-        let mut from = 0;
-        for (at, _) in unicode_linebreak::linebreaks(para) {
-            let segment = &para[from..at];
-            from = at;
-            if segment.is_empty() {
+        let mut line = para.start..para.start;
+        for (at, _) in unicode_linebreak::linebreaks(&text[para.clone()]) {
+            let end = para.start + at;
+            if end == line.end {
                 continue;
             }
-            let joined = format!("{line}{segment}");
+            let joined = line.start..end;
             if line.is_empty() || fits(&joined) {
                 line = joined;
             } else {
-                out.push(shown(&line));
-                line = segment.to_string();
+                out.push(line.clone());
+                line = line.end..end;
             }
             // A word wider than a line of its own is broken where it fills one.
             while !fits(&line) {
-                let clusters: Vec<&str> = line.graphemes(true).collect();
-                let mut n = clusters.len().saturating_sub(1);
-                while n > 1 && !fits(&clusters[..n].concat()) {
+                // Where each cluster of the line ends.
+                let ends: Vec<usize> = (text[line.clone()].grapheme_indices(true))
+                    .map(|(i, c)| line.start + i + c.len())
+                    .collect();
+                let mut n = ends.len().saturating_sub(1);
+                while n > 1 && !fits(&(line.start..ends[n - 1])) {
                     n -= 1;
                 }
                 if n == 0 {
                     break;
                 }
-                out.push(shown(&clusters[..n].concat()));
-                line = clusters[n..].concat();
+                out.push(line.start..ends[n - 1]);
+                line = ends[n - 1]..line.end;
             }
         }
-        out.push(shown(&line));
+        out.push(line);
     }
     out
 }
 
-/// `text` split at its line breaks (`\r\n`, `\n`, `\r`, and Unicode's line and paragraph
-/// separators, vertical tab, form feed and next line).
-fn paragraphs(text: &str) -> Vec<&str> {
+/// `text`'s paragraphs, as it is split at its line breaks (`\r\n`, `\n`, `\r`, and Unicode's
+/// line and paragraph separators, vertical tab, form feed and next line): their bytes.
+fn paragraphs(text: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut from = 0;
     let mut chars = text.char_indices().peekable();
@@ -710,7 +748,7 @@ fn paragraphs(text: &str) -> Vec<&str> {
     ];
     while let Some((i, c)) = chars.next() {
         if ends.contains(&c) {
-            out.push(&text[from..i]);
+            out.push(from..i);
             from = i + c.len_utf8();
             if c == '\r' && chars.peek().is_some_and(|&(_, n)| n == '\n') {
                 chars.next();
@@ -718,13 +756,13 @@ fn paragraphs(text: &str) -> Vec<&str> {
             }
         }
     }
-    out.push(&text[from..]);
+    out.push(from..text.len());
     out
 }
 
 /// A line as it shows: spaces at its end left out, a soft hyphen at its end shown as a
 /// hyphen and others left out.
-fn shown(line: &str) -> String {
+pub(crate) fn shown(line: &str) -> String {
     let line = line.trim_end_matches(char::is_whitespace);
     match line.strip_suffix('\u{AD}') {
         Some(rest) => format!("{}-", rest.replace('\u{AD}', "")),
@@ -1115,6 +1153,27 @@ mod tests {
         let w = s.width("hyphen-", 12.0) + 0.01;
         assert_eq!(s.lines("hyphen\u{AD}ation", w, 12.0), ["hyphen-", "ation"]);
         assert_eq!(s.lines("hyphen\u{AD}ation", 500.0, 12.0), ["hyphenation"]);
+    }
+
+    /// The typing box draws each line as it is typed, so each is found in the text: the
+    /// spaces it ends with in it, the line breaks between lines not.
+    #[test]
+    fn each_line_is_found_in_the_text_as_typed() {
+        let s = Setter::new(SANS, "", None);
+        let ranges = |text: &str, w: f32| break_ranges(text, w, |l| s.width(l, 12.0));
+        let w = s.width("aaaa bbbb", 12.0) + 0.01;
+        let text = "aaaa bbbb    cccc\r\n\ndd\u{AD}ee";
+        let got = ranges(text, w);
+        let lines: Vec<&str> = got.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(lines, ["aaaa bbbb    ", "cccc", "", "dd\u{AD}ee"]);
+        // As written, they are the lines `lines` gives.
+        let shown: Vec<String> = got.into_iter().map(|r| shown(&text[r])).collect();
+        assert_eq!(shown, s.lines(text, w, 12.0));
+        // A word broken between characters, and a final line break.
+        let w = s.width("abc", 12.0) + 0.01;
+        let text = "abcdefg\n";
+        let got: Vec<&str> = ranges(text, w).into_iter().map(|r| &text[r]).collect();
+        assert_eq!(got, ["abc", "def", "g", ""]);
     }
 
     #[test]

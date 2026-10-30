@@ -3,6 +3,7 @@
 //! the inspector saying which words go to another font.
 
 use super::*;
+use limarepdf_core::BoxSetting;
 use std::time::{Duration, Instant};
 
 /// A frame of the window 1400 points wide with `events`, timed as [`Typist::frame`] times
@@ -24,12 +25,8 @@ fn shapes(app: &mut App, ty: &Typist, events: Vec<egui::Event>) -> Vec<egui::epa
     out.shapes
 }
 
-/// The font `word` is drawn in, in the drawn text that holds `whole`.
-fn family_of(
-    shapes: &[egui::epaint::ClippedShape],
-    whole: &str,
-    word: &str,
-) -> Option<egui::FontFamily> {
+/// The text `shapes` draw.
+fn drawn_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<&egui::epaint::TextShape> {
     fn texts<'a>(s: &'a egui::Shape, out: &mut Vec<&'a egui::epaint::TextShape>) {
         match s {
             egui::Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
@@ -41,7 +38,16 @@ fn family_of(
     for c in shapes {
         texts(&c.shape, &mut found);
     }
-    let job = &found
+    found
+}
+
+/// The font `word` is drawn in, in the drawn text that holds `whole`.
+fn family_of(
+    shapes: &[egui::epaint::ClippedShape],
+    whole: &str,
+    word: &str,
+) -> Option<egui::FontFamily> {
+    let job = &drawn_texts(shapes)
         .into_iter()
         .find(|t| t.galley.job.text.contains(whole))?
         .galley
@@ -114,6 +120,94 @@ fn a_form_field_and_a_text_box_are_typed_in_the_fonts_they_are_written_in() {
     );
     let got = settled_families(&mut app, &ty, "Box 漢字", &["Box", "漢字"], done);
     assert!(done(&got), "the text box: {got:?}");
+}
+
+/// The rows of the drawn text that reads `text`, each its characters; `None` when no drawn
+/// text reads it, or its rows' characters don't count up to it.
+fn rows_of(shapes: &[egui::epaint::ClippedShape], text: &str) -> Option<Vec<String>> {
+    let shape = (drawn_texts(shapes).into_iter()).find(|t| t.galley.job.text == text)?;
+    let chars: Vec<char> = text.chars().collect();
+    let mut at = 0;
+    let mut rows = Vec::new();
+    for row in &shape.galley.rows {
+        let n = row.row.glyphs.len();
+        rows.push(chars.get(at..at + n)?.iter().collect());
+        at += n + usize::from(row.ends_with_newline);
+    }
+    (at == chars.len()).then_some(rows)
+}
+
+/// The rows drawn for `text` once they are `want`, else after a minute.
+fn settled_rows(app: &mut App, ty: &Typist, text: &str, want: &[String]) -> Option<Vec<String>> {
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        let got = rows_of(&shapes(app, ty, vec![]), text);
+        if got.as_deref() == Some(want) || Instant::now() > until {
+            return got;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A text box and a multi-line form field wrap their text where it is written (the text
+/// design, 5.1): the typing box's rows are the lines core breaks it into, each with the
+/// spaces it ends with, and their characters count up to what was typed, which the caret
+/// and selection go by.
+#[test]
+fn a_text_box_and_a_multi_line_field_wrap_where_their_text_is_written() {
+    crate::font_list::test_family("Limare Han Test");
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let ty = Typist::new(&ctx);
+    let text = "The walrus and the carpenter were walking close at hand 漢字漢字漢字漢字 they \
+                wept like anything to see such quantities of well-known sand";
+    let lines = |set: &BoxSetting| -> Vec<String> {
+        let (_, lines) = set.lines(text, None);
+        lines.into_iter().map(|r| text[r].to_string()).collect()
+    };
+
+    // A text box with a thick border: its text is set inside it.
+    let mut app = app_with(&ctx, 1);
+    app.act(&ctx, Act::Tool(Tool::TextBox));
+    app.tabs[0].ed.box_style.border = 4.0;
+    let (min, k) = ty.page(&mut app);
+    ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
+    ty.text(&mut app, text);
+    let ed = &app.tabs[0].ed;
+    let w = ed.writing.as_ref().expect("a text box being typed in");
+    assert_eq!(w.text, text);
+    let (width, style) = (w.rect[2] - w.rect[0], ed.box_style);
+    let want = lines(&BoxSetting::text_box(width, style.border, style.size));
+    assert!(want.len() > 2, "{want:?}");
+    let got = settled_rows(&mut app, &ty, text, &want);
+    assert_eq!(got, Some(want), "the text box");
+
+    let mut pdf = form_doc(&[("Notes", 1)]);
+    let notes = (pdf.doc.objects.iter())
+        .find_map(|(&id, o)| {
+            let d = o.as_dict().ok()?;
+            (d.get(b"T").ok()?.as_str().ok()? == b"Notes").then_some(id)
+        })
+        .expect("the field");
+    let d = pdf.doc.get_dictionary_mut(notes).unwrap();
+    d.set("Ff", 4096);
+    d.set("DA", lopdf::Object::string_literal("/Helv 10 Tf 0 g"));
+    let dir = test_dir("box-lines");
+    let path = dir.join("form.pdf");
+    pdf.save(&path).unwrap();
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    open_and_wait(&mut app, &ctx, &path, 1);
+    ty.click_field(&mut app, "Notes", 0);
+    ty.text(&mut app, text);
+    let pdf = &app.tabs[0].pdf;
+    let widget = pdf.form_fields()[0].widgets[0].id;
+    let set = pdf.field_setting("Notes", widget).expect("a setting");
+    let want = lines(&set);
+    assert!(want.len() > 1, "{want:?}");
+    let got = settled_rows(&mut app, &ty, text, &want);
+    assert_eq!(got, Some(want), "the field");
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// A line LimarePDF wrote, opened for editing, shows its words as they are on the page: a

@@ -90,6 +90,9 @@ pub struct Field {
 /// One place a field is shown on a page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
+    /// The widget annotation's object in the file; stays the same while the document is
+    /// open.
+    pub id: (u32, u16),
     /// The page (zero-based).
     pub page: usize,
     /// The widget's box in displayed-page points (y down), like
@@ -493,6 +496,7 @@ impl Pdf {
             .and_then(|o| self.int_value(o))
             .unwrap_or(0);
         Some(Widget {
+            id,
             page,
             bbox: mx::transform_rect(to_vis?, rect),
             on_state,
