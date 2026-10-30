@@ -42,6 +42,7 @@ mod own_font;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
+mod paragraph;
 mod pkcs12;
 mod preview_font;
 pub mod print;
@@ -78,8 +79,7 @@ pub use display::{display_line, display_text, local_date, local_time, quoted_lis
 pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{KeptPiece, PartFont, PathStyle, Shape, TextEdit, TextPart};
 pub use embed::{
-    bundled_face, emoji_sequence, installed_could_write, liberation, refusal, unwritten_script,
-    writable, LIBERATION,
+    bundled_face, emoji_sequence, liberation, refusal, unwritten_script, writable, LIBERATION,
 };
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use form_ap::BoxSetting;
@@ -101,6 +101,7 @@ pub use overlay::{
 };
 pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
+pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
 pub use redact::{PageRedaction, RedactReport};
 pub use sanitise::{Hidden, HiddenReport, LayersDamaged};
 pub use scan::{ScanMode, ScanOptions, ScanResult};

@@ -136,6 +136,9 @@ pub(crate) struct TextData {
     pub hidden: bool,
     /// Some of the line is in vertical writing, which is measured as if it ran across.
     pub vertical: bool,
+    /// Its first show's font turns its glyphs upside down in text space, so the line's up
+    /// is text space's down ([`FontCtx::flipped`]).
+    pub flipped: bool,
     /// Where each show's characters are, for locating matches within the line.
     pub pieces: Vec<Piece>,
     /// The parts of the line in one style each ([`PageObject::spans`]).
@@ -153,6 +156,9 @@ pub(crate) struct Span {
     pub base: String,
     pub reuse: bool,
     pub size: f32,
+    /// The font's em ([`FontCtx::em`]): `size` over it is the size in the font's own
+    /// terms, what its shows are written with.
+    pub em: f32,
     pub fill: Option<[f32; 3]>,
     pub rise: f32,
 }
@@ -308,6 +314,10 @@ struct RunInfo {
     ctm: M,
     visible: bool,
     vertical: bool,
+    /// Its font turns its glyphs upside down in text space ([`FontCtx::flipped`]).
+    flipped: bool,
+    /// Its font's em ([`FontCtx::em`]).
+    em: f32,
     tm_after: M,
     tlm_after: M,
 }
@@ -526,7 +536,10 @@ impl Pdf {
                     tm = mul(mx::translate(adv, 0.0), tm);
                     let trm = mul(mul(start_tm, gs.ctm), mx::ID);
                     let lin = (trm[0].hypot(trm[1])).max(1e-6);
-                    let eff = tfs * lin;
+                    // A Type 3 font's own em and flip ([`FontCtx::em`], PB-56).
+                    let em = fc.map_or(1.0, |f| f.em);
+                    let flipped = fc.is_some_and(|f| f.flipped);
+                    let eff = tfs * lin * em;
                     let dir = (trm[0] / lin, trm[1] / lin);
                     let base_pt = apply(
                         mul(mx::translate(0.0, gs.rise), mul(start_tm, gs.ctm)),
@@ -539,7 +552,8 @@ impl Pdf {
                         0.0,
                     );
                     let m = mul(start_tm, gs.ctm);
-                    let (d0, a0) = (-0.21 * tfs + gs.rise, 0.79 * tfs + gs.rise);
+                    let up = if flipped { -tfs * em } else { tfs * em };
+                    let (d0, a0) = (-0.21 * up + gs.rise, 0.79 * up + gs.rise);
                     let corners = [
                         apply(m, 0.0, d0),
                         apply(m, adv, d0),
@@ -575,6 +589,8 @@ impl Pdf {
                         ctm: gs.ctm,
                         visible: gs.tr != 3 && gs.tr != 7,
                         vertical: fc.is_some_and(|f| f.vertical),
+                        flipped,
+                        em,
                         tm_after: tm,
                         tlm_after: tlm,
                     };
@@ -768,6 +784,11 @@ impl Pdf {
     pub fn page_objects(&self, page_index: usize) -> Result<Vec<PageObject>> {
         let page = self.page_id_at(page_index)?;
         let parsed = self.parse_page(page_index)?;
+        self.objects_of(page, &parsed)
+    }
+
+    /// [`Pdf::page_objects`] of page `page`, parsed as `parsed`.
+    pub(crate) fn objects_of(&self, page: ObjectId, parsed: &Parsed) -> Result<Vec<PageObject>> {
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         Ok(parsed
@@ -822,6 +843,7 @@ impl Pdf {
                     // The text's own across and up directions, on the displayed page (y down).
                     let m = mul(mul(t.runs[0].tm, o.ctm), to_vis);
                     let (across, up) = ((m[0], m[1]), (m[2], m[3]));
+                    let up = if t.flipped { (-up.0, -up.1) } else { up };
                     let level = across.0 > 0.0 && across.1.abs() <= 1e-3 * across.0;
                     po.upright = level && up.1 < 0.0 && !t.vertical;
                     let len = across.0.hypot(across.1);
@@ -1164,6 +1186,7 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
                 reuse: spans[0].reuse,
                 hidden: !group.iter().any(|r| r.visible),
                 vertical: group.iter().any(|r| r.vertical),
+                flipped: first.flipped,
                 pieces,
                 spans,
             }),
@@ -1230,6 +1253,7 @@ fn styled_spans(
             base: r.base.clone(),
             reuse: r.reuse,
             size: r.size,
+            em: r.em,
             fill: r.fill,
             rise: lift,
         };

@@ -232,6 +232,12 @@
 
 ### Fixed
 
+- Text in a Type 3 font drawn the way TeX's bitmap fonts are (in many older papers) was read at a tiny fraction of
+  its size and upside down: selecting, searching and copying it went a word or less at a time, the line was edited
+  in a box rather than where it is, and an edited line was written at 1 point. It now reads at the size it shows,
+  upright, in whole lines, is edited where it is, and keeps its size when edited (its letters then written in
+  another font). Other Type 3 fonts drawn at a scale of their own read at their size too. A Type 3 font whose
+  pictures of letters are stored upside down still reads as turned.
 - Typing on the page was lost when the change keeping it failed: ending a line's typing, new text, a note or a text
   box (Esc, Enter, Tab, a click away or another tool) showed the reason and threw the typing away. It now comes
   back on the page to go on with, the document as it was; ended again unchanged, it is left out and a message says

@@ -442,6 +442,35 @@ What they show:
   for the first ideograph in a serif font on another system (PB-61), a few milliseconds for a character no font
   has.
 
+## Finding paragraphs
+
+Batch 45's stage 2 (NEW-01) finds a page's paragraphs once, with its lines' fonts (`Pdf::page_blocks`;
+architecture.md). The paragraph design's budget (section 11): REL-07's "none over 50 ms" for a click on ordinary
+pages, sharing PB-52's read of the page's fonts. Measured on 30 October 2026 on the machine above, built with the
+release-like `ci-test` profile:
+
+- **Over the paragraph check's 508 pages** (both answer sets, `tests/paragraph_check.rs`, tags and fonts read):
+  median 4.5 ms a page; the worst 96, 83 and 63 ms (PDFBox `4996` page 1, pdf.js `issue6737` page 7 and `issue6165`
+  page 4), then 41 ms and under.
+- **What a page's time is**, best of five with a throwaway checker crate (`target/b45s2/`, `timing`): reading the
+  page's objects, then everything, then everything but the fonts and tags, then the fonts alone.
+
+  | Page | Objects | Blocks | Without fonts and tags | Fonts (`page_line_fonts`) |
+  | --- | --- | --- | --- | --- |
+  | made-up `lo01_ragged_serif11` p2 | 1.2 ms | 3.0 ms | 1.4 ms | 2.8 ms |
+  | made-up `ch05_cols3_softhyph` p2 | 15.6 ms | 25.9 ms | 16.1 ms | 25.3 ms |
+  | pdf.js `issue12294-print` p3 | 4.7 ms | 15.4 ms | 5.4 ms | 14.9 ms |
+  | PDFBox `4996` p1 | 29.2 ms | 33.4 ms | 29.4 ms | 33.4 ms |
+  | pdf.js `issue6165` p4 | 23.6 ms | 25.5 ms | 23.7 ms | 25.3 ms |
+  | pdf.js `issue6737` p7 | 68.5 ms | 72.2 ms | 67.5 ms | 72.6 ms |
+
+What they show:
+
+- Finding the blocks costs under a millisecond beyond reading the page (the "without" column against the objects).
+  The rest is the page's own read, which showing its objects already pays, and the fonts' read, which selecting a
+  line on the page already pays (PB-52); so the app, keeping both for the page as it keeps the fonts today, adds
+  little. The pages over 50 ms are over it in reading their objects alone (PB-52's heavy pages).
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted

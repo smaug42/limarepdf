@@ -1464,13 +1464,45 @@ form XObject, and per inline image.
   which belongs to the part before it. The line's box (`line_box`) covers its shows' boxes less those showing only
   whitespace and less the whitespace at the line's two ends, cut off at the characters' measured positions; the
   text keeps them (BUG-25: a label's tab in a larger font reached over the next label, which a click, the selection
-  and the edit cover then took as the first label's).
+  and the edit cover then took as the first label's). A Type 3 font draws its glyphs in a space of its own
+  (`/FontMatrix`), so besides its widths (`FontCtx::scale`) its text's size is the size set times `FontCtx::em`:
+  1, unless the font's letters and digits, each against its usual width (Times' and Helvetica's averaged), put
+  its em more than a quarter away (TeX's bitmap fonts, glyphs in pixels at a size of 1, about 83); and a matrix
+  that turns its glyphs over stands the line up again where the text matrix turns text space over
+  (`FontCtx::flipped`, which way the glyphs stand read from their `d1` boxes, else the font's box; PB-56). A
+  bitmap stored upside down stands only in its pixels, so such a font reads as it stands by its boxes. An edited
+  line written upright can't keep a flipped font (`LineFont::flipped`: its letters go to another font), and a
+  kept Type 3 font's letters are written at the size in the font's own terms (`Span::em`).
 - **Where a line's characters are** on the displayed page: `PageObject::dir`, the way the line runs (a unit vector),
   and `PageObject::stops`, where each character starts along it from `baseline` and where the last ends, from the
   same measured positions as search boxes (`caret_stops`). A line edited in a plain box (turned, or invisible OCR
   text) puts the caret at the stop nearest a click, measured along `dir` (`editor::caret_along`), and a
   double-click finds the word by the words' order along `dir`, a repeated word too (BUG-26: the caret went by how
   far across the box the click was, which a quarter-turned line doesn't run along).
+- **Paragraphs** (NEW-01, batch 45's stage 2; `paragraph.rs`, the paragraph design's section 4):
+  `Pdf::page_blocks` reads a page once (its objects, its lines' marked content and fonts from one parse) and
+  gives its blocks of text, each a run of visual lines with its frame (left and right edges, first baseline,
+  spacing, alignment, first-line indent) and, unless it is confident, why not (`Doubt`). Visible horizontal text
+  outside form XObjects only. The steps, each rule a named constant from batch 44's prototype: an XY cut of the
+  lines' boxes into regions (a band 0.5 line heights empty cuts across, as against reading order's 0.8), each
+  region in the column the nearest cut down the page made, columns cut in different bands one where they line up;
+  in each region, lines on one baseline (and smaller raised pieces) a visual line, across text objects, split
+  where a gap is over 1.5 sizes and over 2.5 times the line's word gap (its spaces' median; with none, its gaps',
+  three or more); in each column, top to bottom, a line joining the block of the line above when that is the
+  block's last and size, colour and font agree (a line under 80% one colour or font is emphasis), the baseline gap
+  is 1 to 2 sizes (or the page's own spacing, up to 3) and within 15% of the block's median, the edges agree
+  (left, right or centre; a first-line or hanging indent with the second line), no list label starts it (a bullet,
+  "1." or "1)" always; "1.2", "(3)", "a)", "iv." only with a gap after them) and its first word wouldn't have
+  fitted at the end of the line above (measured against the paragraph's own width, up to a picture beside it).
+  Breaks are clear or weak; a block is confident with two lines or more (three centred), clear breaks both sides,
+  even gaps and edges, at least 8 sizes wide and half its column, no table or form signs, some line reading on
+  into the next, not a heading's size, nothing else in its frame, and a font that writes new text in its own face
+  (not Type 3, a CMap other than Identity, vertical or an unusable program: the plan's Q3). In a tagged document,
+  lines whose marked content (`BDC` MCIDs through the parent tree, `struct_parents`) belongs to different block
+  elements (P, H1 to H6, LBody, Lbl, TD, TH, Caption, Note and the like, by the role map) are never joined.
+  `Pdf::page_blocks_by` turns the tags or the fonts off, for the opt-in check (`tests/paragraph_check.rs`, which
+  judged the default off: testing.md). Not yet in the app, and nothing written yet (stage 2's second part,
+  `Pdf::edit_paragraph`).
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.

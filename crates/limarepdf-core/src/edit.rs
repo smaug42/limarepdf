@@ -173,7 +173,9 @@ impl PageObject {
 
     /// How [`Pdf::edit_text`] writes `part` of this line, `fonts` being the line's
     /// ([`Pdf::line_fonts`]): its text in pieces, in order, each in the font of the line's
-    /// part it names ([`PartFont::Span`]) or not. A part that is that part's own text,
+    /// part it names ([`PartFont::Span`]) or not. A font that stands its glyphs up only
+    /// where text space is turned over (a Type 3 font's, PB-56) isn't kept: the line is
+    /// written upright. A part that is that part's own text,
     /// unchanged, keeps it. Otherwise each character keeps it when it is the line's own
     /// character, unchanged, where it was ([`TextPart::origins`]), drawn with a code of its
     /// own (a ligature's letters only together), or when the font has a code for it
@@ -198,11 +200,14 @@ impl PageObject {
         let (Some(s), Some(line)) = (self.spans.get(i), &self.text) else {
             return all(false);
         };
+        let font = fonts.get(i);
+        if font.is_some_and(LineFont::flipped) {
+            return all(false);
+        }
         let line: Vec<char> = line.chars().collect();
         if !self.vertical && line.get(s.chars.0..s.chars.1) == Some(&text[..]) {
             return all(true);
         }
-        let font = fonts.get(i);
         let drawn = font.and_then(LineFont::drawn);
         let ways = plan(&line, s.chars, drawn, font, &text, |j| part.origin(j));
         pieces(&text, &ways)
@@ -426,9 +431,9 @@ fn run_spacing(t: &TextData, s: &Span) -> [f32; 3] {
 }
 
 /// The gap read as a space after `run` of part `s`, as a `TJ` move: in thousandths of the
-/// text size.
+/// text size, in the font's own terms.
 fn gap_move(run: &Run, s: &Span) -> Option<Object> {
-    let size = (s.size * run.spacing[2]).max(1e-3);
+    let size = (s.size / s.em * run.spacing[2]).max(1e-3);
     (run.gap > 0.0).then(|| r(-run.gap * 1000.0 / size))
 }
 
@@ -491,7 +496,7 @@ pub(crate) fn drawn(
             if ra == rb {
                 continue;
             }
-            let own = (s.size * run.spacing[2]).max(1e-3);
+            let own = (s.size / s.em * run.spacing[2]).max(1e-3);
             let mut before = Vec::new();
             let d = along(pos, t.pieces[k].corners[0]);
             if d.abs() > 1e-3 {
@@ -1609,10 +1614,11 @@ impl Pdf {
         page: ObjectId,
         lines: &[Asked],
     ) -> Result<Vec<(Vec<Written>, bool)>> {
-        // A piece of a part keeps its font, written with these shows, or is written in a
-        // font added; with what goes at its end from the piece after it.
+        // A piece of a part keeps its font, written with these shows at this size in the
+        // font's own terms (`Span::em`), or is written in a font added; with what goes at
+        // its end from the piece after it.
         enum How {
-            Own(Vec<u8>, Shows),
+            Own(Vec<u8>, Shows, f32),
             New(FontChoice),
         }
         // Each line's pieces, and whether any was written character by character.
@@ -1650,19 +1656,23 @@ impl Pdf {
                 let s = (t.spans.get(i))
                     .ok_or_else(|| anyhow!("the line has no part {i} (the page changed)"))?;
                 let text: Vec<char> = p.text.chars().collect();
-                if !t.vertical && chars.get(s.chars.0..s.chars.1) == Some(&text[..]) {
+                let font = fonts.get(i);
+                // Its size in the font's own terms, for what is kept in it.
+                let own_size = p.size.max(1.0) / s.em;
+                let flipped = font.is_some_and(LineFont::flipped);
+                if !t.vertical && !flipped && chars.get(s.chars.0..s.chars.1) == Some(&text[..]) {
                     pen.apart();
                     let shows = shows_as_they_were(&parsed.ops, t, s);
-                    line_hows.push((p.clone(), How::Own(s.font.clone(), shows), Tail::default()));
+                    let how = How::Own(s.font.clone(), shows, own_size);
+                    line_hows.push((p.clone(), how, Tail::default()));
                     continue;
                 }
                 let other = FontChoice::of_font(&s.base);
-                if !own {
+                if !own || flipped {
                     pen.apart();
                     line_hows.push((p.clone(), How::New(other), Tail::default()));
                     continue;
                 }
-                let font = fonts.get(i);
                 let ways = plan(&chars, s.chars, drawn, font, &text, |j| p.origin(j));
                 for piece in pieces(&text, &ways) {
                     let (a, b) = piece.chars;
@@ -1677,13 +1687,14 @@ impl Pdf {
                         line_hows.push((sub, How::New(other), Tail::default()));
                         continue;
                     }
-                    let (tail, shows) = pen.write(s, font, &text, &ways, a..b, p.size.max(1.0));
+                    let (tail, shows) = pen.write(s, font, &text, &ways, a..b, own_size);
                     used = true;
                     if let Some((_, _, before)) = line_hows.last_mut() {
                         before.items.extend(tail.items);
                         before.space = tail.space.or(before.space);
                     }
-                    line_hows.push((sub, How::Own(s.font.clone(), shows), Tail::default()));
+                    let how = How::Own(s.font.clone(), shows, own_size);
+                    line_hows.push((sub, how, Tail::default()));
                 }
             }
             hows.push((line_hows, used));
@@ -1709,9 +1720,12 @@ impl Pdf {
         // How many pieces each pen has written so far.
         let mut done = vec![0; pens.len()];
         let mut write = |(p, how, tail): (TextPart, How, Tail)| -> Vec<Written> {
-            let size = p.size.max(1.0);
+            let size = match how {
+                How::Own(_, _, own) => own,
+                How::New(_) => p.size.max(1.0),
+            };
             let mut out: Vec<Written> = match how {
-                How::Own(font, shows) => vec![Written {
+                How::Own(font, shows, _) => vec![Written {
                     font,
                     size,
                     color: p.color,

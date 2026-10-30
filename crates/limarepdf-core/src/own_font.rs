@@ -95,6 +95,9 @@ pub struct LineFont {
     /// How each of the line's characters is drawn, for writing it again as it was
     /// (`edit.rs`), the same for all the line's fonts; `None` when that isn't known.
     drawn: Option<Arc<[Drawn]>>,
+    /// A Type 3 font that stands its glyphs up where the text matrix turns text space over
+    /// (`FontCtx::flipped`, PB-56): an edited line, written upright, can't keep it.
+    flipped: bool,
 }
 
 impl std::fmt::Debug for LineFont {
@@ -210,6 +213,12 @@ impl LineFont {
     pub(crate) fn drawn(&self) -> Option<&[Drawn]> {
         self.drawn.as_deref()
     }
+
+    /// The font turns its glyphs over to stand them up where the text matrix turns text
+    /// space over (`FontCtx::flipped`), so an edited line, written upright, can't keep it.
+    pub(crate) fn flipped(&self) -> bool {
+        self.flipped
+    }
 }
 
 impl Pdf {
@@ -292,6 +301,7 @@ impl<'a> PageFonts<'a> {
                     line: Arc::default(),
                     page: Arc::new(page),
                     drawn: None,
+                    flipped: ctx.flipped,
                 };
                 Some((ctx, font))
             });
@@ -302,6 +312,7 @@ impl<'a> PageFonts<'a> {
                     line: Arc::default(),
                     page: Arc::default(),
                     drawn: None,
+                    flipped: false,
                 });
                 continue;
             };

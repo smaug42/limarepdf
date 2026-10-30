@@ -1,5 +1,6 @@
 use limarepdf_core::{
-    render, FontChoice, ImageWatermark, ObjectKind, PathStyle, Pdf, Shape, TextEdit,
+    render, FontChoice, ImageWatermark, ObjectKind, PartFont, PathStyle, Pdf, Shape, TextEdit,
+    TextPart,
 };
 use lopdf::{dictionary, Dictionary, Object, Stream};
 
@@ -706,6 +707,62 @@ fn edit_text_in_place_and_with_new_font() {
     let bytes = p.to_bytes().unwrap();
     let q = Pdf::from_bytes(&bytes, None).unwrap();
     assert_eq!(q.page_objects(0).unwrap().len(), o.len());
+}
+
+/// A line read with control characters in it, as a UTF-16 string shown in a simple font
+/// reads (PDFBox's `491`: "þÿ\0m\0y..."), edits like any other: the control characters, which
+/// draw nothing, are left out of what is written, as new text leaves them out, never named
+/// as missing from every font (PB-62: refused so during batch 45's stage 1, not by its end).
+#[test]
+fn a_line_read_with_control_characters_can_be_edited() {
+    let mut p = Pdf::new();
+    p.insert_blank(0, W as f32, H as f32).unwrap();
+    let utf16 = "<FEFF006D0079002000740065007800740020>";
+    set_content_in(
+        &mut p,
+        "Helvetica-Bold",
+        &format!("BT /F1 12 Tf 20 100 Td {utf16} Tj ET"),
+    );
+    let line = p.page_objects(0).unwrap().remove(0);
+    let read: Vec<char> = line.text.clone().unwrap().chars().collect();
+    assert_eq!(
+        read.iter().collect::<String>(),
+        "þÿ\0m\0y\0 \0t\0e\0x\0t\0 "
+    );
+    // The second word cut and pasted before the first, as the app writes it: the pasted
+    // characters typed (no origin), the rest the line's own where they were.
+    let pasted = "\0t\0e\0x\0t ";
+    let mut origins: Vec<Option<usize>> = vec![None; pasted.chars().count()];
+    origins.extend((0..8).map(Some));
+    origins.extend((16..read.len()).map(Some));
+    let text: String = pasted
+        .chars()
+        .chain(read[..8].iter().copied())
+        .chain(read[16..].iter().copied())
+        .collect();
+    assert_eq!(text, "\0t\0e\0x\0t þÿ\0m\0y\0 \0 ");
+    let s = &line.spans[0];
+    let part = TextPart {
+        text: text.clone(),
+        font: PartFont::Span(0),
+        size: s.font_size,
+        color: s.fill.unwrap_or([0.0; 3]),
+        rise: s.rise,
+        from: None,
+        origins,
+    };
+    let e = TextEdit {
+        text,
+        font: None,
+        size: None,
+        color: None,
+        parts: vec![part],
+    };
+    p.edit_text(0, line.id, &e).unwrap();
+    let texts: Vec<String> = (p.page_objects(0).unwrap().into_iter())
+        .filter_map(|o| o.text)
+        .collect();
+    assert_eq!(texts, ["text þÿmy  "]);
 }
 
 /// What `keeps_font` says is what `edit_text` writes: the line's own font, or a standard

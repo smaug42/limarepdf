@@ -103,7 +103,10 @@ this list once it works. The feature table below has the details.
 - A line turned on the page, and invisible recognised (OCR) text, are edited in a box over the line rather than
   drawn where they are (a turned line's box shows its fonts, sizes and colours; the caret goes by the character
   clicked). Over a picture or a shaded background, the line being edited is hidden under one flat colour, the one
-  most common around it, until you finish.
+  most common around it, until you finish. Text in a Type 3 font whose pictures of letters are stored upside down
+  (pdf.js `issue2984`, PDFBox `1628`) reads as turned, as only its pixels say otherwise; a Type 3 font's size is
+  measured from its letters' widths, so a font of few or unusual letters can read a little larger or smaller
+  than it shows (PB-56).
 - No spell checking.
 
 **Selecting and arranging**
@@ -429,6 +432,8 @@ built from exactly the versions in `Cargo.lock`; security problems are reported 
   block LimarePDF finds with confidence edits it as a paragraph, a single line or a block it isn't sure of edits a
   line as today, and a switch turns either into the other ("Edit as paragraph"). It becomes the default only if
   LimarePDF's check of how well it finds paragraphs passes; otherwise the switch comes first. One undo step.
+  Finding paragraphs is built (batch 45's stage 2, not yet in the app) and its check doesn't pass yet (testing.md,
+  "Finding paragraphs"), so the switch will come first.
 - **Incremental saving.** Save only what changed, which is faster for large files. Signed documents are already
   saved this way (above); this item is about using it for every document.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.
