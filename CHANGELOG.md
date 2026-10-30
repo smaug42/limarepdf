@@ -196,6 +196,11 @@
 
 ### Fixed
 
+- Typing on the page was lost when the change keeping it failed: ending a line's typing, new text, a note or a text
+  box (Esc, Enter, Tab, a click away or another tool) showed the reason and threw the typing away. It now comes
+  back on the page to go on with, the document as it was; ended again unchanged, it is left out and a message says
+  so. Typing open on the page also waits under a message or question that opens over it, instead of ending when
+  the message is closed.
 - With several documents open, the tabs no longer wrap a name letter by letter down the window. They stay in one
   row, narrowing to share it with long names shortened (the whole name on hover), then scroll by the mouse wheel
   or the arrows at the row's end (a tab a click, on and on while held), and All open documents lists every one;

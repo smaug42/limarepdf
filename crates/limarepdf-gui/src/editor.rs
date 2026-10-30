@@ -214,6 +214,25 @@ enum Kept {
     Objects(Box<Group>),
 }
 
+/// Typing put back after its change failed ([`Editor::settle_kept`]), as it was then: new
+/// text, a note's or text box's text, or the selected object's line and look.
+enum NotKept {
+    Text(Styled),
+    Writing(String),
+    Object((usize, usize), Styled, Look),
+}
+
+impl NotKept {
+    fn of(held: &Held) -> Option<Self> {
+        match &held.0 {
+            Kept::Text(a) => Some(Self::Text(a.text.clone())),
+            Kept::Writing(w) => Some(Self::Writing(w.text.clone())),
+            Kept::Object(o) => Some(Self::Object(o.0.key, o.0.text.clone(), o.0.look())),
+            _ => None,
+        }
+    }
+}
+
 /// What had the keyboard on the page when F6 took it to another region of the window
 /// (ENH-10), given it back when F6 comes back to the page.
 #[derive(Clone, Debug, PartialEq)]
@@ -549,6 +568,17 @@ impl Insp {
             width: o.line_width.unwrap_or(1.0),
             geom: o.bbox,
             fonts: None,
+        }
+    }
+
+    /// Its shape's look, as changed.
+    fn look(&self) -> Look {
+        Look {
+            fill_on: self.fill_on,
+            fill: self.fill,
+            stroke_on: self.stroke_on,
+            stroke: self.stroke,
+            width: self.width,
         }
     }
 }
@@ -1445,6 +1475,15 @@ pub struct Editor {
     /// (from the settings).
     pub keep: Vec<Tool>,
     pub actions: Vec<Action>,
+    /// What [`Editor::keep_later`] took, by its change's place in [`Editor::actions`]: put
+    /// back to go on typing if the change fails ([`Editor::settle_kept`]).
+    later: Vec<(usize, Held)>,
+    /// Typing put back after its change failed, as it was then: ended again unchanged, it
+    /// isn't tried again but left out.
+    not_kept: Option<NotKept>,
+    /// Typing was left out: its change failed, or the document changed before it could be
+    /// put back. The tab says so.
+    pub left_out: bool,
     /// Outline invisible (OCR) text and let it be selected and corrected.
     pub show_hidden: bool,
     words: HashMap<usize, Vec<PageWord>>,
@@ -1572,6 +1611,9 @@ impl Default for Editor {
             line_edit: None,
             keep: Vec::new(),
             actions: Vec::new(),
+            later: Vec::new(),
+            not_kept: None,
+            left_out: false,
             show_hidden: false,
             words: HashMap::new(),
             text_drag: false,
@@ -1915,14 +1957,12 @@ impl Editor {
 
     /// Keep what was typed: a new note or text box with some text, or changed text.
     pub fn finish_writing(&mut self) {
-        self.keep(Typed::Writing);
+        self.keep_later(Typed::Writing);
     }
 
     /// Keep the new text being typed, if any: added as one undo step.
     pub fn finish_adding(&mut self) {
-        if let Some(held) = self.keep(Typed::Text) {
-            self.done(held);
-        }
+        self.keep_later(Typed::Text);
     }
 
     /// Queue the change that keeps `piece` and stop typing it, as clicking away does.
@@ -1987,6 +2027,10 @@ impl Editor {
             Kept::Writing(w) => self.writing = Some(w),
             Kept::Object(o) => {
                 let (insp, line) = *o;
+                // Selected again, should a click have selected something else meanwhile.
+                if self.sel() != Some(insp.key) {
+                    self.select_object(insp.key.0, insp.key.1);
+                }
                 (self.insp, self.line_edit) = (Some(insp), line);
             }
             Kept::Field(original) => self.form.uncommit(original),
@@ -2001,10 +2045,72 @@ impl Editor {
 
     /// What [`Self::keep`] took is in the document now.
     pub fn done(&mut self, held: Held) {
-        // The next new text carries on in the style this one ended in, as typing would.
-        if let Kept::Text(a) = held.0 {
+        self.carry_on(&held);
+    }
+
+    /// The next new text carries on in the style this one ended in, as typing would.
+    fn carry_on(&mut self, held: &Held) {
+        if let Kept::Text(a) = &held.0 {
             let end = page_text::Look::of(a.text.end_style());
             (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
+        }
+    }
+
+    /// [`Self::keep`], as clicking away keeps typing: what it took is held until its change
+    /// is made ([`Self::settle_kept`]). Typing put back after its change failed, ended again
+    /// unchanged, isn't tried again: it is left out, and the tab says so.
+    fn keep_later(&mut self, piece: Typed) {
+        if self.refused_again(piece) {
+            match piece {
+                Typed::Text => self.adding = None,
+                Typed::Writing => self.writing = None,
+                _ => (self.insp, self.line_edit) = (None, None),
+            }
+            self.not_kept = None;
+            self.left_out = true;
+            return;
+        }
+        if let Some(held) = self.keep(piece) {
+            // New text started next, in this frame, carries on in this one's style.
+            self.carry_on(&held);
+            self.not_kept = None;
+            self.later.push((self.actions.len() - 1, held));
+        }
+    }
+
+    /// Whether `piece` is typing put back after its change failed, unchanged since.
+    fn refused_again(&self, piece: Typed) -> bool {
+        match (&self.not_kept, piece) {
+            (Some(NotKept::Text(t)), Typed::Text) => {
+                self.adding.as_ref().is_some_and(|a| a.text.same_as(t))
+            }
+            (Some(NotKept::Writing(t)), Typed::Writing) => {
+                self.writing.as_ref().is_some_and(|w| w.text == *t)
+            }
+            (Some(NotKept::Object(key, t, look)), Typed::Object) => {
+                let same = |i: &Insp| i.key == *key && i.text.same_as(t) && i.look().same_as(look);
+                self.insp.as_ref().is_some_and(same)
+            }
+            _ => false,
+        }
+    }
+
+    /// After the tab made the changes [`Self::keep_later`] queued: typing whose change was
+    /// made is done with; typing whose change failed (`failed`: the change's place in the
+    /// actions as queued, and whether a change after it was made) goes back to be typed on,
+    /// given the keyboard, unless the document changed since, when its place may be
+    /// another's: then it is left out.
+    pub fn settle_kept(&mut self, failed: &[(usize, bool)]) {
+        for (at, held) in std::mem::take(&mut self.later) {
+            match failed.iter().find(|(f, _)| *f == at) {
+                None => self.done(held),
+                Some((_, false)) => {
+                    self.not_kept = NotKept::of(&held);
+                    self.put_back(held);
+                    self.refocus_typing();
+                }
+                Some((_, true)) => self.left_out = true,
+            }
         }
     }
 
@@ -2075,7 +2181,7 @@ impl Editor {
     /// Keep the selected object's changes (see [`Self::insp_change`]) as one undo step. The
     /// working copy starts again from the object.
     fn commit_insp(&mut self) {
-        self.keep(Typed::Object);
+        self.keep_later(Typed::Object);
     }
 
     /// Stop editing the line on the page, keeping what was typed. With the arrow, or once
@@ -2083,11 +2189,13 @@ impl Editor {
     /// isn't left selected, as a word processor leaves no selection behind, so the inspector
     /// goes back to what it showed before.
     fn end_line_edit(&mut self) {
-        let Some(le) = self.line_edit.take() else {
+        let Some(line) = self.line_edit.as_ref().map(|le| (le.page, le.id)) else {
             return;
         };
+        // Kept with what was typed, to come back with it if the change fails.
         self.commit_insp();
-        let line = Some((le.page, le.id));
+        self.line_edit = None;
+        let line = Some(line);
         if self.tool != Tool::Select && !self.selection.loose() && self.sel() == line {
             self.selection.clear_object();
         }
@@ -2255,7 +2363,12 @@ impl Editor {
         let shown = a.ui(ui, r, k, self.page_colours, accent, settled);
         self.typing_box = Some(shown.edit);
         if shown.done {
-            self.finish_adding();
+            // Under a dialog (a change's failure said, say) it waits, open, for it to close.
+            if crate::dialogs::any_open(ui.ctx()) {
+                a.refocus = true;
+            } else {
+                self.finish_adding();
+            }
         }
         shown.over
     }
@@ -2459,6 +2572,12 @@ impl Editor {
             le.fresh = false;
             return true;
         }
+        // Under a dialog (a change's failure said, say) it waits, open, for it to close, and
+        // takes the keyboard back then: its Esc and clicks are the dialog's.
+        if crate::dialogs::any_open(&ctx) {
+            le.refocus = true;
+            return edit.hovered();
+        }
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if esc && (edit.lost_focus() || edit.has_focus()) {
             // Esc keeps what was typed, as a click away does; Ctrl+Z takes it back.
@@ -2637,6 +2756,11 @@ impl Editor {
         if keeping(ui.ctx(), insp, &self.keep_typing) {
             w.refocus = true;
         }
+        // Under a dialog (a change's failure said, say) it waits, open, for it to close.
+        if crate::dialogs::any_open(ui.ctx()) {
+            w.refocus = true;
+            return held || (!w.note && out.hovered());
+        }
         let kept = parked || w.refocus;
         if finish || esc || outside || (!w.note && out.lost_focus() && !kept) {
             if outside {
@@ -2729,6 +2853,8 @@ impl Editor {
         self.digital_place = None;
         self.digital_error = None;
         self.actions.clear();
+        self.later.clear();
+        self.not_kept = None;
         self.apply_redactions = false;
     }
 
@@ -6141,6 +6267,75 @@ mod tests {
             if let Some(held) = ed.keep(piece) {
                 ed.done(held);
             }
+        }
+    }
+
+    /// BUG-41: new text, and a note or text box, whose change failed come back to go on
+    /// typing; ended again unchanged, they are left out, and changed, tried again. Put back
+    /// only while nothing changed the document since.
+    #[test]
+    fn typing_whose_change_failed_comes_back() {
+        let look = page_text::Look {
+            font: FontChoice::default(),
+            size: 12.0,
+            color: [0.0; 3],
+        };
+        for piece in [Typed::Text, Typed::Writing] {
+            let mut ed = Editor::default();
+            let typed = |ed: &mut Editor, text: &str| match piece {
+                Typed::Text => {
+                    let a = ed.adding.get_or_insert_with(|| {
+                        PageText::new(egui::Id::NULL, 0, (100.0, 100.0), look)
+                    });
+                    a.text.sync(text, None);
+                }
+                _ => {
+                    let w = ed.writing.get_or_insert_with(|| {
+                        Writing::new(0, true, [100.0, 100.0, 120.0, 120.0], 12.0)
+                    });
+                    w.text = text.into();
+                }
+            };
+            let end = |ed: &mut Editor| match piece {
+                Typed::Text => ed.finish_adding(),
+                _ => ed.finish_writing(),
+            };
+            // Its change failed: back to go on with.
+            typed(&mut ed, "Seal");
+            end(&mut ed);
+            assert_eq!(ed.actions.len(), 1, "{piece:?}");
+            assert!(!ed.pending(), "{piece:?}: still open");
+            ed.actions.clear();
+            ed.settle_kept(&[(0, false)]);
+            assert!(ed.pending() && !ed.left_out, "{piece:?}: not back");
+            // Ended again as it is: left out, and said, not tried again.
+            end(&mut ed);
+            assert!(
+                ed.actions.is_empty() && !ed.pending(),
+                "{piece:?}: tried again"
+            );
+            assert!(std::mem::take(&mut ed.left_out), "{piece:?}: not said");
+            // Changed after coming back: tried again.
+            typed(&mut ed, "Seal");
+            end(&mut ed);
+            ed.actions.clear();
+            ed.settle_kept(&[(0, false)]);
+            typed(&mut ed, "Seals");
+            end(&mut ed);
+            assert_eq!(ed.actions.len(), 1, "{piece:?}: changed, not tried");
+            assert!(!ed.left_out, "{piece:?}");
+            // A change after it made meanwhile: its place may be another's, so it is left
+            // out, not put back.
+            ed.actions.clear();
+            ed.settle_kept(&[(0, true)]);
+            assert!(!ed.pending() && ed.left_out, "{piece:?}: put back");
+            // Made: done with.
+            ed.left_out = false;
+            typed(&mut ed, "Walrus");
+            end(&mut ed);
+            ed.actions.clear();
+            ed.settle_kept(&[]);
+            assert!(!ed.pending() && !ed.left_out, "{piece:?}");
         }
     }
 

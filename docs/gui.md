@@ -254,6 +254,10 @@ keeps the typing and takes it back. Text that can't be kept (a form value Limare
 with the reason shown, and the command doesn't run. Commands that only show something (zoom, moving between pages,
 opening a tool or a section of the inspector) leave your typing as it is.
 
+Typing on the page that can't be kept when you finish it (with Esc, Enter, Tab or a click away) comes back where it
+was, with the reason shown, for you to change it; the document stays as it was. Finish it again unchanged and it is
+left out, and a message says so. A message or question that opens while you type leaves your typing open under it.
+
 ## Dialogs
 
 Dialogs (questions, messages, Print, Create signature, the digital signature windows, About) open over a dimmed

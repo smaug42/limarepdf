@@ -427,6 +427,21 @@ back when the dialog closes (`Edit::Text`'s `back`); one whose own change is ref
 back the same way (`FormUi::kept`). Panel Apply buttons that redraw only some pages or nothing don't commit first:
 they lose nothing, and their forms join their own undo steps.
 
+Typing ended on the page (Esc, Enter, Tab, a click away, another tool, the selection moving on) is kept by
+`Editor::keep_later` (new text, a note or text box, the selected object's line and look; BUG-41): `Editor::keep`
+takes it and queues its change, and the held typing waits in `Editor::later` by the change's place in the queue.
+`Tab::apply_actions` notes each change that fails (it set `Tab::error`; `Tab::failed_at`, before each change and
+after the last, so the arms' `continue`s need no care) with the revision then, and hands them to
+`Editor::settle_kept`: typing whose change was made is `done`; typing whose change failed is put back
+(`Editor::put_back`, the line selected again) and given the keyboard (`refocus_typing`), unless a later change in
+the same batch moved the revision, when the held object id may be another's and the typing is left out instead.
+Put back, it is remembered as it was (`Editor::not_kept`): ended again unchanged it isn't tried again but dropped
+(`refused_again`), and `Editor::left_out` makes the tab say so (`LEFT_OUT`). The look changes of words or several
+objects (`Typed::Words`, `Typed::Objects`) still use `keep` alone: nothing typed is lost, and the inspector shows
+the document's look again. Typing open on the page waits under any dialog (`dialogs::any_open` in `line_edit_ui`,
+`adding_ui` and `writing_ui`), its Esc and clicks being the dialog's, and takes the keyboard back when it closes; a
+failed change's message is such a dialog.
+
 Undo steps (`tab.rs`'s `Step`; batch 43, PF-42) keep only what each change changed: `Step::doc` is an
 `Option<Arc<Restore>>`, `None` for a change of the password settings alone, made by core's
 `crates/limarepdf-core/src/history.rs`. `Tab::edit_inner` takes `Pdf::before` (a `Before`: the document cloned)

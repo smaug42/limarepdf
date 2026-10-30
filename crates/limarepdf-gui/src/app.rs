@@ -7546,6 +7546,68 @@ mod tests {
         }
     }
 
+    /// BUG-41: typing whose change can't be made isn't lost. A line's typing ended (Esc, or
+    /// a click away) when its change fails comes back on the page to go on with, the reason
+    /// shown and the document as it was; ended again unchanged, it is left out, and that is
+    /// said.
+    #[test]
+    fn typing_whose_change_fails_comes_back_to_go_on_with() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        let ty = Typist::new(&ctx);
+        for end in ["Esc", "a click away"] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let note = typing_doc(&mut app, &ctx);
+            let (min, k) = ty.page(&mut app);
+            start_typing(&mut app, &ty, "line on the page", note);
+            ty.text(&mut app, "Seal");
+            let typing = app.tabs[0].ed.typing_id().expect("typing");
+            // The line goes from the document behind the editor's back: its change fails.
+            let t = &mut app.tabs[0];
+            let objs = t.pdf.page_objects(0).unwrap();
+            let line = objs.iter().position(|o| o.text.as_deref() == Some("Otter"));
+            t.pdf.delete_objects(0, &[line.expect("the line")]).unwrap();
+            let (state, lines) = (t.state(), line_texts(&t.pdf, 0));
+            match end {
+                "Esc" => drop(ty.key(&mut app, Key::Escape, none)),
+                _ => ty.click(&mut app, min + egui::vec2(300.0, 600.0) * k),
+            }
+            ty.pause(&mut app);
+            assert_eq!(message(&app).0, "Error", "{end}");
+            // The message closed as it was opened: by Esc, or a click.
+            let tree = ty.pause(&mut app);
+            match end {
+                "Esc" => drop(ty.key(&mut app, Key::Escape, none)),
+                _ => ty.click(&mut app, middle(&tree, "OK")),
+            }
+            let tree = ty.pause(&mut app);
+            assert!(
+                matches!(app.dialog, Dialog::None),
+                "{end}: the message stayed"
+            );
+            assert_eq!(
+                app.tabs[0].ed.typing_id(),
+                Some(typing),
+                "{end}: typing lost"
+            );
+            assert_eq!(focused_text(&tree).as_deref(), Some("Seal"), "{end}");
+            let t = &app.tabs[0];
+            assert!(t.state() == state, "{end}: changed");
+            assert_eq!(line_texts(&t.pdf, 0), lines, "{end}");
+            // Ended again as it is: left out, and said.
+            ty.key(&mut app, Key::Escape, none);
+            ty.pause(&mut app);
+            assert_eq!(app.tabs[0].ed.typing_id(), None, "{end}: still typing");
+            let said = toast(&app).unwrap_or_default();
+            assert!(said.contains("left out"), "{end}: {said:?}");
+            let t = &app.tabs[0];
+            assert!(t.state() == state, "{end}: changed after");
+            assert_eq!(line_texts(&t.pdf, 0), lines, "{end}");
+        }
+    }
+
     /// ENH-39: typing open on the page (new text, a line being edited, a new note or text
     /// box) waits while another tab is in front, and has the keyboard again when its tab
     /// comes back, to go on typing, as a word processor's document does.

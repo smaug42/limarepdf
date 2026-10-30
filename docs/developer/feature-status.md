@@ -413,9 +413,10 @@ built from exactly the versions in `Cargo.lock`; security problems are reported 
 - **Better OCR.** Scripts beyond Latin; reading the images on pages that also have text (today OCR only reads pages
   with no text at all, so a scanned figure or a pasted screenshot in a normal document is skipped); and matching the
   original fonts when scanned text is edited.
-- **Editing paragraphs.** Edit text as paragraphs that reflow, not line by line, as a command you choose ("Edit as
-  paragraph") rather than the default: LimarePDF outlines the lines it takes to be the paragraph, you adjust or confirm,
-  and the reflow is one undo step. Line-by-line editing stays as it is.
+- **Editing paragraphs.** Edit text as paragraphs that rewrap in their frame, not line by line: a double-click in a
+  block LimarePDF finds with confidence edits it as a paragraph, a single line or a block it isn't sure of edits a
+  line as today, and a switch turns either into the other ("Edit as paragraph"). It becomes the default only if
+  LimarePDF's check of how well it finds paragraphs passes; otherwise the switch comes first. One undo step.
 - **Incremental saving.** Save only what changed, which is faster for large files. Signed documents are already
   saved this way (above); this item is about using it for every document.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.

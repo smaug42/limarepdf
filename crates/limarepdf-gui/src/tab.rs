@@ -53,6 +53,9 @@ const MERGE_PAUSE: f64 = 5.0;
 const SIMILAR_FONT: &str =
     "Some words around the change are now in a similar font: their own couldn't be kept";
 
+/// Typing whose change failed, left as it was, or that couldn't go back to its place.
+const LEFT_OUT: &str = "The typing that couldn't be kept was left out";
+
 /// A change to `n` objects, `done`: when several were changed and it failed, the message
 /// says that one of them couldn't be (`what`: "moved") and nothing was changed.
 fn several(done: limarepdf_core::Result<()>, n: usize, what: &str) -> limarepdf_core::Result<()> {
@@ -1109,7 +1112,13 @@ impl Tab {
     /// Carry out the changes queued by the editing interface.
     pub fn apply_actions(&mut self, ctx: &egui::Context) {
         let acts = std::mem::take(&mut self.ed.actions);
-        for a in acts {
+        let n = acts.len();
+        // The changes that failed, by their place, with the document's revision then: what
+        // was typed for them goes back to be typed on ([`Editor::settle_kept`]).
+        let (mut said, mut failed) = (self.error.take(), Vec::new());
+        for (at, a) in acts.into_iter().enumerate() {
+            // Before each change (a `continue` below goes on to the next), the last one's.
+            self.failed_at(at.checked_sub(1), &mut failed, &mut said);
             match a {
                 Action::SetBox(p, boxes) => {
                     let set = |pdf: &mut Pdf| {
@@ -1263,6 +1272,7 @@ impl Tab {
                 }
                 Action::AnnotText(p, id, text) => {
                     let Some(a) = self.pdf.annotations().into_iter().find(|a| a.id == id) else {
+                        self.error = Some("That comment isn't in the document any more".into());
                         continue;
                     };
                     self.edit_pages(ctx, &[p], |pdf| {
@@ -1478,6 +1488,31 @@ impl Tab {
                     }
                 }
             }
+        }
+        self.failed_at(n.checked_sub(1), &mut failed, &mut said);
+        self.error = said;
+        // Put back only where nothing changed the document since: a later change may have
+        // given its place to another object.
+        let failed: Vec<(usize, bool)> = (failed.into_iter())
+            .map(|(at, revision)| (at, revision != self.revision))
+            .collect();
+        self.ed.settle_kept(&failed);
+        if std::mem::take(&mut self.ed.left_out) {
+            self.info = Some(LEFT_OUT.into());
+        }
+    }
+
+    /// For [`Tab::apply_actions`]: whether its change `at` failed, saying why; noted in
+    /// `failed` with the document's revision, its reason kept in `said`.
+    fn failed_at(
+        &mut self,
+        at: Option<usize>,
+        failed: &mut Vec<(usize, u64)>,
+        said: &mut Option<String>,
+    ) {
+        if let (Some(at), Some(why)) = (at, self.error.take()) {
+            failed.push((at, self.revision));
+            *said = Some(why);
         }
     }
 
