@@ -1,6 +1,7 @@
 //! Font information needed to measure and decode text in page content.
 
 use crate::own_encoding;
+use crate::own_font;
 use crate::std14;
 use crate::tounicode::ToUnicode;
 use hayro::hayro_interpret::hayro_cmap::{load_embedded, BfString, CMap, CMapName, CidFamily};
@@ -9,7 +10,7 @@ use lopdf::{Dictionary, Document, Object};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Family {
     Helvetica,
     Times,
@@ -20,7 +21,7 @@ pub enum Family {
 
 /// The font text is written in: one of the 12 standard PDF fonts (no embedding needed), or
 /// an installed family's face (embedded).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FontChoice {
     pub family: Family,
     pub bold: bool,
@@ -101,7 +102,7 @@ pub fn winansi_bytes(s: &str) -> Vec<u8> {
 
 /// The letters of a Latin ligature character (U+FB00..=U+FB06); other characters as
 /// they are.
-fn unligature(c: char) -> String {
+pub(crate) fn unligature(c: char) -> String {
     match c {
         '\u{FB00}' => "ff",
         '\u{FB01}' => "fi",
@@ -131,6 +132,9 @@ pub(crate) struct FontCtx<'a> {
     /// The font's ToUnicode map, read by LimarePDF (lopdf rejects many that are laid out
     /// differently from the usual template). Consulted before `enc`.
     to_unicode: Option<ToUnicode>,
+    /// A Type 0 font whose `/ToUnicode` names Identity-H or Identity-V instead of holding a
+    /// map: its codes are their characters' Unicode values, as poppler and hayro read it.
+    unicode_codes: bool,
     /// A Type 0 font's CMap, from codes to CIDs: Identity, one of the predefined ones
     /// (hayro carries them), or the font's own. `None` when it can't be read.
     cmap: Option<Arc<CMap>>,
@@ -142,6 +146,9 @@ pub(crate) struct FontCtx<'a> {
     /// For a Type 0 font with no ToUnicode map: its character collection's map from CIDs
     /// to Unicode (`Adobe-Japan1-UCS2` and its kin), as pdf.js and hayro use.
     cid_text: Option<Arc<CMap>>,
+    /// For an Identity Type 0 font with neither a ToUnicode map nor a character collection
+    /// LimarePDF knows: its glyphs' text from its program (PB-26), as poppler reads them.
+    glyph_text: Option<Arc<own_font::CidText>>,
     first: u32,
     widths: Vec<f32>,
     missing: f32,
@@ -577,10 +584,16 @@ impl<'a> FontCtx<'a> {
             enc: dict.get_font_encoding(doc).ok(),
             codes: None,
             to_unicode,
+            unicode_codes: type0
+                && (dict.get(b"ToUnicode").ok())
+                    .and_then(|o| doc.dereference(o).ok())
+                    .and_then(|(_, o)| o.as_name().ok())
+                    .is_some_and(|n| n.starts_with(b"Identity-")),
             cmap: None,
             space: Vec::new(),
             utf16: false,
             cid_text: None,
+            glyph_text: None,
             first: 0,
             widths: Vec::new(),
             missing: 0.0,
@@ -657,12 +670,18 @@ impl<'a> FontCtx<'a> {
             ctx.utf16 = enc_name.as_deref().is_some_and(|n| {
                 n.starts_with("Uni") && (n.contains("-UCS2-") || n.contains("-UTF16-"))
             });
-            if ctx.to_unicode.is_none() && !ctx.utf16 {
+            if ctx.to_unicode.is_none() && !ctx.utf16 && !ctx.unicode_codes {
                 let family = desc.and_then(|d| system_family(doc, d)).or_else(|| {
                     let cc = ctx.cmap.as_ref()?.metadata().character_collection.as_ref();
                     cc.map(|c| c.family.clone())
                 });
                 ctx.cid_text = family.and_then(|f| predefined(f.ucs2_cmap()?));
+                let identity = enc_name
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("Identity-"));
+                if ctx.cid_text.is_none() && identity {
+                    ctx.glyph_text = desc.and_then(|d| own_font::cid_text(doc, d));
+                }
             }
         } else {
             ctx.codes = own_encoding::simple_codes(doc, dict);
@@ -836,11 +855,33 @@ impl<'a> FontCtx<'a> {
         s
     }
 
+    /// The text the font's ToUnicode map gives code `code`, if it has one.
+    pub(crate) fn mapped(&self, code: u32) -> Option<&str> {
+        self.to_unicode.as_ref().and_then(|m| m.get(code))
+    }
+
+    /// The text code `code` stands for ([`FontCtx::decode_code`]) when the font says it: a
+    /// simple font's codes always (its encoding), a Type 0 font's by its ToUnicode map, its
+    /// Unicode CMap, its character collection or its program, not by the last resort of
+    /// reading the code as a simple font's.
+    pub(crate) fn known_text(&self, code: u32, raw: &[u8]) -> Option<String> {
+        let cid = || self.cid(code, raw.len());
+        let known = !self.type0
+            || self.mapped(code).is_some()
+            || self.utf16
+            || self.unicode_codes
+            || cid().is_some_and(|c| {
+                (self.cid_text.as_ref()).is_some_and(|m| m.lookup_bf_string(c).is_some())
+                    || (self.glyph_text.as_ref()).is_some_and(|g| g.get(c).is_some())
+            });
+        known.then(|| self.decode_code(code, raw))
+    }
+
     fn decode_raw(&self, code: u32, raw: &[u8]) -> String {
         if let Some(s) = self.to_unicode.as_ref().and_then(|m| m.get(code)) {
             return s.to_owned();
         }
-        if self.utf16 {
+        if self.utf16 || self.unicode_codes {
             let units: Vec<u16> = raw
                 .as_chunks::<2>()
                 .0
@@ -863,10 +904,15 @@ impl<'a> FontCtx<'a> {
                 None => {}
             }
         }
+        if let Some(g) = &self.glyph_text {
+            if let Some(s) = self.cid(code, raw.len()).and_then(|c| g.get(c)) {
+                return s.to_string();
+            }
+        }
         // A code the CMap of a Type 0 font maps to no CID is drawn as no character: lopdf's
         // encodings, those of simple fonts, would read `<0042>` as "B" (PB-06). A CID with
-        // no text (Identity-H's, with no ToUnicode map) is still read through them, which
-        // often gives the text meant (codes that are ASCII, as in pdf.js's bug951051).
+        // no text still (Identity-H's, with no ToUnicode map, whose program doesn't say) is
+        // read through them, which often gives the text meant (codes that are ASCII).
         if self.type0 && self.cid(code, raw.len()).is_none() {
             return "\u{FFFD}".into();
         }

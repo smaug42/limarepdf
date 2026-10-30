@@ -19,7 +19,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptio
 use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
-    Annot, BookmarkPlace, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf, Query,
+    Annot, BookmarkPlace, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf, Query, Restore,
     SearchHit, Shape, ShapeLook, StampPlace,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -39,9 +39,11 @@ const GAP: f32 = 16.0;
 /// Room left beside a fitted page, beyond the gaps, so it never meets the scroll bar.
 const FIT_MARGIN: f32 = 12.0;
 const THUMB_W: f32 = 120.0;
-const MAX_UNDO: usize = 20;
+/// The most undo steps a tab keeps, as Word and LibreOffice keep by default.
+const MAX_UNDO: usize = 100;
 /// The most memory one tab's undo steps may hold. Beyond it the oldest steps are dropped,
-/// though the latest is always kept, so undo is shorter on very large documents.
+/// though the latest is always kept, so undo is shorter after changes that each change much
+/// of a very large document (optimising a long scan, which rewrites its pictures).
 const UNDO_BUDGET: usize = 1 << 30;
 /// Edits to the words of one line of page text this soon (seconds) after the last one,
 /// with nothing else in between, are one undo step, as typing is in a word processor.
@@ -50,6 +52,9 @@ const MERGE_PAUSE: f64 = 5.0;
 /// (`Pdf::edit_texts`).
 const SIMILAR_FONT: &str =
     "Some words around the change are now in a similar font: their own couldn't be kept";
+
+/// Typing whose change failed, left as it was, or that couldn't go back to its place.
+const LEFT_OUT: &str = "The typing that couldn't be kept was left out";
 
 /// A change to `n` objects, `done`: when several were changed and it failed, the message
 /// says that one of them couldn't be (`what`: "moved") and nothing was changed.
@@ -88,9 +93,10 @@ enum ToHit {
 
 /// One undo or redo step: the state to go back to.
 struct Step {
-    /// The document's bytes; `None` when only the password settings changed. A stamp's
-    /// link shares them when they are the document it was added to.
-    pdf: Option<Arc<Vec<u8>>>,
+    /// What puts the document back: the objects the change changed, as they were; `None`
+    /// when only the password settings changed. A stamp's link shares it while the stamp is
+    /// all that changed since the document it was added to.
+    doc: Option<Arc<Restore>>,
     encryption: Option<Encryption>,
     scrubbed: bool,
     /// The change between this step and the state it was taken from removed content for
@@ -113,12 +119,12 @@ struct Pictures {
 }
 
 /// A watermark or headers and footers just added, which the inspector's form keeps
-/// updating until anything else changes: the document's bytes before it was added (the
-/// same copy as the undo step's, and counted in the undo budget), and the settings it was
-/// added with.
+/// updating until anything else changes: what puts the document back as it was before it
+/// was added (the undo step's when it was added, joined with each update's after; counted
+/// in the undo budget), and the settings it was added with.
 #[derive(Clone)]
 pub struct Stamped {
-    base: Arc<Vec<u8>>,
+    base: Arc<Restore>,
     pub form: StampForm,
 }
 
@@ -140,6 +146,14 @@ impl StampForm {
         match self {
             StampForm::Wm(_) => Stamp::Watermark,
             StampForm::Hf(_) => Stamp::HeaderFooter,
+        }
+    }
+
+    /// The pages it was put on, as typed.
+    fn range(&self) -> &str {
+        match self {
+            StampForm::Wm(w) => &w.range,
+            StampForm::Hf(h) => &h.range,
         }
     }
 }
@@ -178,26 +192,24 @@ enum Redraw<'a> {
     Nothing,
 }
 
-/// The memory `steps` and the form's `link` hold, each copy of the document counted once
-/// (a stamp's link shares the copy of the step it was added after). A copy takes its
-/// length, as the spare capacity left by growing the buffer is never written, so the
-/// system gives it no memory.
+/// The memory `steps` and the form's `link` hold, each [`Restore`] counted once (a stamp's
+/// link shares the step's it was added with).
 fn held(steps: &[Step], link: Option<&Stamped>) -> usize {
     let links = steps.iter().filter_map(|s| s.stamp.as_ref()).chain(link);
-    let copies = steps.iter().filter_map(|s| s.pdf.as_ref());
-    let mut seen: Vec<&Arc<Vec<u8>>> = Vec::new();
-    for c in copies.chain(links.map(|l| &l.base)) {
-        if !seen.iter().any(|s| Arc::ptr_eq(s, c)) {
-            seen.push(c);
+    let kept = steps.iter().filter_map(|s| s.doc.as_ref());
+    let mut seen: Vec<&Arc<Restore>> = Vec::new();
+    for r in kept.chain(links.map(|l| &l.base)) {
+        if !seen.iter().any(|s| Arc::ptr_eq(s, r)) {
+            seen.push(r);
         }
     }
-    seen.iter().map(|c| c.len()).sum()
+    seen.iter().map(|r| r.size()).sum()
 }
 
 /// Drop the oldest steps until at most [`MAX_UNDO`] remain and they and the form's `link`
 /// hold at most `budget` bytes, always keeping the latest. If that alone is over, the stamp
-/// links whose copies no step holds end (the form's and the steps'), and the kind of one
-/// ended is returned.
+/// links that no step shares end (the form's and the steps'), and the kind of one ended is
+/// returned.
 fn trim(steps: &mut Vec<Step>, link: &mut Option<Stamped>, budget: usize) -> Option<Stamp> {
     let mut drop = steps.len().saturating_sub(MAX_UNDO);
     while held(&steps[drop..], link.as_ref()) > budget && drop + 1 < steps.len() {
@@ -207,7 +219,7 @@ fn trim(steps: &mut Vec<Step>, link: &mut Option<Stamped>, budget: usize) -> Opt
     if held(steps, link.as_ref()) <= budget {
         return None;
     }
-    let kept: Vec<Arc<Vec<u8>>> = steps.iter().filter_map(|s| s.pdf.clone()).collect();
+    let kept: Vec<Arc<Restore>> = steps.iter().filter_map(|s| s.doc.clone()).collect();
     let own = |l: &Stamped| !kept.iter().any(|c| Arc::ptr_eq(c, &l.base));
     let mut ended = None;
     let links = steps.iter_mut().map(|s| &mut s.stamp).chain([link]);
@@ -750,6 +762,12 @@ impl Tab {
         (self.revision, self.undo.len(), self.redo.len())
     }
 
+    /// The memory the undo steps and the stamp's link hold, as the budget counts it.
+    #[cfg(test)]
+    pub fn undo_held(&self) -> usize {
+        held(&self.undo, self.stamp.as_ref())
+    }
+
     /// After a command failed part way: nothing selected, dragged or half made, the Read
     /// tool, and no commands left queued.
     pub fn reset_interaction(&mut self) {
@@ -820,13 +838,20 @@ impl Tab {
         pages: &[usize],
         update: bool,
     ) -> bool {
-        let base = if update {
+        let n = self.page_count();
+        let (base, was_on) = if update {
             match self.linked(form.kind()) {
-                Some(s) => Some(s.base.clone()),
+                // Nothing else changed since, so its range gives the same pages: those it
+                // leaves are drawn again too, without it.
+                Some(s) => {
+                    let all = || (0..n).collect();
+                    let was_on = limarepdf_core::parse_page_range(s.form.range(), n);
+                    (Some(s.base.clone()), was_on.unwrap_or_else(|_| all()))
+                }
                 None => return false,
             }
         } else {
-            None
+            (None, Vec::new())
         };
         // A picture is read again each time, so a changed file shows.
         let picture = match &form {
@@ -847,15 +872,28 @@ impl Tab {
         };
         let add = |p: &mut Pdf| {
             if let Some(b) = &base {
-                p.reopen(b)?;
+                p.restore(Restore::clone(b));
             }
             stamp_onto(p, &form, pages, picture)
         };
-        if !self.edit_inner(ctx, Redraw::Pages(pages), false, false, add) {
+        let mut redraw: Vec<usize> = pages.iter().copied().chain(was_on).collect();
+        redraw.sort_unstable();
+        redraw.dedup();
+        if !self.edit_inner(ctx, Redraw::Pages(&redraw), false, false, add) {
             return false;
         }
-        // The state before the stamp: the undo step just made holds it, and shares it.
-        let base = base.or_else(|| self.undo.last()?.pdf.clone());
+        // Back to before the stamp: added, the undo step just made, shared with it; updated,
+        // the link joined with that step, which adds the objects this stamp changed that the
+        // last didn't (nothing else changed them since the stamp was added).
+        let made = self.undo.last().and_then(|s| s.doc.clone());
+        let base = match (base, made) {
+            (Some(link), Some(made)) => {
+                let mut joined = Restore::clone(&link);
+                joined.merge(Restore::clone(&made));
+                Some(Arc::new(joined))
+            }
+            (link, made) => made.or(link),
+        };
         self.stamp = base.map(|base| Stamped {
             base,
             form: form.clone(),
@@ -916,16 +954,11 @@ impl Tab {
         merge: bool,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        let before = match crate::guard(|| self.pdf.snapshot()) {
-            Ok(b) => b,
-            Err(e) => {
-                self.error = Some(format!("{e:#}"));
-                return false;
-            }
-        };
+        // The document as it is: compared with it after the change, or put back if it fails.
+        let before = self.pdf.before();
         // A panic leaves the document half changed, so it is put back like any other failure.
         if let Err(e) = crate::guard(|| f(&mut self.pdf)) {
-            let _ = self.pdf.reopen(&before);
+            self.pdf.go_back(before);
             self.error = Some(format!("{e:#}"));
             return false;
         }
@@ -940,21 +973,29 @@ impl Tab {
             Ok(())
         });
         if let Err(e) = redrawn {
-            let back = self.pdf.reopen(&before);
+            self.pdf.go_back(before);
             let again = crate::guard(|| {
                 self.refresh(ctx);
                 Ok(())
             });
-            if let Err(e) = back.and(again) {
+            if let Err(e) = again {
                 self.broken = Some(e.to_string());
             }
             self.error = Some(format!("{e:#}"));
             return false;
         }
-        if merge && !self.undo.is_empty() {
-            self.dirty = true;
-        } else {
-            self.push_undo(Some(before), scrub);
+        let undo = before.undo(&self.pdf);
+        match self.undo.last_mut().filter(|_| merge) {
+            // Joined to the last step: Undo goes back to before its first change.
+            Some(last) => {
+                match &mut last.doc {
+                    Some(r) => Arc::make_mut(r).merge(undo),
+                    None => last.doc = Some(Arc::new(undo)),
+                }
+                self.dirty = true;
+                self.keep_to_budget();
+            }
+            None => self.push_undo(Some(undo), scrub),
         }
         self.revision += 1;
         self.scrubbed |= scrub;
@@ -1071,7 +1112,13 @@ impl Tab {
     /// Carry out the changes queued by the editing interface.
     pub fn apply_actions(&mut self, ctx: &egui::Context) {
         let acts = std::mem::take(&mut self.ed.actions);
-        for a in acts {
+        let n = acts.len();
+        // The changes that failed, by their place, with the document's revision then: what
+        // was typed for them goes back to be typed on ([`Editor::settle_kept`]).
+        let (mut said, mut failed) = (self.error.take(), Vec::new());
+        for (at, a) in acts.into_iter().enumerate() {
+            // Before each change (a `continue` below goes on to the next), the last one's.
+            self.failed_at(at.checked_sub(1), &mut failed, &mut said);
             match a {
                 Action::SetBox(p, boxes) => {
                     let set = |pdf: &mut Pdf| {
@@ -1225,6 +1272,7 @@ impl Tab {
                 }
                 Action::AnnotText(p, id, text) => {
                     let Some(a) = self.pdf.annotations().into_iter().find(|a| a.id == id) else {
+                        self.error = Some("That comment isn't in the document any more".into());
                         continue;
                     };
                     self.edit_pages(ctx, &[p], |pdf| {
@@ -1441,6 +1489,34 @@ impl Tab {
                 }
             }
         }
+        self.failed_at(n.checked_sub(1), &mut failed, &mut said);
+        self.error = said;
+        // Put back only where nothing changed the document since: a later change may have
+        // given its place to another object.
+        let failed: Vec<(usize, bool)> = (failed.into_iter())
+            .map(|(at, revision)| (at, revision != self.revision))
+            .collect();
+        self.ed.settle_kept(&failed);
+        if std::mem::take(&mut self.ed.left_out) {
+            self.info = Some(LEFT_OUT.into());
+        }
+        if let Some(c) = self.ed.left_composing.take() {
+            self.info = Some(crate::page_text::left_note(&c));
+        }
+    }
+
+    /// For [`Tab::apply_actions`]: whether its change `at` failed, saying why; noted in
+    /// `failed` with the document's revision, its reason kept in `said`.
+    fn failed_at(
+        &mut self,
+        at: Option<usize>,
+        failed: &mut Vec<(usize, u64)>,
+        said: &mut Option<String>,
+    ) {
+        if let (Some(at), Some(why)) = (at, self.error.take()) {
+            failed.push((at, self.revision));
+            *said = Some(why);
+        }
     }
 
     /// Mark the selected words with `mark` in `color`, one annotation per page, as one
@@ -1559,15 +1635,15 @@ impl Tab {
         }
     }
 
-    /// Record the state before a change: the document's bytes (`None` if it did not
+    /// Record the state before a change: what puts the document back (`None` if it did not
     /// change), the current password settings and whether anything was removed for good;
     /// `removal` when the change removes content for good.
-    fn push_undo(&mut self, pdf: Option<Vec<u8>>, removal: bool) {
+    fn push_undo(&mut self, doc: Option<Restore>, removal: bool) {
         let encryption = self.encryption.clone();
         // The link to a stamp belongs to the state before the change.
         let stamp = self.stamp.take();
         self.undo.push(Step {
-            pdf: pdf.map(Arc::new),
+            doc: doc.map(Arc::new),
             encryption,
             scrubbed: self.scrubbed,
             removal,
@@ -1592,7 +1668,7 @@ impl Tab {
         };
         self.info = Some(format!(
             "{what} can't be changed from its tool any more: this document is too \
-             large to keep the copy that needs. What was added stays on the pages"
+             large to keep what that needs. What was added stays on the pages"
         ));
     }
 
@@ -1618,11 +1694,10 @@ impl Tab {
         }
         if let Some(step) = self.undo.pop() {
             let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
-            if let Some(back) = self.restore(ctx, step) {
-                self.redo.push(back);
-                // Words selected stay selected when they still read the same.
-                self.ed.reselect(&self.pdf, sel, was);
-            }
+            let back = self.restore(ctx, step);
+            self.redo.push(back);
+            // Words selected stay selected when they still read the same.
+            self.ed.reselect(&self.pdf, sel, was);
         }
     }
 
@@ -1635,23 +1710,17 @@ impl Tab {
         }
         if let Some(step) = self.redo.pop() {
             let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
-            if let Some(back) = self.restore(ctx, step) {
-                self.undo.push(back);
-                self.ed.reselect(&self.pdf, sel, was);
-            }
+            let back = self.restore(ctx, step);
+            self.undo.push(back);
+            self.ed.reselect(&self.pdf, sel, was);
         }
     }
 
-    /// Go back to a step's state. Returns the step that reverses it.
-    fn restore(&mut self, ctx: &egui::Context, step: Step) -> Option<Step> {
-        let pdf = match step.pdf {
-            Some(bytes) => {
-                let cur = self.pdf.snapshot().ok()?;
-                self.pdf.reopen(&bytes).ok()?;
-                Some(Arc::new(cur))
-            }
-            None => None,
-        };
+    /// Go back to a step's state, in place: what was read when the document was opened
+    /// (protected, repaired) stays as it was. Returns the step that reverses it.
+    fn restore(&mut self, ctx: &egui::Context, step: Step) -> Step {
+        // A copy when a stamp's link shares it.
+        let doc = (step.doc).map(|r| Arc::new(self.pdf.restore(Arc::unwrap_or_clone(r))));
         let encryption = std::mem::replace(&mut self.encryption, step.encryption);
         let scrubbed = std::mem::replace(&mut self.scrubbed, step.scrubbed);
         let stamp = std::mem::replace(&mut self.stamp, step.stamp);
@@ -1664,7 +1733,7 @@ impl Tab {
             None => {}
         }
         self.dirty = true;
-        if pdf.is_some() {
+        if doc.is_some() {
             // Pages only moved, came or went: the others keep their pictures.
             let kept = step.arranged.as_deref().map(|t| self.pictures_by_page(t));
             self.revision += 1;
@@ -1674,14 +1743,14 @@ impl Tab {
             }
             self.place_drafts();
         }
-        Some(Step {
-            pdf,
+        Step {
+            doc,
             encryption,
             scrubbed,
             removal: step.removal,
             stamp,
             arranged: step.arranged,
-        })
+        }
     }
 
     /// Re-render from the current document state.
@@ -2749,11 +2818,25 @@ impl Tab {
         resp.context_menu(|ui| actions::context_menu(ui, &sel, &c, &mut self.requested));
     }
 
+    /// A right-click in the text being typed on the page: the menu for its text, Cut, Copy
+    /// and Paste, Bold and Italic, as word processors have. The box as drawn this frame
+    /// (`Editor::typing_box`): one read again by its id would give up the keyboard it was
+    /// just given back, when a press elsewhere came this frame.
+    fn typing_menu(&mut self, base: &Ctx) {
+        let Some(resp) = self.ed.typing_box.take() else {
+            return;
+        };
+        let mut c = *base;
+        self.fill_ctx(&mut c);
+        resp.context_menu(|ui| actions::typing_menu(ui, &c, &mut self.requested));
+    }
+
     /// A small bar for the selected object or words, with icon buttons for the right-click
-    /// menu's commands (for a line being edited, Bold, Italic and Copy). It goes where it
-    /// covers neither the selection nor the page's other text ([`bar_place`], ENH-20),
-    /// scrolls with the page and stays inside the view. `i` is the page, drawn at `page` on
-    /// the screen, `k` the screen size of a point, `b` the selection's box in page points.
+    /// menu's commands (for a line being edited, Bold, Italic, Cut, Copy and Paste). It goes
+    /// where it covers neither the selection nor the page's other text ([`bar_place`],
+    /// ENH-20), scrolls with the page and stays inside the view. `i` is the page, drawn at
+    /// `page` on the screen, `k` the screen size of a point, `b` the selection's box in page
+    /// points.
     fn floating_toolbar(
         &mut self,
         ui: &egui::Ui,
@@ -3156,7 +3239,9 @@ impl Tab {
                         .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
                     self.context_menu(&resp, base);
                     // The right-click menu replaces the toolbar while it is open.
-                    let menu_open = resp.context_menu_opened();
+                    let typing_menu = self.ed.typing_box.as_ref();
+                    let menu_open = resp.context_menu_opened()
+                        || typing_menu.is_some_and(|r| r.context_menu_opened());
                     if let Some((p, b)) = self.ed.selection_box() {
                         if p == i && !self.ed.dragging() && !menu_open {
                             self.floating_toolbar(ui, base, i, r, self.zoom * BASE, b);
@@ -3205,6 +3290,7 @@ impl Tab {
         self.edge = (top <= 0.5, top >= room - 0.5);
         let at = Pos2::new(out.state.clamped_offset().x, top);
         self.last_view = Some(Rect::from_min_size(at, out.inner_rect.size()));
+        self.typing_menu(base);
         let ed = &mut self.ed;
         ed.form.keys(&ctx, &mut ed.actions);
         self.apply_actions(&ctx);
@@ -3785,9 +3871,19 @@ mod tests {
         );
     }
 
+    /// A step whose [`Restore`] holds a stream of `n` bytes: a removed object to put back;
+    /// with 0, a change of the password settings alone.
     fn step(n: usize, removal: bool) -> Step {
+        let doc = (n > 0).then(|| {
+            let mut p = Pdf::new();
+            let bytes = lopdf::Stream::new(lopdf::Dictionary::new(), vec![n as u8; n]);
+            let id = p.doc.add_object(bytes);
+            let before = p.before();
+            p.doc.objects.remove(&id);
+            Arc::new(before.undo(&p))
+        });
         Step {
-            pdf: (n > 0).then(|| Arc::new(vec![n as u8; n])),
+            doc,
             encryption: None,
             scrubbed: false,
             removal,
@@ -3798,93 +3894,114 @@ mod tests {
 
     fn sizes(s: &[Step]) -> Vec<usize> {
         s.iter()
-            .map(|s| s.pdf.as_ref().map_or(0, |p| p.len()))
+            .map(|s| s.doc.as_ref().map_or(0, |r| r.size()))
             .collect()
     }
+
+    const K: usize = 10_000;
 
     #[test]
     fn undo_steps_are_kept_within_the_budget() {
         let none = &mut None;
         // The oldest go first; password-only steps take nothing.
         let mut s = vec![
-            step(40, true),
-            step(30, false),
+            step(4 * K, true),
+            step(3 * K, false),
             step(0, false),
-            step(20, false),
+            step(2 * K, false),
         ];
-        trim(&mut s, none, 60);
-        assert_eq!(sizes(&s), [30, 0, 20]);
-        trim(&mut s, none, 50);
-        assert_eq!(sizes(&s), [30, 0, 20]);
-        trim(&mut s, none, 49);
-        assert_eq!(sizes(&s), [0, 20]);
+        let z = sizes(&s);
+        assert!(z[0] > 4 * K && z[2] == 0);
+        trim(&mut s, none, z[0] + z[1] + z[3] - 1);
+        assert_eq!(sizes(&s), [z[1], 0, z[3]]);
+        trim(&mut s, none, z[1] + z[3]);
+        assert_eq!(sizes(&s), [z[1], 0, z[3]]);
+        trim(&mut s, none, z[1] + z[3] - 1);
+        assert_eq!(sizes(&s), [0, z[3]]);
         // The latest stays even when it alone is over the budget, and keeps its flag.
-        let mut s = vec![step(10, false), step(100, true)];
-        assert_eq!(trim(&mut s, none, 50), None);
-        assert_eq!(sizes(&s), [100]);
+        let mut s = vec![step(K, false), step(10 * K, true)];
+        let latest = sizes(&s)[1];
+        assert_eq!(trim(&mut s, none, latest / 2), None);
+        assert_eq!(sizes(&s), [latest]);
         assert!(s[0].removal);
         // Within the budget, the count limit still applies.
         let mut s: Vec<_> = (1..=MAX_UNDO + 3).map(|n| step(n, false)).collect();
+        let fourth = sizes(&s)[3];
         trim(&mut s, none, usize::MAX);
         assert_eq!(s.len(), MAX_UNDO);
-        assert_eq!(sizes(&s)[0], 4);
+        assert_eq!(sizes(&s)[0], fourth);
     }
 
-    /// BUG-36: a stamp's link counts in the undo budget, its copy once however many hold
-    /// it; when the latest step and the link alone are over, the link ends, unless its copy
+    /// BUG-36: a stamp's link counts in the undo budget, what it holds once however many
+    /// hold it; when the latest step and the link alone are over, the link ends, unless it
     /// is that step's own.
     #[test]
     fn a_stamp_link_counts_in_the_undo_budget() {
         let link = |s: &Step| Stamped {
-            base: s.pdf.clone().unwrap(),
+            base: s.doc.clone().unwrap(),
             form: StampForm::Wm(Wm::default()),
         };
-        // Added: the link shares the step's copy, so it costs nothing.
-        let mut s = vec![step(30, false), step(40, false)];
+        // Added: the link shares the step's, so it costs nothing.
+        let mut s = vec![step(3 * K, false), step(4 * K, false)];
+        let z = sizes(&s);
         let mut l = Some(link(&s[1]));
-        assert_eq!(trim(&mut s, &mut l, 70), None);
-        assert_eq!(sizes(&s), [30, 40]);
+        assert_eq!(trim(&mut s, &mut l, z[0] + z[1]), None);
+        assert_eq!(sizes(&s), z);
         assert!(l.is_some());
-        // Changed in place: the copy is held by the step before the change too, and still
-        // once; with no room, the oldest step goes first.
-        let mut changed = step(40, false);
+        // Changed in place: what the link holds is held by the step before the change too,
+        // and still counts once; with no room, the oldest step goes first.
+        let mut changed = step(4 * K, false);
         changed.stamp = l.clone();
         s.push(changed);
-        assert_eq!(held(&s, l.as_ref()), 110);
-        assert_eq!(trim(&mut s, &mut l, 80), None);
-        assert_eq!(sizes(&s), [40, 40]);
-        // The step it was added after goes too: the link's copy now counts on its own,
-        // and with no room for it the link ends, the step's and the form's.
-        assert_eq!(trim(&mut s, &mut l, 79), Some(Stamp::Watermark));
-        assert_eq!(sizes(&s), [40]);
+        let z = sizes(&s);
+        assert_eq!(held(&s, l.as_ref()), z[0] + z[1] + z[2]);
+        assert_eq!(trim(&mut s, &mut l, z[1] + z[2]), None);
+        assert_eq!(sizes(&s), [z[1], z[2]]);
+        // The step it was added with goes too: the link now counts on its own, and with no
+        // room for it the link ends, the step's and the form's.
+        assert_eq!(
+            trim(&mut s, &mut l, z[1] + z[2] - 1),
+            Some(Stamp::Watermark)
+        );
+        assert_eq!(sizes(&s), [z[2]]);
         assert!(l.is_none() && s[0].stamp.is_none());
-        assert_eq!(held(&s, None), 40);
-        // A link sharing the latest step's copy stays, even over the budget.
-        let mut s = vec![step(100, false)];
+        assert_eq!(held(&s, None), z[2]);
+        // A link sharing the latest step's stays, even over the budget.
+        let mut s = vec![step(10 * K, false)];
         let mut l = Some(link(&s[0]));
-        assert_eq!(trim(&mut s, &mut l, 50), None);
+        assert_eq!(trim(&mut s, &mut l, K), None);
         assert!(l.is_some());
     }
 
-    /// BUG-36: a watermark's link to the document it was added to is the undo step's copy,
-    /// not a second one; changed in place until the budget can't hold that copy, the link
-    /// then ends with a message, the watermark staying as last changed.
+    /// BUG-36: a watermark's link to the document it was added to is the undo step's, not a
+    /// second copy; changed in place until the budget can't hold the link beside the latest
+    /// step, the link then ends with a message, the watermark staying as last changed.
     #[test]
     fn a_stamp_link_shares_the_undo_copy_and_ends_when_it_would_pass_the_budget() {
         let ctx = egui::Context::default();
         let mut t = blank_tab(&ctx, 2);
         t.forms.wm.text = "DRAFT".into();
         t.stamp_from_form(&ctx, Stamp::Watermark, false);
-        let base = t.linked(Stamp::Watermark).unwrap().base.as_ptr();
-        assert_eq!(base, t.undo.last().unwrap().pdf.as_ref().unwrap().as_ptr());
+        let base = &t.linked(Stamp::Watermark).unwrap().base;
+        assert!(Arc::ptr_eq(
+            base,
+            t.undo.last().unwrap().doc.as_ref().unwrap()
+        ));
         t.forms.wm.text = "COPY".into();
         t.stamp_from_form(&ctx, Stamp::Watermark, true);
         assert!(t.linked(Stamp::Watermark).is_some());
         assert_eq!(t.undo.len(), 2);
         assert!(t.info.is_none());
-        // Room for the copy the next change makes, but not for the link's beside it.
-        let added_to = t.undo[0].pdf.as_ref().unwrap().len();
-        t.undo_budget = t.pdf.snapshot().unwrap().len() + added_to - 1;
+        // What the next change and the link beside it hold, found by making it once.
+        t.forms.wm.text = "FINAL".into();
+        t.stamp_from_form(&ctx, Stamp::Watermark, true);
+        let latest = t.undo.last().unwrap().doc.as_ref().unwrap().size();
+        let link = t.linked(Stamp::Watermark).unwrap().base.size();
+        t.undo(&ctx);
+        assert_eq!(page_lines(&t, 0), ["COPY"]);
+        assert!(t.linked(Stamp::Watermark).is_some());
+        // Room for the step the change makes, but not for the link beside it.
+        t.undo_budget = latest + link - 1;
         t.forms.wm.text = "FINAL".into();
         t.stamp_from_form(&ctx, Stamp::Watermark, true);
         assert_eq!(page_lines(&t, 0), ["FINAL"]);
@@ -3894,6 +4011,8 @@ mod tests {
         let said = t.info.take().unwrap();
         let start = "The watermark just added can't be changed";
         assert!(said.starts_with(start), "{said}");
+        // Undo keeps what changes changed, not copies of the document (batch 43).
+        assert!(!said.contains("copy"), "{said}");
         // The form adds nothing now until asked, and Undo still takes back the last change.
         t.forms.wm.text = "LATER".into();
         let depth = t.undo.len();
@@ -3902,6 +4021,24 @@ mod tests {
         t.undo(&ctx);
         assert_eq!(page_lines(&t, 0), ["COPY"]);
         assert!(t.linked(Stamp::Watermark).is_none());
+    }
+
+    /// A watermark updated for fewer pages draws the pages it leaves again, as well as those
+    /// it is on: they no longer show it.
+    #[test]
+    fn pages_a_stamp_leaves_are_drawn_again() {
+        let ctx = egui::Context::default();
+        let mut t = blank_tab(&ctx, 3);
+        t.forms.wm.text = "DRAFT".into();
+        t.forms.wm.range = "1-3".into();
+        t.stamp_from_form(&ctx, Stamp::Watermark, false);
+        t.stale.clear();
+        t.forms.wm.range = "1".into();
+        t.stamp_from_form(&ctx, Stamp::Watermark, true);
+        assert!(page_lines(&t, 1).is_empty());
+        let mut stale: Vec<usize> = t.stale.iter().copied().collect();
+        stale.sort();
+        assert_eq!(stale, [0, 1, 2]);
     }
 
     #[test]

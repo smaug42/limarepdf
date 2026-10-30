@@ -6,15 +6,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A one-page PDF with a printed text field holding Japanese text and no drawing, as an app
-/// that leaves the drawing to the reader writes it.
+/// A one-page PDF with a printed text field holding Hebrew text (which LimarePDF can't write
+/// yet: right to left) and no drawing, as an app that leaves the drawing to the reader writes
+/// it.
 fn make_pdf(dir: &Path) -> PathBuf {
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /DA (/Helv 12 Tf 0 g) >> >>",
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R] >>",
         "<< /Type /Annot /Subtype /Widget /FT /Tx /F 4 /T (Name) /Rect [20 20 180 50] \
-         /V <FEFF65E5672C8A9E> >>",
+         /V <FEFF05E905DC05D505DD> >>",
     ];
     let mut pdf = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();

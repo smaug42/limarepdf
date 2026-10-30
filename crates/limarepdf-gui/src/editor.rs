@@ -15,12 +15,13 @@ use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    words_text, Annot, AnnotKind, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject,
-    PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace,
-    TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
+    words_text, Annot, AnnotKind, BoxSetting, FieldValue, FontChoice, FontRefusal, LineFont, Link,
+    LinkTarget, ObjectKind, PageObject, PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace,
+    StampColor, StampKind, StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -214,6 +215,25 @@ enum Kept {
     Objects(Box<Group>),
 }
 
+/// Typing put back after its change failed ([`Editor::settle_kept`]), as it was then: new
+/// text, a note's or text box's text, or the selected object's line and look.
+enum NotKept {
+    Text(Styled),
+    Writing(String),
+    Object((usize, usize), Styled, Look),
+}
+
+impl NotKept {
+    fn of(held: &Held) -> Option<Self> {
+        match &held.0 {
+            Kept::Text(a) => Some(Self::Text(a.text.clone())),
+            Kept::Writing(w) => Some(Self::Writing(w.text.clone())),
+            Kept::Object(o) => Some(Self::Object(o.0.key, o.0.text.clone(), o.0.look())),
+            _ => None,
+        }
+    }
+}
+
 /// What had the keyboard on the page when F6 took it to another region of the window
 /// (ENH-10), given it back when F6 comes back to the page.
 #[derive(Clone, Debug, PartialEq)]
@@ -238,6 +258,8 @@ pub struct Writing {
     original: String,
     /// A text box's text size in points.
     size: f32,
+    /// A text box's border's width in points.
+    border: f32,
     /// Takes the keyboard on the next frame.
     fresh: bool,
     /// Takes the keyboard back once a change in the inspector is finished.
@@ -247,9 +269,23 @@ pub struct Writing {
     picking: bool,
     /// The note about a character a text box can't write.
     refused: page_text::Refused,
+    /// What an input method is composing in it, from and to ([`page_text::composition`]).
+    composing: Option<(usize, usize)>,
 }
 
 impl Writing {
+    /// Take what an input method was still composing as committed, as when the box loses
+    /// the keyboard: in a text box, set in Helvetica, what can't be written is left out
+    /// ([`page_text::commit_left`]); a note's comment takes any character. Returns the
+    /// first character left out.
+    fn commit_composition(&mut self) -> Option<String> {
+        let r = self.composing.take().filter(|_| !self.note)?;
+        let helvetica = FontChoice::default();
+        let (text, left) = page_text::commit_left(&self.text, r, false, helvetica);
+        self.text = text;
+        left
+    }
+
     /// A new note (with its icon's box) or text box, empty.
     fn new(page: usize, note: bool, rect: [f32; 4], size: f32) -> Self {
         Self {
@@ -260,10 +296,12 @@ impl Writing {
             text: String::new(),
             original: String::new(),
             size,
+            border: 0.0,
             fresh: true,
             refocus: false,
             picking: false,
             refused: page_text::Refused::default(),
+            composing: None,
         }
     }
 
@@ -524,6 +562,9 @@ struct Insp {
     orig: Styled,
     /// Undo and redo inside the line, until the change is kept.
     history: History,
+    /// A line's fonts, which say what its words can be written in
+    /// ([`limarepdf_core::Pdf::line_fonts`]): read by the page it is on, once.
+    fonts: Option<Vec<LineFont>>,
 }
 
 impl Insp {
@@ -545,6 +586,18 @@ impl Insp {
             stroke: o.stroke.unwrap_or([0.0; 3]),
             width: o.line_width.unwrap_or(1.0),
             geom: o.bbox,
+            fonts: None,
+        }
+    }
+
+    /// Its shape's look, as changed.
+    fn look(&self) -> Look {
+        Look {
+            fill_on: self.fill_on,
+            fill: self.fill,
+            stroke_on: self.stroke_on,
+            stroke: self.stroke,
+            width: self.width,
         }
     }
 }
@@ -1016,6 +1069,21 @@ struct LineEdit {
     /// the read tool, which it types over), given to it once it has it, before the keys
     /// since.
     typed: Vec<egui::Event>,
+    /// What an input method is composing in it, from and to ([`page_text::composition`]).
+    composing: Option<(usize, usize)>,
+}
+
+/// Take what an input method was still composing in the line being edited, `le`, whose
+/// text `insp` has, as committed ([`page_text::commit_left`]), as when it loses the
+/// keyboard: in Helvetica for `hidden` (OCR) text, as that is written. Returns the first
+/// character left out.
+fn commit_line_composition(le: &mut LineEdit, insp: &mut Insp, hidden: bool) -> Option<String> {
+    let r = le.composing.take()?;
+    let font = match hidden {
+        true => FontChoice::default(),
+        false => insp.text.typing_font(r),
+    };
+    page_text::commit_left_styled(&mut insp.text, r, true, font)
 }
 
 /// What a line editor selects when it opens.
@@ -1159,29 +1227,56 @@ fn pdf_fonts(o: &PageObject, sel: (usize, usize)) -> Vec<String> {
     out
 }
 
-/// The font `part` of line `o`, as `text` has it, is written in, as core decides it: its
-/// part's own when it can be kept, else the installed family that font is from or the
+/// Line `o`'s text as `text` has it, in the pieces it is written in, each with the font it
+/// is written in, as core decides it, `fonts` being the line's ([`PageObject::kept_pieces`]):
+/// a part's own font where it is kept, else the installed family that font is from or the
 /// nearest standard font, or the font chosen.
-fn part_font<'a>(o: &'a PageObject, text: &Styled, part: &TextPart) -> Wanted<'a> {
-    match part.font {
-        PartFont::Span(i) if o.keeps_font(part) => {
-            Wanted::Kept(o.spans.get(i).map_or("", |s| s.font_name.as_str()))
+fn drawn_pieces<'a>(
+    o: &'a PageObject,
+    fonts: &'a [LineFont],
+    text: &Styled,
+) -> Vec<(TextPart, Wanted<'a>)> {
+    let mut out = Vec::new();
+    for part in text.drawn_parts() {
+        let other = Wanted::Standard(text.font_of(&part));
+        let PartFont::Span(i) = part.font else {
+            out.push((part, other));
+            continue;
+        };
+        let name = o.spans.get(i).map_or("", |s| s.font_name.as_str());
+        let kept = Wanted::Kept(name, fonts.get(i));
+        let font = |k: bool| if k { kept } else { other };
+        if part.text.is_empty() {
+            let keeps = o.keeps_font(&part, fonts);
+            out.push((part, font(keeps)));
+            continue;
         }
-        _ => Wanted::Standard(text.font_of(part)),
+        let chars: Vec<char> = part.text.chars().collect();
+        for piece in o.kept_pieces(&part, fonts) {
+            let (a, b) = piece.chars;
+            let sub = TextPart {
+                text: chars[a..b].iter().collect(),
+                from: None,
+                origins: Vec::new(),
+                ..part.clone()
+            };
+            out.push((sub, font(piece.kept)));
+        }
     }
+    out
 }
 
-/// Where the font line `o` is written in comes from, as `text` has it now: the PDF's own
-/// kept ("Preserved"), else what replaces it, the installed family it is from or the
-/// nearest standard font; "Partly preserved" when only some parts keep it. Parts in a
-/// font chosen in the band are written in that font, so they count only when nothing else
-/// is left. And whether the nearest standard font replaces it anywhere.
-fn source_font(o: &PageObject, text: &Styled) -> (&'static str, bool) {
+/// Where the font line `o` is written in comes from, as `text` has it now, `fonts` being
+/// the line's: the PDF's own kept ("Preserved"), else what replaces it, the installed
+/// family it is from or the nearest standard font; "Partly preserved" when only some of it
+/// keeps it. Parts in a font chosen in the band are written in that font, so they count
+/// only when nothing else is left.
+fn source_font(o: &PageObject, fonts: &[LineFont], text: &Styled) -> &'static str {
     let mut found: Vec<&str> = Vec::new();
-    for part in text.parts() {
-        let source = match part_font(o, text, &part) {
+    for (part, font) in drawn_pieces(o, fonts, text) {
+        let source = match font {
             _ if !matches!(part.font, PartFont::Span(_)) => continue,
-            Wanted::Kept(_) => "Preserved",
+            Wanted::Kept(..) => "Preserved",
             Wanted::Standard(f) if !f.is_standard() => "Installed family",
             Wanted::Standard(_) => "Nearest standard",
         };
@@ -1189,13 +1284,70 @@ fn source_font(o: &PageObject, text: &Styled) -> (&'static str, bool) {
             found.push(source);
         }
     }
-    let source = match found[..] {
+    match found[..] {
         [] => "Font chosen",
         [one] => one,
         _ if found.contains(&"Preserved") => "Partly preserved",
         _ => "Mixed",
+    }
+}
+
+/// What the inspector says about the font line `o` is written in, as `text` has it, with
+/// `sel` selected, `fonts` being the line's, and why on hover: the words typed that go to
+/// another font, as typed, as its font has no code for a character in them; else, when the
+/// font of what is selected can't take new text at all, that edits use another. `None`
+/// when there is nothing to say.
+fn font_note(
+    o: &PageObject,
+    fonts: &[LineFont],
+    text: &Styled,
+    sel: (usize, usize),
+) -> Option<(String, String)> {
+    let (mut words, mut used, mut names) = (Vec::<String>::new(), None, Vec::new());
+    for part in text.parts() {
+        let PartFont::Span(i) = part.font else {
+            continue;
+        };
+        let chars: Vec<char> = part.text.chars().collect();
+        for piece in o.kept_pieces(&part, fonts) {
+            if piece.missing.is_empty() {
+                continue;
+            }
+            used.get_or_insert(text.font_of(&part).family_name());
+            let name = o.spans.get(i).map(|s| untagged(&s.font_name).to_string());
+            names.extend(name.filter(|n| !names.contains(n)));
+            let (from, to) = piece.chars;
+            let word: String = chars.get(from..to).unwrap_or_default().iter().collect();
+            let word = word.trim().to_string();
+            if !word.is_empty() && !words.contains(&word) {
+                words.push(word);
+            }
+        }
+    }
+    if let Some(used) = used {
+        let words = words.join(" ");
+        let note = format!("Not in this PDF's font: {words}. Those words use {used}.");
+        return Some((note, names.join(", ")));
+    }
+    // What is selected, or at a caret the character before it (the first at the start).
+    let (from, to) = (sel.0.min(sel.1), sel.0.max(sel.1));
+    let (from, to) = match from == to {
+        true => (from.saturating_sub(1), from.max(1)),
+        false => (from, to),
     };
-    (source, found.contains(&"Nearest standard"))
+    let (i, s) = (o.spans.iter().enumerate())
+        .filter(|(_, s)| s.chars.0 < to && s.chars.1 > from)
+        .find(|(i, _)| fonts.get(*i).is_some_and(|f| !f.takes_new_text()))?;
+    let why = match fonts[i].refused()? {
+        FontRefusal::Own => return None,
+        FontRefusal::Type3 => "Type 3 font",
+        FontRefusal::NotEmbedded => "Not embedded",
+        FontRefusal::Vertical => "Vertical writing",
+        FontRefusal::Cmap | FontRefusal::Unreadable => "Its characters can't be read",
+    };
+    let used = text.span_font(i).family_name();
+    let note = format!("This PDF's font can't take new text. Edits use {used}.");
+    Some((note, format!("{}: {why}", untagged(&s.font_name))))
 }
 
 /// A PDF font's name without a subset's tag: "ABCDEF+Calibri" is Calibri.
@@ -1258,40 +1410,45 @@ fn cover_box(o: &PageObject) -> [f32; 4] {
     ]
 }
 
-/// The characters (from, to) of the word at character `i` of `s`; empty between words.
+/// The characters (from, to) of the word at character `i` of `s`; empty between words. At
+/// the end of one word and the start of another, the one with letters or digits, else the
+/// one starting there: after "Walrus" in "Walrus," it is "Walrus".
 pub fn word_around(s: &str, i: usize) -> (usize, usize) {
-    let chars: Vec<char> = s.chars().collect();
-    let i = i.min(chars.len());
-    let word = |c: &char| !c.is_whitespace();
-    let mut a = i;
-    while a > 0 && word(&chars[a - 1]) {
-        a -= 1;
-    }
-    let mut b = i;
-    while b < chars.len() && word(&chars[b]) {
-        b += 1;
-    }
-    (a, b)
+    let i = i.min(s.chars().count());
+    let near: Vec<((usize, usize), bool)> = (unicode_pieces(s).into_iter())
+        .filter(|&((a, b), word)| word.is_some() && a <= i && i <= b && a < b)
+        .map(|(r, word)| (r, word == Some(true)))
+        .collect();
+    // With letters first, then the one starting at `i`.
+    let rank = |((a, _), letters): &&((usize, usize), bool)| (!*letters, *a != i);
+    near.iter().min_by_key(rank).map_or((i, i), |(r, _)| *r)
 }
 
 /// The characters (from, to) of each word of `s`, in order.
 fn word_spans(s: &str) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut start = None;
-    for (i, c) in s.chars().enumerate() {
-        match (c.is_whitespace(), start) {
-            (false, None) => start = Some(i),
-            (true, Some(a)) => {
-                out.push((a, i));
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(a) = start {
-        out.push((a, s.chars().count()));
-    }
-    out
+    (unicode_pieces(s).into_iter())
+        .filter(|(_, word)| word.is_some())
+        .map(|(r, _)| r)
+        .collect()
+}
+
+/// `s` in its pieces by Unicode's word rule (UAX #29, as Ctrl+arrows go in the typing box):
+/// each piece's characters (from, to), and whether it is a word, `Some(true)` when it has
+/// letters or digits; spaces aren't words. Each Chinese or Japanese ideograph is a word, as
+/// is each punctuation mark.
+fn unicode_pieces(s: &str) -> Vec<((usize, usize), Option<bool>)> {
+    let mut at = 0;
+    (s.split_word_bounds())
+        .map(|piece| {
+            let n = piece.chars().count();
+            let word = match piece.chars().all(char::is_whitespace) {
+                true => None,
+                false => Some(piece.chars().any(char::is_alphanumeric)),
+            };
+            at += n;
+            ((at - n, at), word)
+        })
+        .collect()
 }
 
 /// A search match on a page: the number of its hit, and its boxes there (displayed-page
@@ -1304,6 +1461,9 @@ pub struct Editor {
     pub selection: Selection,
     objs: HashMap<usize, Vec<PageObject>>,
     unavailable: HashMap<usize, String>,
+    /// The fonts of each line of a page, by object id, read together the first time one of
+    /// its lines is selected ([`Editor::read_line_fonts`]), kept as `objs` is.
+    line_fonts: HashMap<usize, Vec<Option<Vec<LineFont>>>>,
     drag: Option<Drag>,
     draw: Option<Draw>,
     /// A rectangle being dragged out with the arrow, selecting what is wholly inside it.
@@ -1325,6 +1485,9 @@ pub struct Editor {
     /// Where the floating bar was drawn last, and in which pass: a click there doesn't end
     /// a line being edited either.
     pub bar_rect: (Rect, u64),
+    /// The box of the text being typed on the page (a line, new text, a note or a text box)
+    /// as drawn this frame, for its right-click menu; the tab takes it each frame.
+    pub typing_box: Option<egui::Response>,
     /// Where the band's groups that change the text being typed (its look, Copy and Paste)
     /// were drawn this frame: a click there doesn't end the typing ([`band::show`]).
     ///
@@ -1352,6 +1515,22 @@ pub struct Editor {
     /// (from the settings).
     pub keep: Vec<Tool>,
     pub actions: Vec<Action>,
+    /// What [`Editor::keep_later`] took, by its change's place in [`Editor::actions`]: put
+    /// back to go on typing if the change fails ([`Editor::settle_kept`]).
+    later: Vec<(usize, Held)>,
+    /// Typing put back after its change failed, as it was then: ended again unchanged, it
+    /// isn't tried again but left out.
+    not_kept: Option<NotKept>,
+    /// Typing was left out: its change failed, or the document changed before it could be
+    /// put back. The tab says so.
+    pub left_out: bool,
+    /// What an input method was still composing when typing lost the keyboard was taken as
+    /// committed, and this, the first character that can't be written, left out of it
+    /// (PB-54). The tab says so ([`page_text::left_note`]).
+    pub left_composing: Option<String>,
+    /// The document's language (`/Lang`), as the pages were drawn last: text typed on the
+    /// page is drawn in the fonts core sets it in for it ([`page_text::runs`]).
+    lang: Option<String>,
     /// Outline invisible (OCR) text and let it be selected and corrected.
     pub show_hidden: bool,
     words: HashMap<usize, Vec<PageWord>>,
@@ -1452,6 +1631,7 @@ impl Default for Editor {
             selection: Selection::None,
             objs: HashMap::new(),
             unavailable: HashMap::new(),
+            line_fonts: HashMap::new(),
             drag: None,
             draw: None,
             marquee: None,
@@ -1461,6 +1641,7 @@ impl Default for Editor {
             words_note: page_text::Refused::default(),
             insp_rect: (Rect::NOTHING, 0),
             bar_rect: (Rect::NOTHING, 0),
+            typing_box: None,
             keep_typing: Vec::new(),
             tfont: FontChoice::default(),
             tsize: 14.0,
@@ -1477,6 +1658,11 @@ impl Default for Editor {
             line_edit: None,
             keep: Vec::new(),
             actions: Vec::new(),
+            later: Vec::new(),
+            not_kept: None,
+            left_out: false,
+            left_composing: None,
+            lang: None,
             show_hidden: false,
             words: HashMap::new(),
             text_drag: false,
@@ -1745,6 +1931,7 @@ impl Editor {
     pub fn invalidate(&mut self) {
         self.objs.clear();
         self.unavailable.clear();
+        self.line_fonts.clear();
         self.drag = None;
         self.draw = None;
         self.marquee = None;
@@ -1808,6 +1995,7 @@ impl Editor {
             id: Some(a.id),
             text: a.contents.clone(),
             original: a.contents,
+            border: a.text_style.map_or(0.0, |s| s.border),
             ..Writing::new(
                 a.page,
                 a.kind == AnnotKind::Note,
@@ -1819,14 +2007,12 @@ impl Editor {
 
     /// Keep what was typed: a new note or text box with some text, or changed text.
     pub fn finish_writing(&mut self) {
-        self.keep(Typed::Writing);
+        self.keep_later(Typed::Writing);
     }
 
     /// Keep the new text being typed, if any: added as one undo step.
     pub fn finish_adding(&mut self) {
-        if let Some(held) = self.keep(Typed::Text) {
-            self.done(held);
-        }
+        self.keep_later(Typed::Text);
     }
 
     /// Queue the change that keeps `piece` and stop typing it, as clicking away does.
@@ -1834,6 +2020,24 @@ impl Editor {
     /// [`Self::done`] once it is made; `None` when there was nothing to keep (a new note
     /// or text left empty goes).
     pub fn keep(&mut self, piece: Typed) -> Option<Held> {
+        // What an input method was still composing is taken as committed (PB-54).
+        let left = match piece {
+            Typed::Text => self.adding.as_mut().and_then(PageText::commit_composition),
+            Typed::Writing => self.writing.as_mut().and_then(Writing::commit_composition),
+            Typed::Object => {
+                let key = self.insp.as_ref().map(|i| i.key);
+                let o = key.and_then(|(p, id)| self.objs.get(&p)?.get(id));
+                let hidden = o.is_some_and(|o| o.hidden);
+                match (self.line_edit.as_mut(), self.insp.as_mut()) {
+                    (Some(le), Some(insp)) => commit_line_composition(le, insp, hidden),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if self.left_composing.is_none() {
+            self.left_composing = left;
+        }
         let (action, held) = match piece {
             Typed::Text => {
                 let a = self.adding.take().filter(PageText::has_text)?;
@@ -1891,6 +2095,10 @@ impl Editor {
             Kept::Writing(w) => self.writing = Some(w),
             Kept::Object(o) => {
                 let (insp, line) = *o;
+                // Selected again, should a click have selected something else meanwhile.
+                if self.sel() != Some(insp.key) {
+                    self.select_object(insp.key.0, insp.key.1);
+                }
                 (self.insp, self.line_edit) = (Some(insp), line);
             }
             Kept::Field(original) => self.form.uncommit(original),
@@ -1905,10 +2113,72 @@ impl Editor {
 
     /// What [`Self::keep`] took is in the document now.
     pub fn done(&mut self, held: Held) {
-        // The next new text carries on in the style this one ended in, as typing would.
-        if let Kept::Text(a) = held.0 {
+        self.carry_on(&held);
+    }
+
+    /// The next new text carries on in the style this one ended in, as typing would.
+    fn carry_on(&mut self, held: &Held) {
+        if let Kept::Text(a) = &held.0 {
             let end = page_text::Look::of(a.text.end_style());
             (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
+        }
+    }
+
+    /// [`Self::keep`], as clicking away keeps typing: what it took is held until its change
+    /// is made ([`Self::settle_kept`]). Typing put back after its change failed, ended again
+    /// unchanged, isn't tried again: it is left out, and the tab says so.
+    fn keep_later(&mut self, piece: Typed) {
+        if self.refused_again(piece) {
+            match piece {
+                Typed::Text => self.adding = None,
+                Typed::Writing => self.writing = None,
+                _ => (self.insp, self.line_edit) = (None, None),
+            }
+            self.not_kept = None;
+            self.left_out = true;
+            return;
+        }
+        if let Some(held) = self.keep(piece) {
+            // New text started next, in this frame, carries on in this one's style.
+            self.carry_on(&held);
+            self.not_kept = None;
+            self.later.push((self.actions.len() - 1, held));
+        }
+    }
+
+    /// Whether `piece` is typing put back after its change failed, unchanged since.
+    fn refused_again(&self, piece: Typed) -> bool {
+        match (&self.not_kept, piece) {
+            (Some(NotKept::Text(t)), Typed::Text) => {
+                self.adding.as_ref().is_some_and(|a| a.text.same_as(t))
+            }
+            (Some(NotKept::Writing(t)), Typed::Writing) => {
+                self.writing.as_ref().is_some_and(|w| w.text == *t)
+            }
+            (Some(NotKept::Object(key, t, look)), Typed::Object) => {
+                let same = |i: &Insp| i.key == *key && i.text.same_as(t) && i.look().same_as(look);
+                self.insp.as_ref().is_some_and(same)
+            }
+            _ => false,
+        }
+    }
+
+    /// After the tab made the changes [`Self::keep_later`] queued: typing whose change was
+    /// made is done with; typing whose change failed (`failed`: the change's place in the
+    /// actions as queued, and whether a change after it was made) goes back to be typed on,
+    /// given the keyboard, unless the document changed since, when its place may be
+    /// another's: then it is left out.
+    pub fn settle_kept(&mut self, failed: &[(usize, bool)]) {
+        for (at, held) in std::mem::take(&mut self.later) {
+            match failed.iter().find(|(f, _)| *f == at) {
+                None => self.done(held),
+                Some((_, false)) => {
+                    self.not_kept = NotKept::of(&held);
+                    self.put_back(held);
+                    self.refocus_typing();
+                }
+                Some((_, true)) => self.left_out = true,
+            }
         }
     }
 
@@ -1979,7 +2249,7 @@ impl Editor {
     /// Keep the selected object's changes (see [`Self::insp_change`]) as one undo step. The
     /// working copy starts again from the object.
     fn commit_insp(&mut self) {
-        self.keep(Typed::Object);
+        self.keep_later(Typed::Object);
     }
 
     /// Stop editing the line on the page, keeping what was typed. With the arrow, or once
@@ -1987,11 +2257,13 @@ impl Editor {
     /// isn't left selected, as a word processor leaves no selection behind, so the inspector
     /// goes back to what it showed before.
     fn end_line_edit(&mut self) {
-        let Some(le) = self.line_edit.take() else {
+        let Some(line) = self.line_edit.as_ref().map(|le| (le.page, le.id)) else {
             return;
         };
+        // Kept with what was typed, to come back with it if the change fails.
         self.commit_insp();
-        let line = Some((le.page, le.id));
+        self.line_edit = None;
+        let line = Some(line);
         if self.tool != Tool::Select && !self.selection.loose() && self.sel() == line {
             self.selection.clear_object();
         }
@@ -2015,6 +2287,7 @@ impl Editor {
             refused: page_text::Refused::default(),
             area: Rect::NOTHING,
             typed: Vec::new(),
+            composing: None,
         });
     }
 
@@ -2050,11 +2323,13 @@ impl Editor {
         true
     }
 
-    /// Text `typed` or pasted (its events) with no text box having the keyboard: over the
-    /// words selected with the read tool in one line, as a word processor types over a
-    /// selection, their line opens on the page and it goes in their place; into a line
-    /// just opened, before it has the keyboard, it goes there. Across lines nothing is
-    /// typed, and a note at the selection's end says why. Whether it was taken.
+    /// Text `typed` or pasted (its events, an input method's among them) with no text box
+    /// having the keyboard: over the words selected with the read tool in one line, as a
+    /// word processor types over a selection, their line opens on the page and it goes in
+    /// their place, an input method's first composition too (the input method is on while
+    /// words are selected: [`Self::input_method_at_words`]); into a line just opened, before
+    /// it has the keyboard, it goes there. Across lines nothing is typed, and a note at the
+    /// selection's end says why. Whether it was taken.
     pub fn type_over(
         &mut self,
         ctx: &egui::Context,
@@ -2065,7 +2340,16 @@ impl Editor {
             le.typed.extend(typed);
             return true;
         }
-        if self.selection.words().is_none() || !matches!(self.tool, Tool::Read | Tool::Text) {
+        // An input method's empty composition (one ended, or the method turned on) types
+        // nothing.
+        let something = typed.iter().any(|e| match e {
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. })
+            | egui::Event::Ime(egui::ImeEvent::Commit(text)) => !text.is_empty(),
+            _ => true,
+        });
+        let words =
+            self.selection.words().is_some() && matches!(self.tool, Tool::Read | Tool::Text);
+        if !words || !something {
             return false;
         }
         match self.words_line(pdf) {
@@ -2134,7 +2418,6 @@ impl Editor {
 
     /// Whether a line of page text is being edited, or new text, a note or a text box
     /// typed, on the page.
-    #[cfg(test)]
     pub fn typing_on_page(&self) -> bool {
         self.line_edit.is_some() || self.adding.is_some() || self.writing.is_some()
     }
@@ -2156,9 +2439,19 @@ impl Editor {
         let Some(a) = self.adding.as_mut().filter(|a| a.page == page) else {
             return false;
         };
-        let shown = a.ui(ui, r, k, self.page_colours, accent, settled);
+        let lang = self.lang.as_deref();
+        let shown = a.ui(ui, r, k, self.page_colours, accent, settled, lang);
+        self.typing_box = Some(shown.edit);
+        if self.left_composing.is_none() {
+            self.left_composing = shown.left;
+        }
         if shown.done {
-            self.finish_adding();
+            // Under a dialog (a change's failure said, say) it waits, open, for it to close.
+            if crate::dialogs::any_open(ui.ctx()) {
+                a.refocus = true;
+            } else {
+                self.finish_adding();
+            }
         }
         shown.over
     }
@@ -2229,7 +2522,7 @@ impl Editor {
             page_text::undo_redo(&ctx, id, &t, &mut insp.history, &mut insp.text);
             page_text::switch_styles(&ctx, &t, &mut insp.text, sel, font, &mut le.refused);
             if let Some(c) = t.refused {
-                le.refused.mark(&ctx, page_text::note(font, &c));
+                le.refused.mark(&ctx, page_text::note(&c).to_string());
             }
         }
         let b = o.bbox;
@@ -2237,10 +2530,11 @@ impl Editor {
         let mode = self.page_colours;
         // The text as egui has it this frame, in parts at `k` pixels per point, coloured
         // by `color`.
+        let fonts = insp.fonts.as_deref().unwrap_or(&[]);
+        let lang = self.lang.as_deref();
         let runs = |t: &str, k: f32, color: &dyn Fn([f32; 3]) -> Color32| {
             let text = insp.text.preview(t);
-            let font = |p: &TextPart| part_font(&o, &text, p);
-            page_text::runs(&ctx, &text.drawn_parts(), k, color, font)
+            page_text::runs(&ctx, &drawn_pieces(&o, fonts, &text), k, color, lang)
         };
         let (out, area) = if drawn {
             let runs = |t: &str| runs(t, k, &|c| page_text::shown(mode, c));
@@ -2293,14 +2587,16 @@ impl Editor {
             // At the line, moved left as far as it must to stay in view.
             let view = ui.clip_rect();
             let x = area.min.x.min(view.max.x - size.x).max(view.min.x);
-            let out = egui::Area::new(id.with("area"))
+            let held = egui::TextEdit::load_state(&ctx, id).and_then(|s| s.cursor.char_range());
+            let mut out = egui::Area::new(id.with("area"))
                 .fixed_pos(Pos2::new(x, area.min.y))
                 .order(egui::Order::Foreground)
                 .show(&ctx, |ui| {
                     // Light colours in either theme, as for text boxes: the text sits on
                     // the paper.
                     *ui.visuals_mut() = egui::Visuals::light();
-                    let te = egui::TextEdit::singleline(&mut typed)
+                    let mut buffer = page_text::Clusters(&mut typed);
+                    let te = egui::TextEdit::singleline(&mut buffer)
                         .id(id)
                         .font(font)
                         .min_size(size)
@@ -2314,6 +2610,8 @@ impl Editor {
                     }
                 })
                 .inner;
+            page_text::keep_on_right_click(&ctx, id, &mut out, held);
+            page_text::snap_drawn(&ctx, id, &mut out, &typed, held);
             (out, area)
         };
         // The styles follow what was typed.
@@ -2329,6 +2627,14 @@ impl Editor {
         let now = ctx.input(|i| i.time);
         insp.history.observe(&insp.text, sel, now, settled(&ctx));
         let edit = &out.response.response;
+        // What an input method composes shows unchecked; left without the keyboard, it is
+        // taken as committed (PB-54).
+        le.composing = page_text::composition(&ctx, id, le.composing);
+        if !edit.has_focus() {
+            let left = commit_line_composition(le, insp, o.hidden);
+            self.left_composing = self.left_composing.take().or(left);
+        }
+        self.typing_box = Some(edit.clone());
         le.area = area.union(edit.rect);
         let name = format!("Editing text: {}", o.text.as_deref().unwrap_or(""));
         dialogs::set_name(edit, &name);
@@ -2358,6 +2664,12 @@ impl Editor {
             edit.request_focus();
             le.fresh = false;
             return true;
+        }
+        // Under a dialog (a change's failure said, say) it waits, open, for it to close, and
+        // takes the keyboard back then: its Esc and clicks are the dialog's.
+        if crate::dialogs::any_open(&ctx) {
+            le.refocus = true;
+            return edit.hovered();
         }
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if esc && (edit.lost_focus() || edit.has_focus()) {
@@ -2432,10 +2744,19 @@ impl Editor {
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
         };
-        // A new text box shows the Text box tool's size, which it is kept with, as the
-        // inspector changes it.
-        if w.id.is_none() && !w.note {
-            w.size = self.box_style.size;
+        // A text box shows its size and border as the inspector changes them: a new one the
+        // Text box tool's, which it is kept with; one on the page its own (ENH-13).
+        let own = |id| {
+            let annots = self.annots.get(&page)?;
+            annots.iter().find(|a| a.id == id)?.text_style
+        };
+        let style = match w.id {
+            None => Some(self.box_style),
+            Some(id) => own(id),
+        };
+        if let Some(s) = style.filter(|_| !w.note) {
+            w.size = s.size;
+            w.border = s.border;
         }
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let b = shown_box(w.note, w.rect, k);
@@ -2449,6 +2770,7 @@ impl Editor {
                 ui.painter()
                     .rect_filled(area, 2.0, Color32::from_rgb(cr, cg, cb));
             }
+            let held = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
             let inner = egui::Area::new(scope.with(("note-writing", page)))
                 .fixed_pos(area.right_top() + Vec2::new(6.0, 0.0))
                 .order(egui::Order::Foreground)
@@ -2456,13 +2778,16 @@ impl Editor {
                     egui::Frame::popup(ui.style())
                         .show(ui, |ui| {
                             ui.set_width(240.0);
-                            ui.add(
-                                egui::TextEdit::multiline(&mut w.text)
-                                    .id(id)
-                                    .hint_text("Comment")
-                                    .desired_rows(4)
-                                    .desired_width(f32::INFINITY),
-                            )
+                            let mut buffer = page_text::Clusters(&mut w.text);
+                            let mut out = egui::TextEdit::multiline(&mut buffer)
+                                .id(id)
+                                .hint_text("Comment")
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY)
+                                .show(ui);
+                            page_text::keep_on_right_click(ui.ctx(), id, &mut out, held);
+                            page_text::snap_drawn(ui.ctx(), id, &mut out, &w.text, held);
+                            out.response.response
                         })
                         .inner
                 });
@@ -2485,26 +2810,52 @@ impl Editor {
             if ui.ctx().memory(|m| m.has_focus(id)) {
                 let helvetica = FontChoice::default();
                 if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
-                    let note = page_text::fixed_note(&c).to_string();
+                    let note = page_text::note(&c).to_string();
                     w.refused.mark(ui.ctx(), note);
                 }
             }
-            let te = egui::TextEdit::multiline(&mut w.text)
+            // In Helvetica, as the box is written, the words it lacks in the fonts core
+            // writes them in, not the interface's font; on the lines core breaks it into,
+            // where it writes them in the box.
+            let set = BoxSetting::text_box(w.rect[2] - w.rect[0], w.border, w.size);
+            let lang = self.lang.as_deref();
+            let (helvetica, color) = (FontChoice::default(), egui::Visuals::light().text_color());
+            let now = page_text::set_in_box(ui.ctx(), &set, &w.text, helvetica, k, color, lang);
+            let mut layouter = |ui: &egui::Ui, t: &dyn egui::TextBuffer, _: f32| {
+                if t.as_str() == now.galley.text() {
+                    return now.galley.clone();
+                }
+                page_text::set_in_box(ui.ctx(), &set, t.as_str(), helvetica, k, color, lang).galley
+            };
+            let mut buffer = page_text::Clusters(&mut w.text);
+            let te = egui::TextEdit::multiline(&mut buffer)
                 .id(id)
-                .font(egui::FontId::proportional((w.size * k).clamp(6.0, 96.0)))
+                .font(egui::FontId::proportional(now.px))
                 .desired_rows(1)
                 .min_size(area.size())
                 .desired_width(area.width())
-                .margin(egui::Margin::same(2));
+                .margin(now.margin)
+                .layouter(&mut layouter);
             *ui.visuals_mut() = egui::Visuals::light();
             // As `Ui::put` lays it out, keeping the output for the note at the caret.
             let layout = egui::Layout::centered_and_justified(egui::Direction::TopDown);
             let at = egui::UiBuilder::new().max_rect(area).layout(layout);
-            let out = ui.scope_builder(at, |ui| te.show(ui)).inner;
+            let held = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
+            let mut out = ui.scope_builder(at, |ui| te.show(ui)).inner;
+            page_text::keep_on_right_click(ui.ctx(), id, &mut out, held);
+            page_text::snap_drawn(ui.ctx(), id, &mut out, &w.text, held);
+            // What an input method composes shows unchecked; left without the keyboard, it
+            // is taken as committed (PB-54).
+            w.composing = page_text::composition(ui.ctx(), id, w.composing);
+            if !out.response.response.has_focus() {
+                let left = w.commit_composition();
+                self.left_composing = self.left_composing.take().or(left);
+            }
             *ui.visuals_mut() = theme;
             w.refused.show(ui.ctx(), &out, id);
             (out.response.response, false, false)
         };
+        self.typing_box = Some(out.clone());
         if w.fresh {
             out.request_focus();
             w.fresh = false;
@@ -2531,6 +2882,11 @@ impl Editor {
         let insp = Some(drawn_at(ui.ctx(), self.insp_rect));
         if keeping(ui.ctx(), insp, &self.keep_typing) {
             w.refocus = true;
+        }
+        // Under a dialog (a change's failure said, say) it waits, open, for it to close.
+        if crate::dialogs::any_open(ui.ctx()) {
+            w.refocus = true;
+            return held || (!w.note && out.hovered());
         }
         let kept = parked || w.refocus;
         if finish || esc || outside || (!w.note && out.lost_focus() && !kept) {
@@ -2624,6 +2980,8 @@ impl Editor {
         self.digital_place = None;
         self.digital_error = None;
         self.actions.clear();
+        self.later.clear();
+        self.not_kept = None;
         self.apply_redactions = false;
     }
 
@@ -2726,6 +3084,25 @@ impl Editor {
     /// The selected object's page and index.
     pub fn sel(&self) -> Option<(usize, usize)> {
         self.selection.object()
+    }
+
+    /// The selected line's fonts, when it is on `page` and they aren't read yet: from the
+    /// fonts of all the page's lines, read together the first time one of them is selected
+    /// and kept until the document changes, so that selecting the page's lines one after
+    /// another reads the page once. A page that can't be read gives none: the edit then
+    /// says what is wrong.
+    fn read_line_fonts(&mut self, pdf: &limarepdf_core::Pdf, page: usize) {
+        let line = |o: &PageObject| o.kind == ObjectKind::Text && !o.hidden;
+        let Some(insp) = (self.insp.as_mut()).filter(|i| i.key.0 == page && i.fonts.is_none())
+        else {
+            return;
+        };
+        let o = self.objs.get(&page).and_then(|v| v.get(insp.key.1));
+        if o.is_some_and(line) {
+            let all = (self.line_fonts.entry(page))
+                .or_insert_with(|| pdf.page_line_fonts(page).unwrap_or_default());
+            insp.fonts = Some(all.get(insp.key.1).cloned().flatten().unwrap_or_default());
+        }
     }
 
     /// The objects on `page`, read once until the document changes. Read again after a
@@ -2946,6 +3323,26 @@ impl Editor {
         let id = self.scope.with(("words-note", page));
         let below = caret + Vec2::new(0.0, 4.0);
         self.words_note.show_at(ctx, below, id);
+        self.input_method_at_words(ctx, r, caret.x);
+    }
+
+    /// With words selected and nothing having the keyboard, the input method is on, as for
+    /// a box with the keyboard, so its first composition types over them ([`Self::type_over`],
+    /// PB-54); its candidate window at `x` on the screen, the selection's moving end, in the
+    /// last word, drawn at `word`.
+    fn input_method_at_words(&self, ctx: &egui::Context, word: Rect, x: f32) {
+        if ctx.memory(|m| m.focused().is_some()) || !matches!(self.tool, Tool::Read | Tool::Text) {
+            return;
+        }
+        let caret = Rect::from_x_y_ranges(x..=x + 1.0, word.y_range());
+        ctx.output_mut(|o| {
+            o.ime = Some(egui::output::IMEOutput {
+                purpose: egui::IMEPurpose::Normal,
+                rect: word,
+                cursor_rect: caret,
+                should_interrupt_composition: false,
+            });
+        });
     }
 
     /// The bands that shade `words`: one a line, the spaces between its words too (what a
@@ -3250,6 +3647,7 @@ impl Editor {
         {
             self.sync_insp();
         }
+        self.read_line_fonts(pdf, page);
         self.sync_group();
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
@@ -3479,7 +3877,11 @@ impl Editor {
             }
         };
         // Typing new text, a note or text box, or a line of page text: it takes the
-        // keyboard and the pointer.
+        // keyboard and the pointer, drawn in the fonts core sets it in for the document's
+        // language.
+        if self.typing_on_page() {
+            self.lang = pdf.language();
+        }
         if self.adding_ui(ui, page, r, k)
             || self.writing_ui(ui, page, r, k)
             || self.line_edit_ui(ui, page, r, k)
@@ -5232,21 +5634,33 @@ impl Editor {
                 if e.text.is_some() && ui.ctx().memory(|m| m.has_focus(id)) {
                     let helvetica = FontChoice::default();
                     if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
-                        let note = page_text::fixed_note(&c).to_string();
+                        let note = page_text::note(&c).to_string();
                         self.text_refused.mark(ui.ctx(), note);
                     }
                 }
-                let out = egui::TextEdit::multiline(&mut e.contents)
+                let held =
+                    egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
+                let mut out = egui::TextEdit::multiline(&mut page_text::Clusters(&mut e.contents))
                     .id(id)
                     .desired_rows(4)
                     .desired_width(f32::INFINITY)
                     .show(ui);
+                page_text::snap_drawn(ui.ctx(), id, &mut out, &e.contents, held);
                 self.text_refused.show(ui.ctx(), &out, id);
                 dialogs::set_name(&out.response.response, label);
                 // Changes are kept as they are made, each finished one a step to undo; the
                 // comment when it is left, by Tab too, which puts the keyboard on the next
                 // control (PB-20).
                 left = out.response.response.lost_focus();
+            }
+            // A text box's words Helvetica lacks, which go to an installed font.
+            if e.text.is_some() {
+                let on_page = self.writing.as_ref().filter(|_| typed_on_page);
+                let text = on_page.map_or(e.contents.as_str(), |w| w.text.as_str());
+                let helvetica = FontChoice::default();
+                if let Some((said, why)) = page_text::fallback_note(&[(helvetica, text)]) {
+                    note(ui, &said).on_hover_text(why);
+                }
             }
             // The keyboard back in its text on the page doesn't hold a change made here.
             let ctx = ui.ctx();
@@ -5523,6 +5937,16 @@ impl Editor {
                     ],
                 };
                 facts(ui, "new-text-look", &rows);
+                // Words the fonts chosen lack, which go to an installed font.
+                if let Some(a) = &self.adding {
+                    let parts = a.text.drawn_parts();
+                    let pieces: Vec<(FontChoice, &str)> = (parts.iter())
+                        .map(|p| (a.text.font_of(p), p.text.as_str()))
+                        .collect();
+                    if let Some((said, why)) = page_text::fallback_note(&pieces) {
+                        note(ui, &said).on_hover_text(why);
+                    }
+                }
                 ui.separator();
             }
             Tool::Image => {
@@ -5649,6 +6073,13 @@ impl Editor {
             }
             Tool::TextBox => {
                 text_style_ui(ui, &mut self.box_style);
+                // Words Helvetica lacks in a new text box, which go to an installed font.
+                if let Some(w) = self.writing.as_ref().filter(|w| !w.note && w.id.is_none()) {
+                    let helvetica = FontChoice::default();
+                    if let Some((said, why)) = page_text::fallback_note(&[(helvetica, &w.text)]) {
+                        note(ui, &said).on_hover_text(why);
+                    }
+                }
                 return;
             }
             // Selected words show their look, several objects theirs; a selected object its
@@ -5698,7 +6129,8 @@ impl Editor {
                         sel,
                     };
                     let [font, size] = look_facts(&text);
-                    let (source, standard) = source_font(&obj, &insp.text);
+                    let fonts = insp.fonts.as_deref().unwrap_or(&[]);
+                    let source = source_font(&obj, fonts, &insp.text);
                     // The selection's fonts as the PDF names them, without a subset's tag.
                     let names = pdf_fonts(&obj, sel);
                     let named: Vec<&str> = names.iter().map(|n| untagged(n)).collect();
@@ -5710,11 +6142,20 @@ impl Editor {
                         ("Source font", source.into()),
                     ];
                     facts(ui, "line-look", &rows);
-                    // A standard font standing in for one that is neither standard nor
-                    // installed.
-                    if standard && !obj.font_reusable {
-                        note(ui, "Non-standard font: edits use the nearest standard one.")
-                            .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
+                    // Words that go to another font, or a font that can't take new text.
+                    if let Some((said, why)) = font_note(&obj, fonts, &insp.text, sel) {
+                        note(ui, &said).on_hover_text(why);
+                    }
+                    // Words the font chosen lacks, which go to an installed font.
+                    let pieces = drawn_pieces(&obj, fonts, &insp.text);
+                    let chosen: Vec<(FontChoice, &str)> = (pieces.iter())
+                        .filter_map(|(p, w)| match w {
+                            Wanted::Standard(f) => Some((*f, p.text.as_str())),
+                            Wanted::Kept(..) => None,
+                        })
+                        .collect();
+                    if let Some((said, why)) = page_text::fallback_note(&chosen) {
+                        note(ui, &said).on_hover_text(why);
                     }
                 }
             }
@@ -6020,6 +6461,75 @@ mod tests {
         }
     }
 
+    /// BUG-41: new text, and a note or text box, whose change failed come back to go on
+    /// typing; ended again unchanged, they are left out, and changed, tried again. Put back
+    /// only while nothing changed the document since.
+    #[test]
+    fn typing_whose_change_failed_comes_back() {
+        let look = page_text::Look {
+            font: FontChoice::default(),
+            size: 12.0,
+            color: [0.0; 3],
+        };
+        for piece in [Typed::Text, Typed::Writing] {
+            let mut ed = Editor::default();
+            let typed = |ed: &mut Editor, text: &str| match piece {
+                Typed::Text => {
+                    let a = ed.adding.get_or_insert_with(|| {
+                        PageText::new(egui::Id::NULL, 0, (100.0, 100.0), look)
+                    });
+                    a.text.sync(text, None);
+                }
+                _ => {
+                    let w = ed.writing.get_or_insert_with(|| {
+                        Writing::new(0, true, [100.0, 100.0, 120.0, 120.0], 12.0)
+                    });
+                    w.text = text.into();
+                }
+            };
+            let end = |ed: &mut Editor| match piece {
+                Typed::Text => ed.finish_adding(),
+                _ => ed.finish_writing(),
+            };
+            // Its change failed: back to go on with.
+            typed(&mut ed, "Seal");
+            end(&mut ed);
+            assert_eq!(ed.actions.len(), 1, "{piece:?}");
+            assert!(!ed.pending(), "{piece:?}: still open");
+            ed.actions.clear();
+            ed.settle_kept(&[(0, false)]);
+            assert!(ed.pending() && !ed.left_out, "{piece:?}: not back");
+            // Ended again as it is: left out, and said, not tried again.
+            end(&mut ed);
+            assert!(
+                ed.actions.is_empty() && !ed.pending(),
+                "{piece:?}: tried again"
+            );
+            assert!(std::mem::take(&mut ed.left_out), "{piece:?}: not said");
+            // Changed after coming back: tried again.
+            typed(&mut ed, "Seal");
+            end(&mut ed);
+            ed.actions.clear();
+            ed.settle_kept(&[(0, false)]);
+            typed(&mut ed, "Seals");
+            end(&mut ed);
+            assert_eq!(ed.actions.len(), 1, "{piece:?}: changed, not tried");
+            assert!(!ed.left_out, "{piece:?}");
+            // A change after it made meanwhile: its place may be another's, so it is left
+            // out, not put back.
+            ed.actions.clear();
+            ed.settle_kept(&[(0, true)]);
+            assert!(!ed.pending() && ed.left_out, "{piece:?}: put back");
+            // Made: done with.
+            ed.left_out = false;
+            typed(&mut ed, "Walrus");
+            end(&mut ed);
+            ed.actions.clear();
+            ed.settle_kept(&[]);
+            assert!(!ed.pending() && !ed.left_out, "{piece:?}");
+        }
+    }
+
     #[test]
     fn comment_changes_and_replies_not_yet_kept_are_pending() {
         let mut pdf = limarepdf_core::Pdf::new();
@@ -6252,6 +6762,16 @@ mod tests {
         assert_eq!(word_around("", 0), (0, 0));
         assert_eq!(word_spans(" Walrus  ate "), [(1, 7), (9, 12)]);
         assert!(word_spans("  ").is_empty());
+        // Words by Unicode's rule (UAX #29), as Ctrl+arrows in the box go: punctuation is
+        // apart from the word it follows, an apostrophe within one keeps it whole, and each
+        // Chinese ideograph is a word.
+        assert_eq!(word_around("Walrus, ate", 3), (0, 6));
+        assert_eq!(word_around("Walrus, ate", 6), (0, 6));
+        assert_eq!(word_around("Walrus, ate", 6 + 1), (6, 7));
+        assert_eq!(word_around("can't swim", 2), (0, 5));
+        assert_eq!(word_around("海象吃鱼", 1), (1, 2));
+        assert_eq!(word_spans("Walrus, ate"), [(0, 6), (6, 7), (8, 11)]);
+        assert_eq!(word_spans("海象 fish"), [(0, 1), (1, 2), (3, 7)]);
     }
 
     /// A page with a background over the whole page, a small rectangle and a line of text.
@@ -6586,22 +7106,116 @@ mod tests {
         assert_eq!(font_of("Arial,Bold"), FontChoice::from_name("Arial,Bold"));
     }
 
+    /// The inspector names the words typed that go to another font, as typed, as the line's
+    /// font has no code for a character in them; or says that the font can't take new text
+    /// at all, and why on hover (batch 31, Q5).
+    #[test]
+    fn the_inspector_says_what_the_line_s_font_can_t_write() {
+        use lopdf::{dictionary, Dictionary, Object, Stream};
+        let (pdf, ed) = page_with_objects();
+        let o = ed.objs[&0][2].clone();
+        let fonts = pdf.line_fonts(0, 2).unwrap();
+        let mut text = Styled::of(&o, FontChoice::from_name);
+        assert_eq!(font_note(&o, &fonts, &text, (0, 0)), None);
+        // Whole words, not their letters each once ("ö ß" read as a word spaced out).
+        text.sync("Walrus like größe Maße", None);
+        let (said, why) = font_note(&o, &fonts, &text, (0, 0)).unwrap();
+        let want = "Not in this PDF's font: größe Maße. Those words use Helvetica.";
+        assert_eq!(said, want);
+        assert_eq!(why, "Helvetica");
+        text.sync("Walrus größe like Maße", None);
+        let (said, _) = font_note(&o, &fonts, &text, (0, 0)).unwrap();
+        let want = "Not in this PDF's font: größe Maße. Those words use Helvetica.";
+        assert_eq!(said, want);
+
+        // A subset the PDF doesn't hold can't take any.
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let font = pdf.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "ABCDEF+Garamond-Italic",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let content = b"BT /F1 20 Tf 72 700 Td (Walrus) Tj ET".to_vec();
+        let s = pdf.doc.add_object(Stream::new(Dictionary::new(), content));
+        let page = pdf.page_ids()[0];
+        let d = pdf.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", Object::Reference(s));
+        d.set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => font } },
+        );
+        let o = pdf.page_objects(0).unwrap().remove(0);
+        let fonts = pdf.line_fonts(0, o.id).unwrap();
+        let text = Styled::of(&o, FontChoice::from_name);
+        let used = FontChoice::from_name("ABCDEF+Garamond-Italic").family_name();
+        let (said, why) = font_note(&o, &fonts, &text, (0, 0)).unwrap();
+        let want = format!("This PDF's font can't take new text. Edits use {used}.");
+        assert_eq!(said, want);
+        assert_eq!(why, "Garamond-Italic: Not embedded");
+        // Typed letters it lacks say which first.
+        let mut typed = text.clone();
+        typed.sync("Walrus ö", None);
+        let (said, _) = font_note(&o, &fonts, &typed, (0, 0)).unwrap();
+        assert!(said.starts_with("Not in this PDF's font: ö."), "{said}");
+    }
+
+    /// A line's fonts are read with all the page's lines the first time one of them is
+    /// selected, and kept until the document changes: selecting another line of the page
+    /// doesn't read the page again (on a page with heavy content, or fonts of two-byte
+    /// codes, that took a tenth to a third of a second each time).
+    #[test]
+    fn a_page_s_line_fonts_are_read_once_until_the_document_changes() {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        for (y, text) in [(300.0, "Walrus like it cold"), (200.0, "Otters too")] {
+            pdf.add_text(0, (100.0, y), text, FontChoice::default(), 12.0, [0.0; 3])
+                .unwrap();
+        }
+        let mut ed = Editor::default();
+        assert_eq!(ed.objects(&pdf, 0).len(), 2);
+        let fonts_of = |ed: &mut Editor, pdf: &limarepdf_core::Pdf, id: usize| {
+            ed.select_object(0, id);
+            ed.sync_insp();
+            ed.read_line_fonts(pdf, 0);
+            ed.insp.as_ref().unwrap().fonts.clone().unwrap()
+        };
+        let takes = |f: &[LineFont]| f.len() == 1 && f[0].takes_new_text();
+        let first = fonts_of(&mut ed, &pdf, 0);
+        assert!(takes(&first), "{first:?}");
+        // The page's fonts taken away behind the editor's back: the next line's fonts are
+        // those read with the first, not read from the page again.
+        let page = pdf.doc.get_dictionary_mut(pdf.page_ids()[0]).unwrap();
+        page.remove(b"Resources");
+        assert!(pdf.line_fonts(0, 1).unwrap()[0].refused() == Some(FontRefusal::Unreadable));
+        let second = fonts_of(&mut ed, &pdf, 1);
+        assert!(takes(&second), "{second:?}");
+        // A change to the document forgets them.
+        ed.invalidate();
+        assert!(ed.line_fonts.is_empty());
+    }
+
     /// The editor draws a line in the font core will write it in.
     #[test]
     fn a_line_is_edited_in_the_font_it_will_be_written_in() {
-        let (_, mut ed) = page_with_objects();
+        let (pdf, mut ed) = page_with_objects();
         let o = ed.objs[&0][2].clone();
+        // Shown as Arial Bold, in the line's own font (an unembedded one, whose plain ASCII
+        // is written as it is).
         let mut kept = o.clone();
         kept.font_name = Some("Arial,Bold".into());
-        kept.font_reusable = true;
         kept.spans[0].font_name = "Arial,Bold".into();
-        kept.spans[0].font_reusable = true;
         ed.objs.get_mut(&0).unwrap()[2] = kept.clone();
         ed.select_object(0, 2);
         ed.sync_insp();
+        let fonts = pdf.line_fonts(0, 2).unwrap();
+        ed.insp.as_mut().unwrap().fonts = Some(fonts.clone());
         let font = |ed: &Editor, o: &PageObject| {
-            let text = &ed.insp.as_ref().unwrap().text;
-            format!("{:?}", part_font(o, text, &text.drawn_parts()[0]))
+            let insp = ed.insp.as_ref().unwrap();
+            let fonts = insp.fonts.as_deref().unwrap_or(&[]);
+            match drawn_pieces(o, fonts, &insp.text)[0].1 {
+                Wanted::Kept(name, _) => format!("Kept({name:?})"),
+                Wanted::Standard(f) => format!("Standard({f:?})"),
+            }
         };
         // Its own font, when core can keep it: its own text, or plain ASCII.
         assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
@@ -6613,15 +7227,15 @@ mod tests {
         // A size or colour changed: still its own, as each part has its size and colour.
         text(&mut ed).set_size((0, 9), 20.0);
         assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
-        // A character beyond ASCII, a font that can't be kept, or another font chosen: the
-        // standard font nearest it, or the one chosen.
+        // A word with a character the font can't take, a font that can't be kept, or
+        // another font chosen: the standard font nearest it, or the one chosen.
         let arial_bold = format!("Standard({:?})", FontChoice::from_name("Arial,Bold"));
         text(&mut ed).sync("Café", None);
         assert_eq!(font(&ed, &kept), arial_bold);
         text(&mut ed).sync("Walrus", None);
-        let mut not_kept = kept.clone();
-        not_kept.spans[0].font_reusable = false;
-        assert_eq!(font(&ed, &not_kept), arial_bold);
+        ed.insp.as_mut().unwrap().fonts = Some(Vec::new());
+        assert_eq!(font(&ed, &kept), arial_bold);
+        ed.insp.as_mut().unwrap().fonts = Some(fonts);
         text(&mut ed).italic((0, 6));
         text(&mut ed).set_family((0, 6), Family::Courier);
         let courier = FontChoice {

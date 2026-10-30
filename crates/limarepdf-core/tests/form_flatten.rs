@@ -242,10 +242,10 @@ fn flattens_some_pages_and_keeps_the_rest_fillable() {
 fn refuses_to_lose_values_it_cannot_draw() {
     let (mut p, _) = doc(vec![
         // Filled in another app, which left the drawing to the reader: LimarePDF can't
-        // write these characters in a field yet.
+        // write these characters in a field yet (Hebrew, written right to left).
         widget(dictionary! {
             "FT" => "Tx", "T" => text("name"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
-            "V" => utf16("日本語"),
+            "V" => utf16("שלום"),
         }),
         // No drawing either, but LimarePDF can draw it.
         widget(dictionary! {
@@ -426,7 +426,7 @@ fn undrawable_answers_are_named_before_flattening() {
     let (mut p, ids) = doc(vec![
         widget(dictionary! {
             "FT" => "Tx", "T" => text("name"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
-            "V" => utf16("日本語"),
+            "V" => utf16("שלום"),
         }),
         widget(dictionary! {
             "FT" => "Btn", "Ff" => 1 << 15, "T" => text("size"),

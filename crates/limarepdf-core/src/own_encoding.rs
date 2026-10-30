@@ -22,8 +22,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 /// The text of each one-byte code; `None` for a code with none.
 pub(crate) type Codes = Vec<Option<String>>;
 
-/// Largest font program read for its encoding.
-const MAX_PROGRAM: usize = 32 << 20;
+/// Largest font program read for its encoding (or its glyphs: `own_font.rs`).
+pub(crate) const MAX_PROGRAM: usize = 32 << 20;
 /// Most programs, and glyph names, whose text is kept between pages.
 const KEPT: usize = 256;
 const KEPT_NAMES: usize = 1 << 16;
@@ -115,7 +115,7 @@ fn text_of(enc: &Encoding, c: u8) -> Option<String> {
 /// The character the Adobe Glyph List gives glyph name `name`, as lopdf has the list (its own):
 /// a font whose one difference is that name reads code 0 as it, and lopdf reads a font with a
 /// name it doesn't know through the standard encoding instead.
-fn listed(name: &str) -> Option<String> {
+pub(crate) fn listed(name: &str) -> Option<String> {
     let doc = Document::new();
     let enc = dictionary! {
         "Type" => "Encoding", "Differences" => vec![0.into(), Object::Name(name.into())],

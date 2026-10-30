@@ -9,9 +9,9 @@ use crate::form_ap::{
     self, encode, fill_color, nums, op, stroke_color, Body, Border, Look, Metrics,
 };
 use crate::form_write::parse_da;
+use crate::layout::Setter;
 use crate::matrix as mx;
-use crate::overlay::escape;
-use crate::stamps::{bold_width, rounded, StampColor, StampKind, CAP};
+use crate::stamps::{rounded, StampColor, StampKind, CAP};
 use crate::{Family, FontChoice, Pdf, Result};
 use anyhow::bail;
 use lopdf::content::Operation;
@@ -72,40 +72,47 @@ struct Drawing {
     bbox: [f32; 4],
     /// Opacity below 1, or the Multiply blend mode for highlights.
     gs: Option<Dictionary>,
-    /// The font it uses as [`FONT`], if any.
-    font: Option<embed::Pen>,
+    /// The text it shows after `content`, if any, in fonts named from [`FONT`].
+    text: Option<Typeset>,
     /// Turns the drawing to fit `/Rect`, for text boxes on turned pages.
     matrix: Option<[f32; 6]>,
+}
+
+/// Text a drawing shows, written when the drawing is put in the file
+/// ([`Pdf::draw_annotations`]) with a pen made for its lines, then `after`.
+struct Typeset {
+    setter: Setter,
+    words: Words,
+    after: Vec<u8>,
+}
+
+/// What a drawing's text is.
+enum Words {
+    /// A text box's text, laid out ([`form_ap::draw`]).
+    Box(form_ap::Drawn),
+    /// A stamp's word at a size, its baseline starting at x and y.
+    Line(String, f32, f32, f32),
 }
 
 impl Pdf {
     /// Give each of `ids` an appearance (`/AP /N`) drawn from its entries. Annotations
     /// LimarePDF can't draw are left alone. Returns how many were drawn.
     pub(crate) fn draw_annotations(&mut self, ids: &[ObjectId]) -> usize {
-        let mut fonts: Vec<(&str, ObjectId)> = Vec::new();
+        let mut standard: Vec<(FontChoice, ObjectId)> = Vec::new();
         let mut n = 0;
         for &id in ids {
-            let pen = self.box_pen(id);
-            let Some(d) = self.annotation_drawing(id, pen) else {
+            let Some(d) = self.annotation_drawing(id) else {
                 continue;
             };
             let mut res = Dictionary::new();
-            if let Some(pen) = d.font {
-                let f = match &pen {
-                    embed::Pen::Embedded(c) => c.font,
-                    embed::Pen::Standard(f) => {
-                        let name = f.base_font();
-                        match fonts.iter().find(|(n, _)| *n == name) {
-                            Some(&(_, f)) => f,
-                            None => {
-                                let f = self.doc.add_object(pen.font());
-                                fonts.push((name, f));
-                                f
-                            }
-                        }
-                    }
+            let mut content = d.content;
+            if let Some(t) = d.text {
+                let Some((text, fonts)) = self.typeset(&t, &mut standard) else {
+                    continue;
                 };
-                res.set("Font", dictionary! { FONT => f });
+                content.extend(text);
+                content.extend(t.after);
+                res.set("Font", fonts);
             }
             if let Some(gs) = d.gs {
                 res.set("ExtGState", dictionary! { GS => gs });
@@ -119,7 +126,7 @@ impl Pdf {
             if let Some(m) = d.matrix {
                 form.set("Matrix", nums(&m));
             }
-            let ap = self.doc.add_object(Stream::new(form, d.content));
+            let ap = self.doc.add_object(Stream::new(form, content));
             if let Ok(a) = self.doc.get_dictionary_mut(id) {
                 a.set("AP", dictionary! { "N" => ap });
                 n += 1;
@@ -155,23 +162,65 @@ impl Pdf {
         }
     }
 
-    /// The font a text box's text is drawn in ([`Pdf::pen`]): Helvetica, or its embedded
-    /// face for characters Helvetica lacks. Characters neither has show as `?`: LimarePDF
-    /// refuses such text in its own text boxes ([`Pdf::add_text_box`]), and refuses to
-    /// draw one another app wrote into the file ([`Pdf::check_box_drawable`]), so only the
-    /// app's view, prints and page pictures of a box without a drawing show them.
-    /// `None` for other annotations.
-    pub(crate) fn box_pen(&mut self, id: ObjectId) -> Option<embed::Pen> {
-        let d = self.doc.get_dictionary(id).ok()?;
-        if d.get(b"Subtype").and_then(Object::as_name).ok()? != b"FreeText" {
-            return None;
+    /// The content that writes a drawing's text, and its fonts by name: a pen made for its
+    /// lines ([`Pdf::pen`]), in Helvetica (bold for a stamp), or its embedded face for
+    /// characters Helvetica lacks, and the fonts it falls back to; the standard font
+    /// objects in `standard` used again, and those made added. Characters no font has show
+    /// as `?`: LimarePDF refuses such text in its own text boxes ([`Pdf::add_text_box`]),
+    /// and refuses to draw one another app wrote into the file
+    /// ([`Pdf::check_box_drawable`]), so only the app's view, prints and page pictures of a
+    /// box without a drawing show them. `None` when the text can't be written at all.
+    fn typeset(
+        &mut self,
+        t: &Typeset,
+        standard: &mut Vec<(FontChoice, ObjectId)>,
+    ) -> Option<(Vec<u8>, Dictionary)> {
+        let lines: Vec<&str> = match &t.words {
+            Words::Box(drawn) => drawn.lines.iter().map(|(s, ..)| s.as_str()).collect(),
+            Words::Line(word, ..) => vec![word.as_str()],
+        };
+        let missing = t.setter.missing(&lines.concat());
+        let shown: Vec<String> = (lines.iter())
+            .map(|l| {
+                l.chars()
+                    .map(|c| if missing.contains(c) { '?' } else { c })
+                    .collect()
+            })
+            .collect();
+        let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+        let pen = self.pen_reusing(&t.setter, &shown, standard).ok()?;
+        for &(f, id) in pen.standard_fonts() {
+            if !standard.iter().any(|(c, _)| *c == f) {
+                standard.push((f, id));
+            }
         }
-        let text = self.box_text(d);
-        let helvetica = FontChoice::default();
-        Some(
-            self.pen(helvetica, &text)
-                .unwrap_or(embed::Pen::Standard(helvetica)),
-        )
+        let names = pen.names(FONT);
+        let text = match &t.words {
+            Words::Box(drawn) => drawn.content(|i, _| pen.ops(i, drawn.size, 0.0, &names)),
+            Words::Line(_, size, x, y) => {
+                let shows = pen.content(0, *size, &names);
+                format!("BT /{FONT} {size} Tf {x} {y} Td {shows}\nET\n").into_bytes()
+            }
+        };
+        let mut fonts = pen.font_dict(&names);
+        // An empty box still names its font.
+        if !fonts.has(FONT.as_bytes()) {
+            let own = t.setter.own().choice();
+            let id = match standard.iter().find(|(c, _)| *c == own) {
+                Some(&(_, id)) => id,
+                None => {
+                    let font = dictionary! {
+                        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => own.base_font(),
+                        "Encoding" => "WinAnsiEncoding",
+                    };
+                    let id = self.doc.add_object(font);
+                    standard.push((own, id));
+                    id
+                }
+            };
+            fonts.set(FONT, id);
+        }
+        Some((text, fonts))
     }
 
     /// A text box's text, its `/Contents` with line breaks as `\n`.
@@ -185,8 +234,7 @@ impl Pdf {
     }
 
     /// The appearance for one annotation, or `None` for a type LimarePDF doesn't draw.
-    /// `pen` is a text box's font ([`Pdf::box_pen`]).
-    fn annotation_drawing(&self, id: ObjectId, pen: Option<embed::Pen>) -> Option<Drawing> {
+    fn annotation_drawing(&self, id: ObjectId) -> Option<Drawing> {
         let d = self.doc.get_dictionary(id).ok()?;
         let rect = self.rect(d.get(b"Rect").ok()?)?;
         let sub = d.get(b"Subtype").ok()?.as_name().ok()?;
@@ -344,7 +392,7 @@ impl Pdf {
                 ops.push(op("S", vec![]));
             }
             b"Text" => note(&mut ops, rect, line.c.as_deref(), name(d)),
-            b"FreeText" => return Some(self.free_text(d, rect, alpha, pen?)),
+            b"FreeText" => return Some(self.free_text(d, rect, alpha)),
             b"Stamp" => return Some(stamp(rect, name(d), alpha)),
             b"Caret" => {
                 let r = self.inner(d, rect);
@@ -359,7 +407,7 @@ impl Pdf {
             content: with_gs(encode(ops), alpha, blend),
             bbox: rect,
             gs: gs_dict(alpha, blend),
-            font: None,
+            text: None,
             matrix: None,
         })
     }
@@ -379,11 +427,11 @@ impl Pdf {
         (i > 0.05).then_some(CLOUD * i)
     }
 
-    /// A text box: its `/Contents` in Helvetica (or its embedded face: `pen`), with the size
-    /// and colour from `/DA` (or the `/DS` style string), on the `/C` background with a
-    /// border, which may be cloudy. A callout (`/CL`) is a line from what the box points at
-    /// to the box, whose place in `/Rect` `/RD` then gives.
-    fn free_text(&self, d: &Dictionary, rect: [f32; 4], alpha: f32, pen: embed::Pen) -> Drawing {
+    /// A text box: its `/Contents` in Helvetica (or its embedded face, and the fonts it falls
+    /// back to), with the size and colour from `/DA` (or the `/DS` style string), on the
+    /// `/C` background with a border, which may be cloudy. A callout (`/CL`) is a line from
+    /// what the box points at to the box, whose place in `/Rect` `/RD` then gives.
+    fn free_text(&self, d: &Dictionary, rect: [f32; 4], alpha: f32) -> Drawing {
         // `/Rotate` (as Acrobat writes it) turns the text with its page, so it reads
         // upright as the page is shown.
         let turn = d
@@ -492,16 +540,22 @@ impl Pdf {
                 .unwrap_or(0),
         };
         let text = self.box_text(d);
-        let body = form_ap::draw(&look, &Body::Lines(&text), &Metrics::of(pen.clone()));
+        let m = Metrics::Set(self.setter(FontChoice::default(), &text));
+        let drawn = form_ap::draw(&look, &Body::Lines(&text), &m);
+        let Metrics::Set(setter) = m else {
+            unreachable!("made as a setter")
+        };
         let mut content = encode(ops);
         content.extend(format!("\nq 1 0 0 1 {} {} cm\n", tb[0], tb[1]).into_bytes());
-        content.extend(body);
-        content.extend(b"\nQ\n");
         Drawing {
             content: with_gs(content, alpha, false),
             bbox: [0.0, 0.0, w, h],
             gs: gs_dict(alpha, false),
-            font: Some(pen),
+            text: Some(Typeset {
+                setter,
+                words: Words::Box(drawn),
+                after: b"\nQ\n".to_vec(),
+            }),
             matrix,
         }
     }
@@ -1083,24 +1137,24 @@ fn stamp(rect: [f32; 4], name: &[u8], alpha: f32) -> Drawing {
         );
     }
     let pad = frame + side * 0.12;
-    let size = ((w - 2.0 * pad) / bold_width(&word, 1.0)).min((h - 2.0 * pad) / CAP);
-    if size >= 1.0 {
-        let x = (w - bold_width(&word, size)) / 2.0;
-        let y = (h - CAP * size) / 2.0;
-        s += &format!(
-            "BT /{FONT} {size} Tf {x} {y} Td ({}) Tj ET\n",
-            escape(&word)
-        );
-    }
+    let bold = FontChoice {
+        family: Family::Helvetica,
+        bold: true,
+        italic: false,
+    };
+    let setter = Setter::new(bold, &word, None);
+    let size = ((w - 2.0 * pad) / setter.width(&word, 1.0)).min((h - 2.0 * pad) / CAP);
+    let x = (w - setter.width(&word, size)) / 2.0;
+    let y = (h - CAP * size) / 2.0;
     Drawing {
         content: with_gs(s.into_bytes(), alpha, false),
         bbox: [0.0, 0.0, w, h],
         gs: gs_dict(alpha, false),
-        font: Some(embed::Pen::Standard(FontChoice {
-            family: Family::Helvetica,
-            bold: true,
-            italic: false,
-        })),
+        text: (size >= 1.0).then(|| Typeset {
+            setter,
+            words: Words::Line(word, size, x, y),
+            after: Vec::new(),
+        }),
         matrix: None,
     }
 }

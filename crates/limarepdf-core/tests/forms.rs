@@ -65,6 +65,45 @@ fn no_form_gives_no_fields() {
     assert!(two_pages().form_fields().is_empty());
 }
 
+/// A field's value is set in the standard font nearest the one its `/DA` names in the
+/// form's resources when that can't be used as it is, and what that lacks falls back from
+/// it (the text design's question 4): so the app's note names that font. Helvetica when the
+/// `/DA` names none, or one the form doesn't have.
+#[test]
+fn a_field_s_font_is_the_standard_one_nearest_its_da_s() {
+    let mut p = two_pages();
+    let field = |p: &mut Pdf, name: &str, da: Option<&str>, y: i64| {
+        let mut d = dictionary! { "FT" => "Tx", "T" => text(name), "Rect" => rect(10, y) };
+        if let Some(da) = da {
+            d.set("DA", text(da));
+        }
+        p.doc.add_object(widget(d))
+    };
+    let ids = [
+        field(&mut p, "times", Some("/TiBo 10 Tf 0 g"), 150),
+        field(&mut p, "helv", Some("/Helv 9 Tf 0 g"), 120),
+        field(&mut p, "unknown", Some("/Nowhere 9 Tf 0 g"), 90),
+        field(&mut p, "none", None, 60),
+    ];
+    on_page(&mut p, 0, &ids);
+    let form = set_form(&mut p, &ids);
+    let tibo = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Times-Bold",
+    });
+    let helv = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    let dr = dictionary! { "Font" => dictionary! { "TiBo" => tibo, "Helv" => helv } };
+    p.doc.get_dictionary_mut(form).unwrap().set("DR", dr);
+    let fields = p.form_fields();
+    let times = limarepdf_core::FontChoice::from_name("Times-Bold");
+    assert_eq!(find(&fields, "times").font, times);
+    for name in ["helv", "unknown", "none"] {
+        let f = find(&fields, name).font;
+        assert_eq!(f, limarepdf_core::FontChoice::default(), "{name}");
+    }
+}
+
 #[test]
 fn reads_every_kind_of_field() {
     let mut p = two_pages();

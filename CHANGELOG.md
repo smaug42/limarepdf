@@ -4,13 +4,30 @@
 
 ### Added
 
-- While a line is edited on the page, its floating toolbar has Bold, Italic, Cut and Copy for what is selected in
-  the line, as Ctrl+B, Ctrl+I, Ctrl+X and Ctrl+C do there. Clicking them leaves the line open, with the keyboard
-  back in it.
+- Editing a line keeps the PDF's own font wherever it can, embedded fonts and their subsets included (Chinese,
+  Japanese and Korean fonts that number their glyphs too): the letters you leave as they were keep their exact
+  spacing, new letters are written in the font when it holds them, and only a word with a letter the font lacks
+  goes to the installed family or the nearest standard font, the rest of the line keeping its font. A line in one
+  style changed in its words alone is changed where it is in the page. While you type, the line shows in the
+  font's own letters, at the widths that will be written. The inspector says which letters the font lacks ("Not
+  in this PDF's font: ö ß. Those words use Helvetica.") or that it can't take new text at all ("This PDF's font
+  can't take new text. Edits use Times."), why on hover (a Type 3 font, one not in the PDF, vertical writing).
+  Before, a line in an embedded subset was written again in another font, and its spacing between letters was
+  lost.
+- Ctrl+Tab (or Ctrl+F6) brings the next open document to the front and Ctrl+Shift+Tab (or Ctrl+Shift+F6) the one
+  before, from the last round to the first, as in web browsers and Acrobat; they are under ☰ > View > Go to
+  document too, and work with the keyboard in a box.
+- While a line is edited on the page, its floating toolbar has Bold, Italic, Cut, Copy and Paste for what is
+  selected in the line, as Ctrl+B, Ctrl+I, Ctrl+X, Ctrl+C and Ctrl+V do there. Clicking them leaves the line open,
+  with the keyboard back in it.
+- A right-click in text being typed on the page (a line being edited, new text, a note or a text box) opens a menu
+  for it, as in a word processor: Cut, Copy and Paste, then Bold and Italic where the text takes them. A
+  right-click on what is selected there keeps it selected for the menu. Before, a right-click let go of the
+  selection and opened nothing.
 - Typing over words selected with the read tool replaces them, as in a word processor: their line opens for
-  editing with what you typed in their place, and you go on typing there. Ctrl+V pastes over them the same way.
-  Over words on more than one line nothing is typed, and a note says "Type over words within one line. Paragraph
-  editing is planned."
+  editing with what you typed in their place, and you go on typing there. Ctrl+V pastes over them the same way, as
+  does Paste in the Edit band, the words' right-click menu and their floating toolbar. Over words on more than one
+  line nothing is typed, and a note says "Type over words within one line. Paragraph editing is planned."
 - Delete or Backspace removes the words selected with the read tool, across lines and pages, in one step that
   Undo takes back. As in Word, a space beside them goes too when two would be left together, or one at the start
   or end of a line. A line left empty is gone; lines aren't joined together.
@@ -169,9 +186,33 @@
   document drops its password unless it is set again, and what happens to form fields when files are merged.
   New screenshots show Fill and sign, the Comments view, a form being filled in and redaction marks, and every
   screenshot in the guide is sharper on high-resolution screens.
+- Undo goes back up to 100 steps, as Word and LibreOffice do by default. Before, it went back 20. Each step keeps
+  only what its change altered, so a note added to a long scan keeps a few kilobytes rather than a copy of the
+  whole document, and the 1 GB a document's steps may hold together is reached only by changes that each alter
+  much of a very large document (optimising a long scan). The latest change can always be undone.
+- Undo and Redo put back what the change altered, without reading the whole document again, so they are quicker
+  on large documents: on a 10,000-page document, Undo and Redo of moving or deleting pages take a sixth to a third
+  less time (about 0.1 to 0.26 s), while the move or the deletion itself takes about 25 to 50 ms longer.
 
 ### Fixed
 
+- Typing on the page was lost when the change keeping it failed: ending a line's typing, new text, a note or a text
+  box (Esc, Enter, Tab, a click away or another tool) showed the reason and threw the typing away. It now comes
+  back on the page to go on with, the document as it was; ended again unchanged, it is left out and a message says
+  so. Typing open on the page also waits under a message or question that opens over it, instead of ending when
+  the message is closed.
+- With several documents open, the tabs no longer wrap a name letter by letter down the window. They stay in one
+  row, narrowing to share it with long names shortened (the whole name on hover), then scroll by the mouse wheel
+  or the arrows at the row's end (a tab a click, on and on while held), and All open documents lists every one;
+  the tab in front is always in view.
+- Text in some fonts came out as other letters or as � in search, copying, Export text and `limarepdf-cli text`:
+  whole lines read as shifted letters ("*TVQQPTF" for "I suppose"), and Czech, Romanian and Russian letters as �.
+  These fonts number their characters by glyph and say no more in the PDF, so LimarePDF now reads each glyph's
+  character from the font's embedded program, as other readers do; and a font whose ToUnicode entry names Identity
+  instead of holding a map now reads each code as its character's own number. Of the 1,089 test files, 9 read
+  better and none worse.
+- Letters typed into a line in an embedded font that doesn't hold them (a font made with only some letters) were
+  written in it anyway, and showed as nothing; the word goes to another font now, as the inspector says.
 - The tick and cross in the Fill and sign pane and its menu showed as empty boxes; they are drawn now.
 - The Finish signing question, its notice when nothing is put down and its command's tooltip named "the Sign
   tool"; they say Fill and sign, the tool's name. The notice for Apply redactions with no marks named a menu that
@@ -205,6 +246,11 @@
 - A long document stopped the window for a while once it was read, and again after each change to its pages, for a
   time that grew with the square of its pages: about half a minute on 10,000 pages. Its page sizes are now read
   in one pass, and a 10,000-page document opens in about a tenth of a second.
+- A document opened with its password was no longer treated as protected after Undo or Redo, so signing it was no
+  longer refused, as it is for any encrypted document. It stays protected now.
+- A watermark or headers and footers just added, changed in its tool to cover fewer pages, still showed on the
+  pages it had left until they were drawn again for another reason. Those pages are drawn again at once, without
+  it.
 
 ## [0.11.0] - 2026-10-27
 

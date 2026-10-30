@@ -336,7 +336,8 @@ fn refuses_values_that_dont_fit() {
     assert!(err(p.set_field("nope", t("x"))).contains("no form field"));
     assert!(err(p.set_field("one", t("abcd"))).contains("at most 3"));
     assert!(err(p.set_field("one", t("a\nb"))).contains("line breaks"));
-    assert!(err(p.set_field("one", t("日本"))).contains("Latin, Greek and Cyrillic"));
+    assert!(err(p.set_field("one", t("של"))).contains("right-to-left"));
+    assert!(err(p.set_field("one", t("\u{2FFFE}"))).contains("No font on this computer has"));
     assert!(err(p.set_field("locked", t("x"))).contains("read-only"));
     assert!(
         err(p.set_field("pick", FieldValue::Choice(vec!["b".into()]))).contains("isn't one of")

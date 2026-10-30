@@ -540,10 +540,11 @@ impl Pdf {
         let sideways = matches!(turn, 90 | 270);
         let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
         let (w, h) = if sideways { (h, w) } else { (w, h) };
-        let pen = self
-            .box_pen(id)
-            .ok_or_else(|| anyhow!("the annotation isn't a text box"))?;
-        let need = lines_height(&text, w, size, border, &Metrics::of(pen));
+        if d.get(b"Subtype").and_then(Object::as_name).ok() != Some(b"FreeText") {
+            bail!("the annotation isn't a text box");
+        }
+        let m = Metrics::Set(self.setter(FontChoice::default(), &text));
+        let need = lines_height(&text, w, size, border, &m);
         if need <= h + 0.01 {
             return Ok(());
         }

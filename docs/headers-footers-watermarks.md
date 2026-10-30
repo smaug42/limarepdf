@@ -69,9 +69,10 @@ document until you press Add to pages, and closing the tool before then adds not
 After that, the tool says "Changes update the watermark just added" (or the headers and footers): each change
 updates what you added instead of adding a second copy, one undo step each (a colour when its picker closes). Undo
 steps back through the changes, and the tool's settings follow. **Add another** keeps it and adds a new one.
-To do this, LimarePDF keeps a copy of the document as it was before you added it, counted in the [undo
-limit](gui.md#undo). On a document so large that the limit has no room for that copy, a message says it can't be
-changed from its tool any more; what was added stays on the pages as last changed.
+To do this, LimarePDF keeps what adding it changed, so the pages can go back to how they were before it, counted
+in the [undo limit](gui.md#undo). On a document so large that the limit has no room for that, a message says it
+can't be changed from its tool any more; what was added stays on the pages as last changed. Changing the Pages box
+to fewer pages takes it off the pages it leaves.
 
 Any other change to the document ends this: the tool shows Add to pages again, and the pages show the settings
 again once you change one. From then on, what was added is part of the pages: no command removes it from all its

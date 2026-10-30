@@ -1259,7 +1259,7 @@ impl SignPane {
             if ui.ctx().memory(|m| m.has_focus(id)) {
                 let helvetica = limarepdf_core::FontChoice::default();
                 if let Some(c) = page_text::leave_out_untypable(ui, true, helvetica) {
-                    let note = page_text::fixed_note(&c).to_string();
+                    let note = page_text::note(&c).to_string();
                     self.refused.mark(ui.ctx(), note);
                 }
             }

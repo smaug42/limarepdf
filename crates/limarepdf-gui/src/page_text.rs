@@ -8,13 +8,17 @@ use crate::dialogs;
 use crate::styled::{CharStyle, History, Styled};
 use crate::theme;
 use crate::typing_fonts::{self, Wanted};
-use eframe::egui::epaint::text::{ByteIndex, VariationCoords};
+use eframe::egui::epaint::text::{ByteIndex, CharIndex, VariationCoords};
+use eframe::egui::text::{CCursor, CCursorRange};
 use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    emoji_sequence, installed_could_write, unwritten_script, writable, FontChoice, TextPart,
+    emoji_sequence, unwritten_script, writable, BoxSetting, FontChoice, LineFont, PartFont,
+    TextPart,
 };
+use std::ops::Range;
 use std::sync::Arc;
+use unicode_normalization::char::is_combining_mark;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// The space from one line's baseline to the next, as a multiple of the size (Acrobat's).
@@ -26,9 +30,9 @@ pub const LEADING: f32 = 1.2;
 pub fn line_gap(above: f32, below: f32) -> f32 {
     LEADING * (0.25 * above + 0.75 * below)
 }
-/// Shown at the caret when a character typed or pasted can't be written.
-pub const REFUSED: &str =
-    "LimarePDF can't add this character yet: Latin, Greek and Cyrillic characters work";
+/// Shown at the caret when a character typed or pasted can't be written: no installed font
+/// has it.
+pub const REFUSED: &str = "No font on this computer has this character";
 /// Shown at the caret when an emoji made of several characters is typed or pasted
 /// ([`limarepdf_core::emoji_sequence`]).
 pub const SEQUENCE: &str = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and \
@@ -90,6 +94,8 @@ pub struct PageText {
     refused: Refused,
     /// Being moved by its outline: where it was when the drag started.
     moving: Option<(f32, f32)>,
+    /// What an input method is composing in it, from and to ([`composition`]).
+    composing: Option<(usize, usize)>,
 }
 
 /// What the editor did in a frame.
@@ -98,6 +104,11 @@ pub struct Shown {
     pub over: bool,
     /// Esc or Tab finished the typing, or the text went out of view.
     pub done: bool,
+    /// The text's box as drawn, for its right-click menu.
+    pub edit: egui::Response,
+    /// What an input method was composing when the box lost the keyboard was taken as
+    /// committed, and this, the first character that can't be written, left out.
+    pub left: Option<String>,
 }
 
 /// Whether `c` can be typed in `font`: line breaks, and what LimarePDF can write in it (the
@@ -132,33 +143,61 @@ fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<Stri
     (kept, refused)
 }
 
-/// The note at the caret of a text editor for `refused`, a character (grapheme cluster)
-/// refused in `font`: the font is named when an installed font that has it could write it
-/// (Chinese in Helvetica, or what an installed family lacks), as choosing another font may
-/// help; a script no font is written in yet ([`SCRIPT`]) has a note of its own.
-pub fn note(font: FontChoice, refused: &str) -> String {
-    if !emoji_sequence(refused) && refused.chars().any(unwritten_script) {
-        SCRIPT.to_string()
-    } else if emoji_sequence(refused) || !refused.chars().all(installed_could_write) {
-        fixed_note(refused).to_string()
-    } else if font.is_standard() {
-        format!(
-            "{} can't write this character; choose an installed font that has it",
-            font.family_name()
-        )
-    } else {
-        limarepdf_core::refusal(font, refused)
-    }
-}
-
-/// The note at the caret for `refused` where the font can't be chosen (text boxes and
-/// stamps, set in Helvetica): no font is pointed to.
-pub fn fixed_note(refused: &str) -> &'static str {
+/// The note at the caret of a text editor for `refused`, a character (grapheme cluster) no
+/// font can write: the typing's font, and every installed font it falls back to, lack it
+/// ([`REFUSED`]), or it is an emoji sequence ([`SEQUENCE`]) or of a script no font is
+/// written in yet ([`SCRIPT`]), which no font helps with.
+pub fn note(refused: &str) -> &'static str {
     if emoji_sequence(refused) {
         SEQUENCE
+    } else if refused.chars().any(unwritten_script) {
+        SCRIPT
     } else {
         REFUSED
     }
+}
+
+/// What the inspector says of text typed in fonts that lack some of it, `pieces` being each
+/// stretch with the font it is typed in: the words LimarePDF writes in another font, as
+/// core sets them ([`limarepdf_core::fallbacks`]), "Not in Calibri: 漢字. Those characters
+/// use Noto Sans CJK JP.", and on hover which word uses which font. `None` when every word
+/// is in the font it is typed in.
+pub fn fallback_note(pieces: &[(FontChoice, &str)]) -> Option<(String, String)> {
+    let (mut asked, mut words) = (Vec::new(), Vec::<(String, String)>::new());
+    for &(f, text) in pieces {
+        for (word, used) in limarepdf_core::fallbacks(f, text) {
+            let (word, used) = (word.trim().to_string(), used.family_name());
+            if word.is_empty() || words.iter().any(|w| w.0 == word && w.1 == used) {
+                continue;
+            }
+            let name = f.family_name();
+            if !asked.contains(&name) {
+                asked.push(name);
+            }
+            words.push((word, used));
+        }
+    }
+    if words.is_empty() {
+        return None;
+    }
+    let mut used: Vec<&str> = Vec::new();
+    for (_, f) in &words {
+        if !used.contains(&f.as_str()) {
+            used.push(f);
+        }
+    }
+    let used = match used.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => used.concat(),
+    };
+    let listed: Vec<&str> = words.iter().map(|w| w.0.as_str()).collect();
+    let said = format!(
+        "Not in {}: {}. Those characters use {used}.",
+        asked.join(", "),
+        listed.join(" ")
+    );
+    let why: Vec<String> = words.iter().map(|(w, f)| format!("{w}: {f}")).collect();
+    Some((said, why.join("\n")))
 }
 
 /// `f` with Bold switched when `bold` and Italic when `italic` (Ctrl+B, Ctrl+I), each only
@@ -260,6 +299,80 @@ pub fn leave_out_untypable(ui: &egui::Ui, single: bool, font: FontChoice) -> Opt
     refused
 }
 
+/// What an input method is composing in the typing box `id` once the box has been drawn
+/// this frame, from where it starts to where it ends (characters), given what it was
+/// composing before (`was`). egui puts a composition in the box, selected, unchecked (the
+/// text design, 5.4), and replaces it with what is committed, which the typing filter
+/// checks ([`leave_out_untypable`]). A box without the keyboard keeps `was`: a composition
+/// it was left with, by a click away or another tool, which [`commit_left`] takes as
+/// committed, as Windows and macOS input methods commit when a box loses the keyboard.
+pub fn composition(
+    ctx: &egui::Context,
+    id: egui::Id,
+    was: Option<(usize, usize)>,
+) -> Option<(usize, usize)> {
+    if !ctx.memory(|m| m.has_focus(id)) {
+        return was;
+    }
+    let last = ctx.input(|i| {
+        (i.events.iter().rev()).find_map(|e| match e {
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => Some(!text.is_empty()),
+            egui::Event::Ime(egui::ImeEvent::Commit(_)) => Some(false),
+            _ => None,
+        })
+    });
+    let sel = selection(ctx, id).map(|(a, b)| (a.min(b), a.max(b)));
+    match last {
+        Some(true) => sel,
+        Some(false) => None,
+        // Typed over, or the caret moved: no longer a composition.
+        None => was.filter(|&r| sel == Some(r)),
+    }
+}
+
+/// `text` with a composition left in it at `range` (characters, from and to) taken as
+/// committed ([`composition`]): what can't be written in `font` left out of it, as
+/// [`leave_out_untypable`] leaves it out of committed text, and in a `single` line its line
+/// breaks made spaces. Also returns the first character left out.
+pub fn commit_left(
+    text: &str,
+    range: (usize, usize),
+    single: bool,
+    font: FontChoice,
+) -> (String, Option<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let (a, b) = (range.0.min(chars.len()), range.1.min(chars.len()));
+    let composed: String = chars[a..b.max(a)].iter().collect();
+    let (kept, refused) = keep_typable(&composed, single, font);
+    let mut out: String = chars[..a].iter().collect();
+    out.push_str(&kept);
+    out.extend(&chars[b.max(a)..]);
+    (out, refused)
+}
+
+/// [`commit_left`] for styled text: the composition at `range` left in `text` taken as
+/// committed, in `font`, the caret after it. Returns the first character left out.
+pub fn commit_left_styled(
+    text: &mut Styled,
+    range: (usize, usize),
+    single: bool,
+    font: FontChoice,
+) -> Option<String> {
+    // The characters after the composition, which stay.
+    let after = (text.text().chars().count()).saturating_sub(range.1.max(range.0));
+    let (new, refused) = commit_left(text.text(), range, single, font);
+    let caret = new.chars().count().saturating_sub(after);
+    text.sync(&new, Some(caret));
+    refused
+}
+
+/// What the tab says when what an input method was composing in a typing box left without
+/// the keyboard ([`commit_left`]) had `refused`, a character that can't be written: it is
+/// left out, as typing leaves it out ([`note`]).
+pub fn left_note(refused: &str) -> String {
+    format!("Left out \"{refused}\": {}", note(refused))
+}
+
 /// Take `text`, typed in the editor `id`, back or forward a step of `history` when `t`
 /// took Ctrl+Z or Ctrl+Y, selecting what was selected then.
 pub fn undo_redo(
@@ -329,6 +442,157 @@ pub fn select(ctx: &egui::Context, id: egui::Id, sel: (usize, usize)) {
         );
         st.cursor.set_char_range(Some(range));
         st.store(ctx, id);
+    }
+}
+
+/// A right-click on what is selected in the text box `id` leaves it selected, for the menu
+/// to act on, as in word processors (egui moves the caret for a press of any button); a
+/// right-click elsewhere puts the caret there. `held` is what was selected before the box
+/// was drawn this frame.
+pub fn keep_on_right_click(
+    ctx: &egui::Context,
+    id: egui::Id,
+    out: &mut egui::text_edit::TextEditOutput,
+    held: Option<egui::text::CCursorRange>,
+) {
+    let Some(held) = held.filter(|r| !r.is_empty()) else {
+        return;
+    };
+    let right = ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+    let at = ctx.input(|i| i.pointer.interact_pos());
+    let (true, Some(at)) = (right && out.response.response.hovered(), at) else {
+        return;
+    };
+    let on = out.galley.cursor_from_pos(at - out.galley_pos).index.0;
+    let [from, to] = held.sorted_cursors();
+    if (from.index.0..=to.index.0).contains(&on) {
+        out.state.cursor.set_char_range(Some(held));
+        out.state.clone().store(ctx, id);
+        out.cursor_range = Some(held);
+    }
+}
+
+/// What a typing box holds, deleted by what readers see as one character (a grapheme
+/// cluster; the text design, 5.2), where egui deletes a `char` at a time: Delete takes off
+/// the character after the caret whole (a letter and its accents, a flag, a Hangul syllable
+/// typed in its parts), and Backspace the one before it, except that of a letter typed with
+/// separate accents it takes off the last accent, as browsers' text boxes do, so a wrong
+/// accent can be typed again.
+pub struct Clusters<'a>(pub &'a mut String);
+
+impl egui::TextBuffer for Clusters<'_> {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        self.0
+    }
+
+    fn insert_text(&mut self, text: &str, at: CharIndex) -> usize {
+        <String as egui::TextBuffer>::insert_text(self.0, text, at)
+    }
+
+    fn delete_char_range(&mut self, range: std::ops::Range<CharIndex>) {
+        <String as egui::TextBuffer>::delete_char_range(self.0, range);
+    }
+
+    fn delete_previous_char(&mut self, caret: CCursor) -> CCursor {
+        let i = caret.index.0.min(self.0.chars().count());
+        let from = cluster_edge(self.0, i.saturating_sub(1), true);
+        let cluster: Vec<char> = self.0.chars().skip(from).take(i - from).collect();
+        let from = if accents_apart(&cluster) { i - 1 } else { from };
+        self.delete_selected_ccursor_range([CCursor::new(from), CCursor::new(i)])
+    }
+
+    fn delete_next_char(&mut self, caret: CCursor) -> CCursor {
+        let n = self.0.chars().count();
+        let i = caret.index.0.min(n);
+        let to = cluster_edge(self.0, (i + 1).min(n), false);
+        self.delete_selected_ccursor_range([CCursor::new(i), CCursor::new(to)])
+    }
+
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<Clusters<'static>>()
+    }
+}
+
+/// The place nearest character `i` of `s` that is between two characters as readers see
+/// them (grapheme clusters): `i` itself when it is one, else the edge before it when
+/// `back`, or the edge after it; the end for `i` past it.
+pub fn cluster_edge(s: &str, i: usize, back: bool) -> usize {
+    let mut at = 0;
+    for g in s.graphemes(true) {
+        let n = g.chars().count();
+        if i < at + n {
+            return if i == at || back { at } else { at + n };
+        }
+        at += n;
+    }
+    at
+}
+
+/// Whether `cluster` is a letter typed with separate accents: a character, then only marks
+/// that go on it (not the selectors that choose how an emoji or ideograph shows).
+fn accents_apart(cluster: &[char]) -> bool {
+    let mark = |c: char| {
+        is_combining_mark(c) && !matches!(c, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
+    };
+    cluster.len() > 1 && !mark(cluster[0]) && cluster[1..].iter().all(|&c| mark(c))
+}
+
+/// Keep the caret and what is selected in the typing box `id`, which holds `text`, between
+/// characters as readers see them (the text design, 5.2). egui moves them a `char` at a
+/// time, so an arrow key, a click or a drag that leaves one inside a letter typed with
+/// separate accents, a flag or a Hangul syllable typed in its parts moves it on to that
+/// character's edge, the way it was going from `before` (what was selected before the box
+/// was drawn this frame), else to the edge before it. What an input method composes is
+/// the input method's to place, so a frame with its events is left as it is. Returns what
+/// is selected then.
+pub fn snap_to_clusters(
+    ctx: &egui::Context,
+    id: egui::Id,
+    text: &str,
+    before: Option<CCursorRange>,
+) -> Option<CCursorRange> {
+    let mut st = egui::TextEdit::load_state(ctx, id)?;
+    let now = st.cursor.char_range()?;
+    let composing = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Ime(_))));
+    if composing || before == Some(now) {
+        return Some(now);
+    }
+    let snap = |c: CCursor, was: Option<CCursor>| {
+        let back = was.is_none_or(|w| c.index.0 <= w.index.0);
+        CCursor {
+            index: CharIndex(cluster_edge(text, c.index.0, back)),
+            ..c
+        }
+    };
+    let snapped = CCursorRange {
+        primary: snap(now.primary, before.map(|b| b.primary)),
+        secondary: snap(now.secondary, before.map(|b| b.secondary)),
+        ..now
+    };
+    if snapped != now {
+        st.cursor.set_char_range(Some(snapped));
+        st.store(ctx, id);
+    }
+    Some(snapped)
+}
+
+/// [`snap_to_clusters`] for the typing box `id` drawn as `out`, holding `text`.
+pub fn snap_drawn(
+    ctx: &egui::Context,
+    id: egui::Id,
+    out: &mut egui::text_edit::TextEditOutput,
+    text: &str,
+    before: Option<CCursorRange>,
+) {
+    if let Some(r) = snap_to_clusters(ctx, id, text, before) {
+        out.state.cursor.set_char_range(Some(r));
+        if out.cursor_range.is_some() {
+            out.cursor_range = Some(r);
+        }
     }
 }
 
@@ -458,28 +722,155 @@ pub struct Run {
     pub rise: f32,
 }
 
-/// The runs `parts` are drawn in at `k` pixels per point: each part in the font `font`
-/// gives it, its colour as `color` shows it.
-pub fn runs<'w>(
+/// The runs `parts` are drawn in at `k` pixels per point, in a document whose language is
+/// `lang`: each part in the font it will be written in, the words that font lacks in the
+/// fonts core writes them in ([`limarepdf_core::set_in`]), its colour as `color` shows it.
+pub fn runs(
     ctx: &egui::Context,
-    parts: &[TextPart],
+    parts: &[(TextPart, Wanted)],
     k: f32,
     color: impl Fn([f32; 3]) -> Color32,
-    font: impl Fn(&TextPart) -> Wanted<'w>,
+    lang: Option<&str>,
 ) -> Vec<Run> {
-    parts
-        .iter()
-        .map(|p| {
-            let wanted = font(p);
-            Run {
-                chars: p.text.chars().count(),
-                font: egui::FontId::new((p.size * k).max(1.0), typing_fonts::family(ctx, wanted)),
-                coords: typing_fonts::coords(wanted),
-                color: color(p.color),
-                rise: p.rise * k,
+    let mut out = Vec::new();
+    for (p, wanted) in parts {
+        let run = |chars: usize, wanted: Wanted| Run {
+            chars,
+            font: egui::FontId::new((p.size * k).max(1.0), typing_fonts::family(ctx, wanted)),
+            coords: typing_fonts::coords(wanted),
+            color: color(p.color),
+            rise: p.rise * k,
+        };
+        let n = p.text.chars().count();
+        // A part kept in a font whose own glyphs can't be drawn (one LimarePDF wrote, which
+        // grows as text is added, say) is drawn in the installed family it is from, else its
+        // standard stand-in, as text set anew in it is.
+        let wanted = match *wanted {
+            Wanted::Kept(name, font) if font.and_then(LineFont::preview_key).is_none() => {
+                Wanted::Standard(crate::editor::font_of(name))
             }
-        })
-        .collect()
+            wanted => wanted,
+        };
+        match wanted {
+            // What can't be written goes as it is typed: drawn in the font asked for.
+            Wanted::Standard(f) if n > 0 => {
+                for ((a, b), set) in limarepdf_core::set_in(f, &p.text, lang) {
+                    out.push(run(b - a, Wanted::Standard(set.unwrap_or(f))));
+                }
+            }
+            wanted => out.push(run(n, wanted)),
+        }
+    }
+    out
+}
+
+/// Text typed in a box of its own, a form field's or a text box's, laid out in the fonts it
+/// is written in: `font` at `px` pixels, the words it lacks in the fonts core writes them in
+/// ([`runs`]), in `color`, in a document whose language is `lang`; on one line, or on the
+/// `lines` core breaks it into (each line's bytes, [`limarepdf_core::BoxSetting::lines`])
+/// `leading` times `px` apart. Also returns how far its first baseline is below the top.
+pub fn boxed_galley(
+    ctx: &egui::Context,
+    text: &str,
+    font: FontChoice,
+    px: f32,
+    color: Color32,
+    lines: Option<(&[Range<usize>], f32)>,
+    lang: Option<&str>,
+) -> (Arc<Galley>, f32) {
+    let part = TextPart {
+        text: text.to_string(),
+        font: PartFont::Choice(font),
+        size: px,
+        color: [0.0; 3],
+        rise: 0.0,
+        from: None,
+        origins: Vec::new(),
+    };
+    let mut runs = runs(ctx, &[(part, Wanted::Standard(font))], 1.0, |_| color, lang);
+    let Some((lines, leading)) = lines else {
+        return galley(ctx, text, &runs);
+    };
+    // Each line a row of its own: a line break goes after each line core broke that doesn't
+    // end with one, in the run of the character before it. Where they go, in bytes.
+    let mut broken = String::with_capacity(text.len() + lines.len());
+    let mut added: Vec<usize> = Vec::new();
+    let mut soft: Vec<bool> = Vec::new();
+    let mut from = 0;
+    for i in 0..lines.len() {
+        let to = lines.get(i + 1).map_or(text.len(), |next| next.start);
+        broken.push_str(&text[from..to]);
+        from = to;
+        let made = i + 1 < lines.len() && !broken.ends_with('\n');
+        if made {
+            // The characters before it, those added before among them.
+            let mut before = text[..to].chars().count() + added.len();
+            added.push(broken.len());
+            broken.push('\n');
+            if let Some(r) = runs.iter_mut().find(|r| {
+                let first = before <= r.chars;
+                before = before.saturating_sub(r.chars);
+                first
+            }) {
+                r.chars += 1;
+            }
+        }
+        soft.push(made);
+    }
+    broken.push_str(&text[from..]);
+    let (laid, base) = galley_spaced(ctx, &broken, &runs, leading);
+    // Laid out, those line breaks take no character, and the text is as typed: what the
+    // caret, selection and double-click go by.
+    let mut g = (*laid).clone();
+    for (row, &made) in g.rows.iter_mut().zip(&soft) {
+        if made {
+            row.ends_with_newline = false;
+        }
+    }
+    let typed = |b: usize| ByteIndex(b - added.iter().filter(|&&a| a < b).count());
+    let mut job = (*g.job).clone();
+    job.text = text.to_string();
+    for s in &mut job.sections {
+        s.byte_range = typed(s.byte_range.start.0)..typed(s.byte_range.end.0);
+    }
+    g.job = Arc::new(job);
+    (Arc::new(g), base)
+}
+
+/// Text typed in a box that wraps it, laid out as it is written ([`set_in_box`]).
+pub struct Boxed {
+    pub galley: Arc<Galley>,
+    /// What puts it where it is written in the box: as far in from the box's sides as its
+    /// border and padding, its first baseline 0.8 times its size below that.
+    pub margin: egui::Margin,
+    /// Its size, in pixels.
+    pub px: f32,
+}
+
+/// `text` typed in a box that wraps it, set as `set` sets it ([`boxed_galley`]): in `font`,
+/// at `k` pixels a point, in `color`, in a document whose language is `lang`.
+pub fn set_in_box(
+    ctx: &egui::Context,
+    set: &BoxSetting,
+    text: &str,
+    font: FontChoice,
+    k: f32,
+    color: Color32,
+    lang: Option<&str>,
+) -> Boxed {
+    let (size, lines) = set.lines(text, lang);
+    let px = (size * k).max(1.0);
+    let lines = Some((&lines[..], set.leading()));
+    let (galley, base) = boxed_galley(ctx, text, font, px, color, lines, lang);
+    let side = set.margin() * k;
+    let at = |v: f32| v.round().clamp(-128.0, 127.0) as i8;
+    let margin = egui::Margin {
+        left: at(side),
+        right: at(side),
+        top: at(side + 0.8 * px - base),
+        bottom: at(side),
+    };
+    Boxed { galley, margin, px }
 }
 
 /// How text being typed on the page is drawn this frame.
@@ -504,20 +895,35 @@ pub struct Field {
     pub outline: Rect,
 }
 
-/// `text` laid out as [`job`] lays it out in `runs`, and how far its first baseline is
-/// below the top.
+/// `text` laid out as [`job`] lays it out in `runs`, its lines [`LEADING`] times their size
+/// apart, and how far its first baseline is below the top.
 pub fn galley(ctx: &egui::Context, text: &str, runs: &[Run]) -> (Arc<Galley>, f32) {
+    galley_spaced(ctx, text, runs, LEADING)
+}
+
+/// [`galley`] with its lines `leading` times their size apart.
+fn galley_spaced(
+    ctx: &egui::Context,
+    text: &str,
+    runs: &[Run],
+    leading: f32,
+) -> (Arc<Galley>, f32) {
     ctx.fonts_mut(|f| {
-        let (j, ascent) = job(f, text, runs);
+        let (j, ascent) = job(f, text, runs, leading);
         (f.layout_job(j), ascent)
     })
 }
 
 /// `text` laid out as it is drawn in `runs` (the last one takes any characters left over):
-/// never wrapped, each line's baseline [`line_gap`] below the one before, the runs of a
-/// line on one baseline and raised ones above it. Also returns how far the first baseline
-/// is below the top.
-fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text::LayoutJob, f32) {
+/// never wrapped, each line's baseline [`line_gap`] below the one before (scaled from
+/// [`LEADING`] to `leading`), the runs of a line on one baseline and raised ones above it.
+/// Also returns how far the first baseline is below the top.
+fn job(
+    f: &mut egui::epaint::FontsView,
+    text: &str,
+    runs: &[Run],
+    leading: f32,
+) -> (egui::text::LayoutJob, f32) {
     // Each line's pieces: their bytes, and their run.
     let mut lines: Vec<Vec<(std::ops::Range<usize>, usize)>> = vec![Vec::new()];
     let (mut run, mut left) = (0, runs.first().map_or(0, |r| r.chars));
@@ -601,9 +1007,10 @@ fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text
         let (size, k) = biggest[j];
         let r = run_of(k);
         let (ascent, own) = metric(f, &r.font);
+        let gap = |below| line_gap(size, below) * leading / LEADING;
         let height = match next {
-            Some((below, base)) => 2.0 * (line_gap(size, below) + ascent + r.rise - base) - own,
-            None => LEADING * size,
+            Some((below, base)) => 2.0 * (gap(below) + ascent + r.rise - base) - own,
+            None => leading * size,
         }
         .round()
         .max(1.0);
@@ -732,10 +1139,11 @@ pub fn field(
             }
             let mut layouter =
                 |_: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| laid(text.as_str()).0;
+            let mut buffer = Clusters(text);
             let te = if multiline {
-                egui::TextEdit::multiline(text)
+                egui::TextEdit::multiline(&mut buffer)
             } else {
-                egui::TextEdit::singleline(text)
+                egui::TextEdit::singleline(&mut buffer)
             };
             let te = te
                 .id(id)
@@ -748,9 +1156,12 @@ pub fn field(
                 .min_size(inner.size())
                 .clip_text(false)
                 .layouter(&mut layouter);
-            let out = ui
+            let held = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range());
+            let mut out = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| te.show(ui))
                 .inner;
+            keep_on_right_click(ctx, id, &mut out, held);
+            snap_drawn(ctx, id, &mut out, buffer.0, held);
             (grab, out)
         })
         .inner;
@@ -776,12 +1187,21 @@ impl PageText {
             refocus: false,
             refused: Refused::default(),
             moving: None,
+            composing: None,
         }
     }
 
     /// The editor's id.
     pub fn id(&self) -> egui::Id {
         self.scope.with(("page-text", self.page))
+    }
+
+    /// Take what an input method was still composing as committed ([`commit_left`]), as
+    /// when the box loses the keyboard. Returns the first character left out.
+    pub fn commit_composition(&mut self) -> Option<String> {
+        let r = self.composing.take()?;
+        let font = self.text.typing_font(r);
+        commit_left_styled(&mut self.text, r, false, font)
     }
 
     /// Whether it is being moved by its outline.
@@ -803,7 +1223,9 @@ impl PageText {
     /// colour `mode`, and take the keyboard. Ctrl+B and Ctrl+I switch Bold and Italic as
     /// the inspector's buttons do, and Ctrl+Z and Ctrl+Y undo and redo typing and styles.
     /// `accent` outlines it; `settled` says a change in the inspector is finished, so the
-    /// keyboard can come back.
+    /// keyboard can come back. `lang` is the document's language, which sets the fonts of
+    /// Chinese, Japanese and Korean words.
+    #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -812,6 +1234,7 @@ impl PageText {
         mode: PageColours,
         accent: Color32,
         settled: bool,
+        lang: Option<&str>,
     ) -> Shown {
         let ctx = ui.ctx().clone();
         let id = self.id();
@@ -823,14 +1246,19 @@ impl PageText {
             undo_redo(&ctx, id, &t, &mut self.history, &mut self.text);
             switch_styles(&ctx, &t, &mut self.text, sel, font, &mut self.refused);
             if let Some(c) = t.refused {
-                self.refused.mark(&ctx, note(font, &c));
+                self.refused.mark(&ctx, note(&c).to_string());
             }
         }
         let text = &self.text;
         let runs = |t: &str| {
             let text = text.preview(t);
-            let font = |p: &TextPart| Wanted::Standard(text.font_of(p));
-            runs(&ctx, &text.drawn_parts(), k, |c| shown(mode, c), font)
+            let parts: Vec<_> = (text.drawn_parts().into_iter())
+                .map(|p| {
+                    let font = Wanted::Standard(text.font_of(&p));
+                    (p, font)
+                })
+                .collect();
+            runs(&ctx, &parts, k, |c| shown(mode, c), lang)
         };
         let style = Style {
             runs: &runs,
@@ -852,9 +1280,16 @@ impl PageText {
         if let Some(sel) = sel {
             self.text.caret_at(sel);
         }
+        let edit = &f.out.response.response;
+        // What an input method composes shows unchecked; left without the keyboard, it is
+        // taken as committed (PB-54).
+        self.composing = composition(&ctx, id, self.composing);
+        let left = match edit.has_focus() {
+            true => None,
+            false => self.commit_composition(),
+        };
         let now = ctx.input(|i| i.time);
         self.history.observe(&self.text, sel, now, settled);
-        let edit = &f.out.response.response;
         dialogs::set_name(edit, NAME);
         let mut on_grip = false;
         let (esc, tab) = ui.input(|i| {
@@ -873,6 +1308,8 @@ impl PageText {
             return Shown {
                 over: true,
                 done: false,
+                edit: edit.clone(),
+                left,
             };
         }
         if let Some(grab) = &f.grip {
@@ -906,6 +1343,8 @@ impl PageText {
                 return Shown {
                     over: true,
                     done: false,
+                    edit: edit.clone(),
+                    left,
                 };
             }
         }
@@ -915,6 +1354,8 @@ impl PageText {
         Shown {
             over: done || on_grip || edit.contains_pointer(),
             done,
+            edit: edit.clone(),
+            left,
         }
     }
 }
@@ -1019,7 +1460,7 @@ mod tests {
             run(2, 10.0, 0.0),
         ];
         let (galley, top) = ctx.fonts_mut(|f| {
-            let (j, top) = job(f, "abcdef\ngh", &runs);
+            let (j, top) = job(f, "abcdef\ngh", &runs, LEADING);
             (f.layout_job(j), top)
         });
         let row = &galley.rows[0];
@@ -1069,6 +1510,101 @@ mod tests {
         assert!(near(base(2, 0) - base(1, 0), line_gap(30.0, 14.0)));
     }
 
+    /// The text in a typing box, and what is selected there (from the anchor to the caret),
+    /// after `key` with `modifiers` is pressed with the caret at `caret` in `text`.
+    fn after_key(
+        text: &str,
+        caret: usize,
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+    ) -> (String, (usize, usize)) {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("typing");
+        let mut text = text.to_string();
+        let frame = |events: Vec<egui::Event>, text: &mut String| {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let runs = |t: &str| {
+                    vec![Run {
+                        chars: t.chars().count(),
+                        font: egui::FontId::proportional(20.0),
+                        coords: VariationCoords::default(),
+                        color: Color32::BLACK,
+                        rise: 0.0,
+                    }]
+                };
+                let style = Style {
+                    runs: &runs,
+                    mode: PageColours::Normal,
+                    accent: Color32::BLUE,
+                    warn: &|_| None,
+                };
+                let at = Pos2::new(100.0, 100.0);
+                field(ui.ctx(), id, text, at, &style, true, None, false);
+            });
+            out.textures_delta.clear();
+        };
+        frame(vec![], &mut text);
+        ctx.memory_mut(|m| m.request_focus(id));
+        frame(vec![], &mut text);
+        select(&ctx, id, (caret, caret));
+        let pressed = egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        frame(vec![pressed], &mut text);
+        frame(vec![], &mut text);
+        let sel = selection(&ctx, id).expect("a caret");
+        (text, sel)
+    }
+
+    /// The text design's 5.2: the arrows, Delete and Backspace go by what readers see as one
+    /// character (a grapheme cluster), not by `char` as egui does: a letter typed with
+    /// separate accents, a flag, a Hangul syllable typed in its parts. Backspace after a
+    /// letter with separate accents takes off its last accent, as browsers' text boxes do,
+    /// so a wrong accent can be typed again.
+    #[test]
+    fn the_caret_and_deleting_go_by_what_readers_see_as_one_character() {
+        use egui::{Key, Modifiers as M};
+        let cafe = "Cafe\u{301}";
+        let gak = "\u{1100}\u{1161}\u{11A8}";
+        let cases = [
+            (cafe, 5, Key::ArrowLeft, M::NONE, cafe, (3, 3)),
+            (cafe, 3, Key::ArrowRight, M::NONE, cafe, (5, 5)),
+            (cafe, 5, Key::ArrowLeft, M::SHIFT, cafe, (5, 3)),
+            ("Cafe\u{301}!", 3, Key::Delete, M::NONE, "Caf!", (3, 3)),
+            (cafe, 5, Key::Backspace, M::NONE, "Cafe", (4, 4)),
+            (
+                "e\u{301}\u{308}",
+                3,
+                Key::Backspace,
+                M::NONE,
+                "e\u{301}",
+                (2, 2),
+            ),
+            ("🇬🇧!", 2, Key::ArrowLeft, M::NONE, "🇬🇧!", (0, 0)),
+            ("🇬🇧!", 0, Key::ArrowRight, M::NONE, "🇬🇧!", (2, 2)),
+            ("🇬🇧", 2, Key::Backspace, M::NONE, "", (0, 0)),
+            (gak, 3, Key::ArrowLeft, M::NONE, gak, (0, 0)),
+            (gak, 3, Key::Backspace, M::NONE, "", (0, 0)),
+            (gak, 0, Key::Delete, M::NONE, "", (0, 0)),
+            // An emoji with its presentation selector goes whole: the selector isn't an
+            // accent.
+            ("❤\u{FE0F}", 2, Key::Backspace, M::NONE, "", (0, 0)),
+        ];
+        for (text, caret, key, m, want, sel) in cases {
+            let got = after_key(text, caret, key, m);
+            assert_eq!(got, (want.to_string(), sel), "{text:?} {key:?} {m:?}");
+        }
+    }
+
     #[test]
     fn only_what_can_be_written_is_typed() {
         let sans = FontChoice::default();
@@ -1081,13 +1617,10 @@ mod tests {
             keep_typable("Łódź Ωmega Жук", false, sans),
             ("Łódź Ωmega Жук".into(), None)
         );
+        // What no installed font has (a noncharacter here) is left out.
         assert_eq!(
-            keep_typable("Seal\r\n中\tfish", false, sans),
-            ("Seal\n fish".into(), Some("中".into()))
-        );
-        assert_eq!(
-            keep_typable("中文", false, sans),
-            (String::new(), Some("中".into()))
+            keep_typable("Seal\r\n\u{2FFFE}\tfish", false, sans),
+            ("Seal\n fish".into(), Some("\u{2FFFE}".into()))
         );
         // Right-to-left scripts aren't written yet, though the face has Hebrew.
         assert_eq!(
@@ -1099,34 +1632,16 @@ mod tests {
             keep_typable("Seal\r\nfish", true, sans),
             ("Seal fish".into(), None)
         );
-        // The note points to installed fonts for what one could write (single emoji too),
-        // not for right-to-left or shaped scripts, emoji sequences or control characters.
-        assert_eq!(
-            note(sans, "中"),
-            "Helvetica can't write this character; choose an installed font that has it"
-        );
-        let times = FontChoice::from_name("Times-Bold");
-        assert_eq!(
-            note(times, "한"),
-            "Times can't write this character; choose an installed font that has it"
-        );
-        assert_eq!(
-            note(sans, "😀"),
-            "Helvetica can't write this character; choose an installed font that has it"
-        );
-        // Right-to-left and shaped scripts have a note of their own: the general one says
-        // what works in a standard font, and Chinese and emoji work in installed ones.
+        // Every installed font was tried, so the note points to none: what no font has,
+        // right-to-left and shaped scripts and emoji sequences each have a note of their own.
+        assert_eq!(note("\u{2FFFE}"), REFUSED);
+        assert_eq!(note("\u{7}"), REFUSED);
         for c in ["ש", "مرحبا", "क", "ไทย"] {
-            assert_eq!(note(sans, c), SCRIPT, "{c:?}");
+            assert_eq!(note(c), SCRIPT, "{c:?}");
         }
-        assert_eq!(note(sans, "\u{7}"), REFUSED);
         for s in ["👍🏽", "🇬🇧", "👨\u{200D}👩"] {
-            assert_eq!(note(sans, s), SEQUENCE, "{s:?}");
+            assert_eq!(note(s), SEQUENCE, "{s:?}");
         }
-        // Where the font can't be chosen, none is pointed to.
-        assert_eq!(fixed_note("中"), REFUSED);
-        assert_eq!(fixed_note("😀"), REFUSED);
-        assert_eq!(fixed_note("🇬🇧"), SEQUENCE);
     }
 
     fn installed(name: &str) -> FontChoice {
@@ -1136,33 +1651,105 @@ mod tests {
         }
     }
 
+    /// The text design's acceptance (10): a Latin word with a letter the chosen font lacks
+    /// goes whole to another font, an ideograph alone, and the inspector's note names both,
+    /// with the fonts core writes them in, in batch 31's words.
+    #[test]
+    fn the_note_names_the_words_that_go_to_another_font() {
+        crate::font_list::test_family("Limare Han Test");
+        let caveat = installed("Caveat");
+        assert_eq!(fallback_note(&[(caveat, "Walrus ate fish")]), None);
+        // Caveat has no Greek and no Chinese.
+        let text = "say Ωmega or 漢字 now";
+        let gone = limarepdf_core::fallbacks(caveat, text);
+        let [(omega, f), (han, g)] = &gone[..] else {
+            panic!("{gone:?}");
+        };
+        assert_eq!((omega.trim(), han.trim()), ("Ωmega", "漢字"));
+        let (f, g) = (f.family_name(), g.family_name());
+        let used = match f == g {
+            true => f.clone(),
+            false => format!("{f} and {g}"),
+        };
+        let (said, why) = fallback_note(&[(caveat, text)]).expect("a note");
+        let want = format!("Not in Caveat: Ωmega 漢字. Those characters use {used}.");
+        assert_eq!(said, want);
+        assert_eq!(why, format!("Ωmega: {f}\n漢字: {g}"));
+    }
+
+    /// The typing box draws each word in the font core writes it in (the text design, 5.1):
+    /// a word the chosen font lacks in the font it falls back to, the rest in the font
+    /// chosen, so the caret goes where the text will be written.
+    #[test]
+    fn a_word_the_font_lacks_is_drawn_in_the_font_it_is_written_in() {
+        crate::font_list::test_family("Limare Han Test");
+        let serif = installed("Source Serif 4");
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
+        let part = TextPart {
+            text: "Kan漢ji".into(),
+            font: limarepdf_core::PartFont::Choice(serif),
+            size: 12.0,
+            color: [0.0; 3],
+            rise: 0.0,
+            from: None,
+            origins: Vec::new(),
+        };
+        let gone = limarepdf_core::fallbacks(serif, "Kan漢ji");
+        let [(han, other)] = &gone[..] else {
+            panic!("{gone:?}");
+        };
+        assert_eq!(han, "漢");
+        let parts = [(part, Wanted::Standard(serif))];
+        let drawn = |ctx: &egui::Context| runs(ctx, &parts, 1.0, |_| Color32::BLACK, None);
+        let fonts = [serif, *other, serif];
+        let want = |ctx: &egui::Context| {
+            (fonts.iter())
+                .map(|&f| typing_fonts::family(ctx, Wanted::Standard(f)))
+                .collect::<Vec<_>>()
+        };
+        // Each face loads on another thread: drawn in it once it is in.
+        let done = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let got = drawn(&ctx);
+            let chars: Vec<usize> = got.iter().map(|r| r.chars).collect();
+            assert_eq!(chars, [3, 1, 2]);
+            let families: Vec<_> = got.into_iter().map(|r| r.font.family).collect();
+            // In the faces' own files, not their stand-ins.
+            let file = |f: &egui::FontFamily| matches!(f, egui::FontFamily::Name(n) if n.starts_with("file "));
+            let loaded = file(&families[0]) && file(&families[1]);
+            if loaded || std::time::Instant::now() > done {
+                assert!(loaded, "{families:?}");
+                assert_eq!(families, want(&ctx));
+                assert_ne!(families[0], families[1]);
+                break;
+            }
+            ctx.run_ui(Default::default(), |_| {})
+                .textures_delta
+                .clear();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn installed_fonts_type_what_they_have() {
+        // Caveat has no Greek: Greek words are typed, and written in a font that has them.
         let caveat = installed("Caveat");
         assert_eq!(
             keep_typable("Жук Ωmega", false, caveat),
-            ("Жук mega".into(), Some("Ω".into()))
+            ("Жук Ωmega".into(), None)
         );
-        assert_eq!(
-            note(caveat, "Ω"),
-            "Caveat has no \"Ω\"; choose another font"
-        );
-        // Single emoji in a font with their outlines; one it draws only in colour is
-        // refused, and a sequence goes whole though the font has every part.
+        // Single emoji in a font with their outlines; a sequence goes whole though the font
+        // has every part.
         let emoji = installed("Limare Emoji Test");
         assert_eq!(
-            keep_typable("Seal 😀😎 👍🏽 fish", false, emoji),
-            ("Seal 😀  fish".into(), Some("😎".into()))
+            keep_typable("Seal 😀 👍🏽 fish", false, emoji),
+            ("Seal 😀  fish".into(), Some("👍🏽".into()))
         );
-        assert_eq!(
-            note(emoji, "😎"),
-            "Limare Emoji Test has no \"😎\"; choose another font"
-        );
-        assert_eq!(
-            keep_typable("👍🏽👍", false, emoji),
-            ("👍".into(), Some("👍🏽".into()))
-        );
-        assert_eq!(note(emoji, "👍🏽"), SEQUENCE);
+        assert_eq!(note("👍🏽"), SEQUENCE);
         // Ctrl+B and Ctrl+I switch only to faces the family has.
         let bold = switched(caveat, true, false);
         assert!(bold.bold && !bold.italic);
@@ -1195,5 +1782,148 @@ mod tests {
         }
         // Black text on dark paper is light.
         assert!(shown(PageColours::Dark, [0.0; 3]).r() > 200);
+    }
+
+    /// Kerning pairs (AV, To, Te, WA), a ligature (fi) and an accented letter.
+    const SET: &str = "AVATAR To Te fine WAVE café";
+
+    /// Helvetica (drawn in its Liberation face, written kerned with its pairs) and installed
+    /// fonts: Source Serif 4 (CFF, with ligatures) and Caveat (TrueType, variable).
+    fn half_pixel_fonts() -> [FontChoice; 3] {
+        [
+            FontChoice::default(),
+            installed("Source Serif 4"),
+            installed("Caveat"),
+        ]
+    }
+
+    /// [`SET`] written in `f` at 12 points from (20, 40) on a page of its own: the document's
+    /// bytes, and where each character starts along the line, in points, as LimarePDF reads it
+    /// back (and where the last one ends).
+    fn written(f: FontChoice) -> (Vec<u8>, Vec<f32>) {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 600.0, 200.0).unwrap();
+        (pdf.add_text(0, (20.0, 40.0), SET, f, 12.0, [0.0; 3])).unwrap();
+        let bytes = pdf.to_bytes().unwrap();
+        let back = limarepdf_core::Pdf::from_bytes(&bytes, None).unwrap();
+        let line = (back.page_objects(0).unwrap().into_iter())
+            .find(|o| o.text.as_deref() == Some(SET))
+            .expect("the line written");
+        (bytes, line.stops)
+    }
+
+    /// Where the typing box draws each character of [`SET`] in `f` at 12 points, `k` pixels a
+    /// point, that starts a glyph, once its face has loaded (a minute at most): its index, and
+    /// how far along the line it starts, in pixels.
+    fn drawn(ctx: &egui::Context, f: FontChoice, k: f32) -> Vec<(usize, f32)> {
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
+        let part = TextPart {
+            text: SET.into(),
+            font: limarepdf_core::PartFont::Choice(f),
+            size: 12.0,
+            color: [0.0; 3],
+            rise: 0.0,
+            from: None,
+            origins: Vec::new(),
+        };
+        let parts = [(part, Wanted::Standard(f))];
+        let done = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let runs = runs(ctx, &parts, k, |_| Color32::BLACK, None);
+            // In the face's own file, or Helvetica's Liberation face, not a stand-in.
+            let loaded = (runs.iter()).all(|r| match &r.font.family {
+                egui::FontFamily::Name(n) if f.is_standard() => &**n == "Liberation Sans",
+                egui::FontFamily::Name(n) => n.starts_with("file "),
+                _ => false,
+            });
+            if loaded || std::time::Instant::now() > done {
+                assert!(loaded, "{runs:?}");
+                let (g, _) = galley(ctx, SET, &runs);
+                let row = &g.rows[0];
+                let (mut pen, mut out) = (0.0, Vec::new());
+                for (i, g) in row.glyphs.iter().enumerate() {
+                    if g.advance_width > 0.0 {
+                        // epaint draws a glyph at its pen position to the nearest quarter
+                        // pixel (its sub-pixel bins), the whole pixel in `pos`.
+                        let at = (pen * 4.0_f32).round() / 4.0;
+                        assert_eq!(g.pos.x, at.floor(), "character {i}'s pen at {pen}");
+                        out.push((i, row.pos.x + at));
+                    }
+                    pen += g.advance_width;
+                }
+                return out;
+            }
+            ctx.run_ui(Default::default(), |_| {})
+                .textures_delta
+                .clear();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The typing box draws text where it will be written (the text design's acceptance,
+    /// 10): at 2 pixels a point, each character starting a glyph starts within half a pixel
+    /// of where LimarePDF reads it back from the line written.
+    #[test]
+    fn each_character_is_drawn_within_half_a_pixel_of_where_it_is_written() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let k = 2.0;
+        for f in half_pixel_fonts() {
+            let (_, stops) = written(f);
+            let at: Vec<(usize, f32, f32)> = (drawn(&ctx, f, k).into_iter())
+                .map(|(i, x)| (i, x, stops[i] * k))
+                .collect();
+            assert!(
+                at.iter().all(|&(_, x, want)| (x - want).abs() <= 0.5),
+                "{} {SET:?}: each character's drawn and written place, in pixels: {at:?}",
+                f.family_name()
+            );
+        }
+    }
+
+    /// The typing box's word starts against Poppler's reading of the line written: each
+    /// word's start, as `pdftotext -bbox` gives it, within half a pixel at 2 pixels a point
+    /// of where the typing box draws it. Opt-in: `cargo test -p limarepdf-gui --bin limarepdf
+    /// -- --ignored cross_check`.
+    #[test]
+    #[ignore]
+    fn cross_check_word_starts_with_pdftotext() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let k = 2.0;
+        let dir = std::env::temp_dir().join(format!("limarepdf-half-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Where each word starts in `SET`, by character.
+        let starts: Vec<usize> = (SET.split_word_bound_indices())
+            .filter(|(_, w)| !w.trim().is_empty())
+            .map(|(b, _)| SET[..b].chars().count())
+            .collect();
+        for f in half_pixel_fonts() {
+            let (bytes, _) = written(f);
+            let path = dir.join("line.pdf");
+            std::fs::write(&path, bytes).unwrap();
+            let out = std::process::Command::new("pdftotext")
+                .args(["-bbox".as_ref(), path.as_os_str(), "-".as_ref()])
+                .output()
+                .expect("pdftotext (Poppler) installed");
+            let html = String::from_utf8_lossy(&out.stdout);
+            let mins: Vec<f32> = (html.split("<word xMin=\"").skip(1))
+                .map(|w| w.split('"').next().unwrap().parse().unwrap())
+                .collect();
+            assert_eq!(mins.len(), starts.len(), "{}: {html}", f.family_name());
+            let drawn = drawn(&ctx, f, k);
+            for (&i, x_min) in starts.iter().zip(mins) {
+                let (_, x) = drawn.iter().find(|d| d.0 == i).expect("its first glyph");
+                let want = (x_min - 20.0) * k;
+                assert!(
+                    (x - want).abs() <= 0.5,
+                    "{}: the word at {i} drawn at {x}, Poppler's at {want}",
+                    f.family_name()
+                );
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

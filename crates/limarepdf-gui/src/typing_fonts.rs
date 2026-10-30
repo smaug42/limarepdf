@@ -4,7 +4,10 @@
 //! New text and lines written anew are in one of the 12 standard fonts, drawn here in the
 //! bundled Liberation fonts, which have the widths of Helvetica, Times and Courier; each face
 //! is unpacked (core stores them compressed) and loaded the first time it is needed. A line
-//! that keeps its own font is drawn in that font when the computer has it (found through
+//! that keeps its own embedded font is drawn in that font's own glyphs, in a small font core
+//! makes of them with the PDF's widths ([`LineFont::preview`], made on another thread),
+//! falling back to the Liberation face of its kind for what it lacks; a font the PDF doesn't
+//! hold is drawn in the installed font of its name when the computer has it (found through
 //! core's installed fonts and loaded the first time it is needed), else in the Liberation
 //! face of its kind. Inter is the last resort, and the stand-in while a font loads, and
 //! every family falls back to Inter for characters its font lacks.
@@ -16,7 +19,7 @@
 use eframe::egui::epaint::text::VariationCoords;
 use eframe::egui::{self, FontData, FontFamily};
 use limarepdf_core::render::InstalledFonts;
-use limarepdf_core::{bundled_face, liberation, FaceFile, FontChoice};
+use limarepdf_core::{bundled_face, liberation, FaceFile, FontChoice, LineFont};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,25 +35,21 @@ fn named(name: &str) -> FontFamily {
     FontFamily::Name(name.into())
 }
 
-/// A family of one font, then `fallback` (Inter and egui's own fonts).
-fn with_fallback(name: &str, fallback: &[String]) -> Vec<String> {
-    let mut list = vec![name.to_string()];
-    list.extend(fallback.iter().filter(|n| *n != name).cloned());
-    list
-}
-
 /// What text being typed will be written in.
 #[derive(Clone, Copy, Debug)]
 pub enum Wanted<'a> {
     /// A standard font or an installed family's face: new text, and lines written anew.
     Standard(FontChoice),
-    /// A line that keeps its own font, by the name the document gives it ("Arial,Bold").
-    Kept(&'a str),
+    /// A line that keeps its own font, by the name the document gives it ("Arial,Bold"),
+    /// and the font itself when it is known ([`limarepdf_core::Pdf::line_fonts`]).
+    Kept(&'a str, Option<&'a LineFont>),
 }
 
 /// A font to draw with.
 #[derive(Clone, Debug, PartialEq)]
 enum Candidate {
+    /// A PDF font's own glyphs, in a font core makes of them ([`LineFont::preview`]).
+    Preview(Own),
     /// An installed font, by a PDF font name.
     Installed(String),
     /// An installed family's font file, and the face's index in it.
@@ -58,6 +57,18 @@ enum Candidate {
     /// A bundled Liberation face, a family of its own named as in core's `LIBERATION`.
     Bundled(&'static str),
     Inter,
+}
+
+/// A PDF font whose own glyphs are drawn ([`Candidate::Preview`]): what tells its preview
+/// font from others ([`LineFont::preview_key`]), the font, and the bundled face of its kind,
+/// which draws what its preview lacks.
+#[derive(Clone, Debug)]
+struct Own(u64, LineFont, &'static str);
+
+impl PartialEq for Own {
+    fn eq(&self, other: &Self) -> bool {
+        (self.0, self.2) == (other.0, other.2)
+    }
 }
 
 /// The fonts to try, best first.
@@ -70,10 +81,13 @@ fn candidates(w: Wanted) -> Vec<Candidate> {
                 .map(|file| Candidate::File(file.path, file.index));
             (file.into_iter().collect(), f.standard())
         }
-        Wanted::Kept(name) => (
-            vec![Candidate::Installed(name.to_string())],
-            FontChoice::from_name(name),
-        ),
+        Wanted::Kept(name, font) => {
+            let f = FontChoice::from_name(name);
+            let own = font.and_then(|font| Some(Own(font.preview_key()?, font.clone(), face(f))));
+            let mut out: Vec<Candidate> = own.map(Candidate::Preview).into_iter().collect();
+            out.push(Candidate::Installed(name.to_string()));
+            (out, f)
+        }
     };
     // The bundled face is always there, ready a frame or two after it is first asked for:
     // Inter meanwhile, rather than loading an installed font that would soon go unused.
@@ -86,6 +100,7 @@ fn candidates(w: Wanted) -> Vec<Candidate> {
 /// loading an installed font, which is then ready in a later frame.
 fn pick(w: Wanted, mut ready: impl FnMut(&Candidate) -> bool) -> FontFamily {
     match candidates(w).into_iter().find(|c| ready(c)) {
+        Some(Candidate::Preview(own)) => named(&preview_key(own.0)),
         Some(Candidate::Installed(name)) => named(&installed_key(&name)),
         Some(Candidate::File(path, index)) => named(&file_key(&path, index)),
         Some(Candidate::Bundled(name)) => named(name),
@@ -96,7 +111,15 @@ fn pick(w: Wanted, mut ready: impl FnMut(&Candidate) -> bool) -> FontFamily {
 /// The egui font family to draw text being typed in.
 pub fn family(ctx: &egui::Context, w: Wanted) -> FontFamily {
     pick(w, |c| match c {
-        Candidate::Installed(name) => loaded(ctx, &installed_key(name), None, {
+        Candidate::Preview(Own(key, font, face)) => {
+            // Its own glyphs, made on another thread; the face of its kind, for what they
+            // lack, loaded too.
+            bundled(ctx, face);
+            let font = font.clone();
+            let fetch = move || Some((Cow::Owned(font.preview()?), 0));
+            loaded(ctx, &preview_key(*key), &[face], None, fetch)
+        }
+        Candidate::Installed(name) => loaded(ctx, &installed_key(name), &[], None, {
             let name = name.clone();
             move || {
                 let f = InstalledFonts::system().named(&name)?;
@@ -104,13 +127,16 @@ pub fn family(ctx: &egui::Context, w: Wanted) -> FontFamily {
             }
         }),
         Candidate::File(path, index) => file(ctx, path, *index, None),
-        Candidate::Bundled(name) => {
-            let name = *name;
-            loaded(ctx, name, None, move || {
-                Some((Cow::Borrowed(bundled_face(name)?), 0))
-            })
-        }
+        Candidate::Bundled(name) => bundled(ctx, name),
         Candidate::Inter => true,
+    })
+}
+
+/// Whether the bundled face `name` is ready to draw with; the first question starts
+/// unpacking it.
+fn bundled(ctx: &egui::Context, name: &'static str) -> bool {
+    loaded(ctx, name, &[], None, move || {
+        Some((Cow::Borrowed(bundled_face(name)?), 0))
     })
 }
 
@@ -147,6 +173,11 @@ fn installed_key(name: &str) -> String {
     format!("installed {name}")
 }
 
+/// The egui name of a PDF font's preview font, by its key ([`LineFont::preview_key`]).
+fn preview_key(key: u64) -> String {
+    format!("preview {key:016x}")
+}
+
 /// The egui name of a font file's face.
 fn file_key(path: &std::path::Path, index: u32) -> String {
     format!("file {}#{index}", path.display())
@@ -156,7 +187,7 @@ fn file_key(path: &std::path::Path, index: u32) -> String {
 /// question starts loading it. With `max`, a larger file isn't loaded.
 fn file(ctx: &egui::Context, path: &std::path::Path, index: u32, max: Option<u64>) -> bool {
     let path = path.to_path_buf();
-    loaded(ctx, &file_key(&path, index), max, move || {
+    loaded(ctx, &file_key(&path, index), &[], max, move || {
         if max.is_some_and(|max| std::fs::metadata(&path).map_or(true, |m| m.len() > max)) {
             return None;
         }
@@ -173,29 +204,34 @@ enum Load {
     /// font.
     Looking,
     /// Found; `sent` once handed to egui, which adds it at the start of the next frame.
-    Found { data: Arc<FontData>, sent: bool },
+    /// `then` names the fonts it falls back to before Inter, once they are loaded. An
+    /// `interface` font is one every font of the interface falls back to as well
+    /// ([`interface_fallback`]).
+    Found {
+        data: Arc<FontData>,
+        sent: bool,
+        then: Vec<String>,
+        interface: bool,
+    },
     /// Not installed, or not read: too large, when `limited`, which a question without a
     /// limit asks again.
     Missing { limited: bool },
 }
 
 /// Whether the font egui knows as `key` is ready to draw with; the first question starts
-/// `fetch` (its bytes and index) on another thread. `max` says whether the question had a
-/// size limit.
+/// `fetch` (its bytes and index) on another thread. It falls back to the fonts `then` once
+/// they are loaded, then to Inter. `max` says whether the question had a size limit.
 fn loaded(
     ctx: &egui::Context,
     key: &str,
+    then: &[&str],
     max: Option<u64>,
     fetch: impl FnOnce() -> Option<(Cow<'static, [u8]>, u32)> + Send + 'static,
 ) -> bool {
     if has(ctx, &named(key)) {
         return true;
     }
-    let loads = ctx.data_mut(|d| {
-        d.get_temp_mut_or_default::<Loads>(egui::Id::unique("typing fonts"))
-            .0
-            .clone()
-    });
+    let loads = loads(ctx);
     let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
     let start = match l.get(key) {
         None => true,
@@ -206,6 +242,7 @@ fn loaded(
         _ if start => {
             l.insert(key.to_string(), Load::Looking);
             let (loads, ctx, key) = (loads.clone(), ctx.clone(), key.to_string());
+            let then: Vec<String> = then.iter().map(|n| n.to_string()).collect();
             std::thread::spawn(move || {
                 let load = match fetch() {
                     Some((bytes, index)) => {
@@ -216,37 +253,170 @@ fn loaded(
                         Load::Found {
                             data: Arc::new(FontData { index, ..data }),
                             sent: false,
+                            then,
+                            interface: false,
                         }
                     }
                     None => Load::Missing {
                         limited: max.is_some(),
                     },
                 };
-                loads
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(key, load);
+                let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+                arrived(&mut l, key, load);
+                drop(l);
                 ctx.request_repaint();
             });
         }
         Some(Load::Found { sent: false, .. }) => {
-            // Every font found so far goes in, so two arriving in one frame both stay.
-            let mut defs = ctx.fonts(|f| f.definitions().clone());
-            let fallback = defs.families[&FontFamily::Proportional].clone();
-            for (key, load) in l.iter_mut() {
-                if let Load::Found { data, sent } = load {
-                    defs.font_data.insert(key.clone(), data.clone());
-                    defs.families
-                        .insert(named(key), with_fallback(key, &fallback));
-                    *sent = true;
-                }
-            }
+            let defs = install(ctx, &mut l);
             drop(l);
             ctx.set_fonts(defs);
         }
         _ => {}
     }
     false
+}
+
+/// Puts `load`, just read, in `l` as `key`. Typing and the interface's fallback
+/// ([`interface_fallback`]) can read one face at once: what the other read arrived with
+/// stays, so it is the interface's if either says so, and falls back to what typing asked.
+fn arrived(l: &mut HashMap<String, Load>, key: String, mut load: Load) {
+    if let (
+        Load::Found {
+            then, interface, ..
+        },
+        Some(Load::Found {
+            then: had,
+            interface: was,
+            ..
+        }),
+    ) = (&mut load, l.get(&key))
+    {
+        *interface |= *was;
+        if then.is_empty() {
+            *then = had.clone();
+        }
+    }
+    l.insert(key, load);
+}
+
+/// The fonts loaded so far, by egui name, kept in the context's memory.
+fn loads(ctx: &egui::Context) -> Arc<Mutex<HashMap<String, Load>>> {
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Loads>(egui::Id::unique("typing fonts"))
+            .0
+            .clone()
+    })
+}
+
+/// egui's fonts with every font found so far (`l`) in, so two arriving in one frame both
+/// stay: each with a family of its own, which falls back to what it names that is in, then
+/// to the interface's fonts; and each the interface falls back to at the end of every
+/// family. Marks them handed to egui.
+fn install(ctx: &egui::Context, l: &mut HashMap<String, Load>) -> egui::FontDefinitions {
+    let mut defs = ctx.fonts(|f| f.definitions().clone());
+    let fallback = defs.families[&FontFamily::Proportional].clone();
+    for (key, load) in l.iter_mut() {
+        if let Load::Found { data, sent, .. } = load {
+            defs.font_data.insert(key.clone(), data.clone());
+            *sent = true;
+        }
+    }
+    for (key, load) in l.iter() {
+        if let Load::Found { then, .. } = load {
+            let then = then.iter().filter(|n| defs.font_data.contains_key(*n));
+            let mut list = vec![key.clone()];
+            list.extend(then.cloned());
+            let rest: Vec<String> = (fallback.iter())
+                .filter(|n| !list.contains(n))
+                .cloned()
+                .collect();
+            list.extend(rest);
+            defs.families.insert(named(key), list);
+        }
+    }
+    for (key, load) in l.iter() {
+        if let Load::Found {
+            interface: true, ..
+        } = load
+        {
+            for list in defs.families.values_mut() {
+                if !list.contains(key) {
+                    list.push(key.clone());
+                }
+            }
+        }
+    }
+    defs
+}
+
+/// Where finding the fonts the interface falls back to is noted among the loads.
+const INTERFACE: &str = "interface fallback";
+
+/// Characters the interface's own fonts lack, whose installed fonts it falls back to
+/// (ENH-33): Chinese, Japanese and Korean, and an emoji.
+const SAMPLES: &str = "漢あ한😀";
+
+/// Largest font file read for the interface to fall back to: collections of every weight
+/// of a Chinese, Japanese and Korean family run past a hundred megabytes, and the
+/// interface then shows boxes for what they would draw.
+const MAX_INTERFACE: u64 = 64 << 20;
+
+/// Interface text falls back to installed fonts for what Inter and egui's own fonts can't
+/// draw (ENH-33): the first call starts finding, on another thread, the faces LimarePDF
+/// writes Chinese, Japanese and Korean text and an emoji in
+/// ([`limarepdf_core::fallback_faces`]); each is added at the end of every font of the
+/// interface once read, and serves typing in that face too. Called each frame.
+pub fn interface_fallback(ctx: &egui::Context) {
+    let loads = loads(ctx);
+    let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+    if !l.contains_key(INTERFACE) {
+        l.insert(INTERFACE.into(), Load::Looking);
+        let (loads, ctx) = (loads.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            for face in limarepdf_core::fallback_faces(SAMPLES) {
+                let key = file_key(&face.path, face.index);
+                {
+                    // Already loaded for typing: the interface falls back to it too.
+                    let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(Load::Found {
+                        interface, sent, ..
+                    }) = l.get_mut(&key)
+                    {
+                        (*interface, *sent) = (true, false);
+                        continue;
+                    }
+                }
+                let small = std::fs::metadata(&face.path).is_ok_and(|m| m.len() <= MAX_INTERFACE);
+                let Some(bytes) = small.then(|| std::fs::read(&face.path).ok()).flatten() else {
+                    continue;
+                };
+                let data = FontData {
+                    index: face.index,
+                    ..FontData::from_owned(bytes)
+                };
+                let found = Load::Found {
+                    data: Arc::new(data),
+                    sent: false,
+                    then: Vec::new(),
+                    interface: true,
+                };
+                let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+                arrived(&mut l, key, found);
+            }
+            let done = Load::Missing { limited: false };
+            (loads.lock().unwrap_or_else(|e| e.into_inner())).insert(INTERFACE.into(), done);
+            ctx.request_repaint();
+        });
+        return;
+    }
+    if l.values()
+        .any(|v| matches!(v, Load::Found { sent: false, .. }))
+    {
+        let defs = install(ctx, &mut l);
+        drop(l);
+        ctx.set_fonts(defs);
+    }
 }
 
 #[cfg(test)]
@@ -322,7 +492,7 @@ mod tests {
             ]
         );
         // A kept font: the font itself first, then the Liberation face of its kind.
-        let kept = candidates(Wanted::Kept("CourierNewPS-ItalicMT"));
+        let kept = candidates(Wanted::Kept("CourierNewPS-ItalicMT", None));
         assert_eq!(
             kept,
             [
@@ -333,7 +503,7 @@ mod tests {
         );
 
         // Each falls to the next that is ready.
-        let w = Wanted::Kept("Arial,Bold");
+        let w = Wanted::Kept("Arial,Bold", None);
         assert_eq!(pick(w, |_| true), named("installed Arial,Bold"));
         assert_eq!(
             pick(w, |c| !matches!(c, Candidate::Installed(_))),
@@ -438,7 +608,7 @@ mod tests {
         // A font no computer has: the Liberation face of its kind, and still that once
         // the search is done.
         let ctx = ctx();
-        let w = Wanted::Kept("NoSuchFontAnywhere-BoldItalic");
+        let w = Wanted::Kept("NoSuchFontAnywhere-BoldItalic", None);
         let stand_in = named("Liberation Sans Bold Italic");
         assert_eq!(settled(&ctx, w, &stand_in), stand_in);
         let done = Instant::now() + Duration::from_secs(60);
@@ -469,11 +639,101 @@ mod tests {
         else {
             return;
         };
-        let w = Wanted::Kept(name);
+        let w = Wanted::Kept(name, None);
         let got = settled(&ctx, w, &named(&installed_key(name)));
         assert_eq!(got, named(&installed_key(name)));
         let list = ctx.fonts(|f| f.definitions().families[&got].clone());
         assert!(list.contains(&"Inter".to_string()));
+    }
+
+    /// A page with a line, "Walrus", in an embedded font of its own: the bundled Liberation
+    /// Sans by its WinAnsi codes, with Helvetica's widths (which it shares); and the line's
+    /// fonts.
+    fn embedded_line() -> Vec<LineFont> {
+        use lopdf::{dictionary, Dictionary, Object, Stream};
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let program = bundled_face("Liberation Sans").unwrap().to_vec();
+        let file = pdf.doc.add_object(Stream::new(Dictionary::new(), program));
+        let widths: Vec<Object> = (32u8..=126)
+            .map(|b| Object::Real(limarepdf_core::text_width(&(b as char).to_string(), 1000.0)))
+            .collect();
+        let descriptor = pdf.doc.add_object(dictionary! {
+            "Type" => "FontDescriptor", "FontName" => "LiberationSans", "Flags" => 32,
+            "FontBBox" => vec![(-203).into(), (-303).into(), 1050.into(), 910.into()],
+            "ItalicAngle" => 0, "Ascent" => 905, "Descent" => -212, "CapHeight" => 729,
+            "StemV" => 80, "FontFile2" => file,
+        });
+        let font = pdf.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "TrueType", "BaseFont" => "LiberationSans",
+            "FirstChar" => 32, "LastChar" => 126, "Widths" => widths,
+            "Encoding" => "WinAnsiEncoding", "FontDescriptor" => descriptor,
+        });
+        let content = b"BT /F1 20 Tf 72 700 Td (Walrus) Tj ET".to_vec();
+        let s = pdf.doc.add_object(Stream::new(Dictionary::new(), content));
+        let page = pdf.page_ids()[0];
+        let d = pdf.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", Object::Reference(s));
+        d.set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => font } },
+        );
+        let objects = pdf.page_objects(0).unwrap();
+        let line = objects.iter().find(|o| o.text.is_some()).unwrap();
+        pdf.line_fonts(0, line.id).unwrap()
+    }
+
+    /// A line in an embedded font is typed in that font's own glyphs: a font core makes of
+    /// them, with the PDF's widths, so the caret goes where the text will be written; what
+    /// it lacks is drawn in the Liberation face of its kind.
+    #[test]
+    fn a_kept_embedded_font_is_drawn_in_its_own_glyphs() {
+        let fonts = embedded_line();
+        let w = Wanted::Kept("LiberationSans", Some(&fonts[0]));
+        let list = candidates(w);
+        assert!(matches!(list[0], Candidate::Preview(_)), "{list:?}");
+        assert_eq!(
+            list[1..],
+            [
+                Candidate::Installed("LiberationSans".into()),
+                Candidate::Bundled("Liberation Sans"),
+                Candidate::Inter
+            ]
+        );
+        let ctx = ctx();
+        let want = named(&preview_key(fonts[0].preview_key().unwrap()));
+        assert_eq!(settled(&ctx, w, &want), want);
+        // Falling back to the face of its kind once that is in, then Inter.
+        let done = Instant::now() + Duration::from_secs(60);
+        let families = |ctx: &egui::Context| ctx.fonts(|f| f.definitions().families[&want].clone());
+        while families(&ctx).get(1).map(String::as_str) != Some("Liberation Sans")
+            && Instant::now() < done
+        {
+            frame(&ctx);
+            family(&ctx, w);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let list = families(&ctx);
+        assert_eq!(list[1], "Liberation Sans", "{list:?}");
+        assert!(list.contains(&"Inter".to_string()));
+        let width = |s: &str, f: FontFamily| {
+            ctx.fonts_mut(|fonts| {
+                let id = egui::FontId::new(100.0, f);
+                let laid = fonts.layout_no_wrap(s.into(), id, egui::Color32::BLACK);
+                laid.size().x
+            })
+        };
+        // Its letters as wide as the PDF writes them: the line's own and others typed, each
+        // its width (text kept in a PDF's own font isn't kerned anew).
+        for s in ["Walrus", "Hello, World!"] {
+            let one = |c: char| limarepdf_core::text_width(&c.to_string(), 100.0);
+            let pdf: f32 = s.chars().map(one).sum();
+            let drawn = width(s, want.clone());
+            assert!((drawn - pdf).abs() < 0.01 * pdf, "{s}: {drawn} vs {pdf}");
+        }
+        // A letter the PDF's font has no code for (WinAnsi has no Ω): the face of its kind.
+        let face = width("Ω", named("Liberation Sans"));
+        assert!((width("Ω", want) - face).abs() < 0.01, "{face}");
     }
 
     #[test]
@@ -498,5 +758,61 @@ mod tests {
         assert_ne!(family(&ctx, w), want);
         assert_eq!(settled(&ctx, w, &want), want);
         assert_eq!(preview(&ctx, &face), Some(want));
+    }
+
+    /// A face read for typing while the fonts read at start read it for the interface too
+    /// (ENH-33) serves both, whichever read arrives last: the interface's text falls back to
+    /// it, and typing's family to what typing asked. (Typing's read, arriving last, took it
+    /// from the interface, whose Chinese, Japanese and Korean then showed as boxes for the
+    /// rest of the run: when typing began before the fonts at start were read, which a cold
+    /// disk cache made likely.)
+    #[test]
+    fn a_face_read_for_typing_and_the_interface_at_once_serves_both() {
+        let ctx = ctx();
+        let bytes = limarepdf_core::bundled_face("Liberation Serif").expect("a face");
+        let key = "file both";
+        let then = ["Liberation Sans".to_string()];
+        let for_interface = || Load::Found {
+            data: Arc::new(FontData::from_static(bytes)),
+            sent: false,
+            then: Vec::new(),
+            interface: true,
+        };
+        // Typing asks first: the file is read on another thread, not in yet.
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let fetch = move || {
+            wait.recv().ok()?;
+            Some((Cow::Borrowed(bytes), 0))
+        };
+        assert!(!loaded(&ctx, key, &["Liberation Sans"], None, fetch));
+        // Meanwhile the fonts read at start read it for the interface.
+        let loads = loads(&ctx);
+        arrived(&mut loads.lock().unwrap(), key.into(), for_interface());
+        go.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        let typed = loop {
+            let l = loads.lock().unwrap();
+            if matches!(l.get(key), Some(Load::Found { then: t, .. }) if !t.is_empty()) {
+                break l;
+            }
+            assert!(Instant::now() < until, "typing's read never arrived");
+            drop(l);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let both = |l: &HashMap<String, Load>| match l.get(key) {
+            Some(Load::Found {
+                then: t, interface, ..
+            }) => *interface && t[..] == then,
+            _ => false,
+        };
+        assert!(both(&typed), "typing's read took it from the interface");
+        drop(typed);
+        // The other way round: the interface's read arriving last keeps typing's fallbacks.
+        arrived(&mut loads.lock().unwrap(), key.into(), for_interface());
+        assert!(both(&loads.lock().unwrap()), "typing's fallbacks lost");
+        // Handed to egui, every interface family falls back to it.
+        loaded(&ctx, key, &[], None, || None);
+        let families = ctx.fonts(|f| f.definitions().families.clone());
+        assert!(families[&FontFamily::Proportional].contains(&key.to_string()));
     }
 }

@@ -2,7 +2,6 @@
 //! text laid out afresh. Used to print or save selected text.
 
 use crate::embed::writable;
-use crate::overlay::text_width;
 use crate::{FontChoice, Pdf, Result};
 use anyhow::bail;
 use lopdf::content::{Content, Operation};
@@ -59,11 +58,15 @@ impl Pdf {
         if width < 36.0 || per_page == 0 {
             bail!("the page is too small for text");
         }
-        let lines: Vec<String> = text.lines().flat_map(|l| wrap(l, width)).collect();
-
         let mut out = Pdf::new();
-        let pen = out.pen(helvetica, &lines.concat())?;
-        let font = out.pen_font(&pen);
+        let setter = out.setter(helvetica, &text);
+        // A line break at the end starts no line of its own.
+        let body = text.strip_suffix('\n').unwrap_or(&text);
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        let lines = setter.lines(body, width, TEXT_SIZE);
+        let shown: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let pen = out.pen_with(&setter, &shown)?;
+        let names = pen.names("F1");
         for (n, chunk) in lines.chunks(per_page).enumerate() {
             let mut ops = vec![
                 Operation::new("BT", vec![]),
@@ -71,8 +74,8 @@ impl Pdf {
                 Operation::new("TL", vec![LEADING.into()]),
                 Operation::new("Td", vec![margin.into(), (h - margin - TEXT_SIZE).into()]),
             ];
-            for line in chunk {
-                ops.push(Operation::new("Tj", vec![pen.string(line)]));
+            for i in (n * per_page)..(n * per_page + chunk.len()) {
+                ops.extend(pen.ops(i, TEXT_SIZE, 0.0, &names));
                 ops.push(Operation::new("T*", vec![]));
             }
             ops.push(Operation::new("ET", vec![]));
@@ -82,60 +85,31 @@ impl Pdf {
             let id = out.page_ids()[n];
             let page = out.doc.get_dictionary_mut(id)?;
             page.set("Contents", contents);
-            let fonts = dictionary! { "F1" => font };
-            page.set("Resources", dictionary! { "Font" => fonts });
+            page.set("Resources", dictionary! { "Font" => pen.font_dict(&names) });
         }
         Ok(out)
     }
 }
 
-/// Break one line into lines no wider than `width` at the text size, at spaces where
-/// possible. An empty line stays one empty line.
-fn wrap(line: &str, width: f32) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for word in line.split_whitespace() {
-        let joined = if cur.is_empty() {
-            word.to_string()
-        } else {
-            format!("{cur} {word}")
-        };
-        if text_width(&joined, TEXT_SIZE) <= width {
-            cur = joined;
-            continue;
-        }
-        if !cur.is_empty() {
-            out.push(std::mem::take(&mut cur));
-        }
-        // A word wider than the line is broken wherever it overflows.
-        for c in word.chars() {
-            cur.push(c);
-            if text_width(&cur, TEXT_SIZE) > width && cur.chars().count() > 1 {
-                cur.pop();
-                out.push(std::mem::replace(&mut cur, c.to_string()));
-            }
-        }
-    }
-    if !cur.is_empty() || out.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlay::text_width;
 
     #[test]
-    fn wraps_at_spaces_and_breaks_long_words() {
-        assert_eq!(wrap("", 100.0), vec![String::new()]);
-        assert_eq!(wrap("a b", 100.0), vec!["a b"]);
-        let text = "the quick brown fox jumps over the lazy dog";
-        let lines = wrap(text, 60.0);
-        assert!(lines.len() > 1);
-        assert!(lines.iter().all(|l| text_width(l, TEXT_SIZE) <= 60.0));
-        assert_eq!(lines.join(" "), text);
-        let long = wrap(&"m".repeat(40), 60.0);
+    fn wraps_within_the_margins_and_breaks_long_words() {
+        let lines = |text: &str| {
+            let p = Pdf::from_text(text, (200.0, 300.0)).unwrap();
+            let t = p.page_text(0);
+            t.lines().map(str::to_string).collect::<Vec<_>>()
+        };
+        // 200 points wide: 23.5-point margins leave 153 for the text.
+        let text = "the quick brown fox jumps over the lazy dog and runs";
+        let got = lines(text);
+        assert!(got.len() > 1, "{got:?}");
+        assert!(got.iter().all(|l| text_width(l, TEXT_SIZE) <= 153.0));
+        assert_eq!(got.join(" "), text);
+        let long = lines(&"m".repeat(40));
         assert!(long.len() > 1);
         assert_eq!(long.concat(), "m".repeat(40));
     }

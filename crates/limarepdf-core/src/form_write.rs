@@ -1,19 +1,34 @@
 //! Writing form values, and the appearance streams that show them.
 
 use crate::doc::encode_text;
-use crate::embed::{cant_write, unwritable, Pen};
-use crate::fonts::{winansi_byte, winansi_bytes, FontChoice, FontCtx};
-use crate::form_ap::{self, Body, Border, Look, Metrics};
+use crate::embed::{cant_write, unwritable};
+use crate::fonts::{FontChoice, FontCtx};
+use crate::form_ap::{self, Body, Border, BoxSetting, Look, Metrics, OwnFont};
 use crate::forms::{button_export, Node, MAX_DEPTH};
+use crate::layout::SetIn;
 use crate::{std14, Field, FieldKind, FieldValue, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
-use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream, StringFormat};
+use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream, StringFormat};
 
 /// The check mark in ZapfDingbats, drawn when a checkbox has no appearance of its own.
 const CHECK: u8 = b'4';
 /// The name of an embedded font in the appearances that use one.
 const EMBEDDED: &[u8] = b"LimareEm";
+
+/// The font a widget's text is drawn with ([`Pdf::pick_font`]).
+struct Picked {
+    /// Its name in the appearance's resources.
+    name: Vec<u8>,
+    /// The field's own font, written as it is, or the form's standard font; `None` for an
+    /// embedded face.
+    font: Option<ObjectId>,
+    metrics: Metrics,
+    /// Whether `/DA` should name it.
+    replaced: bool,
+    /// The font chosen, when it isn't the field's own.
+    choice: FontChoice,
+}
 
 impl Pdf {
     /// Set a field's value and redraw it. The value must suit the field: text for a text
@@ -449,7 +464,13 @@ impl Pdf {
         };
         let da = self.widget_da(widget, node);
         let (font, size, color) = parse_da(&da);
-        let (font, font_ref, metrics, replaced) = self.pick_font(font.as_deref(), &text)?;
+        let Picked {
+            name: font,
+            font: font_ref,
+            metrics,
+            replaced,
+            choice,
+        } = self.pick_font(font.as_deref(), &text)?;
         if replaced {
             // Keep /DA in step, so readers that redraw fields use the same font.
             let da = encode_da(&font, size, color.as_ref());
@@ -471,8 +492,24 @@ impl Pdf {
             .ok()
             .and_then(|o| self.int_value(o))
             .unwrap_or(node.q);
-        let content = form_ap::draw(&look, &body, &metrics);
-        let resources = dictionary! { "Font" => dictionary! { font => font_ref } };
+        let drawn = form_ap::draw(&look, &body, &metrics);
+        let (content, mut fonts) = match &metrics {
+            Metrics::Bytes(_) => (drawn.bytes_content(), Dictionary::new()),
+            Metrics::Set(setter) => {
+                let lines: Vec<&str> = drawn.lines.iter().map(|(s, ..)| s.as_str()).collect();
+                let reuse: Vec<(FontChoice, ObjectId)> =
+                    font_ref.iter().map(|&id| (choice, id)).collect();
+                let pen = self.pen_reusing(setter, &lines, &reuse)?;
+                let names = pen.names(&String::from_utf8_lossy(&font));
+                let content = drawn.content(|i, _| pen.ops(i, drawn.size, 0.0, &names));
+                (content, pen.font_dict(&names))
+            }
+        };
+        // The font `/DA` names stays in the resources, though no text is in it.
+        if let Some(id) = font_ref.filter(|_| !fonts.has(&font)) {
+            fonts.set(font.clone(), id);
+        }
+        let resources = dictionary! { "Font" => fonts };
         let ap = self.add_appearance(&look, matrix, resources, content);
         self.doc
             .get_dictionary_mut(widget)?
@@ -505,8 +542,8 @@ impl Pdf {
             std14::symbolic_width("ZapfDingbats", c as u32).unwrap_or(0.0)
         })));
         let resources = || dictionary! { "Font" => dictionary! { "ZaDb" => font_ref } };
-        let on_content = form_ap::draw(&look, &Body::Mark(mark), &zapf);
-        let off_content = form_ap::draw(&look, &Body::Empty, &zapf);
+        let on_content = form_ap::draw(&look, &Body::Mark(mark), &zapf).bytes_content();
+        let off_content = form_ap::draw(&look, &Body::Empty, &zapf).bytes_content();
         let on_ap = self.add_appearance(&look, matrix, resources(), on_content);
         let off_ap = self.add_appearance(&look, matrix, resources(), off_content);
         let state = self.on_state(widget).unwrap_or_else(|| "Yes".into());
@@ -611,6 +648,31 @@ impl Pdf {
             .and_then(|(_, o)| o.as_dict().ok())
     }
 
+    /// How the text field `name`'s value is set in its widget `widget` ([`Widget::id`]), to
+    /// lay text out while it is typed as it will be written ([`BoxSetting::lines`]): in the
+    /// font its `/DA` names when that takes the text, as [`Pdf::set_field`] writes it; `None`
+    /// when it isn't a text field or has no such widget.
+    ///
+    /// [`Widget::id`]: crate::Widget::id
+    pub fn field_setting(&self, name: &str, widget: (u32, u16)) -> Option<BoxSetting> {
+        let (field, node) = (self.form_nodes().into_iter()).find(|(f, _)| f.name == name)?;
+        if !matches!(field.kind, FieldKind::Text { .. }) || !node.widgets.contains(&widget) {
+            return None;
+        }
+        let (font, size, _) = parse_da(&self.widget_da(widget, &node));
+        let (mut look, _) = self.widget_look(widget).ok()?;
+        look.size = size;
+        let found = font.and_then(|n| self.dr_font(&n));
+        let (own, base) = match found.as_ref().and_then(|o| self.dict_of(o)) {
+            Some(dict) => {
+                let (own, base) = own_font(&self.doc, dict);
+                (Some(own), base)
+            }
+            None => (None, String::from("Helvetica")),
+        };
+        Some(BoxSetting::field(look, own, FontChoice::from_name(&base)))
+    }
+
     /// The widget's own `/DA`, else the field's (inherited, or the form's).
     fn widget_da(&self, widget: ObjectId, node: &Node) -> Vec<u8> {
         self.doc
@@ -624,14 +686,10 @@ impl Pdf {
 
     /// The font to draw `text` with: the one `/DA` names when LimarePDF can write with it,
     /// else the closest standard font, added to the form's resources, or for characters
-    /// the standard font lacks, its embedded face, named only in the appearance's own
-    /// resources (`/DA` keeps the field's font: the Unicode text design, question 8).
-    /// Returns its name, a reference to it, its widths, and whether `/DA` should name it.
-    fn pick_font(
-        &mut self,
-        name: Option<&[u8]>,
-        text: &str,
-    ) -> Result<(Vec<u8>, ObjectId, Metrics, bool)> {
+    /// the standard font lacks, its embedded face and the fonts it falls back to, named
+    /// only in the appearance's own resources (`/DA` keeps the field's font: the Unicode
+    /// text design, question 8).
+    fn pick_font(&mut self, name: Option<&[u8]>, text: &str) -> Result<Picked> {
         let found = name.and_then(|n| Some((n.to_vec(), self.dr_font(n)?)));
         let mut base = String::from("Helvetica");
         if let Some((name, obj)) = &found {
@@ -641,34 +699,35 @@ impl Pdf {
                 _ => (None, None),
             };
             if let Some(dict) = dict {
-                let ctx = FontCtx::new(&self.doc, dict);
-                let winansi = dict
-                    .get(b"Encoding")
-                    .ok()
-                    .and_then(|o| o.as_name().ok())
-                    .is_some_and(|n| n == b"WinAnsiEncoding");
-                let widths: [f32; 256] = std::array::from_fn(|c| ctx.width(c as u32, 1));
-                // A zero width is how some makers (LibreOffice, for one) mark a character
-                // the font in the file doesn't have.
-                let has_all = text.chars().filter(|c| !c.is_control()).all(|c| {
-                    winansi_byte(c).is_some_and(|b| b <= b' ' || widths[b as usize] > 0.0)
-                });
-                if ctx.reusable() && (text.is_ascii() || winansi) && has_all {
+                let (own, nearest) = own_font(&self.doc, dict);
+                if own.takes(text) {
                     let dict = dict.clone();
                     let id = id.unwrap_or_else(|| self.doc.add_object(dict));
-                    return Ok((name.clone(), id, Metrics::Bytes(Box::new(widths)), false));
+                    return Ok(Picked {
+                        name: name.clone(),
+                        font: Some(id),
+                        metrics: Metrics::Bytes(own.widths),
+                        replaced: false,
+                        choice: FontChoice::default(),
+                    });
                 }
-                base = ctx.base.clone();
+                base = nearest;
             }
         }
         let choice = FontChoice::from_name(&base);
-        if let Pen::Embedded(codes) = self.pen(choice, text)? {
-            return Ok((
-                EMBEDDED.to_vec(),
-                codes.font,
-                Metrics::Embedded(codes),
-                false,
-            ));
+        let setter = self.setter(choice, text);
+        let missing = setter.missing(&text.replace(['\n', '\r'], ""));
+        if !missing.is_empty() {
+            bail!("{}", cant_write(&missing));
+        }
+        if !matches!(setter.own(), SetIn::Standard(_)) {
+            return Ok(Picked {
+                name: EMBEDDED.to_vec(),
+                font: None,
+                metrics: Metrics::Set(setter),
+                replaced: false,
+                choice,
+            });
         }
         let base = choice.base_font();
         let name = format!("Limare{}", base.replace('-', "")).into_bytes();
@@ -686,7 +745,13 @@ impl Pdf {
                 id
             }
         };
-        Ok((name, id, standard_metrics(base), true))
+        Ok(Picked {
+            name,
+            font: Some(id),
+            metrics: Metrics::Set(setter),
+            replaced: true,
+            choice,
+        })
     }
 
     /// The form's ZapfDingbats font (`/ZaDb`), added when it has none.
@@ -706,7 +771,7 @@ impl Pdf {
     }
 
     /// A font in the form's default resources (`/DR /Font`), as stored there.
-    fn dr_font(&self, name: &[u8]) -> Option<Object> {
+    pub(crate) fn dr_font(&self, name: &[u8]) -> Option<Object> {
         let dr = self.acro_form()?.get(b"DR").ok()?;
         let dr = self.doc.dereference(dr).ok()?.1.as_dict().ok()?;
         let fonts = self.doc.dereference(dr.get(b"Font").ok()?).ok()?.1;
@@ -741,6 +806,21 @@ impl Pdf {
         self.doc.get_dictionary_mut(parent)?.set(key, id);
         Ok(id)
     }
+}
+
+/// The font `dict` (in `doc`) as a field's own font, and the name of the standard font
+/// nearest it, which sets the text it doesn't take.
+fn own_font(doc: &Document, dict: &Dictionary) -> (OwnFont, String) {
+    let ctx = FontCtx::new(doc, dict);
+    let winansi = (dict.get(b"Encoding").ok())
+        .and_then(|o| o.as_name().ok())
+        .is_some_and(|n| n == b"WinAnsiEncoding");
+    let own = OwnFont {
+        widths: Box::new(std::array::from_fn(|c| ctx.width(c as u32, 1))),
+        winansi,
+        reusable: ctx.reusable(),
+    };
+    (own, ctx.base.clone())
 }
 
 /// Text, choice and list fields are drawn by LimarePDF; buttons have drawings of their own.
@@ -865,16 +945,4 @@ fn encode_da(font: &[u8], size: f32, color: Option<&Operation>) -> Vec<u8> {
     )];
     ops.extend(color.cloned());
     Content { operations: ops }.encode().unwrap_or_default()
-}
-
-/// Widths of a standard font by WinAnsi code.
-pub(crate) fn standard_metrics(base: &str) -> Metrics {
-    let mut w = [0.0; 256];
-    for c in (0x20..=0x2122).filter_map(char::from_u32) {
-        let b = winansi_bytes(&c.to_string())[0];
-        if b != b'?' || c == '?' {
-            w[b as usize] = std14::width(base, c).unwrap_or(556.0);
-        }
-    }
-    Metrics::Bytes(Box::new(w))
 }

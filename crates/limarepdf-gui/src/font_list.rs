@@ -14,12 +14,15 @@ use limarepdf_core::{Family, FontChoice, Typeface};
 use std::sync::Arc;
 
 /// Starts reading the installed fonts on another thread, so the list has them when it is
-/// first opened; a repaint follows.
+/// first opened (a repaint follows), and then the fonts typing falls back to for the
+/// system's language and emoji, so typing doesn't wait for them
+/// ([`limarepdf_core::warm_fallbacks`]).
 pub fn warm(ctx: &egui::Context) {
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         limarepdf_core::typefaces();
         ctx.request_repaint();
+        limarepdf_core::warm_fallbacks();
     });
 }
 
@@ -251,8 +254,10 @@ fn list(ui: &mut egui::Ui, search_id: egui::Id, f: &mut FontChoice, blank: bool)
 }
 
 /// A test font as an installed family, by name: Source Serif 4 (OpenType CFF, regular
-/// only), Cantarell (variable, upright), Caveat (variable, weights 400 to 700, no Greek) or
-/// Limare Emoji Test (made up: Latin letters and a few emoji), from core's test fonts.
+/// only), Cantarell (variable, upright), Caveat (variable, weights 400 to 700, no Greek),
+/// Limare Emoji Test (made up: Latin letters and a few emoji) or Limare Han Test (made up: a
+/// few ideographs, kana and Hangul, the fallback for them where no other font has them),
+/// from core's test fonts.
 #[cfg(test)]
 pub fn test_family(name: &str) -> Family {
     static NUMBERS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
@@ -263,6 +268,7 @@ pub fn test_family(name: &str) -> Family {
             core.join("tests/data/fonts/Cantarell-VF.otf"),
             core.join("assets/fonts/Caveat.ttf"),
             core.join("tests/data/fonts/LimareEmojiTest.ttf"),
+            core.join("tests/data/fonts/LimareHanTest.ttf"),
         ];
         limarepdf_core::add_font_files(&files.iter().map(|p| p.as_path()).collect::<Vec<_>>())
     });

@@ -22,6 +22,7 @@ pub const BROOM: &str = "\u{EC54}";
 pub const CARET_DOUBLE_LEFT: &str = "\u{E128}";
 pub const CARET_DOUBLE_RIGHT: &str = "\u{E12A}";
 pub const CARET_DOWN: &str = "\u{E136}";
+pub const CARET_LEFT: &str = "\u{E138}";
 pub const CARET_RIGHT: &str = "\u{E13A}";
 pub const CARET_UP: &str = "\u{E13C}";
 pub const CERTIFICATE: &str = "\u{E766}";

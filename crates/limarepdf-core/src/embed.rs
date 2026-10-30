@@ -2,28 +2,37 @@
 //! design, section 4): Polish, Czech, Vietnamese, Greek, Russian and the rest.
 //!
 //! A face is written once per document as a Type 0 font with a CIDFontType2 descendant and
-//! `Identity-H` encoding: each character is its glyph's number in the embedded font, two
-//! bytes. `/W` gives the widths, so every reader spaces the text alike, and a ToUnicode map
-//! the characters, so search, copy and LimarePDF's own text reading get them back. The font
-//! file is the face cut down to the glyphs used by the `subsetter` crate, which numbers the
-//! glyphs it keeps in the order it is given them.
+//! `Identity-H` encoding: two bytes a glyph, each a code of the font's own, which a
+//! `/CIDToGIDMap` stream maps to the glyph in the embedded font. A code stands for one glyph
+//! written for one text, so a ligature's glyph maps to all its letters and one glyph two
+//! characters share (Latin A and Cyrillic А, in many fonts) maps back to each. `/W` gives
+//! the widths as the face has them, so every reader spaces the text alike, and a ToUnicode
+//! map the text, so search, copy and LimarePDF's own text reading get it back. The font file
+//! is the face cut down to the glyphs used by the `subsetter` crate, which numbers the
+//! glyphs it keeps in the order it is given them. What is written is shaped first
+//! (`layout.rs`, [`Face::shape`]): kerning, ligatures and marks as the font places them.
 //!
-//! When more text is set in the face, the same font object is rewritten with the old glyphs
+//! When more text is set in the face, the same font object is rewritten with the old codes
 //! given first, so they keep their numbers and text written before stays valid. What that
 //! needs is kept in the font dictionary under `/LimarePDF` (readers ignore keys they don't
-//! know): the face, the glyphs in order with the character each was written for, and a
-//! checksum of the font file. A font object whose font file has changed since (another app
-//! rewrote it), or that was made from another version of the face, isn't grown: a new one
-//! is started.
+//! know): the face, each code's glyph and text, and a checksum of the font file. A font
+//! object whose font file has changed since (another app rewrote it), or that was made from
+//! another version of the face, isn't grown: a new one is started.
 //!
 //! Installed fonts (`typefaces.rs`) are written the same way, always embedded. An OpenType
 //! font with CFF outlines is written as a CIDFontType0 font with a `/FontFile3 /OpenType`
-//! font file; a variable font is set at the chosen weight as it is cut down, which gives a
-//! TrueType font whatever its outlines.
+//! font file, which takes no map: each code is its glyph's number in the font file, as in
+//! the fonts LimarePDF 0.11 wrote, which go on growing so. In those a glyph is written for
+//! one text only; text that needs it for another goes to another font object of the face. A
+//! variable font is set at the chosen weight as it is cut down, which gives a TrueType font
+//! whatever its outlines.
 
-use crate::fonts::{winansi_byte, winansi_bytes};
 use crate::{Family, FontChoice, Pdf, Result};
 use anyhow::{anyhow, bail};
+use harfrust::{
+    BufferClusterLevel, BufferFlags, Direction, Feature, ShapeOptions, ShapePlan, ShaperData,
+    ShaperInstance, UnicodeBuffer, Variation,
+};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 use sha2::{Digest, Sha256};
 use skrifa::instance::Location;
@@ -34,7 +43,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use subsetter::GlyphRemapper;
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
@@ -131,7 +140,7 @@ fn place(f: FontChoice) -> (usize, usize) {
 }
 
 /// Key of LimarePDF's own entry in the fonts it writes.
-const KEY: &[u8] = b"LimarePDF";
+pub(crate) const KEY: &[u8] = b"LimarePDF";
 /// Most glyphs one embedded font holds: a glyph number is two bytes, and the subsetter's
 /// numbering stops short of 65,536.
 const MAX_GLYPHS: usize = 0xFFF0;
@@ -154,11 +163,42 @@ pub(crate) struct Face {
     /// has any), so a font object made from another version or weight of the face is told
     /// apart.
     source: [u8; 8],
-    /// Each glyph's width, in thousandths of an em, rounded as `/W` gives it.
+    /// Each glyph's width, in thousandths of an em, as the face has it.
+    advances: Vec<f32>,
+    /// Each glyph's width, in thousandths of an em, rounded as `/W` gives it in the fonts
+    /// LimarePDF 0.11 wrote.
     widths: Vec<i64>,
+    /// Font units per em.
+    upem: f32,
     /// Whether each glyph has an outline ([`Face::outlined`]), found the first time asked.
     outlines: Box<[OnceLock<bool>]>,
+    /// What shaping needs of the face, made the first time it is shaped.
+    shaper: OnceLock<ShaperData>,
+    /// Where a variable font is set, for shaping; `None` for others.
+    instance: Option<ShaperInstance>,
+    /// The shaping plans made, by script, language and whether only kerning was asked.
+    plans: Mutex<Vec<(PlanKey, Arc<ShapePlan>)>>,
 }
+
+/// What a shaping plan is made for: a script, a language and whether only kerning is wanted.
+type PlanKey = (harfrust::Script, Option<harfrust::Language>, bool);
+
+/// One glyph as [`Face::shape`] gives it: the face's glyph, the characters of the text it
+/// draws (from and to; none for a glyph after the first that draws a character, a mark
+/// placed apart, say), and how far it moves the line on and where it is placed from there,
+/// in thousandths of an em.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Shaped {
+    pub glyph: u16,
+    pub chars: (usize, usize),
+    pub advance: f32,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// The features turned off for text written in a standard font itself, which shows each
+/// character's own glyph: only kerning is kept.
+const NO_LIGATURES: [&[u8; 4]; 3] = [b"liga", b"clig", b"calt"];
 
 /// Largest embedded font file read back to grow it, once decompressed.
 const MAX_FILE: usize = 32 << 20;
@@ -259,10 +299,18 @@ impl Face {
         let m = font.metrics(Size::unscaled(), at);
         let em = 1000.0 / m.units_per_em.max(1) as f32;
         let gm = font.glyph_metrics(Size::unscaled(), at);
-        let widths = (0..m.glyph_count as u32)
-            .map(|g| (gm.advance_width(GlyphId::new(g)).unwrap_or(0.0) * em).round() as i64)
+        let advances: Vec<f32> = (0..m.glyph_count as u32)
+            .map(|g| gm.advance_width(GlyphId::new(g)).unwrap_or(0.0) * em)
             .collect();
+        let widths = advances.iter().map(|w| w.round() as i64).collect();
         let outlines = (0..m.glyph_count).map(|_| OnceLock::new()).collect();
+        let instance = (!coords.is_empty()).then(|| {
+            let at = coords.iter().map(|(t, v)| Variation {
+                tag: Tag::new(t),
+                value: *v,
+            });
+            ShaperInstance::from_variations(&font, at)
+        });
         let mut sum = Sha256::new();
         sum.update(data);
         if index != 0 || !coords.is_empty() {
@@ -282,9 +330,110 @@ impl Face {
             location,
             cff,
             source,
+            advances,
             widths,
+            upem: m.units_per_em.max(1) as f32,
             outlines,
+            shaper: OnceLock::new(),
+            instance,
+            plans: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Whether glyph `g` is in the face.
+    pub(crate) fn has_glyph(&self, g: u16) -> bool {
+        (g as usize) < self.advances.len()
+    }
+
+    /// Glyph `g`'s width as the face has it, in thousandths of an em.
+    pub(crate) fn advance(&self, g: u16) -> f32 {
+        self.advances.get(g as usize).copied().unwrap_or(0.0)
+    }
+
+    /// Glyph `g`'s width as `/W` gives it: to a thousandth of a unit when `exact`, else
+    /// rounded, as LimarePDF 0.11 wrote it.
+    pub(crate) fn width_of(&self, g: u16, exact: bool) -> f32 {
+        match exact {
+            true => (self.advance(g) * 1000.0).round() / 1000.0,
+            false => self.widths.get(g as usize).copied().unwrap_or(0) as f32,
+        }
+    }
+
+    /// `text` shaped in the face, left to right in `script` (and `language`, when known),
+    /// with the font's own features (kerning, ligatures, contextual forms, marks placed),
+    /// or with `kerning_only` one glyph for each character, spaced by the font's kerning.
+    /// Each character is a cluster of its own (a ligature's letters and a glyph's parts
+    /// aside), so a mark keeps its own glyph's text.
+    pub(crate) fn shape(
+        &self,
+        text: &[char],
+        script: harfrust::Script,
+        language: Option<&harfrust::Language>,
+        kerning_only: bool,
+    ) -> Vec<Shaped> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let font = self.font();
+        let data = self.shaper.get_or_init(|| ShaperData::new(&font));
+        let shaper = data.shaper(&font).instance(self.instance.as_ref()).build();
+        let features: Vec<Feature> = match kerning_only {
+            true => (NO_LIGATURES.iter())
+                .map(|t| Feature::new(Tag::new(t), 0, ..))
+                .collect(),
+            false => Vec::new(),
+        };
+        let key: PlanKey = (script, language.cloned(), kerning_only);
+        let plan = {
+            let mut plans = self.plans.lock().unwrap_or_else(|e| e.into_inner());
+            match plans.iter().find(|(k, _)| *k == key) {
+                Some((_, p)) => Arc::clone(p),
+                None => {
+                    let p = Arc::new(ShapePlan::new(
+                        &shaper,
+                        Direction::LeftToRight,
+                        Some(script),
+                        language,
+                        &features,
+                    ));
+                    plans.push((key, Arc::clone(&p)));
+                    p
+                }
+            }
+        };
+        let s: String = text.iter().collect();
+        let mut buffer = UnicodeBuffer::new();
+        buffer.push_str(&s);
+        buffer.set_direction(Direction::LeftToRight);
+        buffer.set_script(script);
+        if let Some(l) = language {
+            buffer.set_language(l.clone());
+        }
+        buffer.set_cluster_level(BufferClusterLevel::MonotoneCharacters);
+        buffer.set_flags(BufferFlags::BEGINNING_OF_TEXT | BufferFlags::END_OF_TEXT);
+        let options = ShapeOptions::new().plan(Some(&plan)).features(&features);
+        let out = shaper.shape(buffer, options);
+        // Clusters are where their characters start in `s`, in bytes.
+        let starts: Vec<usize> = s.char_indices().map(|(b, _)| b).collect();
+        let at = |cluster: u32| starts.partition_point(|&b| b < cluster as usize);
+        let (infos, places) = (out.glyph_infos(), out.glyph_positions());
+        let k = 1000.0 / self.upem;
+        let mut glyphs = Vec::with_capacity(infos.len());
+        for (i, (info, place)) in infos.iter().zip(places).enumerate() {
+            let from = at(info.cluster);
+            let first = i == 0 || infos[i - 1].cluster != info.cluster;
+            let to = (infos[i + 1..].iter())
+                .find(|g| g.cluster != info.cluster)
+                .map_or(text.len(), |g| at(g.cluster));
+            glyphs.push(Shaped {
+                glyph: info.glyph_id as u16,
+                chars: if first { (from, to) } else { (from, from) },
+                advance: place.x_advance as f32 * k,
+                x: place.x_offset as f32 * k,
+                y: place.y_offset as f32 * k,
+            });
+        }
+        glyphs
     }
 
     fn font(&self) -> FontRef<'static> {
@@ -312,6 +461,15 @@ impl Face {
         (g != 0 && (blank(c) || self.outlined(g))).then_some(g)
     }
 
+    /// The face's glyph for `c` as its character map gives it, whatever it is.
+    pub(crate) fn glyph_of(&self, c: char) -> Option<u16> {
+        self.font()
+            .charmap()
+            .map(c)
+            .map(|g| g.to_u32() as u16)
+            .filter(|&g| g != 0)
+    }
+
     /// Whether glyph `g` draws anything, set as the face is.
     fn outlined(&self, g: u16) -> bool {
         let Some(known) = self.outlines.get(g as usize) else {
@@ -337,7 +495,7 @@ impl Face {
     /// The characters `text` is written with in the face: put together (NFC) where the face
     /// has the combined letter, else apart where it has the parts; and those it can't write,
     /// each once, an emoji sequence whole ([`emoji_sequence`]).
-    fn spelled(&self, text: &str) -> (Vec<char>, String) {
+    pub(crate) fn spelled(&self, text: &str) -> (Vec<char>, String) {
         let (mut out, mut missing) = (Vec::new(), String::new());
         let text: String = text.nfc().collect();
         for cluster in text.graphemes(true) {
@@ -365,38 +523,26 @@ impl Face {
 
     /// The characters `text` is written with in the face ([`Face::spelled`]), or those it
     /// can't write, when there are any.
+    #[cfg(test)]
     fn spell(&self, text: &str) -> std::result::Result<Vec<char>, String> {
         match self.spelled(text) {
             (out, missing) if missing.is_empty() => Ok(out),
             (_, missing) => Err(missing),
         }
     }
-
-    /// The width of `text` set in the face at `size`, in points, as readers space it (from
-    /// the widths `/W` gives). Characters the face can't write count as nothing.
-    pub(crate) fn width(&self, text: &str, size: f32) -> f32 {
-        let units: i64 = self
-            .spelled(text)
-            .0
-            .into_iter()
-            .filter_map(|c| self.glyph(c))
-            .map(|g| self.widths[g as usize])
-            .sum();
-        units as f32 * size / 1000.0
-    }
 }
 
-/// Whether LimarePDF can write `c` in `f`: a standard font itself or its embedded face, or
-/// an installed family's face (read the first time). Control characters never.
+/// Whether LimarePDF can write `c` in `f`, or in a font it falls back to for it
+/// (`layout.rs`): a standard font itself or its embedded face, an installed family's face,
+/// or another installed font that has it. Control characters never.
 pub fn writable(f: FontChoice, c: char) -> bool {
-    match f.family {
-        Family::Installed(_) => Face::of(f).is_ok_and(|face| face.covers(c)),
-        _ => winansi_byte(c).is_some() || Face::liberation(f).covers(c),
-    }
+    !c.is_control() && unwritable(f, c.encode_utf8(&mut [0; 4])).is_empty()
 }
 
-/// The message refusing text with the characters `missing`: its emoji sequences
-/// ([`emoji_sequence`]), when it has any, as no font helps with those.
+/// The message refusing text with the characters `missing`, which no font can write: its
+/// emoji sequences ([`emoji_sequence`]), and the characters of scripts LimarePDF doesn't
+/// write yet ([`unwritten_script`]), when it has any, as no font helps with those; else
+/// that no installed font has them.
 pub(crate) fn cant_write(missing: &str) -> String {
     let sequences = sequences(missing);
     if !sequences.is_empty() {
@@ -405,10 +551,14 @@ pub(crate) fn cant_write(missing: &str) -> String {
              emoji aren't supported"
         );
     }
-    format!(
-        "LimarePDF can't write \"{missing}\" yet; Latin, Greek and Cyrillic characters are \
-         supported"
-    )
+    let script: String = missing.chars().filter(|&c| unwritten_script(c)).collect();
+    if !script.is_empty() {
+        return format!(
+            "LimarePDF can't write \"{script}\" yet: right-to-left writing, and scripts whose \
+             letters join, such as Arabic, Hebrew and Hindi, aren't supported"
+        );
+    }
+    format!("No font on this computer has \"{missing}\"")
 }
 
 /// The emoji sequences ([`emoji_sequence`]) among the characters `missing`.
@@ -419,8 +569,8 @@ fn sequences(missing: &str) -> String {
         .collect()
 }
 
-/// Why a text box with the characters `missing` (in Helvetica, or its embedded face) can't
-/// be drawn: the end of a message that says which box (BUG-39).
+/// Why a text box with the characters `missing`, which no font can write, can't be drawn:
+/// the end of a message that says which box (BUG-39).
 pub(crate) fn box_refusal(missing: &str) -> String {
     let sequences = sequences(missing);
     if !sequences.is_empty() {
@@ -429,10 +579,14 @@ pub(crate) fn box_refusal(missing: &str) -> String {
              supported yet"
         );
     }
-    format!(
-        "it has \"{missing}\", which LimarePDF can't write yet (Latin, Greek and Cyrillic \
-         characters are supported)"
-    )
+    let script: String = missing.chars().filter(|&c| unwritten_script(c)).collect();
+    if !script.is_empty() {
+        return format!(
+            "it has \"{script}\", in a script LimarePDF can't write yet (right-to-left \
+             writing, and scripts whose letters join, aren't supported)"
+        );
+    }
+    format!("it has \"{missing}\", which no font on this computer has")
 }
 
 /// Whether LimarePDF could write `c` in an installed font that has it: not a control
@@ -449,21 +603,15 @@ pub fn unwritten_script(c: char) -> bool {
     right_to_left(c) || shaped(c)
 }
 
-/// The message refusing text in `f` with the characters `missing`: an installed family
-/// lacking them is named, as another font may have them.
-pub fn refusal(f: FontChoice, missing: &str) -> String {
-    let sequence = missing.graphemes(true).any(emoji_sequence);
-    match f.typeface() {
-        Some(t) if !sequence && missing.chars().any(installed_could_write) => {
-            format!("{} has no \"{missing}\"; choose another font", t.label())
-        }
-        _ => cant_write(missing),
-    }
+/// The message refusing text in `f` with the characters `missing`, which no font can write
+/// ([`cant_write`]; `f` and every font it falls back to lack them).
+pub fn refusal(_f: FontChoice, missing: &str) -> String {
+    cant_write(missing)
 }
 
 /// Refuses `text`, with [`refusal`]'s message, when LimarePDF can't write all of it in
-/// `f` as [`Pdf::pen`] would (control characters, such as line breaks, aside). Nothing is
-/// embedded.
+/// `f` and the fonts it falls back to, as [`Pdf::pen`] would (control characters, such as
+/// line breaks, aside). Nothing is embedded.
 pub(crate) fn check_writable(f: FontChoice, text: &str) -> Result<()> {
     let text: String = text.chars().filter(|c| !c.is_control()).collect();
     let missing = unwritable(f, &text);
@@ -473,139 +621,37 @@ pub(crate) fn check_writable(f: FontChoice, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// The characters of `text` LimarePDF can't write in `f` (a standard font or its embedded
-/// face, or an installed family's face), each once (as [`Pdf::pen`] writes it; control
-/// characters included). All of them when the installed face can't be read.
+/// The characters of `text` LimarePDF can't write in `f` or any font it falls back to
+/// (`layout.rs`), each once, an emoji sequence whole (control characters included).
 pub(crate) fn unwritable(f: FontChoice, text: &str) -> String {
-    if f.is_standard() && text.chars().all(|c| winansi_byte(c).is_some()) {
-        return String::new();
-    }
-    match Face::of(f) {
-        Ok(face) => face.spelled(text).1,
-        Err(_) => {
-            let mut all = String::new();
-            for c in text.chars() {
-                if !all.contains(c) {
-                    all.push(c);
-                }
-            }
-            all
-        }
-    }
+    crate::layout::Setter::new(f, text, None).missing(text)
 }
 
-/// Text set in an embedded font: the font object to name in the resources, and the bytes
-/// to show with `Tj`.
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct Set {
+/// Where each glyph of some text an embedded face writes is ([`Pdf::embed_glyphs`]): the
+/// font object, the code that shows it, and its width as the font's `/W` gives it, in
+/// thousandths of an em.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Placed {
     pub font: ObjectId,
-    pub bytes: Vec<u8>,
-}
-
-/// An embedded font grown for some text: the font object, and the code of each glyph it
-/// holds, to write that text or any part of it.
-#[derive(Clone)]
-pub(crate) struct Codes {
-    pub font: ObjectId,
-    face: &'static Face,
-    /// The code of each glyph of the face the font holds.
-    cids: HashMap<u16, u16>,
-}
-
-impl Codes {
-    /// The bytes that show `text`, two for each character. Characters the font doesn't
-    /// hold are left out.
-    pub(crate) fn bytes(&self, text: &str) -> Vec<u8> {
-        self.face
-            .spelled(text)
-            .0
-            .into_iter()
-            .filter_map(|c| self.cids.get(&self.face.glyph(c)?))
-            .flat_map(|n| n.to_be_bytes())
-            .collect()
-    }
-
-    /// The width of `text` at `size`, in points.
-    pub(crate) fn width(&self, text: &str, size: f32) -> f32 {
-        self.face.width(text, size)
-    }
-}
-
-/// The font a writer sets text in: the standard font, with nothing embedded, while the
-/// text fits WinAnsi, else its embedded face (the Unicode text design, question 2); an
-/// installed family always embedded.
-#[derive(Clone)]
-pub(crate) enum Pen {
-    /// Only ever a standard font.
-    Standard(FontChoice),
-    Embedded(Codes),
-}
-
-impl Pen {
-    /// The font to name in the resources: a standard font's dictionary, or a reference to
-    /// the embedded font.
-    pub(crate) fn font(&self) -> Object {
-        match self {
-            Pen::Standard(f) => dictionary! {
-                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => f.base_font(),
-                "Encoding" => "WinAnsiEncoding",
-            }
-            .into(),
-            Pen::Embedded(c) => Object::Reference(c.font),
-        }
-    }
-
-    /// The bytes that show `text` (part of the text the pen was made for).
-    pub(crate) fn bytes(&self, text: &str) -> Vec<u8> {
-        match self {
-            Pen::Standard(_) => winansi_bytes(text),
-            Pen::Embedded(c) => c.bytes(text),
-        }
-    }
-
-    /// `text` as a string object to show with `Tj`.
-    pub(crate) fn string(&self, text: &str) -> Object {
-        let format = match self {
-            Pen::Standard(_) => lopdf::StringFormat::Literal,
-            Pen::Embedded(_) => lopdf::StringFormat::Hexadecimal,
-        };
-        Object::String(self.bytes(text), format)
-    }
-
-    /// `text` as a string written in a content stream: `(…)` in a standard font, `<…>` in
-    /// an embedded one.
-    pub(crate) fn token(&self, text: &str) -> String {
-        match self {
-            Pen::Standard(_) => format!("({})", crate::overlay::escape(text)),
-            Pen::Embedded(c) => {
-                let hex: String = c.bytes(text).iter().map(|b| format!("{b:02X}")).collect();
-                format!("<{hex}>")
-            }
-        }
-    }
-
-    /// The width of `text` at `size`, in points.
-    pub(crate) fn width(&self, text: &str, size: f32) -> f32 {
-        match self {
-            Pen::Standard(f) => {
-                let units: f32 = text
-                    .chars()
-                    .map(|c| crate::std14::width(f.base_font(), c).unwrap_or(0.0))
-                    .sum();
-                units * size / 1000.0
-            }
-            Pen::Embedded(c) => c.width(text, size),
-        }
-    }
+    pub code: u16,
+    pub width: f32,
 }
 
 /// What LimarePDF keeps in a font it wrote, to grow it.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Record {
-    /// The glyphs of the face it holds, in their order in the font file (glyph 1 first),
-    /// each with the character it was written for.
-    glyphs: Vec<(u16, char)>,
+    /// Each code's glyph of the face and the text it was written for (a ligature's
+    /// letters; nothing for a glyph after the first that draws a character), code 1
+    /// first.
+    glyphs: Vec<(u16, String)>,
+    /// Whether the codes are the font's own, mapped to its glyphs by a `/CIDToGIDMap`
+    /// stream, so one glyph can be written for two texts. Otherwise each code is its
+    /// glyph's number in the font file (`Identity`), and each glyph is written for one
+    /// text: CFF fonts, which take no map, and the fonts LimarePDF 0.11 wrote.
+    own: bool,
+    /// Whether `/W` gives the widths to a thousandth of a unit, as the face has them,
+    /// rather than rounded, as LimarePDF 0.11 wrote them.
+    exact: bool,
 }
 
 /// The objects of an embedded font other than its font dictionary: kept when it grows.
@@ -615,105 +661,141 @@ struct Parts {
     descriptor: Option<ObjectId>,
     file: Option<ObjectId>,
     to_unicode: Option<ObjectId>,
+    /// The `/CIDToGIDMap` stream of a font with codes of its own.
+    map: Option<ObjectId>,
+}
+
+/// Text set in an embedded font: the font object to name in the resources, and the codes
+/// that show it.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct Set {
+    pub font: ObjectId,
+    pub bytes: Vec<u8>,
 }
 
 impl Pdf {
-    /// `text` set in the embedded face of `f` ([`Pdf::embed_codes`]), and the bytes that
-    /// show it.
+    /// `text` set in the embedded face of `f` with nothing falling back, in one font
+    /// object.
     #[cfg(test)]
     pub(crate) fn embed_text(&mut self, f: FontChoice, text: &str) -> Result<Set> {
-        let codes = self.embed_codes(f, text)?;
-        Ok(Set {
-            font: codes.font,
-            bytes: codes.bytes(text),
-        })
-    }
-
-    /// The pen to write `text`, and any part of it, in `f`: a standard font itself while
-    /// every character fits WinAnsi, else its embedded face, grown to hold them
-    /// ([`Pdf::embed_codes`]); an installed family's face always. Control characters don't
-    /// count: line breaks, for one, as lines are shown one by one.
-    pub(crate) fn pen(&mut self, f: FontChoice, text: &str) -> Result<Pen> {
-        let text: String = text.chars().filter(|c| !c.is_control()).collect();
-        if f.is_standard() && text.chars().all(|c| winansi_byte(c).is_some()) {
-            return Ok(Pen::Standard(f));
-        }
-        let missing = Face::of(f)?.spelled(&text).1;
-        if !missing.is_empty() {
-            bail!("{}", refusal(f, &missing));
-        }
-        Ok(Pen::Embedded(self.embed_codes(f, &text)?))
-    }
-
-    /// The font object a pen writes with: a new standard font object, or the embedded font.
-    pub(crate) fn pen_font(&mut self, pen: &Pen) -> ObjectId {
-        match pen {
-            Pen::Standard(_) => self.doc.add_object(pen.font()),
-            Pen::Embedded(c) => c.font,
-        }
-    }
-
-    /// The embedded face of `f` ([`Face::of`]): the face's font object in this document,
-    /// grown to hold the glyphs `text` needs (made the first time), and the codes to write
-    /// that text. Accents typed as separate marks are put together first (NFC) where the
-    /// face has the combined letter, and a letter it has only in parts is written in them.
-    /// Refused, with nothing changed, when the face lacks a character.
-    pub(crate) fn embed_codes(&mut self, f: FontChoice, text: &str) -> Result<Codes> {
         let face = Face::of(f)?;
-        let (font, cids) = self.embed_in(face, text)?;
-        Ok(Codes { font, face, cids })
-    }
-
-    fn embed_in(&mut self, face: &Face, text: &str) -> Result<(ObjectId, HashMap<u16, u16>)> {
         let chars = face
             .spell(text)
             .map_err(|missing| anyhow!("{} has no characters for \"{missing}\"", face.ps))?;
-        let found = self.embedded(face);
-        let (mut record, at) = match found {
-            Some((id, record, parts)) => (record, Some((id, parts))),
-            None => (Record::default(), None),
-        };
-        let before = record.glyphs.len();
-        let mut cid: HashMap<u16, u16> = record
-            .glyphs
-            .iter()
-            .enumerate()
-            .map(|(i, &(g, _))| (g, i as u16 + 1))
+        // One glyph a character, as the character map gives it, so the tests of what is
+        // embedded can match codes to characters; shaping has its own (`layout.rs`).
+        let script = crate::layout::script_of(&chars);
+        let glyphs = face.shape(&chars, script, None, true);
+        let needs: Vec<(u16, String)> = (glyphs.iter())
+            .map(|g| (g.glyph, chars[g.chars.0..g.chars.1].iter().collect()))
             .collect();
-        for c in chars {
-            let g = face.glyph(c).expect("checked above");
-            if let std::collections::hash_map::Entry::Vacant(e) = cid.entry(g) {
-                if record.glyphs.len() >= MAX_GLYPHS {
-                    bail!("too many different characters in one font");
-                }
-                record.glyphs.push((g, c));
-                e.insert(record.glyphs.len() as u16);
-            }
-        }
-        let font = match at {
-            Some((id, _)) if record.glyphs.len() == before => id,
-            Some((id, parts)) => self.write_font(face, &record, Some(id), parts)?,
-            None => self.write_font(face, &record, None, Parts::default())?,
+        let placed = self.embed_glyphs(face, &needs)?;
+        let font = match placed.first() {
+            Some(p) => p.font,
+            None => self.embed_glyphs(face, &[(0, String::new())])?[0].font,
         };
-        self.made_fonts.insert(font);
-        Ok((font, cid))
+        if placed.iter().any(|p| p.font != font) {
+            bail!("the text went to two font objects");
+        }
+        Ok(Set {
+            font,
+            bytes: placed.iter().flat_map(|p| p.code.to_be_bytes()).collect(),
+        })
     }
 
-    /// This document's font object for `face` that LimarePDF wrote and can grow, with what
-    /// it holds and its other objects. In a signed document, only one made since it was
-    /// opened: growing rewrites objects, and in one a signed revision holds, checking the
-    /// signature would see a change.
-    fn embedded(&self, face: &Face) -> Option<(ObjectId, Record, Parts)> {
+    /// The embedded face's font objects in this document, grown to hold each of `glyphs`
+    /// (a glyph of the face, and the text it is written for), made the first time: where
+    /// each is, in order. A glyph a font holds for another text, in a font whose codes are
+    /// its glyphs' numbers, goes to another of the face's font objects, made when there is
+    /// none.
+    pub(crate) fn embed_glyphs(
+        &mut self,
+        face: &'static Face,
+        glyphs: &[(u16, String)],
+    ) -> Result<Vec<Placed>> {
+        if let Some((g, _)) = glyphs.iter().find(|(g, _)| !face.has_glyph(*g)) {
+            bail!("{} has no glyph {g}", face.ps);
+        }
+        let mut found = self.embedded(face).into_iter();
+        // Where each goes: the round of fonts tried, and its code there.
+        let mut out: Vec<Option<(usize, u16)>> = vec![None; glyphs.len()];
+        let mut rounds: Vec<(ObjectId, bool)> = Vec::new();
+        while out.iter().any(Option::is_none) {
+            let (at, mut record) = match found.next() {
+                Some((id, record, parts)) => (Some((id, parts)), record),
+                None => (
+                    None,
+                    Record {
+                        glyphs: Vec::new(),
+                        own: !face.cff,
+                        exact: true,
+                    },
+                ),
+            };
+            let before = record.glyphs.len();
+            let mut codes: HashMap<(u16, String), u16> = (record.glyphs.iter().enumerate())
+                .map(|(i, (g, t))| ((*g, t.clone()), i as u16 + 1))
+                .collect();
+            let mut held: HashSet<u16> = record.glyphs.iter().map(|(g, _)| *g).collect();
+            let round = rounds.len();
+            for (k, (g, t)) in glyphs.iter().enumerate() {
+                if out[k].is_some() {
+                    continue;
+                }
+                if let Some(&code) = codes.get(&(*g, t.clone())) {
+                    out[k] = Some((round, code));
+                    continue;
+                }
+                if (!record.own && held.contains(g)) || record.glyphs.len() >= MAX_GLYPHS {
+                    continue;
+                }
+                record.glyphs.push((*g, t.clone()));
+                let code = record.glyphs.len() as u16;
+                codes.insert((*g, t.clone()), code);
+                held.insert(*g);
+                out[k] = Some((round, code));
+            }
+            let font = match at {
+                Some((id, _)) if record.glyphs.len() == before => id,
+                Some((id, parts)) => self.write_font(face, &record, Some(id), parts)?,
+                None if record.glyphs.is_empty() => {
+                    bail!("too many different characters in one font")
+                }
+                None => self.write_font(face, &record, None, Parts::default())?,
+            };
+            self.made_fonts.insert(font);
+            rounds.push((font, record.exact));
+        }
+        Ok((out.into_iter().zip(glyphs))
+            .map(|(at, (g, _))| {
+                let (round, code) = at.expect("placed");
+                let (font, exact) = rounds[round];
+                Placed {
+                    font,
+                    code,
+                    width: face.width_of(*g, exact),
+                }
+            })
+            .collect())
+    }
+
+    /// This document's font objects for `face` that LimarePDF wrote and can grow, with what
+    /// each holds and its other objects, in the order they were made. In a signed document,
+    /// only those made since it was opened: growing rewrites objects, and in one a signed
+    /// revision holds, checking the signature would see a change.
+    fn embedded(&self, face: &Face) -> Vec<(ObjectId, Record, Parts)> {
         let signed = self.holds_signature();
         self.doc
             .objects
             .iter()
             .filter(|(id, _)| !signed || self.made_fonts.contains(id))
             .filter_map(|(&id, o)| Some((id, o.as_dict().ok()?)))
-            .find_map(|(id, d)| {
+            .filter_map(|(id, d)| {
                 let (record, parts) = self.grows(face, d)?;
                 Some((id, record, parts))
             })
+            .collect()
     }
 
     /// Whether the document holds a signature dictionary (one with a `/ByteRange`), signed
@@ -736,26 +818,52 @@ impl Pdf {
         if s(b"Face")? != face.ps.as_bytes() || s(b"Source")? != face.source {
             return None;
         }
-        let list = own.get(b"Glyphs").and_then(Object::as_array).ok()?;
-        if list.len() > 2 * MAX_GLYPHS {
-            return None;
-        }
-        let mut glyphs = Vec::with_capacity(list.len() / 2);
+        let name = |k: &[u8]| own.get(k).and_then(Object::as_name).ok();
+        let mut record = Record {
+            glyphs: Vec::new(),
+            own: name(b"Codes") == Some(b"Own"),
+            exact: name(b"Widths") == Some(b"Exact"),
+        };
         let mut seen = HashSet::new();
-        for pair in list.chunks(2) {
-            let [g, c] = pair else { return None };
-            let g = u16::try_from(g.as_i64().ok()?).ok()?;
-            let c = char::from_u32(u32::try_from(c.as_i64().ok()?).ok()?)?;
-            // Each glyph once, for the character it was written for.
-            if face.glyph(c) != Some(g) || !seen.insert(g) {
+        if let Ok(list) = own.get(b"Texts").and_then(Object::as_array) {
+            if list.len() > 2 * MAX_GLYPHS || (record.own && face.cff) {
                 return None;
             }
-            glyphs.push((g, c));
+            for pair in list.chunks(2) {
+                let [g, t] = pair else { return None };
+                let g = u16::try_from(g.as_i64().ok()?).ok()?;
+                let t = String::from_utf8(t.as_str().ok()?.to_vec()).ok()?;
+                // Each glyph once where codes are glyph numbers; each glyph and text once
+                // where they are the font's own.
+                if !face.has_glyph(g) || !seen.insert((g, (record.own).then(|| t.clone()))) {
+                    return None;
+                }
+                record.glyphs.push((g, t));
+            }
+        } else {
+            // As LimarePDF 0.11 wrote it: each glyph its code, written for one character.
+            let list = own.get(b"Glyphs").and_then(Object::as_array).ok()?;
+            if list.len() > 2 * MAX_GLYPHS || record.own || record.exact {
+                return None;
+            }
+            for pair in list.chunks(2) {
+                let [g, c] = pair else { return None };
+                let g = u16::try_from(g.as_i64().ok()?).ok()?;
+                let c = char::from_u32(u32::try_from(c.as_i64().ok()?).ok()?)?;
+                if face.glyph(c) != Some(g) || !seen.insert((g, None)) {
+                    return None;
+                }
+                record.glyphs.push((g, c.to_string()));
+            }
         }
         let reference = |d: &Dictionary, k: &[u8]| d.get(k).and_then(Object::as_reference).ok();
         let descendants = d.get(b"DescendantFonts").and_then(Object::as_array).ok()?;
         let descendant = descendants.first()?.as_reference().ok()?;
         let cid_font = self.doc.get_dictionary(descendant).ok()?;
+        let map = reference(cid_font, b"CIDToGIDMap");
+        if record.own != map.is_some() {
+            return None;
+        }
         let descriptor = reference(cid_font, b"FontDescriptor")?;
         let descriptor_dict = self.doc.get_dictionary(descriptor).ok()?;
         let file = reference(descriptor_dict, file_key(face).as_bytes())?;
@@ -769,11 +877,12 @@ impl Pdf {
             descriptor: Some(descriptor),
             file: Some(file),
             to_unicode: reference(d, b"ToUnicode"),
+            map,
         };
-        Some((Record { glyphs }, parts))
+        Some((record, parts))
     }
 
-    /// Writes the font object for `face` holding `record`'s glyphs: at `at` with its other
+    /// Writes the font object for `face` holding `record`'s codes: at `at` with its other
     /// objects in `parts` when it grows, else as new objects.
     fn write_font(
         &mut self,
@@ -782,14 +891,19 @@ impl Pdf {
         at: Option<ObjectId>,
         parts: Parts,
     ) -> Result<ObjectId> {
-        let gids: Vec<u16> = record.glyphs.iter().map(|&(g, _)| g).collect();
+        // The glyphs the font file keeps, each once, in the order first written.
+        let mut gids: Vec<u16> = Vec::with_capacity(record.glyphs.len());
+        let mut kept = HashSet::new();
+        for &(g, _) in &record.glyphs {
+            if kept.insert(g) {
+                gids.push(g);
+            }
+        }
         let mapper = GlyphRemapper::new_from_glyphs(&gids);
-        // The subset's glyph numbers are the ones the text is written with.
-        let numbered = gids
-            .iter()
-            .enumerate()
-            .all(|(i, &g)| mapper.get(g) == Some(i as u16 + 1));
-        if !numbered {
+        // Where codes are glyph numbers, the subset's numbers are the codes the text is
+        // written with.
+        let numbered = (gids.iter().enumerate()).all(|(i, &g)| mapper.get(g) == Some(i as u16 + 1));
+        if !record.own && (!numbered || gids.len() != record.glyphs.len()) {
             bail!("the font's glyphs were numbered unexpectedly; nothing was changed");
         }
         let coords: Vec<(subsetter::Tag, f32)> = face
@@ -835,9 +949,13 @@ impl Pdf {
         };
         descriptor.set(file_key(face), file);
         let descriptor = self.put(parts.descriptor, descriptor.into());
+        let width = |g: u16| match record.exact {
+            true => Object::Real(face.width_of(g, true)),
+            false => Object::Integer(face.widths[g as usize]),
+        };
         let widths: Vec<Object> = std::iter::once(0)
-            .chain(gids.iter().copied())
-            .map(|g| Object::Integer(face.widths[g as usize]))
+            .chain(record.glyphs.iter().map(|&(g, _)| g))
+            .map(width)
             .collect();
         let mut descendant = dictionary! {
             "Type" => "Font",
@@ -849,12 +967,21 @@ impl Pdf {
                 "Supplement" => 0,
             },
             "FontDescriptor" => descriptor,
-            "DW" => face.widths[0],
+            "DW" => width(0),
             "W" => vec![0.into(), widths.into()],
         };
         // A CFF font's glyphs are found by CID through its own charset, which the subset
-        // makes the glyph numbers; only TrueType fonts take a map.
-        if !face.cff {
+        // makes the glyph numbers; only TrueType fonts take a map: the codes' own, or
+        // `Identity` where codes are glyph numbers.
+        if record.own {
+            let mut map = vec![0, 0];
+            for &(g, _) in &record.glyphs {
+                map.extend(mapper.get(g).unwrap_or(0).to_be_bytes());
+            }
+            let mut stream = Stream::new(Dictionary::new(), map);
+            stream.allows_compression = true;
+            descendant.set("CIDToGIDMap", self.put(parts.map, stream.into()));
+        } else if !face.cff {
             descendant.set("CIDToGIDMap", "Identity");
         }
         let descendant = self.put(parts.descendant, descendant.into());
@@ -862,17 +989,22 @@ impl Pdf {
             parts.to_unicode,
             Stream::new(Dictionary::new(), to_unicode(&record.glyphs).into_bytes()).into(),
         );
-        let list: Vec<Object> = record
-            .glyphs
-            .iter()
-            .flat_map(|&(g, c)| [Object::Integer(g.into()), Object::Integer(c as i64)])
+        let list: Vec<Object> = (record.glyphs.iter())
+            .flat_map(|(g, t)| {
+                let text = Object::String(t.as_bytes().to_vec(), lopdf::StringFormat::Hexadecimal);
+                [Object::Integer((*g).into()), text]
+            })
             .collect();
-        let own = dictionary! {
+        let mut own = dictionary! {
             "Face" => Object::string_literal(face.ps.as_str()),
             "Source" => Object::String(face.source.to_vec(), lopdf::StringFormat::Hexadecimal),
-            "Glyphs" => list,
+            "Texts" => list,
+            "Codes" => if record.own { "Own" } else { "Identity" },
             "Sum" => Object::String(sum.to_vec(), lopdf::StringFormat::Hexadecimal),
         };
+        if record.exact {
+            own.set("Widths", "Exact");
+        }
         let mut dict = dictionary! {
             "Type" => "Font",
             "Subtype" => "Type0",
@@ -1034,20 +1166,25 @@ fn tag(sum: &[u8]) -> String {
         .collect()
 }
 
-/// A ToUnicode map from each glyph's number (glyph 1 first) to the character it was
-/// written for.
-fn to_unicode(glyphs: &[(u16, char)]) -> String {
+/// A ToUnicode map from each code (code 1 first) to the text it was written for: several
+/// characters for a ligature. A code written for no text (a glyph after the first that
+/// draws a character) has no entry.
+fn to_unicode(glyphs: &[(u16, String)]) -> String {
     let mut s = String::from(
         "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
          /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
          /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
          1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
     );
-    for (i, chunk) in glyphs.chunks(100).enumerate() {
+    let entries: Vec<(usize, &str)> = (glyphs.iter().enumerate())
+        .filter(|(_, (_, t))| !t.is_empty())
+        .map(|(i, (_, t))| (i + 1, t.as_str()))
+        .collect();
+    for chunk in entries.chunks(100) {
         let _ = writeln!(s, "{} beginbfchar", chunk.len());
-        for (j, &(_, c)) in chunk.iter().enumerate() {
-            let _ = write!(s, "<{:04X}> <", 100 * i + j + 1);
-            for u in c.encode_utf16(&mut [0; 2]) {
+        for &(code, text) in chunk {
+            let _ = write!(s, "<{code:04X}> <");
+            for u in text.encode_utf16() {
                 let _ = write!(s, "{u:04X}");
             }
             s.push_str(">\n");
@@ -1443,10 +1580,8 @@ mod tests {
         let truetype = ("CIDFontType2".to_string(), "FontFile2".to_string());
         assert_eq!(kinds, [cff, truetype.clone(), truetype.clone(), truetype]);
         // Text in an installed font is embedded even when it fits WinAnsi.
-        assert!(matches!(
-            p.pen(serif, "Plain words"),
-            Ok(super::Pen::Embedded(_))
-        ));
+        let set = p.setter(serif, "Plain words").own();
+        assert_eq!(set, crate::layout::SetIn::Face(serif));
 
         let mut back = reopened(&mut p);
         let text = back.page_text(0);
@@ -1511,7 +1646,7 @@ mod tests {
                 for (code, c) in set.bytes.chunks(2).zip(text.nfc()) {
                     let cid = u16::from_be_bytes(code.try_into().unwrap()) as u32;
                     let w = sub_widths.advance_width(GlyphId::new(cid)).unwrap() * em;
-                    let want = face.width(&c.to_string(), 1000.0);
+                    let want = face.advance(face.glyph(c).unwrap());
                     assert!((w - want).abs() <= 0.5, "{name} {c:?}: {w} and {want}");
                 }
             }
@@ -1573,24 +1708,36 @@ mod tests {
         assert_eq!(fonts.len(), 1);
         assert_eq!(kind(&back, fonts[0]).0, "CIDFontType0");
         // Not in the standard fonts' faces.
-        assert!(!writable(SANS, '中'));
+        assert!(!Face::liberation(SANS).covers('中'));
     }
+
+    /// A character no font has: a noncharacter (some fonts map unassigned ones).
+    const NONE: char = '\u{2FFFE}';
 
     #[test]
     fn installed_fonts_name_what_they_lack() {
-        // Caveat has Latin and Cyrillic, but no Greek.
+        // Caveat has Latin and Cyrillic, but no Greek: Greek words go to another font.
         let caveat = installed("Caveat", false);
-        assert!(writable(caveat, 'ж') && writable(caveat, 'A'));
-        assert!(!writable(caveat, 'Ω') && !writable(caveat, '\n'));
+        let face = Face::of(caveat).unwrap();
+        assert!(face.covers('ж') && face.covers('A') && !face.covers('Ω'));
+        assert!(writable(caveat, 'Ω') && !writable(caveat, '\n'));
+        let gone = crate::fallbacks(caveat, "Ωmega and Ψ");
+        let words: Vec<&str> = gone.iter().map(|(w, _)| w.as_str()).collect();
+        assert_eq!(words, ["Ωmega", "Ψ"]);
+        assert!(gone.iter().all(|(_, f)| *f != caveat));
+        // What no font has is refused, with nothing changed.
         let mut p = blank();
         let before = p.doc.objects.len();
-        let err = p.pen(caveat, "Ωmega and Ψ").err().unwrap().to_string();
-        assert_eq!(err, "Caveat has no \"ΩΨ\"; choose another font");
+        let text = format!("Ωmega {NONE}");
+        let err = p.pen(caveat, &[&text]).err().unwrap().to_string();
+        assert_eq!(err, format!("No font on this computer has \"{NONE}\""));
         assert_eq!(p.doc.objects.len(), before, "nothing changed");
-        assert_eq!(unwritable(caveat, "Ωж"), "Ω");
-        // Scripts LimarePDF can't write in any font aren't put on the font.
+        assert_eq!(unwritable(caveat, &format!("Ωж{NONE}")), NONE.to_string());
+        // Scripts LimarePDF can't write in any font are named so.
         assert_eq!(refusal(caveat, "क"), cant_write("क"));
-        assert!(refusal(caveat, "שΩ").starts_with("Caveat has no"));
+        let rtl = refusal(caveat, "שΩ");
+        assert!(rtl.contains("\"ש\""), "{rtl}");
+        assert!(rtl.contains("right-to-left"), "{rtl}");
         for c in ['क', 'ก', 'ᄀ', 'ក', 'ꦄ', '𑀅'] {
             assert!(shaped(c), "{c:?}");
         }
@@ -1606,12 +1753,12 @@ mod tests {
         for c in ['🇬', '🏽', '\u{FE0F}', '\u{20E3}', '\u{E0067}'] {
             assert!(!installed_could_write(c), "{c:?}");
         }
-        let whale = "Caveat has no \"🐋\"; choose another font";
+        let whale = "No font on this computer has \"🐋\"";
         assert_eq!(refusal(caveat, "🐋"), whale);
 
-        // A face the family lacks.
+        // A face the family lacks: nothing is written in it, or in a fallback for it.
         let bold_serif = installed("Source Serif 4", true);
-        let err = p.pen(bold_serif, "Bold").err().unwrap().to_string();
+        let err = p.pen(bold_serif, &["Bold"]).err().unwrap().to_string();
         assert_eq!(err, "Source Serif 4 has no bold face");
         assert!(!writable(bold_serif, 'A'));
         assert_eq!(p.doc.objects.len(), before);
@@ -1652,13 +1799,11 @@ mod tests {
         // would show nothing.
         let face = Face::of(emoji).unwrap();
         assert!(face.font().charmap().map('😎').is_some());
-        assert!(!writable(emoji, '😎'));
-        let mut p = blank();
-        let before = p.doc.objects.len();
-        let err = p.pen(emoji, "Cool 😎").err().unwrap().to_string();
-        assert_eq!(err, "Limare Emoji Test has no \"😎\"; choose another font");
-        assert_eq!(p.doc.objects.len(), before, "nothing changed");
-        assert_eq!(unwritable(emoji, "😀😎"), "😎");
+        assert!(!face.covers('😎') && face.covers('😀'));
+        // It goes to another installed font with an outline for it, when there is one.
+        let gone = crate::fallbacks(emoji, "Cool 😎");
+        let elsewhere = gone.iter().all(|(w, f)| w == "😎" && *f != emoji);
+        assert!(elsewhere, "{gone:?}");
         // Characters meant to show nothing are written: spaces, and the invisible ones.
         for c in [' ', '\u{2009}', '\u{202F}', '\u{200B}', '\u{AD}'] {
             assert!(writable(SANS, c), "{c:?}");
@@ -1683,7 +1828,7 @@ mod tests {
         for s in sequences {
             assert_eq!(unwritable(emoji, &format!("Seal {s} fish")), s, "{s:?}");
             let text = format!("Seal {s}");
-            let err = p.pen(emoji, &text).err().unwrap().to_string();
+            let err = p.pen(emoji, &[&text]).err().unwrap().to_string();
             let want = format!(
                 "LimarePDF can't write \"{s}\" yet: flags, skin tones, keycaps and joined emoji \
                  aren't supported"
@@ -1700,8 +1845,11 @@ mod tests {
         assert!(writable(emoji, '👍') && writable(emoji, '👨'));
         // A joiner outside an emoji is only an invisible mark, written as it is.
         assert!(unwritable(SANS, "a\u{200D}b").is_empty());
-        // In a standard font, named whole too, beside what else it lacks.
-        assert_eq!(unwritable(SANS, "a 👍🏽 b 中"), "👍🏽中");
+        // In a standard font, named whole too, beside what else no font has.
+        assert_eq!(
+            unwritable(SANS, &format!("a 👍🏽 b {NONE}")),
+            format!("👍🏽{NONE}")
+        );
     }
 
     #[test]
@@ -1744,11 +1892,10 @@ mod tests {
         let face = Face::liberation(SANS);
         for (code, c) in set.bytes.chunks(2).zip(text.nfc()) {
             let code = u16::from_be_bytes(code.try_into().unwrap()) as u32;
-            let want = face.width(&c.to_string(), 1000.0);
-            assert_eq!(ctx.width(code, 2), want, "{c:?}");
+            // As the face has it, to a thousandth of a unit.
+            let want = face.advance(face.glyph(c).unwrap());
+            assert!((ctx.width(code, 2) - want).abs() < 1e-3, "{c:?}");
         }
-        let total: f32 = text.chars().map(|c| face.width(&c.to_string(), 12.0)).sum();
-        assert!((face.width(text, 12.0) - total).abs() < 1e-3);
     }
 
     #[test]
@@ -1758,7 +1905,8 @@ mod tests {
             let face = Face::liberation(f);
             for c in ascii.chars() {
                 let want = crate::std14::width(f.base_font(), c).unwrap();
-                assert_eq!(face.width(&c.to_string(), 1000.0), want, "{ps} {c:?}");
+                let got = face.width_of(face.glyph(c).unwrap(), false);
+                assert_eq!(got, want, "{ps} {c:?}");
             }
         }
     }
@@ -1792,7 +1940,9 @@ mod tests {
         // Å in NFC).
         let back: String = back.trim().nfc().collect();
         assert_eq!(back, text.nfc().collect::<String>());
-        assert!(face.width(&text, 10.0) > 0.0);
+        let setter = crate::layout::Setter::new(SANS, &text, None);
+        assert!(setter.width(&text, 10.0) > 0.0);
+        assert!(setter.missing(&text).is_empty());
     }
 
     #[test]
@@ -1890,7 +2040,7 @@ mod tests {
         );
         assert_ne!(made(&mut p), first);
 
-        // Ours, with a record that doesn't match the face.
+        // Ours, with a record that doesn't match the face: a glyph it hasn't.
         let mut p = blank();
         let first = made(&mut p);
         let own = p
@@ -1900,12 +2050,12 @@ mod tests {
             .get_mut(KEY)
             .unwrap();
         let own = own.as_dict_mut().unwrap();
-        let mut glyphs = own.get(b"Glyphs").unwrap().as_array().unwrap().clone();
-        glyphs[1] = Object::Integer('?' as i64);
-        own.set("Glyphs", glyphs);
+        let mut texts = own.get(b"Texts").unwrap().as_array().unwrap().clone();
+        texts[0] = Object::Integer(65_000);
+        own.set("Texts", texts);
         assert_ne!(made(&mut p), first);
 
-        // Ours, with a glyph listed twice.
+        // Ours, with a glyph and its text listed twice.
         let mut p = blank();
         let first = made(&mut p);
         let own = p
@@ -1915,22 +2065,33 @@ mod tests {
             .get_mut(KEY)
             .unwrap();
         let own = own.as_dict_mut().unwrap();
-        let mut glyphs = own.get(b"Glyphs").unwrap().as_array().unwrap().clone();
-        glyphs.extend(glyphs[..2].to_vec());
-        own.set("Glyphs", glyphs);
+        let mut texts = own.get(b"Texts").unwrap().as_array().unwrap().clone();
+        texts.extend(texts[..2].to_vec());
+        own.set("Texts", texts);
         assert_ne!(made(&mut p), first);
     }
 
     #[test]
     fn the_text_map_spells_characters_beyond_the_first_plane() {
-        let map = to_unicode(&[(5, 'A'), (9, '𝐀'), (3, 'ж')]);
+        let texts = |list: &[(u16, &str)]| -> Vec<(u16, String)> {
+            list.iter().map(|&(g, t)| (g, t.to_string())).collect()
+        };
+        let map = to_unicode(&texts(&[(5, "A"), (9, "𝐀"), (3, "ж"), (7, "fi"), (8, "")]));
         assert!(map.contains("<0002> <D835DC00>"), "{map}");
+        // A ligature maps to its letters; a glyph written for no text has no entry.
+        assert!(map.contains("<0004> <00660069>"), "{map}");
+        assert!(!map.contains("<0005>"), "{map}");
         let read = crate::tounicode::ToUnicode::parse(map.as_bytes()).unwrap();
         assert_eq!(read.get(1), Some("A"));
         assert_eq!(read.get(2), Some("𝐀"));
         assert_eq!(read.get(3), Some("ж"));
+        assert_eq!(read.get(4), Some("fi"));
         // More than 100 glyphs: in blocks of 100, as the CMap language limits them.
-        let many: Vec<(u16, char)> = ('a'..='z').cycle().take(250).map(|c| (1, c)).collect();
+        let many: Vec<(u16, String)> = ('a'..='z')
+            .cycle()
+            .take(250)
+            .map(|c| (1, c.to_string()))
+            .collect();
         let map = to_unicode(&many);
         assert_eq!(map.matches("100 beginbfchar").count(), 2);
         assert!(map.contains("50 beginbfchar"));

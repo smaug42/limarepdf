@@ -31,6 +31,10 @@ pub enum Act {
     ExportText,
     Print,
     CloseTab,
+    /// Bring the open document after the one in front to the front (the first after the
+    /// last), or the one before it, as Ctrl+Tab goes through a web browser's tabs.
+    NextDocument,
+    PrevDocument,
     /// Keep recovery copies of documents with unsaved changes, or stop.
     ToggleRecovery,
     /// Show, in the file manager, the recovery file the active tab's notice names. Offered
@@ -274,6 +278,8 @@ impl Act {
             | Act::NewFromImages
             | Act::ExportImages
             | Act::CloseTab
+            | Act::NextDocument
+            | Act::PrevDocument
             | Act::ToggleRecovery
             | Act::ShowRecoveryFile
             | Act::Quit
@@ -388,6 +394,8 @@ impl Group {
 pub struct Ctx {
     /// A document is open.
     pub doc: bool,
+    /// How many documents are open.
+    pub docs: usize,
     /// The document was opened from or saved to a file.
     pub file: bool,
     /// A background job (OCR, optimising, exporting, printing) is running.
@@ -500,6 +508,10 @@ fn doc(c: &Ctx) -> bool {
 fn idle(c: &Ctx) -> bool {
     c.doc && !c.busy
 }
+/// Another open document to go to.
+fn other_docs(c: &Ctx) -> bool {
+    c.docs > 1
+}
 /// The document's file, which waits while it is saved.
 fn file(c: &Ctx) -> bool {
     c.file && !c.busy && !c.saving
@@ -526,9 +538,10 @@ fn copyable(c: &Ctx) -> bool {
 fn cuttable(c: &Ctx) -> bool {
     c.typing || ((c.words || (c.object && c.obj_only_text) || c.pages) && !c.busy)
 }
-/// Somewhere to paste: the text being typed, or pages cut to put elsewhere.
+/// Somewhere to paste: the text being typed, words to type over, or pages cut to put
+/// elsewhere.
 fn pasteable(c: &Ctx) -> bool {
-    c.typing || (c.cut && !c.busy)
+    c.typing || ((c.words || c.cut) && !c.busy)
 }
 /// Pages selected, to move.
 fn pages_selected(c: &Ctx) -> bool {
@@ -596,6 +609,9 @@ const CS: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const N: Modifiers = Modifiers::NONE;
 const S: Modifiers = Modifiers::SHIFT;
 const AS: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
+/// Ctrl itself, on a Mac too, where Cmd+Tab goes from app to app.
+const CT: Modifiers = Modifiers::CTRL;
+const CTS: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
 const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(m, key)
 }
@@ -770,8 +786,9 @@ pub static ACTIONS: &[Action] = &[
         // Shown, not matched: the system sends the key as a paste (App::type_over).
         keys: &[k(C, Key::V)],
         enabled: pasteable,
-        hint: "Paste into the text being typed, at its caret. Pages cut go where the \
-               insertion bar is in Organise, else after the selected pages.",
+        hint: "Paste into the text being typed, at its caret, or in place of the words \
+               selected. Pages cut go where the insertion bar is in Organise, else after the \
+               selected pages.",
         ..BASE
     },
     Action {
@@ -1158,6 +1175,27 @@ pub static ACTIONS: &[Action] = &[
         label: "Last page",
         keys: &[k(N, Key::End)],
         submenu: "Go to page",
+        ..BASE
+    },
+    Action {
+        act: Act::NextDocument,
+        group: Group::View,
+        label: "Next document",
+        keys: &[k(CT, Key::Tab), k(CT, Key::F6)],
+        enabled: other_docs,
+        hint: "Bring the open document after this one to the front, the first after the last.",
+        submenu: "Go to document",
+        ..BASE
+    },
+    Action {
+        act: Act::PrevDocument,
+        group: Group::View,
+        label: "Previous document",
+        keys: &[k(CTS, Key::Tab), k(CTS, Key::F6)],
+        enabled: other_docs,
+        hint: "Bring the open document before this one to the front, the last before the \
+               first.",
+        submenu: "Go to document",
         ..BASE
     },
     Action {
@@ -2019,7 +2057,7 @@ pub fn matches(a: &Action, query: &str) -> bool {
 pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[
-            &[Act::Cut, Act::Copy, Act::SelectAllText],
+            &[Act::Cut, Act::Copy, Act::Paste, Act::SelectAllText],
             &[Act::EditObjectText, Act::Bold, Act::Italic],
             &[Act::Mark(Mark::Highlight)],
             &[Act::MarkRedact],
@@ -2059,10 +2097,26 @@ pub const MOVES: [Act; 4] = [
     Act::MovePages(PageMove::End),
 ];
 
-/// Fill a right-click menu: only the commands that are available now.
+/// The right-click menu of text being typed on the page, as word processors' menu for
+/// text: Cut, Copy and Paste, then Bold and Italic where they apply.
+const TYPING: &[&[Act]] = &[
+    &[Act::Cut, Act::Copy, Act::Paste],
+    &[Act::Bold, Act::Italic],
+];
+
+/// Fill the right-click menu of what is selected: only the commands that are available now.
 pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<Act>) {
+    menu_of(ui, context_items(sel), c, acts);
+}
+
+/// Fill the right-click menu of text being typed on the page.
+pub fn typing_menu(ui: &mut egui::Ui, c: &Ctx, acts: &mut Vec<Act>) {
+    menu_of(ui, TYPING, c, acts);
+}
+
+fn menu_of(ui: &mut egui::Ui, groups: &[&[Act]], c: &Ctx, acts: &mut Vec<Act>) {
     let mut first = true;
-    for group in context_items(sel) {
+    for group in groups {
         let items: Vec<&Action> = group
             .iter()
             .map(|&a| get(a))
@@ -2097,6 +2151,8 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
 
 /// What a greyed command says when nothing else explains it.
 const NOT_NOW: &str = "Not available just now.";
+/// What a greyed command that acts on words says.
+const SELECT_TEXT: &str = "Select some text first.";
 
 /// Why command `a` can't be used in `c`, for its greyed button or menu item: the first of
 /// the things it may wait for, in the order people meet them, that would let it be used.
@@ -2106,19 +2162,20 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 23] = [
+    let fixes: [Fix; 24] = [
         (
             |d| d.busy = false,
             "Waits until the task under way finishes.",
         ),
         (|d| d.saving = false, "Waits until the document is saved."),
         (|d| d.file = true, "Save the document as a file first."),
+        (|d| d.docs = 2, "Open another document first."),
         (|d| d.can_undo = true, "Nothing to undo."),
         (|d| d.can_redo = true, "Nothing to redo."),
         // In Organise's grid, where nothing is typed or selected but pages, these first.
         (|d| d.cut |= d.organise, "Cut pages first."),
         (|d| d.pages |= d.organise, "Select pages first."),
-        (|d| d.words = true, "Select some text first."),
+        (|d| d.words = true, SELECT_TEXT),
         (
             |d| d.typing = true,
             "Click in text being typed, or where new text goes, first.",
@@ -2158,7 +2215,9 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         fix(&mut d);
         (a.enabled)(&d)
     };
-    if let Some((_, why)) = fixes.iter().find(|(fix, _)| helps(*fix)) {
+    // Paste types over words selected too, but where typed text goes is said first.
+    let skip = |why: &str| a.act == Act::Paste && why == SELECT_TEXT;
+    if let Some((_, why)) = (fixes.iter()).find(|(fix, why)| !skip(why) && helps(*fix)) {
         return why;
     }
     // It waits for several: the one that, with those before it, lets it be used.
@@ -2191,10 +2250,13 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 }
 
 /// The floating toolbar's buttons: the right-click menu's commands that are
-/// available now and have an icon, in groups. While a line is edited on the page, Bold,
-/// Italic, Cut and Copy for what is selected in it, as the keys do there (ENH-20).
+/// available now and have an icon, in groups. While a line is edited on the page, Bold and
+/// Italic, then Cut, Copy and Paste for what is selected in it, as the keys do there (ENH-20).
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
-    const LINE_EDIT: &[&[Act]] = &[&[Act::Bold, Act::Italic], &[Act::Cut, Act::Copy]];
+    const LINE_EDIT: &[&[Act]] = &[
+        &[Act::Bold, Act::Italic],
+        &[Act::Cut, Act::Copy, Act::Paste],
+    ];
     let items = if c.line_edit {
         LINE_EDIT
     } else {

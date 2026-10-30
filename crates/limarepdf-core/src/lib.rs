@@ -8,6 +8,7 @@ mod annot_write;
 mod annots;
 mod asn1;
 mod atomic;
+mod base_encodings;
 mod blank;
 mod cms_check;
 mod cms_write;
@@ -22,12 +23,14 @@ mod form_ap;
 mod form_flatten;
 mod form_write;
 mod forms;
+mod history;
 mod ids;
 mod imgs;
 mod incremental;
 mod inline;
 mod installed_fonts;
 mod labels;
+mod layout;
 mod links;
 mod matrix;
 mod objects;
@@ -35,13 +38,16 @@ mod ocr;
 mod outline;
 mod overlay;
 mod own_encoding;
+mod own_font;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
 mod pkcs12;
+mod preview_font;
 pub mod print;
 #[cfg(windows)]
 mod print_win;
+mod radicals;
 mod reading;
 mod redact;
 mod redact_img;
@@ -70,19 +76,22 @@ pub use blank::BLANK_TOLERANCE;
 pub use cms_check::CertInfo;
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};
 pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
-pub use edit::{PartFont, PathStyle, Shape, TextEdit, TextPart};
+pub use edit::{KeptPiece, PartFont, PathStyle, Shape, TextEdit, TextPart};
 pub use embed::{
     bundled_face, emoji_sequence, installed_could_write, liberation, refusal, unwritten_script,
     writable, LIBERATION,
 };
 pub use fonts::{winansi_byte, Family, FontChoice};
+pub use form_ap::BoxSetting;
 pub use forms::{Field, FieldKind, FieldValue, Widget};
+pub use history::{Before, Restore};
 pub use ids::{
     password_problem, DigitalId, IdList, IdStore, NewId, Stored, UnlockedId, WrongPassword,
     MIN_PASSWORD,
 };
 pub use imgs::{image_dimensions, picture_preview, ImageImport};
 pub use labels::{LabelRange, LabelStyle};
+pub use layout::{fallback_faces, fallbacks, set_in, warm_fallbacks};
 pub use links::{Link, LinkTarget};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord, TextSpan};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
@@ -90,6 +99,7 @@ pub use outline::{BookmarkPlace, OutlineItem};
 pub use overlay::{
     picture_size, text_width, today_iso, Bates, HeaderFooter, ImageWatermark, Placed, Watermark,
 };
+pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use redact::{PageRedaction, RedactReport};
 pub use sanitise::{Hidden, HiddenReport, LayersDamaged};

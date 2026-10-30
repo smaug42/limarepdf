@@ -12,7 +12,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 ## The window
 
 - **Tabs**, at the top: one per document, with a × inside it to close it. **Unsaved** beside the name means
-  unsaved changes, from the first key you type. Text you are typing on a page (new text, a line, a note or text
+  unsaved changes, from the first key you type. With many open they share the row and then scroll
+  ([Opening files](#opening-files)). Text you are typing on a page (new text, a line, a note or text
   box) stays open while you look at another tab; back on its tab, you go on typing where you were.
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
@@ -156,6 +157,15 @@ Files that no longer exist are left out. The list holds 10 files and is kept on 
 Each document gets a tab. The tab shows its name, with **Unsaved** beside it while it has unsaved changes,
 including text being typed, from the first key; the window's title is marked the same way.
 
+With many documents open, the tabs stay in one row and narrow to share it, long names shortened with "…" (a dot
+stands for **Unsaved** on a tab too narrow for the word); point at a tab to see its whole name. When even narrowed
+tabs don't fit, the row scrolls: turn the mouse wheel over the tabs, or click the arrows at the row's right end, a
+tab at a time (hold one down to keep scrolling). The button after the arrows, **All open documents**, lists every
+open document, the one in front marked; choose one to bring it to the front. Ctrl+Tab (or Ctrl+F6) brings the next
+document to the front and Ctrl+Shift+Tab (or Ctrl+Shift+F6) the one before, from the last round to the first; they
+are under ☰ > View > Go to document too. The tab in front is always scrolled into view: when you choose it, open a
+document, close one or make the window narrower.
+
 Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a
 comment or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet
 added, to any comment ([drafts](comments-and-markup.md#see-every-comment-and-reply)). Saving keeps that text first,
@@ -216,11 +226,13 @@ signed original.
 
 ## Undo
 
-Everything that changes the document can be undone with Ctrl+Z, and redone with Ctrl+Y (or Ctrl+Shift+Z), up to 20
-steps back. Each step keeps a whole copy of the document, and a document's steps are limited to 1 GB together, so
-undo goes back fewer steps on very large documents (about 7 on a 139 MB scan); the latest change can always be
-undone. A watermark or headers and footers just added count in that limit too, with the copy of the document their
-section keeps to change them (see [Change it after adding](headers-footers-watermarks.md#change-it-after-adding)).
+Everything that changes the document can be undone with Ctrl+Z, and redone with Ctrl+Y (or Ctrl+Shift+Z), up to
+100 steps back, as in a word processor. Each step keeps only what its change altered, so a note added to a long scan
+takes a few kilobytes, not a copy of every page. A document's steps are limited to 1 GB together: only changes
+that each alter much of a very large document (optimising a long scan, which rewrites its pictures) come near
+that, and then undo goes back fewer steps. The latest change can always be undone. A watermark or headers and footers
+just added count in that limit too, with what their tool keeps to change them (see
+[Change it after adding](headers-footers-watermarks.md#change-it-after-adding)).
 
 Deleting pages, comments, objects or bookmarks, marking text for redaction, flattening, resetting a form and changing password settings show a
 notice at the bottom of the window with an Undo button, which takes back that change in that document only. The
@@ -241,6 +253,10 @@ back, before the command's step. Undo with typing open on the page but the keybo
 keeps the typing and takes it back. Text that can't be kept (a form value LimarePDF can't write) stays as typed,
 with the reason shown, and the command doesn't run. Commands that only show something (zoom, moving between pages,
 opening a tool or a section of the inspector) leave your typing as it is.
+
+Typing on the page that can't be kept when you finish it (with Esc, Enter, Tab or a click away) comes back where it
+was, with the reason shown, for you to change it; the document stays as it was. Finish it again unchanged and it is
+left out, and a message says so. A message or question that opens while you type leaves your typing open under it.
 
 ## Dialogs
 
@@ -380,7 +396,7 @@ click a section's name to open or fold it.
 | An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
 | A form field you are typing in | Headed **Form field**. Words selected on the page before are let go, so Edit > Font and Ctrl+B don't change them meanwhile |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
-| Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Copy, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
+| Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 
 Selected text, a line or words, ends with **Future text tools**, marked Planned: open it to read which text tools
 are coming. It is hidden while Show planned features is off.
@@ -394,11 +410,13 @@ box. Saving, printing and other commands keep a field you are still typing in. P
 sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words, a thumbnail or a card in Organise for a short menu of what applies
-there. Right-clicking selects what is under the pointer first. A selected object or run of words also gets a small
+there. Right-clicking selects what is under the pointer first. In text you are typing on the page (a line being
+edited, new text, a note or a text box), a right-click on what is selected keeps it selected, and the menu has Cut,
+Copy and Paste, then Bold and Italic where they apply, as in a word processor. A selected object or run of words also gets a small
 floating toolbar with the same commands. It sits by the selection: above it, below it or beside it where that
 covers no other text, or else just above or below it, over as little text as it can; it never covers the
-selection. While a line is edited on the page, it has Bold, Italic, Cut and Copy for what is selected in the line,
-and clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves these buttons to the
+selection. While a line is edited on the page, it has Bold, Italic, Cut, Copy and Paste for what is selected in
+the line, and clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves these buttons to the
 top of the inspector (or its strip, when collapsed) instead; Float controls near selection there brings the
 floating toolbar back. View > Properties ▾ > Selection controls on the right does either. The choice is remembered between
 runs; resizing the window doesn't change it.
@@ -466,6 +484,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+O | Open |
 | Ctrl+S, Ctrl+Shift+S | Save, Save As |
 | Ctrl+W | Close the tab |
+| Ctrl+Tab, Ctrl+Shift+Tab (or Ctrl+F6, Ctrl+Shift+F6) | Next, previous open document, from the last round to the first (Ctrl on a Mac too) |
 | Ctrl+P | Print |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) | Undo, redo |
 | Ctrl+F | Find: Search results opens with the keyboard in its box; type, and the matches come once you pause |

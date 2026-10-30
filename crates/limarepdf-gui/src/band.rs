@@ -1248,6 +1248,8 @@ mod tests {
                         | Act::Palette
                         | Act::NextRegion
                         | Act::PrevRegion
+                        | Act::NextDocument
+                        | Act::PrevDocument
                         | Act::Props
                         | Act::About
                 )

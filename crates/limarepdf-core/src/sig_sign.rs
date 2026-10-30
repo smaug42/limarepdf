@@ -17,8 +17,8 @@ use crate::form_ap::nums;
 use crate::forms::FieldKind;
 use crate::ids::UnlockedId;
 use crate::incremental;
+use crate::layout::Setter;
 use crate::matrix as mx;
-use crate::overlay::text_width;
 use crate::sig_verify::{Lexer, Tok};
 use crate::sign::{signature_art, typed_signature};
 use crate::{
@@ -613,10 +613,10 @@ fn zone(t: DateTime<FixedOffset>) -> String {
     format!("{sign}{:02}'{:02}'", m / 60, m % 60)
 }
 
-/// The signer's name as the appearance writes it, or `None` when it has characters the
-/// appearance's font (Helvetica, or its embedded face) can't show: the line then leaves
-/// the name out rather than show it wrongly. Readers show the full name from the
-/// certificate.
+/// The signer's name as the appearance writes it, or `None` when it has characters no font
+/// can show (the appearance's, Helvetica or its embedded face, and those it falls back
+/// to): the line then leaves the name out rather than show it wrongly. Readers show the
+/// full name from the certificate.
 fn shown_name(cert: &CertInfo) -> Option<String> {
     let n = cert.display_name().trim();
     let shows = unwritable(FontChoice::default(), n).is_empty();
@@ -713,19 +713,22 @@ fn appearance(
     let [x0, y0, x1, y1] = text_box;
     let (tw, th) = (x1 - x0, y1 - y0);
     if tw > 2.0 && th > 2.0 {
-        let (size, lines) = fit_text(&[&first, &date], tw, th);
+        let setter = pdf.setter(FontChoice::default(), &format!("{first}{date}"));
+        let (size, lines) = fit_text(&setter, &[&first, &date], tw, th);
         let lead = size * LEADING;
         let block = lead * lines.len() as f32;
         let mut y = y0 + (th + block) / 2.0 - size * ASCENT;
-        let pen = pdf.pen(FontChoice::default(), &format!("{first}{date}"))?;
+        let shown: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let pen = pdf.pen_with(&setter, &shown)?;
+        let names = pen.names(FONT);
         ops += &format!("0 g BT /{FONT} {} Tf\n", f(size));
-        for l in &lines {
-            ops += &format!("1 0 0 1 {} {} Tm {} Tj\n", f(x0), f(y), pen.token(l));
+        for i in 0..lines.len() {
+            let shows = pen.content(i, size, &names);
+            ops += &format!("1 0 0 1 {} {} Tm {shows}\n", f(x0), f(y));
             y -= lead;
         }
         ops += "ET\n";
-        let font = pdf.pen_font(&pen);
-        res.set("Font", dictionary! { FONT => font });
+        res.set("Font", pen.font_dict(&names));
     }
     form.set("Resources", res);
     Ok(pdf.doc.add_object(Stream::new(form, ops.into_bytes())))
@@ -735,34 +738,22 @@ fn appearance(
 const LEADING: f32 = 1.15;
 const ASCENT: f32 = 0.8;
 
-/// The largest text size (at most 10 points, at least 3) at which `paras`, each wrapped at
-/// spaces, fit in `w` by `h`, and the wrapped lines.
-fn fit_text(paras: &[&str], w: f32, h: f32) -> (f32, Vec<String>) {
+/// The largest text size (at most 10 points, at least 3) at which `paras`, each broken into
+/// lines as `setter` breaks them, fit in `w` by `h` with no word broken, and the lines.
+fn fit_text(setter: &Setter, paras: &[&str], w: f32, h: f32) -> (f32, Vec<String>) {
     let mut size = 10.0;
     loop {
-        let lines: Vec<String> = paras.iter().flat_map(|p| wrap(p, w, size)).collect();
-        let fits = lines.len() as f32 * size * LEADING <= h
-            && lines.iter().all(|l| text_width(l, size) <= w);
+        let lines: Vec<String> = (paras.iter())
+            .flat_map(|p| setter.lines(p, w, size))
+            .collect();
+        let words_fit = (paras.iter().flat_map(|p| p.split_whitespace()))
+            .all(|word| setter.width(word, size) <= w);
+        let fits = lines.len() as f32 * size * LEADING <= h && words_fit;
         if fits || size <= 3.0 {
             return (size, lines);
         }
         size -= 0.25;
     }
-}
-
-/// `text` broken at spaces into lines no wider than `w` at `size` where words allow.
-fn wrap(text: &str, w: f32, size: f32) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for word in text.split(' ').filter(|s| !s.is_empty()) {
-        match lines.last_mut() {
-            Some(l) if text_width(&format!("{l} {word}"), size) <= w => {
-                l.push(' ');
-                l.push_str(word);
-            }
-            _ => lines.push(word.to_string()),
-        }
-    }
-    lines
 }
 
 /// A number for a content stream.
@@ -996,19 +987,19 @@ mod tests {
 
     #[test]
     fn text_is_wrapped_and_sized_to_fit() {
-        let (size, lines) = fit_text(
-            &["Digitally signed by Jane Doe", "Date: 2026.10.16"],
-            80.0,
-            40.0,
-        );
+        let paras = ["Digitally signed by Jane Doe", "Date: 2026.10.16"];
+        let setter = Setter::new(FontChoice::default(), &paras.concat(), None);
+        let (size, lines) = fit_text(&setter, &paras, 80.0, 40.0);
         assert!(lines.len() >= 2, "{lines:?}");
         assert!((3.0..=10.0).contains(&size));
-        assert!(lines.iter().all(|l| text_width(l, size) <= 80.0));
+        assert!(lines.iter().all(|l| setter.width(l, size) <= 80.0));
         assert!(lines.len() as f32 * size * LEADING <= 40.0);
         // Too little room: the smallest size, as many lines as needed.
-        let (size, _) = fit_text(&["Digitally signed by Jane Doe"], 20.0, 4.0);
+        let (size, _) = fit_text(&setter, &paras[..1], 20.0, 4.0);
         assert_eq!(size, 3.0);
-        assert_eq!(wrap("a  b", 1000.0, 10.0), ["a b"]);
+        // A word too wide shrinks the text before it is broken.
+        let (size, lines) = fit_text(&setter, &["Doe"], 12.0, 40.0);
+        assert!(size < 10.0 && lines == ["Doe"], "{size} {lines:?}");
     }
 
     #[test]
@@ -1040,12 +1031,11 @@ mod tests {
         );
         assert_eq!(shown_name(&cert("Ζωή")).as_deref(), Some("Ζωή"));
         assert_eq!(shown_name(&cert("Юлия")).as_deref(), Some("Юлия"));
-        // Scripts the face can't write, and control characters.
-        assert_eq!(shown_name(&cert("山田")), None);
+        // Characters no font has, scripts not written yet, control characters and emoji
+        // sequences. (Characters the face lacks go to another installed font.)
+        assert_eq!(shown_name(&cert("Jo \u{2FFFE}")), None);
         assert_eq!(shown_name(&cert("שרה")), None);
         assert_eq!(shown_name(&cert("Jo\u{7}e")), None);
-        // Emoji, single or in sequences: the face has none.
-        assert_eq!(shown_name(&cert("Jo 😀")), None);
         assert_eq!(shown_name(&cert("Jo 👍🏽")), None);
     }
 

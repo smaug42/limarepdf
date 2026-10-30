@@ -91,7 +91,14 @@ fn own(o: &PageObject, i: usize, text: &str) -> TextPart {
         color: s.fill.unwrap_or(BLACK),
         rise: s.rise,
         from: None,
+        origins: Vec::new(),
     }
+}
+
+/// Whether `part` of line `o` of page 1 is written all in the font of the line's part it
+/// names ([`PageObject::keeps_font`]).
+fn kept(p: &Pdf, o: &PageObject, part: &TextPart) -> bool {
+    o.keeps_font(part, &p.line_fonts(0, o.id).unwrap())
 }
 
 /// Part `i` of line `o`, with the line's characters `chars` (unchanged), in the span's
@@ -268,7 +275,7 @@ fn editing_one_part_keeps_the_others_as_they_were() {
         own(&o, 1, "slanted"),
         own(&o, 2, " word"),
     ];
-    assert!(parts.iter().all(|t| o.keeps_font(t)));
+    assert!(parts.iter().all(|t| kept(&p, &o, t)));
     p.edit_text(0, o.id, &TextEdit::in_parts(parts)).unwrap();
     let o = line(&p, "An slanted word");
     assert_eq!(
@@ -287,7 +294,7 @@ fn editing_one_part_keeps_the_others_as_they_were() {
 
     // Changed, it can't keep that font: the nearest standard one.
     let parts = vec![own(&o, 0, "An "), own(&o, 1, "italic"), own(&o, 2, " word")];
-    assert!(!o.keeps_font(&parts[1]));
+    assert!(!kept(&p, &o, &parts[1]));
     p.edit_text(0, o.id, &TextEdit::in_parts(parts)).unwrap();
     let o = line(&p, "An italic word");
     assert_eq!(
@@ -295,13 +302,13 @@ fn editing_one_part_keeps_the_others_as_they_were() {
         style("Helvetica-Oblique", 20.0, BLACK, 0.0, "italic")
     );
     // Plain ASCII in a font that can be kept keeps it; other text can't.
-    assert!(o.keeps_font(&own(&o, 0, "Some ")));
-    assert!(!o.keeps_font(&own(&o, 0, "Café ")));
+    assert!(kept(&p, &o, &own(&o, 0, "Some ")));
+    assert!(!kept(&p, &o, &own(&o, 0, "Café ")));
     let chosen = TextPart {
         font: PartFont::Choice(FontChoice::from_name("Courier")),
         ..own(&o, 0, "An ")
     };
-    assert!(!o.keeps_font(&chosen));
+    assert!(!kept(&p, &o, &chosen));
 }
 
 #[test]
@@ -380,6 +387,7 @@ fn a_restyled_word_reads_back_as_part_of_its_line() {
             color: RED,
             rise: 0.0,
             from: None,
+            origins: Vec::new(),
         },
         own(&o, 2, " word"),
     ];
@@ -616,6 +624,7 @@ fn new_text_can_be_added_in_parts() {
         color: BLACK,
         rise,
         from: None,
+        origins: Vec::new(),
     };
     p.add_text_parts(
         0,
@@ -675,7 +684,7 @@ fn restyling_words_keeps_the_rest_of_their_part_in_its_own_font() {
     let mut p = make("BT /F3 20 Tf 20 100 Td (one two three) Tj ET\n");
     let o = line(&p, "one two three");
     let parts = around(&o, bold(&o, (4, 7)));
-    assert!(o.keeps_font(&parts[0]) && o.keeps_font(&parts[2]));
+    assert!(kept(&p, &o, &parts[0]) && kept(&p, &o, &parts[2]));
     assert_eq!(write(&mut p, &o, parts), Vec::<usize>::new());
     let subset = "ABCDEF+Helvetica-Oblique";
     assert_eq!(
@@ -693,7 +702,8 @@ fn restyling_words_keeps_the_rest_of_their_part_in_its_own_font() {
 
 /// A word whose size alone changes keeps its own font too, and a word cut out of a `TJ`
 /// keeps its spacing numbers: a kern between its letters, and the big gaps read as spaces
-/// going with the words before them (the space after the bigger word grows with it).
+/// going with the words before them, each space as wide as it was (the space after the
+/// bigger word is the next part's, at its size).
 #[test]
 fn a_word_cut_out_of_a_tj_keeps_its_spacing_numbers() {
     let mut p = make("BT /F3 20 Tf 20 100 Td [(one) -400 (tw) 20 (o) -400 (three)] TJ ET\n");
@@ -705,7 +715,7 @@ fn a_word_cut_out_of_a_tj_keeps_its_spacing_numbers() {
     assert!(write(&mut p, &o, around(&o, bigger)).is_empty());
     let c = content(&p);
     assert!(
-        c.contains("[(one) -400] TJ") && c.contains("[(tw) 20(o) -400] TJ"),
+        c.contains("[(one) -400] TJ") && c.contains("[(tw) 20(o) -266.666"),
         "{c}"
     );
     assert!(c.contains("[(three)] TJ"), "{c}");
@@ -753,14 +763,19 @@ fn coded_together() -> Pdf {
     p
 }
 
-/// Characters one code shows together can't be parted: the words kept apart from them are
-/// written in a standard font instead, and the edit says which line that happened to.
+/// Characters one code shows together can't be parted: a word kept apart from the others
+/// is written in a standard font instead, as `kept_pieces` says beforehand.
 #[test]
-fn characters_coded_together_fall_back_and_are_reported() {
+fn characters_coded_together_fall_back_by_word() {
     let mut p = coded_together();
     let o = line(&p, "x yz");
     let parts = vec![own_chars(&o, 0, (0, 2)), bold(&o, (2, 4))];
-    assert_eq!(write(&mut p, &o, parts), [o.id]);
+    let fonts = p.line_fonts(0, o.id).unwrap();
+    let pieces: Vec<_> = (o.kept_pieces(&parts[0], &fonts).into_iter())
+        .map(|k| (k.chars, k.kept, k.missing))
+        .collect();
+    assert_eq!(pieces, [((0, 1), false, vec!['x']), ((1, 2), true, vec![])]);
+    assert_eq!(write(&mut p, &o, parts), Vec::<usize>::new());
     let o = line(&p, "x yz");
     assert_eq!(o.spans[0].font_name, "Helvetica");
     assert_eq!(o.spans[1].font_name, "Helvetica-Bold");
@@ -823,22 +838,21 @@ fn several_lines_of_a_page_change_in_one_edit() {
     assert_eq!(content(&p), before);
 }
 
-/// A part of a line's own characters keeps its font only when it ends at spaces (or the
-/// ends of its part), so that no word is parted.
+/// A part of a line's own characters keeps its font wherever it is cut, inside a word too:
+/// each character keeps the code it was drawn with (ENH-31).
 #[test]
-fn own_characters_keep_their_font_only_when_cut_at_spaces() {
+fn own_characters_keep_their_font_wherever_they_are_cut() {
     let p = make("BT /F3 20 Tf 20 100 Td (one two three) Tj ET\n");
     let o = line(&p, "one two three");
-    assert!(o.keeps_font(&own_chars(&o, 0, (4, 7))));
-    assert!(o.keeps_font(&own_chars(&o, 0, (3, 8))));
-    assert!(!o.keeps_font(&own_chars(&o, 0, (0, 2))));
-    assert!(!o.keeps_font(&own_chars(&o, 0, (5, 13))));
+    for chars in [(4, 7), (3, 8), (0, 2), (5, 13)] {
+        assert!(kept(&p, &o, &own_chars(&o, 0, chars)), "{chars:?}");
+    }
     // Text that isn't those characters doesn't.
     let other = TextPart {
         from: Some(0),
         ..own(&o, 0, "two ")
     };
-    assert!(!o.keeps_font(&other));
+    assert!(!kept(&p, &o, &other));
 }
 
 /// Each word says which text line it is in and where; words inside a form XObject are in

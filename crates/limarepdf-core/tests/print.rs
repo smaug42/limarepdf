@@ -150,13 +150,14 @@ fn form_values_are_sent_drawn_in() {
 #[test]
 fn fields_that_would_print_empty_are_named_before_printing() {
     // Three filled fields with no drawing: two printed (flag 4), one only shown on screen.
-    // LimarePDF can't draw the Japanese values; it can draw the Latin one.
+    // LimarePDF can't draw the Hebrew values (written right to left); it can draw the
+    // Latin one.
     let mut p = Pdf::new();
     p.insert_blank(0, 300.0, 200.0).unwrap();
     p.insert_blank(1, 300.0, 200.0).unwrap();
-    let japanese = || {
+    let hebrew = || {
         let mut b = vec![0xFE, 0xFF];
-        b.extend("日本語".encode_utf16().flat_map(u16::to_be_bytes));
+        b.extend("שלום".encode_utf16().flat_map(u16::to_be_bytes));
         Object::String(b, lopdf::StringFormat::Hexadecimal)
     };
     let field = |name: &str, y: i64, flags: i64, value: Object| {
@@ -167,8 +168,8 @@ fn fields_that_would_print_empty_are_named_before_printing() {
         }
     };
     let ids = [
-        p.doc.add_object(field("Name", 140, 4, japanese())),
-        p.doc.add_object(field("Note", 90, 0, japanese())),
+        p.doc.add_object(field("Name", 140, 4, hebrew())),
+        p.doc.add_object(field("Note", 90, 0, hebrew())),
         p.doc
             .add_object(field("City", 40, 4, Object::string_literal("Oslo"))),
     ];

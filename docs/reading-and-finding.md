@@ -185,6 +185,11 @@ and `limarepdf-cli text`, so they always agree.
   their widths found by character number, so highlights and selections sit on the right characters. A code the
   map leaves out is drawn as no character, and reads as the replacement character �; so does one that is drawn
   but whose text no map gives.
+  A font whose codes are its glyphs' numbers (Identity) with no ToUnicode map is read through its embedded
+  program, whose own character map says which character each glyph is, as poppler does; and one whose ToUnicode
+  names Identity instead of holding a map has codes that are their characters' own numbers, as other readers take
+  it. So Czech, Romanian or Russian text in such fonts reads as written, where it came out as � or as shifted
+  letters ("*TVQQPTF" for "I suppose").
 - **Spaces:** a gap between words is a space, whether the file has a space character there or only moves the next
   word along (as justified text and many PDF makers do).
 - **Order:** words come in reading order worked out from where they sit on the page, not the order the file draws
@@ -203,7 +208,9 @@ Limits:
   fonts not embedded, and fonts whose glyphs are named only by number) can give the wrong characters.
 - CID fonts with no ToUnicode map whose character map can't be read, or that use their own character numbers
   rather than Adobe's tables, come out as "�" or the wrong characters. A file that names Adobe's tables but numbers
-  its characters otherwise reads wrong in pdf.js too.
+  its characters otherwise reads wrong in pdf.js too. An Identity font with no ToUnicode map reads wrong too when
+  its program doesn't say what its glyphs are: fonts that aren't embedded, CFF programs (which number their glyphs
+  without naming them) and TrueType programs cut down to no character map or glyph names.
 - After a code a font's character map leaves out, LimarePDF draws the rest of that piece of text further along
   than it reads it (see [Rendering](rendering.md#known-to-be-wrong)), so highlights there sit where other readers
   put the characters, not on the drawn ones.
