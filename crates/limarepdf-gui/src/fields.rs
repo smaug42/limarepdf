@@ -131,6 +131,14 @@ impl FormUi {
         self.focus = None;
     }
 
+    /// What the text box of the field with the keyboard holds, as typed so far.
+    pub fn typed_text(&self) -> Option<&str> {
+        match &self.focus.as_ref()?.edit {
+            Edit::Text { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+
     /// The field whose text box has the keyboard: its name and widget.
     pub fn typing_in(&self) -> Option<(String, usize)> {
         let f = self.focus.as_ref()?;
@@ -486,12 +494,14 @@ impl FormUi {
         }
         .clamp(8.0, 48.0);
         // A multi-line box would otherwise be four rows high, whatever the field's size.
+        let held = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
+        let mut buffer = crate::page_text::Clusters(text);
         let mut te = if multiline {
-            egui::TextEdit::multiline(text)
+            egui::TextEdit::multiline(&mut buffer)
                 .desired_rows(1)
                 .min_size(rect.size())
         } else {
-            egui::TextEdit::singleline(text)
+            egui::TextEdit::singleline(&mut buffer)
         }
         .id(id)
         .font(egui::FontId::proportional(size))
@@ -505,6 +515,7 @@ impl FormUi {
         let theme = ui.visuals().clone();
         *ui.visuals_mut() = egui::Visuals::light();
         let out = ui.put(rect, te);
+        crate::page_text::snap_to_clusters(ui.ctx(), id, text, held);
         *ui.visuals_mut() = theme;
         if *fresh {
             out.request_focus();

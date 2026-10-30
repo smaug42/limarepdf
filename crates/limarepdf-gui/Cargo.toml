@@ -17,8 +17,11 @@ anyhow.workspace = true
 eframe.workspace = true
 rayon.workspace = true
 rfd.workspace = true
-# Typed emoji made of several characters left out whole (page_text.rs); egui already uses it.
+# Typed emoji made of several characters left out whole, the caret moved by what readers see as
+# one character, and words by Unicode's rule (page_text.rs, editor.rs); egui already uses it.
 unicode-segmentation = "1.13"
+# Backspace takes off a letter's last accent typed apart (page_text.rs); core already uses it.
+unicode-normalization = "0.1.25"
 
 # Finder's Open With and double-click (macos.rs); eframe, rfd and arboard already use both.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1034,6 +1034,14 @@ fn form_ui(ui: &mut Ui, form: &FormUi, c: &Ctx) -> Option<Act> {
         if !flags.is_empty() {
             note(ui, flags.join(" · "));
         }
+        // Words of the value the field's font lacks, which go to an installed font (the
+        // text design's question 4: allowed, and said).
+        if let Some((said, why)) = form
+            .typed_text()
+            .and_then(|t| crate::page_text::fallback_note(&[(f.font, t)]))
+        {
+            note(ui, &said).on_hover_text(why);
+        }
         if act_button(ui, Act::ClearField, c) {
             act = Some(Act::ClearField);
         }

@@ -453,6 +453,27 @@ pub fn fallbacks(f: FontChoice, text: &str) -> Vec<(String, FontChoice)> {
     Setter::new(f, text, None).fallbacks(text)
 }
 
+/// `text` in the stretches LimarePDF writes it in when it is set in `f`, in a document whose
+/// language is `lang` (its `/Lang`, [`Pdf::language`]): each stretch's characters (from,
+/// to) and its font, `f` or one it falls back to ([`fallbacks`]), `None` for what no font
+/// can write; in order, neighbours in one font joined. The typing box draws each stretch in
+/// its font, as it will be written.
+pub fn set_in(
+    f: FontChoice,
+    text: &str,
+    lang: Option<&str>,
+) -> Vec<((usize, usize), Option<FontChoice>)> {
+    let mut out: Vec<((usize, usize), Option<FontChoice>)> = Vec::new();
+    for ((a, b), font) in Setter::new(f, text, lang).pieces(text) {
+        let font = font.map(SetIn::choice);
+        match out.last_mut() {
+            Some((r, last)) if *last == font => r.1 = b,
+            _ => out.push(((a, b), font)),
+        }
+    }
+    out
+}
+
 /// The face's glyph for `c` as its character map gives it, 0 when it has none.
 fn face_glyph(face: &Face, c: char) -> u16 {
     face.glyph_of(c).unwrap_or(0)
@@ -837,8 +858,9 @@ type Needs = (FontChoice, &'static Face, Vec<(u16, String)>);
 const DRIFT: f64 = 0.005;
 
 impl Pdf {
-    /// The document's language (`/Lang`), when it gives one.
-    pub(crate) fn language(&self) -> Option<String> {
+    /// The document's language (`/Lang`), when it gives one: what text is shaped for, and
+    /// which of Chinese, Japanese and Korean fonts its ideographs are set in.
+    pub fn language(&self) -> Option<String> {
         let root = self.doc.trailer.get(b"Root").ok()?;
         let catalog = self.doc.dereference(root).ok()?.1.as_dict().ok()?;
         let lang = self.doc.dereference(catalog.get(b"Lang").ok()?).ok()?.1;

@@ -757,7 +757,7 @@ impl Pdf {
     }
 
     /// A font in the form's default resources (`/DR /Font`), as stored there.
-    fn dr_font(&self, name: &[u8]) -> Option<Object> {
+    pub(crate) fn dr_font(&self, name: &[u8]) -> Option<Object> {
         let dr = self.acro_form()?.get(b"DR").ok()?;
         let dr = self.doc.dereference(dr).ok()?.1.as_dict().ok()?;
         let fonts = self.doc.dereference(dr.get(b"Font").ok()?).ok()?.1;

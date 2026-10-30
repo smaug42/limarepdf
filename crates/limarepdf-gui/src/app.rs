@@ -4800,9 +4800,19 @@ impl App {
         if ctx.egui_wants_keyboard_input() && !t.holds_keys(ctx) {
             return;
         }
+        // An input method's too: with words selected it is on ([`Editor::type_over`]).
         let typed: Vec<egui::Event> = ctx.input(|i| {
             (i.events.iter())
-                .filter(|e| matches!(e, egui::Event::Text(_) | egui::Event::Paste(_)))
+                .filter(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Ime(
+                                egui::ImeEvent::Preedit { .. } | egui::ImeEvent::Commit(_)
+                            )
+                    )
+                })
                 .cloned()
                 .collect()
         });
@@ -6799,11 +6809,13 @@ mod tests {
 
     mod forms;
     mod history;
+    mod input_methods;
     mod organise;
     mod redact_marks;
     mod review;
     mod sign;
     mod tabs;
+    mod typing_box;
     mod typing_menus;
 
     /// The height of the window the tests draw: room for the commands above the pages.

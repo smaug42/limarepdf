@@ -90,7 +90,7 @@ pub use ids::{
 };
 pub use imgs::{image_dimensions, picture_preview, ImageImport};
 pub use labels::{LabelRange, LabelStyle};
-pub use layout::fallbacks;
+pub use layout::{fallbacks, set_in};
 pub use links::{Link, LinkTarget};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord, TextSpan};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};

@@ -1500,6 +1500,9 @@ impl Tab {
         if std::mem::take(&mut self.ed.left_out) {
             self.info = Some(LEFT_OUT.into());
         }
+        if let Some(c) = self.ed.left_composing.take() {
+            self.info = Some(crate::page_text::left_note(&c));
+        }
     }
 
     /// For [`Tab::apply_actions`]: whether its change `at` failed, saying why; noted in

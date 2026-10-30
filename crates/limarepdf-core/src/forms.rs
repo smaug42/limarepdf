@@ -3,7 +3,7 @@
 use crate::doc::{decode_shown_text, decode_text};
 use crate::form_write::parse_da;
 use crate::matrix::{self as mx, M};
-use crate::Pdf;
+use crate::{FontChoice, Pdf};
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 
@@ -79,6 +79,10 @@ pub struct Field {
     pub tooltip: Option<String>,
     /// The text size the field asks for (`/DA`), in points; 0 means fit to the field.
     pub text_size: f32,
+    /// The font its value is set in when LimarePDF can't write it in the font `/DA` names as
+    /// that is: the standard font nearest it, Helvetica when it names none. What this font
+    /// lacks goes to fonts it falls back to ([`crate::fallbacks`]).
+    pub font: FontChoice,
     /// Where the field is drawn and clicked. Widgets that aren't on any page are left out.
     pub widgets: Vec<Widget>,
 }
@@ -456,8 +460,21 @@ impl Pdf {
             required: ff & REQUIRED != 0,
             tooltip: d.get(b"TU").ok().and_then(|o| self.shown_text_value(o)),
             text_size: inh.da.as_deref().map_or(0.0, |da| parse_da(da).1),
+            font: self.da_font(inh.da.as_deref()),
             widgets: ws,
         })
+    }
+
+    /// The font a value is set in for the `/DA` `da` when the font it names can't be used
+    /// as it is ([`Field::font`], as `form_write`'s `pick_font` picks it).
+    fn da_font(&self, da: Option<&[u8]>) -> FontChoice {
+        let base = (da.and_then(|da| parse_da(da).0))
+            .and_then(|name| self.dr_font(&name))
+            .and_then(|font| {
+                let d = self.dict_of(&font)?;
+                Some(decode_text(d.get(b"BaseFont").ok()?.as_name().ok()?))
+            });
+        FontChoice::from_name(base.as_deref().unwrap_or("Helvetica"))
     }
 
     /// A widget annotation, if it is on a page.
