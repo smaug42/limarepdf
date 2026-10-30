@@ -2800,14 +2800,23 @@ impl Editor {
                     w.refused.mark(ui.ctx(), note);
                 }
             }
+            // In Helvetica, as the box is written, the words it lacks in the fonts core
+            // writes them in, not the interface's font.
+            let px = (w.size * k).clamp(6.0, 96.0);
+            let lang = self.lang.as_deref();
+            let mut layouter = |ui: &egui::Ui, t: &dyn egui::TextBuffer, wrap: f32| {
+                let (helvetica, color) = (FontChoice::default(), ui.visuals().text_color());
+                page_text::boxed_galley(ui.ctx(), t.as_str(), helvetica, px, color, wrap, lang)
+            };
             let mut buffer = page_text::Clusters(&mut w.text);
             let te = egui::TextEdit::multiline(&mut buffer)
                 .id(id)
-                .font(egui::FontId::proportional((w.size * k).clamp(6.0, 96.0)))
+                .font(egui::FontId::proportional(px))
                 .desired_rows(1)
                 .min_size(area.size())
                 .desired_width(area.width())
-                .margin(egui::Margin::same(2));
+                .margin(egui::Margin::same(2))
+                .layouter(&mut layouter);
             *ui.visuals_mut() = egui::Visuals::light();
             // As `Ui::put` lays it out, keeping the output for the note at the caret.
             let layout = egui::Layout::centered_and_justified(egui::Direction::TopDown);

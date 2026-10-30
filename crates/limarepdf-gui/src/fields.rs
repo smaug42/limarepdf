@@ -399,7 +399,7 @@ impl FormUi {
         }
         if let Some((fi, wi)) = focused.filter(|f| here.iter().any(|h| (h.0, h.1) == *f)) {
             let rect = screen(self.fields()[fi].widgets[wi].bbox);
-            self.text_box(ui, fi, rect, k, acts);
+            self.text_box(ui, fi, rect, k, pdf.language().as_deref(), acts);
             self.options(ui, fi, rect, acts);
         }
         let Some((fi, wi, _)) = over.filter(|_| active) else {
@@ -448,13 +448,16 @@ impl FormUi {
         true
     }
 
-    /// The text box over a text field being typed in.
+    /// The text box over a text field being typed in, its value drawn in the font it is
+    /// written in, the words that lacks in the fonts core writes them in, for a document
+    /// whose language is `lang`.
     fn text_box(
         &mut self,
         ui: &mut egui::Ui,
         fi: usize,
         rect: Rect,
         k: f32,
+        lang: Option<&str>,
         acts: &mut Vec<Action>,
     ) {
         let f = &self.fields()[fi];
@@ -493,6 +496,14 @@ impl FormUi {
             (rect.height() * 0.6).min(12.0 * k)
         }
         .clamp(8.0, 48.0);
+        // In the field's font, as its value is written, not the interface's; a password's
+        // dots in the interface's.
+        let font = field.font;
+        let mut layouter = |ui: &egui::Ui, t: &dyn egui::TextBuffer, wrap: f32| {
+            let wrap = if multiline { wrap } else { f32::INFINITY };
+            let color = ui.visuals().text_color();
+            crate::page_text::boxed_galley(ui.ctx(), t.as_str(), font, size, color, wrap, lang)
+        };
         // A multi-line box would otherwise be four rows high, whatever the field's size.
         let held = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
         let mut buffer = crate::page_text::Clusters(text);
@@ -510,6 +521,9 @@ impl FormUi {
         .password(password);
         if let Some(n) = max_len {
             te = te.char_limit(n);
+        }
+        if !password {
+            te = te.layouter(&mut layouter);
         }
         // Light colours in either theme: the box sits on the paper.
         let theme = ui.visuals().clone();
@@ -900,7 +914,7 @@ mod tests {
         };
         let rect = Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(90.0, 20.0));
         let mut out = ctx.run_ui(raw, |eui| {
-            ui.text_box(eui, fi, rect, 1.0, acts);
+            ui.text_box(eui, fi, rect, 1.0, None, acts);
             ui.options(eui, fi, rect, acts);
         });
         out.textures_delta.clear();

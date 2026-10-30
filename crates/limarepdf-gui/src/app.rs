@@ -5954,6 +5954,9 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_loads(&ctx);
+        // Interface text the interface's own fonts can't draw (Chinese, Japanese, Korean,
+        // emoji) in installed fonts, found on another thread at start (ENH-33).
+        crate::typing_fonts::interface_fallback(&ctx);
         // Back from another app, which may have changed the files open here.
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {

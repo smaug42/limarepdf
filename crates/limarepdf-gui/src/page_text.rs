@@ -12,7 +12,9 @@ use eframe::egui::epaint::text::{ByteIndex, CharIndex, VariationCoords};
 use eframe::egui::text::{CCursor, CCursorRange};
 use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::{emoji_sequence, unwritten_script, writable, FontChoice, TextPart};
+use limarepdf_core::{
+    emoji_sequence, unwritten_script, writable, FontChoice, LineFont, PartFont, TextPart,
+};
 use std::sync::Arc;
 use unicode_normalization::char::is_combining_mark;
 use unicode_segmentation::UnicodeSegmentation;
@@ -738,7 +740,16 @@ pub fn runs(
             rise: p.rise * k,
         };
         let n = p.text.chars().count();
-        match *wanted {
+        // A part kept in a font whose own glyphs can't be drawn (one LimarePDF wrote, which
+        // grows as text is added, say) is drawn in the installed family it is from, else its
+        // standard stand-in, as text set anew in it is.
+        let wanted = match *wanted {
+            Wanted::Kept(name, font) if font.and_then(LineFont::preview_key).is_none() => {
+                Wanted::Standard(crate::editor::font_of(name))
+            }
+            wanted => wanted,
+        };
+        match wanted {
             // What can't be written goes as it is typed: drawn in the font asked for.
             Wanted::Standard(f) if n > 0 => {
                 for ((a, b), set) in limarepdf_core::set_in(f, &p.text, lang) {
@@ -749,6 +760,56 @@ pub fn runs(
         }
     }
     out
+}
+
+/// Text typed in a box of its own, a form field's or a text box's, laid out in the fonts it
+/// is written in: `font` at `px` pixels, the words it lacks in the fonts core writes them in
+/// ([`runs`]), in `color`, wrapped by egui's rule at `wrap` (infinite for one line), in a
+/// document whose language is `lang`.
+pub fn boxed_galley(
+    ctx: &egui::Context,
+    text: &str,
+    font: FontChoice,
+    px: f32,
+    color: Color32,
+    wrap: f32,
+    lang: Option<&str>,
+) -> Arc<Galley> {
+    let part = TextPart {
+        text: text.to_string(),
+        font: PartFont::Choice(font),
+        size: px,
+        color: [0.0; 3],
+        rise: 0.0,
+        from: None,
+        origins: Vec::new(),
+    };
+    let runs = runs(ctx, &[(part, Wanted::Standard(font))], 1.0, |_| color, lang);
+    let mut job = egui::text::LayoutJob {
+        text: text.to_string(),
+        ..Default::default()
+    };
+    job.wrap.max_width = wrap;
+    // Where each character starts, in bytes, and the end.
+    let starts: Vec<usize> = (text.char_indices().map(|(b, _)| b))
+        .chain([text.len()])
+        .collect();
+    let mut at = 0;
+    for r in runs {
+        let to = (at + r.chars).min(starts.len() - 1);
+        job.sections.push(egui::text::LayoutSection {
+            leading_space: 0.0,
+            byte_range: ByteIndex(starts[at])..ByteIndex(starts[to]),
+            format: egui::TextFormat {
+                font_id: r.font,
+                coords: r.coords,
+                color: r.color,
+                ..Default::default()
+            },
+        });
+        at = to;
+    }
+    ctx.fonts_mut(|f| f.layout_job(job))
 }
 
 /// How text being typed on the page is drawn this frame.

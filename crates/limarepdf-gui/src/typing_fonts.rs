@@ -204,11 +204,14 @@ enum Load {
     /// font.
     Looking,
     /// Found; `sent` once handed to egui, which adds it at the start of the next frame.
-    /// `then` names the fonts it falls back to before Inter, once they are loaded.
+    /// `then` names the fonts it falls back to before Inter, once they are loaded. An
+    /// `interface` font is one every font of the interface falls back to as well
+    /// ([`interface_fallback`]).
     Found {
         data: Arc<FontData>,
         sent: bool,
         then: Vec<String>,
+        interface: bool,
     },
     /// Not installed, or not read: too large, when `limited`, which a question without a
     /// limit asks again.
@@ -228,11 +231,7 @@ fn loaded(
     if has(ctx, &named(key)) {
         return true;
     }
-    let loads = ctx.data_mut(|d| {
-        d.get_temp_mut_or_default::<Loads>(egui::Id::unique("typing fonts"))
-            .0
-            .clone()
-    });
+    let loads = loads(ctx);
     let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
     let start = match l.get(key) {
         None => true,
@@ -255,6 +254,7 @@ fn loaded(
                             data: Arc::new(FontData { index, ..data }),
                             sent: false,
                             then,
+                            interface: false,
                         }
                     }
                     None => Load::Missing {
@@ -269,35 +269,131 @@ fn loaded(
             });
         }
         Some(Load::Found { sent: false, .. }) => {
-            // Every font found so far goes in, so two arriving in one frame both stay, then
-            // each family with what it falls back to that is in.
-            let mut defs = ctx.fonts(|f| f.definitions().clone());
-            let fallback = defs.families[&FontFamily::Proportional].clone();
-            for (key, load) in l.iter_mut() {
-                if let Load::Found { data, sent, .. } = load {
-                    defs.font_data.insert(key.clone(), data.clone());
-                    *sent = true;
-                }
-            }
-            for (key, load) in l.iter() {
-                if let Load::Found { then, .. } = load {
-                    let then = then.iter().filter(|n| defs.font_data.contains_key(*n));
-                    let mut list = vec![key.clone()];
-                    list.extend(then.cloned());
-                    let rest: Vec<String> = (fallback.iter())
-                        .filter(|n| !list.contains(n))
-                        .cloned()
-                        .collect();
-                    list.extend(rest);
-                    defs.families.insert(named(key), list);
-                }
-            }
+            let defs = install(ctx, &mut l);
             drop(l);
             ctx.set_fonts(defs);
         }
         _ => {}
     }
     false
+}
+
+/// The fonts loaded so far, by egui name, kept in the context's memory.
+fn loads(ctx: &egui::Context) -> Arc<Mutex<HashMap<String, Load>>> {
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Loads>(egui::Id::unique("typing fonts"))
+            .0
+            .clone()
+    })
+}
+
+/// egui's fonts with every font found so far (`l`) in, so two arriving in one frame both
+/// stay: each with a family of its own, which falls back to what it names that is in, then
+/// to the interface's fonts; and each the interface falls back to at the end of every
+/// family. Marks them handed to egui.
+fn install(ctx: &egui::Context, l: &mut HashMap<String, Load>) -> egui::FontDefinitions {
+    let mut defs = ctx.fonts(|f| f.definitions().clone());
+    let fallback = defs.families[&FontFamily::Proportional].clone();
+    for (key, load) in l.iter_mut() {
+        if let Load::Found { data, sent, .. } = load {
+            defs.font_data.insert(key.clone(), data.clone());
+            *sent = true;
+        }
+    }
+    for (key, load) in l.iter() {
+        if let Load::Found { then, .. } = load {
+            let then = then.iter().filter(|n| defs.font_data.contains_key(*n));
+            let mut list = vec![key.clone()];
+            list.extend(then.cloned());
+            let rest: Vec<String> = (fallback.iter())
+                .filter(|n| !list.contains(n))
+                .cloned()
+                .collect();
+            list.extend(rest);
+            defs.families.insert(named(key), list);
+        }
+    }
+    for (key, load) in l.iter() {
+        if let Load::Found {
+            interface: true, ..
+        } = load
+        {
+            for list in defs.families.values_mut() {
+                if !list.contains(key) {
+                    list.push(key.clone());
+                }
+            }
+        }
+    }
+    defs
+}
+
+/// Where finding the fonts the interface falls back to is noted among the loads.
+const INTERFACE: &str = "interface fallback";
+
+/// Characters the interface's own fonts lack, whose installed fonts it falls back to
+/// (ENH-33): Chinese, Japanese and Korean, and an emoji.
+const SAMPLES: &str = "漢あ한😀";
+
+/// Largest font file read for the interface to fall back to: collections of every weight
+/// of a Chinese, Japanese and Korean family run past a hundred megabytes, and the
+/// interface then shows boxes for what they would draw.
+const MAX_INTERFACE: u64 = 64 << 20;
+
+/// Interface text falls back to installed fonts for what Inter and egui's own fonts can't
+/// draw (ENH-33): the first call starts finding, on another thread, the faces LimarePDF
+/// writes Chinese, Japanese and Korean text and an emoji in
+/// ([`limarepdf_core::fallback_faces`]); each is added at the end of every font of the
+/// interface once read, and serves typing in that face too. Called each frame.
+pub fn interface_fallback(ctx: &egui::Context) {
+    let loads = loads(ctx);
+    let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+    if !l.contains_key(INTERFACE) {
+        l.insert(INTERFACE.into(), Load::Looking);
+        let (loads, ctx) = (loads.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            for face in limarepdf_core::fallback_faces(SAMPLES) {
+                let key = file_key(&face.path, face.index);
+                {
+                    // Already loaded for typing: the interface falls back to it too.
+                    let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(Load::Found {
+                        interface, sent, ..
+                    }) = l.get_mut(&key)
+                    {
+                        (*interface, *sent) = (true, false);
+                        continue;
+                    }
+                }
+                let small = std::fs::metadata(&face.path).is_ok_and(|m| m.len() <= MAX_INTERFACE);
+                let Some(bytes) = small.then(|| std::fs::read(&face.path).ok()).flatten() else {
+                    continue;
+                };
+                let data = FontData {
+                    index: face.index,
+                    ..FontData::from_owned(bytes)
+                };
+                let found = Load::Found {
+                    data: Arc::new(data),
+                    sent: false,
+                    then: Vec::new(),
+                    interface: true,
+                };
+                (loads.lock().unwrap_or_else(|e| e.into_inner())).insert(key, found);
+            }
+            let done = Load::Missing { limited: false };
+            (loads.lock().unwrap_or_else(|e| e.into_inner())).insert(INTERFACE.into(), done);
+            ctx.request_repaint();
+        });
+        return;
+    }
+    if l.values()
+        .any(|v| matches!(v, Load::Found { sent: false, .. }))
+    {
+        let defs = install(ctx, &mut l);
+        drop(l);
+        ctx.set_fonts(defs);
+    }
 }
 
 #[cfg(test)]

@@ -453,6 +453,30 @@ pub fn fallbacks(f: FontChoice, text: &str) -> Vec<(String, FontChoice)> {
     Setter::new(f, text, None).fallbacks(text)
 }
 
+/// The installed faces LimarePDF writes the characters of `samples` in where Helvetica lacks
+/// them, each face once, and one left out when a face before it has the character: what the
+/// interface falls back to for text its own fonts can't draw (ENH-33). The first call reads
+/// the installed fonts' list, so it is asked off the window's thread.
+pub fn fallback_faces(samples: &str) -> Vec<crate::FaceFile> {
+    let mut out: Vec<crate::FaceFile> = Vec::new();
+    for c in samples.chars() {
+        if out.iter().any(|f| maps_all(&f.path, f.index, &[c])) {
+            continue;
+        }
+        let one = c.to_string();
+        let Some(SetIn::Face(f)) = Setter::new(FontChoice::default(), &one, None).unit_font(&one)
+        else {
+            continue;
+        };
+        // A standard font's bundled face is the interface's to have, not an installed one.
+        let face = f.typeface().and_then(|t| t.face(f.bold, f.italic).cloned());
+        if let Some(face) = face.filter(|face| !out.contains(face)) {
+            out.push(face);
+        }
+    }
+    out
+}
+
 /// `text` in the stretches LimarePDF writes it in when it is set in `f`, in a document whose
 /// language is `lang` (its `/Lang`, [`Pdf::language`]): each stretch's characters (from,
 /// to) and its font, `f` or one it falls back to ([`fallbacks`]), `None` for what no font
