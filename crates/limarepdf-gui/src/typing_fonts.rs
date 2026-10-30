@@ -261,10 +261,9 @@ fn loaded(
                         limited: max.is_some(),
                     },
                 };
-                loads
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(key, load);
+                let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+                arrived(&mut l, key, load);
+                drop(l);
                 ctx.request_repaint();
             });
         }
@@ -276,6 +275,29 @@ fn loaded(
         _ => {}
     }
     false
+}
+
+/// Puts `load`, just read, in `l` as `key`. Typing and the interface's fallback
+/// ([`interface_fallback`]) can read one face at once: what the other read arrived with
+/// stays, so it is the interface's if either says so, and falls back to what typing asked.
+fn arrived(l: &mut HashMap<String, Load>, key: String, mut load: Load) {
+    if let (
+        Load::Found {
+            then, interface, ..
+        },
+        Some(Load::Found {
+            then: had,
+            interface: was,
+            ..
+        }),
+    ) = (&mut load, l.get(&key))
+    {
+        *interface |= *was;
+        if then.is_empty() {
+            *then = had.clone();
+        }
+    }
+    l.insert(key, load);
 }
 
 /// The fonts loaded so far, by egui name, kept in the context's memory.
@@ -379,7 +401,8 @@ pub fn interface_fallback(ctx: &egui::Context) {
                     then: Vec::new(),
                     interface: true,
                 };
-                (loads.lock().unwrap_or_else(|e| e.into_inner())).insert(key, found);
+                let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+                arrived(&mut l, key, found);
             }
             let done = Load::Missing { limited: false };
             (loads.lock().unwrap_or_else(|e| e.into_inner())).insert(INTERFACE.into(), done);
@@ -735,5 +758,61 @@ mod tests {
         assert_ne!(family(&ctx, w), want);
         assert_eq!(settled(&ctx, w, &want), want);
         assert_eq!(preview(&ctx, &face), Some(want));
+    }
+
+    /// A face read for typing while the fonts read at start read it for the interface too
+    /// (ENH-33) serves both, whichever read arrives last: the interface's text falls back to
+    /// it, and typing's family to what typing asked. (Typing's read, arriving last, took it
+    /// from the interface, whose Chinese, Japanese and Korean then showed as boxes for the
+    /// rest of the run: when typing began before the fonts at start were read, which a cold
+    /// disk cache made likely.)
+    #[test]
+    fn a_face_read_for_typing_and_the_interface_at_once_serves_both() {
+        let ctx = ctx();
+        let bytes = limarepdf_core::bundled_face("Liberation Serif").expect("a face");
+        let key = "file both";
+        let then = ["Liberation Sans".to_string()];
+        let for_interface = || Load::Found {
+            data: Arc::new(FontData::from_static(bytes)),
+            sent: false,
+            then: Vec::new(),
+            interface: true,
+        };
+        // Typing asks first: the file is read on another thread, not in yet.
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let fetch = move || {
+            wait.recv().ok()?;
+            Some((Cow::Borrowed(bytes), 0))
+        };
+        assert!(!loaded(&ctx, key, &["Liberation Sans"], None, fetch));
+        // Meanwhile the fonts read at start read it for the interface.
+        let loads = loads(&ctx);
+        arrived(&mut loads.lock().unwrap(), key.into(), for_interface());
+        go.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        let typed = loop {
+            let l = loads.lock().unwrap();
+            if matches!(l.get(key), Some(Load::Found { then: t, .. }) if !t.is_empty()) {
+                break l;
+            }
+            assert!(Instant::now() < until, "typing's read never arrived");
+            drop(l);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let both = |l: &HashMap<String, Load>| match l.get(key) {
+            Some(Load::Found {
+                then: t, interface, ..
+            }) => *interface && t[..] == then,
+            _ => false,
+        };
+        assert!(both(&typed), "typing's read took it from the interface");
+        drop(typed);
+        // The other way round: the interface's read arriving last keeps typing's fallbacks.
+        arrived(&mut loads.lock().unwrap(), key.into(), for_interface());
+        assert!(both(&loads.lock().unwrap()), "typing's fallbacks lost");
+        // Handed to egui, every interface family falls back to it.
+        loaded(&ctx, key, &[], None, || None);
+        let families = ctx.fonts(|f| f.definitions().families.clone());
+        assert!(families[&FontFamily::Proportional].contains(&key.to_string()));
     }
 }

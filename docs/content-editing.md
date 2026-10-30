@@ -25,8 +25,8 @@ While you type:
   written in the font when it holds them, drawn in its own letters as you type. A word with a letter the font
   lacks is written in the installed font it came from (when LimarePDF can embed it), or in the Helvetica, Times or
   Courier that replaces it, and switches as you type that letter; the rest of the line keeps its font. The
-  inspector says which letters the font lacks and which font their words use ("Not in this PDF's font: ö ß. Those
-  words use Helvetica."), or that the font can't take new text at all (a Type 3 font, one not in the PDF, vertical
+  inspector names those words and the font they use ("Not in this PDF's font: größe Maße. Those words use
+  Helvetica."), or says that the font can't take new text at all (a Type 3 font, one not in the PDF, vertical
   writing), why when you point at it.
 - When what you type runs past the edge of the page, or on past the line's end into the text beside it, the
   outline turns the caution colour and a tag under it says **Past the page edge** or **Over other text**. It is

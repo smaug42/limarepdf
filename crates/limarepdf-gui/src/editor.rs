@@ -1293,21 +1293,22 @@ fn source_font(o: &PageObject, fonts: &[LineFont], text: &Styled) -> &'static st
 }
 
 /// What the inspector says about the font line `o` is written in, as `text` has it, with
-/// `sel` selected, `fonts` being the line's, and why on hover: the characters typed that
-/// its font has no code for, whose words go to another font; else, when the font of what
-/// is selected can't take new text at all, that edits use another. `None` when there is
-/// nothing to say.
+/// `sel` selected, `fonts` being the line's, and why on hover: the words typed that go to
+/// another font, as typed, as its font has no code for a character in them; else, when the
+/// font of what is selected can't take new text at all, that edits use another. `None`
+/// when there is nothing to say.
 fn font_note(
     o: &PageObject,
     fonts: &[LineFont],
     text: &Styled,
     sel: (usize, usize),
 ) -> Option<(String, String)> {
-    let (mut missing, mut used, mut names) = (Vec::new(), None, Vec::new());
+    let (mut words, mut used, mut names) = (Vec::<String>::new(), None, Vec::new());
     for part in text.parts() {
         let PartFont::Span(i) = part.font else {
             continue;
         };
+        let chars: Vec<char> = part.text.chars().collect();
         for piece in o.kept_pieces(&part, fonts) {
             if piece.missing.is_empty() {
                 continue;
@@ -1315,17 +1316,17 @@ fn font_note(
             used.get_or_insert(text.font_of(&part).family_name());
             let name = o.spans.get(i).map(|s| untagged(&s.font_name).to_string());
             names.extend(name.filter(|n| !names.contains(n)));
-            for c in piece.missing {
-                if !missing.contains(&c) {
-                    missing.push(c);
-                }
+            let (from, to) = piece.chars;
+            let word: String = chars.get(from..to).unwrap_or_default().iter().collect();
+            let word = word.trim().to_string();
+            if !word.is_empty() && !words.contains(&word) {
+                words.push(word);
             }
         }
     }
     if let Some(used) = used {
-        let chars: Vec<String> = missing.iter().map(char::to_string).collect();
-        let chars = chars.join(" ");
-        let note = format!("Not in this PDF's font: {chars}. Those words use {used}.");
+        let words = words.join(" ");
+        let note = format!("Not in this PDF's font: {words}. Those words use {used}.");
         return Some((note, names.join(", ")));
     }
     // What is selected, or at a caret the character before it (the first at the start).
@@ -2743,11 +2744,19 @@ impl Editor {
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
         };
-        // A new text box shows the Text box tool's size and border, which it is kept with,
-        // as the inspector changes them.
-        if w.id.is_none() && !w.note {
-            w.size = self.box_style.size;
-            w.border = self.box_style.border;
+        // A text box shows its size and border as the inspector changes them: a new one the
+        // Text box tool's, which it is kept with; one on the page its own (ENH-13).
+        let own = |id| {
+            let annots = self.annots.get(&page)?;
+            annots.iter().find(|a| a.id == id)?.text_style
+        };
+        let style = match w.id {
+            None => Some(self.box_style),
+            Some(id) => own(id),
+        };
+        if let Some(s) = style.filter(|_| !w.note) {
+            w.size = s.size;
+            w.border = s.border;
         }
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let b = shown_box(w.note, w.rect, k);
@@ -7097,9 +7106,9 @@ mod tests {
         assert_eq!(font_of("Arial,Bold"), FontChoice::from_name("Arial,Bold"));
     }
 
-    /// The inspector says which characters typed the line's font has no code for, whose
-    /// words go to another font; or that the font can't take new text at all, and why on
-    /// hover (batch 31, Q5).
+    /// The inspector names the words typed that go to another font, as typed, as the line's
+    /// font has no code for a character in them; or says that the font can't take new text
+    /// at all, and why on hover (batch 31, Q5).
     #[test]
     fn the_inspector_says_what_the_line_s_font_can_t_write() {
         use lopdf::{dictionary, Dictionary, Object, Stream};
@@ -7108,11 +7117,16 @@ mod tests {
         let fonts = pdf.line_fonts(0, 2).unwrap();
         let mut text = Styled::of(&o, FontChoice::from_name);
         assert_eq!(font_note(&o, &fonts, &text, (0, 0)), None);
+        // Whole words, not their letters each once ("ö ß" read as a word spaced out).
         text.sync("Walrus like größe Maße", None);
         let (said, why) = font_note(&o, &fonts, &text, (0, 0)).unwrap();
-        let want = "Not in this PDF's font: ö ß. Those words use Helvetica.";
+        let want = "Not in this PDF's font: größe Maße. Those words use Helvetica.";
         assert_eq!(said, want);
         assert_eq!(why, "Helvetica");
+        text.sync("Walrus größe like Maße", None);
+        let (said, _) = font_note(&o, &fonts, &text, (0, 0)).unwrap();
+        let want = "Not in this PDF's font: größe Maße. Those words use Helvetica.";
+        assert_eq!(said, want);
 
         // A subset the PDF doesn't hold can't take any.
         let mut pdf = limarepdf_core::Pdf::new();

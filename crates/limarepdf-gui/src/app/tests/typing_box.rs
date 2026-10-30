@@ -210,6 +210,52 @@ fn a_text_box_and_a_multi_line_field_wrap_where_their_text_is_written() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A text box open for typing shows the look its inspector gives it meanwhile (ENH-13): a
+/// bigger size and a thick border change its typing box's lines as they change the written
+/// ones, as a new box's do with the Text box tool's look.
+#[test]
+fn an_open_text_box_follows_its_inspector_s_changes() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let ty = Typist::new(&ctx);
+    let mut pdf = Pdf::new();
+    pdf.insert_blank(0, 612.0, 792.0).unwrap();
+    let text = "The walrus and the carpenter were walking close at hand";
+    let style = limarepdf_core::TextStyle::default();
+    let rect = [72.0, 100.0, 272.0, 160.0];
+    let id = pdf.add_text_box(0, rect, text, &style, "Sam").unwrap();
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    assert!(app.add_tab(&ctx, pdf, None, None, false));
+    let t = &mut app.tabs[0];
+    t.ed.annots(&t.pdf, 0);
+    t.ed.selection = Selection::Annot { page: 0, id };
+    t.ed.write_selected();
+    ty.pause(&mut app);
+    // Bigger, with a thick border, as the inspector makes it.
+    let a = app.tabs[0].pdf.annotations()[0].clone();
+    let style = limarepdf_core::TextStyle {
+        size: 18.0,
+        border: 6.0,
+        ..a.text_style.expect("its look")
+    };
+    let edit = crate::editor::AnnotEdit {
+        color: a.color,
+        opacity: a.opacity,
+        contents: a.contents.clone(),
+        text: Some(style),
+        shape: None,
+    };
+    app.tabs[0].ed.actions.push(EdAction::SetAnnot(0, id, edit));
+    app.tabs[0].apply_actions(&ctx);
+    let typed = app.tabs[0].ed.writing.as_ref().map(|w| w.text.clone());
+    assert_eq!(typed.as_deref(), Some(text), "the box closed");
+    let (_, lines) = BoxSetting::text_box(rect[2] - rect[0], 6.0, 18.0).lines(text, None);
+    let want: Vec<String> = lines.into_iter().map(|r| text[r].to_string()).collect();
+    let got = settled_rows(&mut app, &ty, text, &want);
+    assert_eq!(got, Some(want));
+}
+
 /// A line LimarePDF wrote, opened for editing, shows its words as they are on the page: a
 /// font LimarePDF made has no preview of its own glyphs, so its words are drawn in the
 /// installed font it was made from, or the fonts core would write them in, not in a
