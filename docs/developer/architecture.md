@@ -21,6 +21,13 @@ It uses:
   it: interface text falls back to installed fonts through LimarePDF's own `typing_fonts::interface_fallback`,
   ENH-33, below); winit, which eframe then gives only its X11 and Wayland features, is named in `limarepdf-gui`'s
   `Cargo.toml` for its defaults (Wayland window decorations, libwayland loaded at run time), at eframe's version.
+  The window is drawn by eframe's wgpu renderer (on Linux Vulkan, OpenGL where Vulkan fails). On Wayland its
+  frames go to the screen without waiting for the display (wgpu's `AutoNoVsync`, set each frame by
+  `src/present.rs`, BUG-42): with NVIDIA's driver under KWin 6.8 a frame handed over while the screen is off, or
+  after a long idle gap, can wait for ever, and the desktop with it. winit already paces drawing there, asking for
+  a frame only after the compositor's frame callback, as eframe's OpenGL renderer relies on too (egui #5136). X11,
+  Windows and macOS keep eframe's waiting `AutoVsync`. NVIDIA takes immediate for it and marks its frames as fine
+  to tear, which KWin allows only for a full-screen window it shows directly, with its tearing setting on (PB-66).
   The icons are the Phosphor fonts in `crates/limarepdf-gui/assets/fonts/`, by name in `src/icon.rs`;
 - [`skrifa`](https://crates.io/crates/skrifa) to read font programs and [`subsetter`](https://crates.io/crates/subsetter)
   to cut embedded fonts down to the glyphs used; [`harfrust`](https://crates.io/crates/harfrust) 0.13.3 to shape

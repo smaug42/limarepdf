@@ -5951,8 +5951,11 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // On Wayland, frames go to the screen without waiting for it, which may never take
+        // them (BUG-42).
+        crate::present::set(frame);
         self.poll_loads(&ctx);
         // Interface text the interface's own fonts can't draw (Chinese, Japanese, Korean,
         // emoji) in installed fonts, found on another thread at start (ENH-33).

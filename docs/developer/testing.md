@@ -662,6 +662,20 @@ reader. The close confirmation shot here and in the redesign's check above is th
 its successors from ENH-01 (2026-10-24: "Save changes?" and "Quit with unsaved changes?") are checked by
 `every_question_fits_and_is_answered_from_the_keyboard`, not yet by screenshot.
 
+How frames go to the screen (BUG-42, 2026-10-30): `present.rs`'s tests check that on Wayland the window's frames
+don't wait for the display (`AutoNoVsync`, the frame latency kept; failing on the code before, which left eframe's
+`AutoVsync`), that X11, Windows and macOS keep eframe's setting, and that only a Wayland display counts. The fix
+was then run in a hidden KWin 6.8.1 (`kwin_wayland --virtual` on its own socket, private D-Bus, home and config;
+NVIDIA 615.78 with Vulkan, as on the user's KDE desktop), against the release binary from before it. With
+`WAYLAND_DEBUG=client` and five redraws, the binary from before sent `wp_fifo_v1` barriers (26 set, 52 waits) and
+`wp_commit_timer_v1` timestamps (23), the protocols KDE bug 527500 is about; the fixed one sent none, and drew one
+frame per compositor frame callback (22 frames, 22 callbacks), so no faster than before. It marked its frames as
+fine to tear instead (`wp_tearing_control_v1`'s async hint, NVIDIA's immediate mode; PB-66). Both drew when nudged
+with the virtual screen on, off through DPMS, on again and after 90 seconds idle, KWin answering throughout.
+The hang itself didn't happen in the hidden KWin with either binary: its virtual screen has no real display to
+turn off. Not tried: the user's own desktop left idle until the screen turns off (the user's check), GNOME and
+other compositors, Intel and AMD graphics on Wayland.
+
 ## How each feature was checked
 
 The record for each feature, moved here from the user pages, which keep a short summary under "How this was

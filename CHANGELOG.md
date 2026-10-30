@@ -232,6 +232,11 @@
 
 ### Fixed
 
+- On Linux in a Wayland session, LimarePDF left open for a long while (an hour, say, so the screen had turned off)
+  could freeze the whole desktop until it was closed by force; seen with NVIDIA's graphics driver under KDE Plasma
+  6.8. Each picture of the window was handed to the screen and waited for the screen to take it, which then could
+  last for ever. On Wayland it no longer waits: the desktop already sets the pace of drawing there, so nothing else
+  changes. Other systems are as they were.
 - Text in a Type 3 font drawn the way TeX's bitmap fonts are (in many older papers) was read at a tiny fraction of
   its size and upside down: selecting, searching and copying it went a word or less at a time, the line was edited
   in a box rather than where it is, and an edited line was written at 1 point. It now reads at the size it shows,

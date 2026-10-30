@@ -316,6 +316,9 @@ available.
   field values are shown as they are. The command line's listings (`info`, `bookmarks list`, `annot list`, `form
   list`, `labels list`, `view-prefs list`, `objects`, `search`, `verify`) clean such text the same way, without
   shortening it, so a file can't send escape codes to the terminal; `--json` output stays exact.
+- On Linux in a Wayland session the window's frames go to the screen without waiting for it, the compositor
+  setting the pace of drawing (BUG-42): waiting could hang LimarePDF, and KDE Plasma 6.8 with it, with NVIDIA's
+  driver once the screen had turned off. On X11, Windows and macOS each frame waits for the display, as before.
 
 ## Planned and proposed
 
