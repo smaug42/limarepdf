@@ -470,12 +470,8 @@ pub struct Ctx {
     pub typing: bool,
     /// A line or paragraph of page text is being edited on the page.
     pub line_edit: bool,
-    /// A paragraph of page text is being edited on the page.
+    /// Paragraph editing is on: page text opens as paragraphs where it can be one.
     pub paragraph: bool,
-    /// The selected line, or the one being edited, can be edited as a paragraph; else why
-    /// not, when a line is selected.
-    pub paragraph_can: bool,
-    pub paragraph_why: Option<&'static str>,
     /// The paragraph being edited has a marked line-end hyphen at the right-click or the
     /// caret.
     pub hyphen: bool,
@@ -963,17 +959,17 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Edit as paragraph",
         icon: icon::TEXT_ALIGN_LEFT,
-        enabled: |c| c.doc && !c.busy && (c.paragraph || c.paragraph_can),
+        enabled: doc_idle,
         checked: Some(|c| c.paragraph),
-        hint: "Edit the selected text's paragraph as one, its lines rewrapping as you type. \
-               Off, it is edited a line at a time.",
+        hint: "Edit page text a paragraph at a time, its lines rewrapping as you type, the \
+               text being edited too. Off, it is edited a line at a time.",
         ..BASE
     },
     Action {
         act: Act::JoinHyphen,
         group: Group::Edit,
         label: "Join the hyphenated word",
-        enabled: |c| c.paragraph && c.hyphen,
+        enabled: |c| c.hyphen,
         hint: "Take out the marked hyphen, which ended a line, making the word one.",
         ..BASE
     },
@@ -981,7 +977,7 @@ pub static ACTIONS: &[Action] = &[
         act: Act::KeepHyphen,
         group: Group::Edit,
         label: "Keep the line-end hyphen",
-        enabled: |c| c.paragraph && c.hyphen,
+        enabled: |c| c.hyphen,
         hint: "Keep the marked hyphen, which ended a line, as part of the word.",
         ..BASE
     },
@@ -2215,15 +2211,9 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     if !c.doc {
         return "Open a document first.";
     }
-    // Why the selected line's text can't be edited as a paragraph, and where the hyphen
-    // commands act.
-    match a.act {
-        Act::EditParagraph if c.busy && (c.paragraph || c.paragraph_can) => return BUSY,
-        Act::EditParagraph => return c.paragraph_why.unwrap_or(SELECT_LINE),
-        Act::JoinHyphen | Act::KeepHyphen => {
-            return "Click in a word whose hyphen is marked in a paragraph first.";
-        }
-        _ => {}
+    // Where the hyphen commands act.
+    if matches!(a.act, Act::JoinHyphen | Act::KeepHyphen) {
+        return "Click in a word whose hyphen is marked in a paragraph first.";
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);

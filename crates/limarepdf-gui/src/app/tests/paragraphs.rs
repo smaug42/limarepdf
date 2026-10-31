@@ -71,6 +71,25 @@ fn status_says(tree: &egui::accesskit::TreeUpdate, said: &str) -> bool {
     values.any(|v| v.starts_with(said))
 }
 
+/// Click the command band's button called `name` (the topmost control of that name, above
+/// the inspector's), then let half a second of frames pass, so that the next click isn't
+/// taken with this one as a double-click.
+fn click_band(app: &mut App, ctx: &egui::Context, name: &str) {
+    let tree = settled_at(app, ctx, 1400.0);
+    let at = (tree.nodes.iter())
+        .filter(|(_, n)| n.label() == Some(name))
+        .filter_map(|(_, n)| n.bounds())
+        .min_by(|a, b| a.y0.total_cmp(&b.y0))
+        .unwrap_or_else(|| panic!("no {name}"));
+    let p = egui::pos2((at.x0 + at.x1) as f32 / 2.0, (at.y0 + at.y1) as f32 / 2.0);
+    window(app, ctx, 1400.0, vec![egui::Event::PointerMoved(p)]);
+    window(app, ctx, 1400.0, vec![press(p, true)]);
+    window(app, ctx, 1400.0, vec![press(p, false)]);
+    for _ in 0..30 {
+        window(app, ctx, 1400.0, vec![]);
+    }
+}
+
 /// The page's paragraph as it reads now: its lines below the heading, joined by spaces.
 fn paragraph_now(pdf: &Pdf) -> String {
     let lines = line_texts(pdf, 0);
@@ -149,6 +168,82 @@ fn a_line_switched_to_paragraph_is_typed_into_as_one_and_kept_as_one_step() {
     assert_eq!(content(&app.tabs[0].pdf), was, "one Undo, byte for byte");
 }
 
+/// The user's finding after 3a: the band's Paragraph, clicked while a line is edited, edits
+/// its paragraph (the click ended the line's editing first, so it went back to reading), and
+/// clicked again edits the line at the caret.
+#[test]
+fn the_bands_paragraph_switches_the_line_being_edited_to_its_paragraph_and_back() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    double_click_word(&mut app, &ctx, "fishing");
+    assert!(app.tabs[0].ed.editing_line() && !app.tabs[0].ed.editing_paragraph());
+    click_band(&mut app, &ctx, "Paragraph");
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing a paragraph"), "not switched");
+    click_band(&mut app, &ctx, "Paragraph");
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing one line"), "not switched back");
+}
+
+/// The user's finding after 3a: the band's Paragraph with nothing selected turns paragraph
+/// editing on, so a double-click edits a paragraph (a line on its own still a line), and
+/// off again, so it edits a line.
+#[test]
+fn the_bands_paragraph_with_nothing_selected_turns_paragraph_editing_on_and_off() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    click_band(&mut app, &ctx, "Paragraph");
+    assert!(app.settings.paragraphs, "not remembered");
+    double_click_word(&mut app, &ctx, "fishing");
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing a paragraph"), "not on");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    double_click_word(&mut app, &ctx, "Harbour");
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing one line"), "a line on its own");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    click_band(&mut app, &ctx, "Paragraph");
+    assert!(!app.settings.paragraphs);
+    // Another word: two more clicks on "fishing" with no time between would be a third.
+    double_click_word(&mut app, &ctx, "gulls");
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing one line"), "not off");
+}
+
+/// The user's finding after 3a: Edit text, pressed (the Text tool, or text being edited on
+/// the page), clicked again goes back to the read tool, what was typed kept.
+#[test]
+fn edit_text_pressed_again_goes_back_to_the_read_tool() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    let text = paragraph_now(&app.tabs[0].pdf);
+    click_band(&mut app, &ctx, "Edit text");
+    assert_eq!(app.tabs[0].ed.tool, Tool::Text);
+    click_band(&mut app, &ctx, "Edit text");
+    assert_eq!(app.tabs[0].ed.tool, Tool::Read, "the Text tool stayed");
+    // A line edited with the read tool: ended, kept.
+    double_click_word(&mut app, &ctx, "fishing");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::End)]);
+    type_in(&mut app, &ctx, " too");
+    click_band(&mut app, &ctx, "Edit text");
+    let ed = &app.tabs[0].ed;
+    assert!(!ed.typing_on_page(), "still editing");
+    assert_eq!(ed.tool, Tool::Read, "not the read tool");
+    assert_ne!(paragraph_now(&app.tabs[0].pdf), text, "the typing not kept");
+    // A paragraph being edited: the same.
+    let text = paragraph_now(&app.tabs[0].pdf);
+    double_click_word(&mut app, &ctx, "gulls");
+    click_band(&mut app, &ctx, "Paragraph");
+    assert!(app.tabs[0].ed.editing_paragraph());
+    window(&mut app, &ctx, 1400.0, vec![key(Key::End)]);
+    type_in(&mut app, &ctx, " again");
+    click_band(&mut app, &ctx, "Edit text");
+    let ed = &app.tabs[0].ed;
+    let read = !ed.typing_on_page() && ed.tool == Tool::Read;
+    assert!(read, "still editing");
+    assert_ne!(paragraph_now(&app.tabs[0].pdf), text, "the typing not kept");
+}
+
 /// A paragraph opened and left without a change makes no change and no undo step, and the
 /// document stays unchanged.
 #[test]
@@ -183,22 +278,17 @@ fn a_paragraphs_typing_is_kept_before_a_command_uses_the_document() {
     settled_at(&mut app, &ctx, 1400.0);
     let steps = app.tabs[0].history().1;
     assert!(app.tabs[0].ed.pending());
-    // Edit text with it open goes on in it, the typing as it was.
-    app.act(&ctx, Act::EditObjectText);
-    settled_at(&mut app, &ctx, 1400.0);
-    let (text, _) = app.tabs[0].ed.para_text().expect("still open");
-    assert!(text.contains("fishing very boats"), "{text:?}");
     assert!(app.tabs[0].keep_typing(&ctx));
     assert!(!app.tabs[0].ed.pending());
     assert_eq!(app.tabs[0].history().1, steps + 1);
     assert!(paragraph_now(&app.tabs[0].pdf).contains("fishing very boats"));
 }
 
-/// Once switched to Paragraph, the block opens as one again while the document is open; One
-/// line switches it back, editing the line at the caret, and a double-click then edits a
-/// line again.
+/// Switched to Paragraph, paragraph editing stays on: a double-click elsewhere in it opens
+/// the paragraph again; switched back, it edits the line at the caret, and a double-click
+/// then edits a line again.
 #[test]
-fn the_switch_is_remembered_for_the_block_and_one_line_switches_back() {
+fn the_switch_stays_on_and_one_line_switches_back() {
     let (ctx, mut app) = new_app();
     prose_tab(&mut app, &ctx);
     double_click_word(&mut app, &ctx, "fishing");
@@ -220,8 +310,9 @@ fn the_switch_is_remembered_for_the_block_and_one_line_switches_back() {
     assert!(status_says(&tree, "Editing one line"), "forgotten");
 }
 
-/// A line on its own can't be edited as a paragraph: the switch is greyed, saying why, and
-/// the command does nothing.
+/// A line on its own can't be edited as a paragraph: the inspector's switch is greyed for
+/// it, saying why; the band's Paragraph still turns paragraph editing on (ticked), the line
+/// staying a line.
 #[test]
 fn a_line_on_its_own_cant_be_switched_and_says_why() {
     let (ctx, mut app) = new_app();
@@ -233,11 +324,14 @@ fn a_line_on_its_own_cant_be_switched_and_says_why() {
     let mut c = Ctx::default();
     app.tabs[0].fill_ctx(&mut c);
     let a = actions::get(Act::EditParagraph);
-    assert!(!(a.enabled)(&c));
-    assert_eq!(actions::why_not(&c, a), "This line is on its own.");
+    assert!((a.enabled)(&c) && !(a.checked.unwrap())(&c));
     app.act(&ctx, Act::EditParagraph);
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert!(status_says(&tree, "Editing one line"), "still a line");
+    let mut c = Ctx::default();
+    app.tabs[0].fill_ctx(&mut c);
+    assert!((a.checked.unwrap())(&c), "paragraph editing not on");
+    assert!(app.settings.paragraphs);
 }
 
 /// Enter starts a new paragraph in the frame and Shift+Enter a new line: each written as a
@@ -267,6 +361,25 @@ fn enter_starts_a_new_paragraph_and_shift_enter_a_new_line() {
     assert_eq!(now[n - 3], lines[lines.len() - 1], "{now:?}");
 }
 
+/// CI's finding on Windows after 3a: a line switched to its paragraph, or back, while its
+/// font is still loading (drawn in Inter, wider, its caret past the line's end) is edited
+/// as switched to, not left with nothing being edited.
+#[test]
+fn a_line_switched_while_its_font_loads_is_still_switched() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    double_click_word(&mut app, &ctx, "allowed.");
+    assert!(app.tabs[0].ed.editing_line());
+    app.act(&ctx, Act::EditParagraph);
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing a paragraph"), "not switched");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::End)]);
+    app.act(&ctx, Act::EditParagraph);
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing one line"), "not switched back");
+}
+
 /// Words selected with the read tool across lines of a paragraph LimarePDF is sure of are
 /// typed over there, and deleted there, the paragraph rewrapping (stage 3's Q3), as a word
 /// processor takes a selection out of its text.
@@ -287,8 +400,11 @@ fn words_across_a_paragraphs_lines_are_typed_over_and_deleted_there() {
     settled_at(&mut app, &ctx, 1400.0);
     let want = text.replacen("boats sat low in the water", "ships", 1);
     assert_eq!(paragraph_now(&app.tabs[0].pdf), want);
-    // Deleted across lines: taken out, the caret where they were.
-    let text = paragraph_now(&app.tabs[0].pdf);
+    // Deleted across lines: taken out, the caret where they were. On the page as it was:
+    // rewritten, its block needn't read as one LimarePDF is sure of.
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    settled_at(&mut app, &ctx, 1400.0);
     select_words(&mut app, "argued", "Nobody");
     app.act(&ctx, Act::DeleteSelection);
     settled_at(&mut app, &ctx, 1400.0);

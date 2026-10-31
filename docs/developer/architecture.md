@@ -1589,15 +1589,23 @@ form XObject, and per inline image.
   font its words go to, as the writer plans them (`planned`), for the typing box to draw each in its face;
   `part_font(i)` the parts' `LineFont`s.
 - **Editing a paragraph in the app** (NEW-01, batch 45's stage 3a; `editor/paragraph.rs`, the paragraph design's
-  sections 5, 6.4, 8 and 9). The default stays off (`PARAGRAPH_DEFAULT`, as the check judged): a block opens as a
-  paragraph once switched (`Editor::set_paragraph`, from `Act::EditParagraph`, the inspector's Editing row through
-  `Editor::switch`, the band's Text flow, the menus and the command search), remembered by page, left edge and first
-  baseline (`as_paragraph`, kept across edits, so a block rewritten in place is found again); `start_text_edit`
-  then opens the paragraph for a double-click, a Text-tool click or Edit text, else the line. The page's blocks are
-  read when one of its lines is selected (`read_blocks`, cached with the objects); the switch's state and why it is
-  greyed (`para_state`: on its own, a table, turned, invisible) come from them, into `Ctx`. A switch keeps what was
+  sections 5, 6.4, 8 and 9). Paragraph editing is a mode, off unless chosen (`PARAGRAPH_DEFAULT` stays off, as
+  the check judged): the app's `Settings::paragraphs` (`text_editing` in settings.txt), set by `App::set_paragraphs`
+  from `Act::EditParagraph` (a toggle: the band's Text flow, the menus, the command search) and the inspector's
+  Editing row (`Editor::switch`, read by the app), lent to every tab's `Editor::paragraphs` each frame; it switches
+  the text being edited in the tab in front (`Editor::set_paragraph`). `start_text_edit` opens the paragraph for a
+  double-click, a Text-tool click or Edit text while it is on and the block can be one, else the line. The band's
+  Text flow group keeps typing open (`Group::keeps_typing`), so that its click doesn't end the line being edited
+  before the switch (the user's finding after 3a: it went back to reading). The page's blocks are read when one of
+  its lines is selected (`read_blocks`, cached with the objects); the inspector's switch, and why its Paragraph is
+  greyed (`para_state`: on its own, a table, turned, invisible), come from them. Edit text (`band::is_on`) is
+  pressed while the Text tool is on or text is edited on the page, and clicked when pressed goes back to the read
+  tool: the app reads that from the commands' state as the frame drew them (`App::shown`), as the click itself ends
+  a line being edited first. A switch keeps what was
   typed first (`keep_later`) and opens the other editor at the caret's place once that is in the document
-  (`Then`, `follow_then`: the line under that point, as ids change with a rewrite). `ParaEdit` holds the block, the
+  (`Then`, `follow_then`: the line under that point, as ids change with a rewrite, or else the line in its row
+  nearest it, `row_hit`, as a caret placed while the line's font is still loading, drawn in Inter, can sit past the
+  line's end). `ParaEdit` holds the block, the
   `ParagraphSetting` (built on the window's thread: the installed fonts' list is read at start, so reading one is
   a few milliseconds, the cost line editing's fonts already pay on heavy pages), the text as `Styled`
   (`Styled::of_paragraph`, every character's origin kept, so `parts` names what is kept), its own `History`, and
@@ -1615,7 +1623,7 @@ form XObject, and per inline image.
   background over most of the page), and the page's edge. Kept through `Typed::Paragraph` (`keep`, `put_back`,
   `settle_kept`, `refused_again`, `pending`), as `Action::EditParagraph` through `Tab::edit_inner`, one step; no
   action when the text or its setting is unchanged. Words selected across a paragraph's lines (`words_paragraph`:
-  one block, switched or confident; within one line, switched only) are typed over, deleted (Word's space rule)
+  one block, with paragraph editing on or confident; within one line, with it on only) are typed over, deleted (Word's space rule)
   and cut in it, and Edit text opens it with them selected. Marked hyphens (`SetParagraph::marked`, less those kept)
   are dotted under; `Act::JoinHyphen` and `KeepHyphen` act on the one at the right-click or the caret. The
   inspector's Editing row is a horizontal row as wide as the panel, not a grid of its own, which widened the panel.

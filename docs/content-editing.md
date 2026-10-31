@@ -3,7 +3,7 @@
 # Editing text and pictures
 
 Change the text already on a page, add new text and pictures, and move, resize, restyle or delete what is there.
-A double-click edits a line; switch its paragraph to **Paragraph** to edit it as one, its lines rewrapping as you
+A double-click edits a line; turn on **Paragraph** to edit whole paragraphs instead, their lines rewrapping as you
 type (see [Edit a paragraph](#edit-a-paragraph)). Shortcuts are written with Ctrl; on a Mac, use ⌘ (Command)
 instead.
 
@@ -14,7 +14,8 @@ instead.
    selected, **Edit > Edit text** edits their line with them selected (see
    [Type over, delete or cut words](#type-over-delete-or-cut-words)).
 2. Type your change.
-3. Press Enter, Esc or Tab, or click elsewhere, to keep it.
+3. Press Enter, Esc or Tab, or click elsewhere, to keep it. **Edit > Edit text**, shown pressed while you edit
+   text or use the Text tool, also keeps it when you click it again, and goes back to the read tool.
 
 While you type:
 
@@ -62,20 +63,23 @@ character you clicked along the line, and a double-click selects the word you cl
 
 ## Edit a paragraph
 
-To edit a whole paragraph, its lines rewrapping as you type, as in a word processor:
+To edit whole paragraphs, their lines rewrapping as you type, as in a word processor, turn on **Paragraph** in
+**Edit > Text flow** in the band. It shows pressed while it is on. It is also **Edit as paragraph** in the
+right-click menu and the command search (Ctrl+K), and **Paragraph** in the inspector's **Editing** row while text
+is selected. Then:
 
-1. Double-click a line in it with the read tool, or click it with the Text tool.
-2. Choose **Paragraph** in the inspector's **Editing** row, or **Paragraph** in **Edit > Text flow** in the band.
-   It is also **Edit as paragraph** in the right-click menu and the command search (Ctrl+K).
-3. Type your change. Press Esc or Tab, or click elsewhere, to keep it.
+1. Double-click a line of the paragraph with the read tool, or click it with the Text tool (or choose **Edit >
+   Edit text** with it selected).
+2. Type your change. Press Esc or Tab, or click elsewhere, to keep it.
 
-The paragraph stays a paragraph while the document is open: a double-click, a Text-tool click or **Edit > Edit
-text** in it opens the whole paragraph from then on. **One line** in the inspector (or **Paragraph** again) goes back
-to editing it a line at a time, at the line where the caret is; what you typed is kept first.
+**Paragraph** stays on, in every document and the next time you start LimarePDF, until you turn it off. Turned on
+or off while you edit a line or a paragraph, it switches what you are editing: what you typed is kept first, and
+the line or paragraph where the caret is opens. **One line** in the inspector turns it off too.
 
-LimarePDF finds paragraphs from where their lines sit on the page. It doesn't yet open them as paragraphs by
-itself, as it doesn't find every paragraph reliably enough on its own. A line on its own, text in a table and
-turned text are edited a line at a time: **Paragraph** is greyed for them, and says why when you point at it.
+Off, a double-click edits a line: LimarePDF finds paragraphs from where their lines sit on the page, but it
+doesn't yet find every one reliably enough to open them as paragraphs by itself. With **Paragraph** on, a line on
+its own, text in a table and turned text are still edited a line at a time: the inspector's **Paragraph** is
+greyed for them, and says why when you point at it.
 
 While you type:
 
@@ -104,7 +108,7 @@ While you type:
 - Ctrl+Z and Ctrl+Y undo and redo your typing inside the paragraph. Once kept, the whole change is one undo step.
   Opening a paragraph and leaving it as it was changes nothing.
 
-Words you select with the read tool across the lines of one paragraph (one switched to **Paragraph**, or one
+Words you select with the read tool in one paragraph (with **Paragraph** on; with it off, across the lines of one
 LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragraph, which rewraps; see
 [Type over, delete or cut words](#type-over-delete-or-cut-words).
 
@@ -163,8 +167,8 @@ Words you select with the read tool can be changed as in a word processor, witho
 
 - **Type** to replace them. Their line opens for editing with what you typed in their place, and you go on typing
   there; press Enter, Esc or Tab, or click elsewhere, to keep it. **Ctrl+V**, or **Paste** (in **Edit** in the
-  band, the right-click menu or the floating toolbar), pastes over them the same way. Over words on several lines
-  of one paragraph (one switched to **Paragraph**, or one LimarePDF is sure is a paragraph), the paragraph opens
+  band, the right-click menu or the floating toolbar), pastes over them the same way. Over words of one paragraph
+  (with **Paragraph** on; with it off, on several lines of one LimarePDF is sure is a paragraph), the paragraph opens
   with what you typed in their place (see [Edit a paragraph](#edit-a-paragraph)). Over words in different
   paragraphs nothing is typed, and a note says "Type over words within one paragraph." With no words selected and
   nothing being typed, Ctrl+V says where to click to paste. An input method types over them too: the line opens
@@ -375,8 +379,8 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 ## Limits
 
 - Text objects are lines recovered from the content stream by heuristics. Paragraphs are found from where those
-  lines sit, and open as paragraphs only once switched to **Paragraph**: LimarePDF's check of how well it finds
-  them isn't passed yet, so a double-click edits a line. Outside a paragraph, typing over words selected in
+  lines sit, and open as paragraphs only with **Paragraph** turned on: LimarePDF's check of how well it finds them
+  isn't passed yet, so it starts off and a double-click edits a line. Outside a paragraph, typing over words selected in
   different paragraphs types nothing, and deleting words leaves each line where it was, an emptied one blank. Text
   boxes are estimated from font metrics, so they can be slightly off for unusual fonts. A line the page draws twice
   (as maps draw a label over a halo of its own) is changed where you click it; the copy under it keeps the old

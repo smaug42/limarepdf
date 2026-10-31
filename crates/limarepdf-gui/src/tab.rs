@@ -1116,10 +1116,8 @@ impl Tab {
 
     /// Carry out the changes queued by the editing interface.
     pub fn apply_actions(&mut self, ctx: &egui::Context) {
-        // The inspector's Editing switch, and its Join all for a paragraph's hyphens.
-        if let Some(on) = self.ed.switch.take() {
-            self.ed.set_paragraph(&self.pdf, on);
-        }
+        // The inspector's Join all for a paragraph's hyphens (its Editing switch is the
+        // app's: `App::set_paragraphs`).
         if let Some(all) = self.ed.hyphens_wanted.take() {
             self.ed.settle_hyphen(ctx, true, all);
         }
@@ -2836,8 +2834,7 @@ impl Tab {
         c.cropping = self.crop_view();
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
-        let p = self.ed.para_state();
-        (c.paragraph, c.paragraph_can, c.paragraph_why) = (p.on, p.can, p.why);
+        c.paragraph = self.ed.paragraphs;
         c.hyphen = self.ed.hyphen_here();
     }
 

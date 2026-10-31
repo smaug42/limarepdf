@@ -699,6 +699,10 @@ pub struct App {
     /// This frame's Esc left a box of the band or the inspector, with typing open on the
     /// page: it goes back to the typing, which stays open.
     esc_to_typing: bool,
+    /// The commands' state as this frame drew them, while the commands clicked in it run: a
+    /// toggle goes by what it showed, as its click may have changed what it shows (a line
+    /// being edited ends when Edit text is clicked).
+    shown: Option<Ctx>,
     /// The text box the keyboard last left: its id, and its tab's id and revision then.
     left_box: Option<(egui::Id, u64, u64)>,
     /// The id of the tab that was in front last frame.
@@ -833,6 +837,7 @@ impl App {
             undo_held: false,
             undo_in_box: None,
             esc_to_typing: false,
+            shown: None,
             left_box: None,
             front: None,
             status_width: None,
@@ -2946,10 +2951,15 @@ impl App {
             Act::Crop => self.reveal(Section::Crop),
             Act::Props => self.reveal(Section::Properties),
             Act::Security => self.reveal(Section::Security),
-            // The selected line, on the page; with none, the text tool, to click a line.
+            // The selected line, on the page; with none, the text tool, to click a line. On
+            // (the Text tool, or text being edited on the page), back to the read tool, what
+            // was typed kept.
             Act::EditObjectText => {
+                let c = self.shown.unwrap_or_else(|| self.state(ctx));
                 let t = &mut self.tabs[self.active];
-                if t.ed.selection.words().is_some() && t.ed.edit_words(&t.pdf) {
+                if band::is_on(Act::EditObjectText, &c) {
+                    t.ed.set_tool(Tool::Read);
+                } else if t.ed.selection.words().is_some() && t.ed.edit_words(&t.pdf) {
                     self.open_inspector();
                 } else if t.ed.one_line_selected() {
                     self.open_inspector();
@@ -2960,12 +2970,7 @@ impl App {
                 }
             }
             Act::MoveText => self.tabs[self.active].ed.move_text(),
-            Act::EditParagraph => {
-                let t = &mut self.tabs[self.active];
-                let on = !t.ed.editing_paragraph();
-                t.ed.set_paragraph(&t.pdf, on);
-                self.open_inspector();
-            }
+            Act::EditParagraph => self.set_paragraphs(!self.settings.paragraphs),
             Act::JoinHyphen => self.tabs[self.active].ed.settle_hyphen(ctx, true, false),
             Act::KeepHyphen => self.tabs[self.active].ed.settle_hyphen(ctx, false, false),
             Act::SignWith(pick) => {
@@ -3074,6 +3079,20 @@ impl App {
     }
 
     /// Open the inspector, as the user's choice.
+    /// Paragraph editing on or off (Edit > Text flow's Paragraph, the inspector's Editing
+    /// row, the menus and the command search; NEW-01), for every tab and remembered between
+    /// runs; the text being edited in the tab in front follows ([`Editor::set_paragraph`]).
+    fn set_paragraphs(&mut self, on: bool) {
+        self.settings.paragraphs = on;
+        self.settings.save();
+        for t in &mut self.tabs {
+            t.ed.paragraphs = on;
+        }
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.ed.set_paragraph(&t.pdf, on);
+        }
+    }
+
     fn open_inspector(&mut self) {
         self.inspector.set_open(true);
         self.keep_panels();
@@ -6151,6 +6170,10 @@ impl eframe::App for App {
         if let Some(t) = t.filter(|t| enter && t.crop_view()) {
             t.end_crop();
         }
+        // Paragraph editing as the app has it, in every tab (a tab opened since too).
+        for t in &mut self.tabs {
+            t.ed.paragraphs = self.settings.paragraphs;
+        }
         self.type_over(&ctx);
         self.clipboard(&ctx);
 
@@ -6691,9 +6714,16 @@ impl eframe::App for App {
         }
         self.toast_ui(&ctx);
         self.palette_ui(&ctx, &c, &mut acts);
+        // The inspector's Editing switch, for every tab.
+        let active = self.tabs.get_mut(self.active);
+        if let Some(on) = active.and_then(|t| t.ed.switch.take()) {
+            self.set_paragraphs(on);
+        }
+        self.shown = Some(c);
         for a in acts {
             self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
         }
+        self.shown = None;
         // By its id, as a command above may have opened or closed tabs. The tab in front
         // stays there, unless it is the one closed.
         if let Some(i) = close.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
@@ -7363,6 +7393,7 @@ mod tests {
             "Edit text",
             "Find",
             "Select",
+            "Paragraph",
             "Show planned features",
             "Page view",
             "Organise pages",
@@ -13301,6 +13332,21 @@ mod tests {
         window(app, ctx, 1400.0, vec![])
     }
 
+    /// The window drawn until Liberation Sans, which Helvetica is drawn in, is in, for a
+    /// minute at most: typing fonts are read on another thread, Inter standing in until
+    /// then, which on a busy computer is longer than settling takes (macOS CI after 3a).
+    fn liberation_in(app: &mut App, ctx: &egui::Context) {
+        let want = egui::FontFamily::Name("Liberation Sans".into());
+        let helvetica = crate::typing_fonts::Wanted::Standard(FontChoice::default());
+        for _ in 0..6000 {
+            if crate::typing_fonts::family(ctx, helvetica) == want {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            window(app, ctx, 1400.0, vec![]);
+        }
+    }
+
     /// Document properties apply as typed, with no Apply button: Enter or leaving a field
     /// keeps it, one undo step each, and saving keeps what is still being typed.
     #[test]
@@ -13423,6 +13469,7 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         app.tabs[0].forms.reveal = Some(inspector::Section::Watermark);
         let tree = settle(&mut app, &ctx);
+        liberation_in(&mut app, &ctx);
         // On the page in view, written nowhere: drawn over it while a setting is being
         // changed, its text field having the keyboard (once settled, the page is drawn
         // with it instead, ENH-23).

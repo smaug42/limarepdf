@@ -1535,14 +1535,14 @@ pub struct Editor {
     /// The blocks of text of each page ([`limarepdf_core::Pdf::page_blocks`]), read when one
     /// of its lines is selected, kept as `objs` is.
     blocks: HashMap<usize, Vec<limarepdf_core::Block>>,
-    /// The blocks switched to Paragraph while the document is open: page, left edge and
-    /// first baseline.
-    as_paragraph: Vec<(usize, f32, f32)>,
+    /// Paragraph editing is on: page text opens as paragraphs where it can be one (the app's
+    /// setting, lent to each tab; [`Editor::set_paragraph`]).
+    pub paragraphs: bool,
     /// The editor a switch between Paragraph and One line opens once what was typed is in
     /// the document.
     then: Option<Then>,
-    /// The inspector's Editing switch was pressed: Paragraph (true) or One line. The tab
-    /// makes the switch ([`Editor::set_paragraph`]).
+    /// The inspector's Editing switch was pressed: Paragraph (true) or One line. The app
+    /// makes the switch, for every tab ([`Editor::set_paragraph`]).
     pub switch: Option<bool>,
     /// The inspector's Join all was pressed for the paragraph's marked hyphens.
     pub hyphens_wanted: Option<bool>,
@@ -1696,7 +1696,7 @@ impl Default for Editor {
             line_edit: None,
             para: None,
             blocks: HashMap::new(),
-            as_paragraph: Vec::new(),
+            paragraphs: false,
             then: None,
             switch: None,
             hyphens_wanted: None,

@@ -79,9 +79,11 @@ impl Group {
     /// Its controls change the text being typed, which they leave open: a click on them
     /// doesn't end the typing.
     fn keeps_typing(&self) -> bool {
+        // Paragraph switches the text being edited, which the click mustn't end first.
+        let keeps = |a: Act| matches!(a, Act::Paste | Act::Cut | Act::Copy | Act::EditParagraph);
         self.items.iter().any(|i| match i {
             Item::Font => true,
-            Item::Button(b) => matches!(b.act, Some(Act::Paste | Act::Cut | Act::Copy)),
+            Item::Button(b) => b.act.is_some_and(keeps),
             _ => false,
         })
     }
@@ -893,11 +895,12 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
 }
 
 /// Whether `act` is on: a tool in use, or an on/off command that is on.
-fn is_on(act: Act, c: &Ctx) -> bool {
+pub fn is_on(act: Act, c: &Ctx) -> bool {
     match act {
         Act::Tool(t) => c.tool == Some(t) && t != Tool::Read,
-        // Edit text is the Text tool, with nothing selected.
-        Act::EditObjectText => c.tool == Some(Tool::Text),
+        // Edit text is the Text tool, or text being edited on the page; clicked when on, it
+        // goes back to the read tool.
+        Act::EditObjectText => c.tool == Some(Tool::Text) || c.line_edit,
         // Crop while the crop is being set; a click on it again ends that, as in Word.
         Act::Crop => c.cropping,
         _ => actions::get(act).checked.is_some_and(|on| on(c)),

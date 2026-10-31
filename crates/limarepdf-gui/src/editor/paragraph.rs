@@ -3,22 +3,20 @@
 //! the lines core will write and in the fonts it will write them in, kept as one change when
 //! the editing ends.
 //!
-//! A block opens as a paragraph once it is switched to Paragraph (the inspector's Editing
-//! row, Edit > Text flow, the right-click menu or the command search), and again while the
-//! document is open; other lines open a line at a time, as LimarePDF's check of how well it
-//! finds paragraphs judged (testing.md, "Finding paragraphs": [`PARAGRAPH_DEFAULT`]).
+//! Text opens as paragraphs while paragraph editing is on (Edit > Text flow's Paragraph, the
+//! inspector's Editing row, the right-click menu or the command search, remembered between
+//! runs: [`Editor::paragraphs`]), and a line at a time while it is off, as LimarePDF's check
+//! of how well it finds paragraphs judged the default (testing.md, "Finding paragraphs":
+//! [`PARAGRAPH_DEFAULT`]).
 
 use super::*;
 use limarepdf_core::{Block, Doubt, ParagraphSetting, SetParagraph};
 use std::sync::Arc;
 
 /// Whether a double-click, a Text-tool click or Edit text in a block LimarePDF is sure of
-/// opens it as a paragraph without its being switched first. Off while the check of
-/// detection fails on the answer sets (the paragraph design's 4.5).
+/// opens it as a paragraph with paragraph editing off. Off while the check of detection
+/// fails on the answer sets (the paragraph design's 4.5).
 pub(super) const PARAGRAPH_DEFAULT: bool = false;
-
-/// Blocks within half a point of each other are the same block found again.
-const SAME_PLACE: f32 = 0.5;
 
 /// A paragraph of page text being edited on the page.
 pub(super) struct ParaEdit {
@@ -78,10 +76,11 @@ pub(super) enum Then {
     Paragraph(usize, Pos2),
 }
 
-/// Whether a block of a page can be edited as a paragraph, and why not ([`Editor::para_state`]).
+/// Whether the selected text is, or would be, edited as a paragraph, whether it can be,
+/// and why not ([`Editor::para_state`]): the inspector's Editing row.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ParaState {
-    /// A paragraph is being edited.
+    /// A paragraph is being edited, or the line selected would open as one.
     pub on: bool,
     /// The selected line, or the one being edited, is in a block the switch can open as a
     /// paragraph.
@@ -272,30 +271,9 @@ impl Editor {
         blocks.iter().find(|b| b.pieces().any(|p| p == id))
     }
 
-    /// Whether block `b` of `page` was switched to Paragraph while the document is open.
-    fn remembered(&self, page: usize, b: &Block) -> bool {
-        let f = &b.frame;
-        let near = |a: f32, b: f32| (a - b).abs() < SAME_PLACE;
-        (self.as_paragraph.iter())
-            .any(|&(p, left, base)| p == page && near(left, f.left) && near(base, f.baseline))
-    }
-
-    /// Remember block `b` of `page` as switched to Paragraph (`on`) or not.
-    fn remember(&mut self, page: usize, b: &Block, on: bool) {
-        let was = self.remembered(page, b);
-        if on && !was {
-            let f = b.frame;
-            self.as_paragraph.push((page, f.left, f.baseline));
-        } else if !on && was {
-            let f = b.frame;
-            let near = |a: f32, b: f32| (a - b).abs() < SAME_PLACE;
-            self.as_paragraph
-                .retain(|&(p, l, base)| !(p == page && near(l, f.left) && near(base, f.baseline)));
-        }
-    }
-
-    /// Whether line `id` of `page` opens as a paragraph: its block was switched to
-    /// Paragraph, or LimarePDF is sure of it and that is the default ([`PARAGRAPH_DEFAULT`]).
+    /// Whether line `id` of `page` opens as a paragraph: its block can be edited as one and
+    /// paragraph editing is on, or LimarePDF is sure of it and that is the default
+    /// ([`PARAGRAPH_DEFAULT`]).
     pub(super) fn opens_as_paragraph(
         &mut self,
         pdf: &limarepdf_core::Pdf,
@@ -309,12 +287,13 @@ impl Editor {
         let Some(b) = self.block_of(pdf, page, id) else {
             return false;
         };
-        refused(&b).is_none() && (self.remembered(page, &b) || PARAGRAPH_DEFAULT && b.confident())
+        refused(&b).is_none() && (self.paragraphs || PARAGRAPH_DEFAULT && b.confident())
     }
 
     /// Whether the selected line, or the one being edited, can be edited as a paragraph,
-    /// and whether one is: for the switch's state and its hover text. The blocks are those
-    /// read for the page ([`Editor::read_blocks`]).
+    /// and whether it is (being edited as one, or, selected, opening as one): for the
+    /// inspector's switch and its hover text. The blocks are those read for the page
+    /// ([`Editor::read_blocks`]).
     pub fn para_state(&self) -> ParaState {
         if self.para.is_some() {
             return ParaState {
@@ -343,9 +322,10 @@ impl Editor {
             (true, None) => Some(ON_ITS_OWN),
             (true, Some(b)) => refused(b),
         };
+        let can = why.is_none();
         ParaState {
-            on: false,
-            can: why.is_none(),
+            on: can && self.paragraphs && self.line_edit.is_none(),
+            can,
             why,
         }
     }
@@ -425,7 +405,6 @@ impl Editor {
         self.sync_insp();
         self.line_edit = None;
         self.cover = None;
-        self.remember(page, &block, true);
         let text = Styled::of_paragraph(&para, font_of);
         self.para = Some(ParaEdit {
             page,
@@ -493,19 +472,20 @@ impl Editor {
         }
     }
 
-    /// Edit as a paragraph (`on`) or a line at a time: the switch in the inspector, Edit >
-    /// Text flow, the menus and the command search. What was typed is kept first, as one
-    /// change, and the other editor opens where the caret was; with a line selected and
-    /// nothing typed, its block opens as a paragraph, the caret at the line's end. The
-    /// choice is remembered for the block while the document is open.
+    /// Paragraph editing on (`on`) or off: Edit > Text flow's Paragraph, the inspector's
+    /// Editing row, the menus and the command search ([`Editor::paragraphs`]; the app keeps
+    /// the choice). The text being edited follows: what was typed is kept first, as one
+    /// change, and the other editor opens where the caret was; on, a line selected and not
+    /// being edited opens as its paragraph, the caret at the line's end. A line that can't be
+    /// a paragraph stays a line.
     pub fn set_paragraph(&mut self, pdf: &limarepdf_core::Pdf, on: bool) {
+        self.paragraphs = on;
         if let Some(pe) = self.para.as_ref().filter(|_| !on) {
-            let (page, block) = (pe.page, pe.block.clone());
+            let (page, block) = (pe.page, &pe.block);
             let at = pe.caret_at.unwrap_or_else(|| {
                 let l = &block.lines[0];
                 Pos2::new(l.bbox[0], (l.bbox[1] + l.bbox[3]) / 2.0)
             });
-            self.remember(page, &block, false);
             self.then = Some(Then::Line(page, at));
             self.end_paragraph(true);
             return;
@@ -522,7 +502,6 @@ impl Editor {
         if refused(&block).is_some() {
             return;
         }
-        self.remember(page, &block, true);
         if let Some(le) = self.line_edit.as_ref() {
             let at = le.caret_at.unwrap_or_else(|| {
                 let b = block.lines[0].bbox;
@@ -535,9 +514,7 @@ impl Editor {
         let end = (self.objs.get(&page).and_then(|v| v.get(id)))
             .and_then(|o| o.text.as_deref())
             .map_or(0, |t| t.chars().count());
-        if !self.start_paragraph(pdf, page, id, Pick::Chars(end, end)) {
-            self.remember(page, &block, false);
-        }
+        self.start_paragraph(pdf, page, id, Pick::Chars(end, end));
     }
 
     /// Open the editor a switch asked for ([`Then`]) once what was typed before it is in
@@ -552,7 +529,8 @@ impl Editor {
         }
         self.then = None;
         self.objects(pdf, page);
-        let Some(id) = self.text_hit(page, at, 3.0 / k.max(0.01)) else {
+        let hit = self.text_hit(page, at, 3.0 / k.max(0.01));
+        let Some(id) = hit.or_else(|| self.row_hit(page, at)) else {
             return;
         };
         match then {
@@ -565,10 +543,23 @@ impl Editor {
         }
     }
 
+    /// The line of page text in the row of `p` on `page` nearest it: what a caret past a
+    /// line's end was in, placed while the line was drawn in a stand-in font, wider or
+    /// narrower than its own, which is still loading.
+    fn row_hit(&self, page: usize, p: Pos2) -> Option<usize> {
+        let objs = self.objs.get(&page)?;
+        let gap = |b: [f32; 4]| (b[0] - p.x).max(p.x - b[2]).max(0.0);
+        (objs.iter().enumerate())
+            .filter(|(_, o)| o.kind == ObjectKind::Text && !o.hidden)
+            .filter(|(_, o)| (o.bbox[1]..=o.bbox[3]).contains(&p.y))
+            .min_by(|(_, a), (_, b)| gap(a.bbox).total_cmp(&gap(b.bbox)))
+            .map(|(i, _)| i)
+    }
+
     /// Open the paragraph of the words selected with the read tool, the words selected in
-    /// it, when they are all in one block switched to Paragraph, or, `across` its lines, one
-    /// LimarePDF is sure of (stage 3's Q3): typing over them, or deleting them, rewraps it.
-    /// Whether it opened.
+    /// it, when they are all in one block that can be a paragraph, with paragraph editing
+    /// on, or, `across` its lines, one LimarePDF is sure of (stage 3's Q3): typing over them,
+    /// or deleting them, rewraps it. Whether it opened.
     pub(super) fn words_paragraph(&mut self, pdf: &limarepdf_core::Pdf, across: bool) -> bool {
         self.sync_chosen(pdf);
         let Some(c) = self.chosen.as_ref() else {
@@ -590,7 +581,7 @@ impl Editor {
             return false;
         };
         let inside = ids.iter().all(|&(_, id)| block.pieces().any(|p| p == id));
-        let sure = self.remembered(page, &block) || across && block.confident();
+        let sure = self.paragraphs || across && block.confident();
         if !inside || !sure || refused(&block).is_some() {
             return false;
         }

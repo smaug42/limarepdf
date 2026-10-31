@@ -4,11 +4,12 @@
 
 ### Added
 
-- Paragraphs can be edited as one, their lines rewrapping as you type, as in a word processor. Double-click a line
-  of the paragraph, then choose **Paragraph** in the inspector's new **Editing** row, in **Edit > Text flow** in
-  the band (no longer marked Planned), or **Edit as paragraph** in the right-click menu or the command search; the
-  paragraph opens as one from then on while the document is open, and **One line** goes back to editing a line at
-  a time. The paragraph is drawn on the lines it will be written on, in its own fonts, inside its frame's edges and
+- Paragraphs can be edited as one, their lines rewrapping as you type, as in a word processor. Turn on
+  **Paragraph** in **Edit > Text flow** in the band (no longer marked Planned; also **Edit as paragraph** in the
+  right-click menu and the command search, and **Paragraph** in the inspector's new **Editing** row); a
+  double-click, a Text-tool click or Edit text then opens the paragraph, and the choice is remembered between runs.
+  Turned on or off while a line or paragraph is being edited, it switches that text where the caret is. The
+  paragraph is drawn on the lines it will be written on, in its own fonts, inside its frame's edges and
   alignment (justified lines stretched to the edge); Enter starts a new paragraph and Shift+Enter a new line; the
   status bar says **Editing a paragraph**. Lines whose breaks don't change stay exactly as they were, and the edit
   is one undo step. A hyphen that ended a line is read by the document's own words: one only put in to break the
@@ -129,6 +130,8 @@
   that command's icon rather than to a button with the group's name that opens it.
 - Typing over words selected in different paragraphs now says "Type over words within one paragraph." (before:
   within one line).
+- **Edit > Edit text** shows pressed while text is being edited on the page, as well as while the Text tool is
+  on, and clicked again it goes back to the read tool, keeping what was typed. Before, it stayed on the Text tool.
 - Undo and Redo in the commands row act on what you are typing, as Ctrl+Z and Ctrl+Y do, in a line, new text, a
   note, a text box, a form field or a box of the inspector: the keyboard stays where you are typing, and they are
   greyed when there is nothing there to undo or redo. Before, Undo kept the typing and then took the whole of it
