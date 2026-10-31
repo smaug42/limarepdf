@@ -3,7 +3,7 @@
 Every feature's status in detail, with its limits, what doesn't work yet and what is planned, for testers and
 people working on LimarePDF. The user guide's [Features](../features.md) is the short summary.
 
-**Status: 0.11, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
+**Status: 0.12, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
 can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures
 can be checked, made with your own or an imported digital ID, certified, and kept valid when a signed document is
@@ -44,7 +44,7 @@ with Acrobat are still to be tested.
 
 ## What doesn't work yet
 
-Things you would expect an everyday PDF editor to do that LimarePDF doesn't yet, as of 0.11. Each is removed from
+Things you would expect an everyday PDF editor to do that LimarePDF doesn't yet, as of 0.12. Each is removed from
 this list once it works. The feature table below has the details.
 
 **Typing and editing text**
