@@ -21,6 +21,7 @@ mod macos;
 mod markup;
 mod page_text;
 mod panels;
+mod present;
 mod recent;
 mod recovery;
 mod regions;

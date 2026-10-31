@@ -19,8 +19,8 @@ To check that a download really comes from this project, see [Checking a downloa
 
 ### The app doesn't start on Linux
 
-The desktop app needs a working OpenGL graphics driver and an X11 or Wayland desktop session. Start `limarepdf` from
-a terminal to see why it stopped, and [report it](#reporting-a-problem) with that message.
+The desktop app needs a working Vulkan or OpenGL graphics driver and an X11 or Wayland desktop session. Start
+`limarepdf` from a terminal to see why it stopped, and [report it](#reporting-a-problem) with that message.
 
 ### The window has a plain icon on Linux
 

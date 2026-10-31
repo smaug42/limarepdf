@@ -159,6 +159,14 @@ pub(crate) struct FontCtx<'a> {
     /// Glyph widths to 1/1000 em: 1, except for Type 3 fonts, whose widths are in their
     /// own glyph space (`/FontMatrix`).
     scale: f32,
+    /// How tall the font's text is in text space at a size of 1: 1, except for a Type 3
+    /// font whose glyphs plainly say otherwise ([`FontCtx::type3_em`]), such as TeX's bitmap
+    /// fonts, drawn in pixels at a size of 1.
+    pub em: f32,
+    /// A Type 3 font whose matrix turns its glyphs upside down in text space, as TeX's
+    /// bitmap fonts' does, to stand them up again where the text matrix turns text space
+    /// over (PB-56).
+    pub flipped: bool,
     /// Whether [`FontCtx::codes`] splits strings the way the font does: always for simple
     /// fonts, and for Type 0 fonts whose CMap and its codespace were read or that are
     /// two-byte Unicode.
@@ -170,6 +178,56 @@ pub(crate) struct FontCtx<'a> {
 
 fn f(doc: &Document, o: &Object) -> Option<f32> {
     doc.dereference(o).ok()?.1.as_float().ok()
+}
+
+/// Which way a Type 3 font's glyphs stand in their glyph space: 1 when their ink is mostly
+/// above the baseline, as glyphs are drawn; -1 when below, in a font whose matrix turns them
+/// over to stand them up (PB-56). Read from the boxes its glyphs give (`d1`), a few of them,
+/// else from the font's box. A bitmap's rows can be stored upside down too, which only its
+/// pixels say: such a font is taken as its boxes stand.
+fn type3_up(doc: &Document, font: &Dictionary) -> f32 {
+    // A glyph procedure starts `wx wy llx lly urx ury d1` when it gives its box.
+    const LOOKED_AT: usize = 16;
+    const MAX_GLYPH: usize = 1 << 16;
+    let procs = (font.get(b"CharProcs").ok())
+        .and_then(|o| doc.dereference(o).ok())
+        .and_then(|(_, o)| o.as_dict().ok());
+    let (mut above, mut below) = (0, 0);
+    for (_, p) in procs.into_iter().flat_map(|d| d.iter()).take(LOOKED_AT) {
+        let Ok((_, Object::Stream(s))) = doc.dereference(p) else {
+            continue;
+        };
+        let Ok(data) = s.get_plain_content_with_limit(MAX_GLYPH) else {
+            continue;
+        };
+        let words: Vec<&[u8]> = (data.split(|b| b.is_ascii_whitespace()))
+            .filter(|w| !w.is_empty())
+            .take(7)
+            .collect();
+        let number = |w: &[u8]| std::str::from_utf8(w).ok()?.parse::<f32>().ok();
+        if words.len() == 7 && words[6] == b"d1" {
+            match (number(words[3]), number(words[5])) {
+                (Some(lo), Some(hi)) if lo + hi > 0.0 => above += 1,
+                (Some(lo), Some(hi)) if lo + hi < 0.0 => below += 1,
+                _ => {}
+            }
+        }
+    }
+    if above + below == 0 {
+        let bbox: Vec<f32> = (font.get(b"FontBBox").ok())
+            .and_then(|o| doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_array().ok())
+            .map(|a| a.iter().filter_map(|o| f(doc, o)).collect())
+            .unwrap_or_default();
+        if let [_, lly, _, ury] = bbox[..] {
+            return if lly + ury < 0.0 { -1.0 } else { 1.0 };
+        }
+    }
+    if below > above {
+        -1.0
+    } else {
+        1.0
+    }
 }
 
 /// The character collection a CID font's `/CIDSystemInfo` names (`Adobe-Japan1`, ...).
@@ -602,6 +660,8 @@ impl<'a> FontCtx<'a> {
             has_widths: false,
             encoding_ok,
             scale: 1.0,
+            em: 1.0,
+            flipped: false,
             codes_known: !type0
                 || enc_name.as_deref().is_some_and(|n| {
                     n.starts_with("Identity-") || n.contains("UCS2") || n.contains("UTF16")
@@ -619,17 +679,20 @@ impl<'a> FontCtx<'a> {
                     }
                 },
         };
+        // A Type 3 font's matrix: [a b c d e f] from glyph space to text space.
+        let mut type3 = None;
         if name(dict, b"Subtype").as_deref() == Some("Type3") {
-            let fm = dict
+            let fm: Vec<f32> = dict
                 .get(b"FontMatrix")
                 .ok()
                 .and_then(|o| doc.dereference(o).ok())
                 .and_then(|(_, o)| o.as_array().ok())
-                .and_then(|a| a.first())
-                .and_then(|o| f(doc, o));
-            if let Some(a) = fm.filter(|a| a.is_finite() && *a != 0.0) {
+                .map(|a| a.iter().map(|o| f(doc, o).unwrap_or(0.0)).collect())
+                .unwrap_or_default();
+            if let Some(&a) = fm.first().filter(|a| a.is_finite() && **a != 0.0) {
                 ctx.scale = a * 1000.0;
             }
+            type3 = (fm.len() >= 4 && fm.iter().all(|v| v.is_finite())).then_some(fm);
         }
         if type0 {
             let desc = dict
@@ -712,7 +775,59 @@ impl<'a> FontCtx<'a> {
                     .unwrap_or(0.0);
             }
         }
+        if let Some(fm) = type3 {
+            let (b, c, d) = (fm[1], fm[2], fm[3]);
+            // Upside down: its glyphs' up runs down text space (rotations and slants aside).
+            let level = b.abs() <= 1e-3 * d.abs() && c.abs() <= 1e-3 * d.abs();
+            ctx.flipped = level && d * type3_up(doc, dict) < 0.0;
+            ctx.em = ctx.type3_em(d.abs());
+        }
         ctx
+    }
+
+    /// How tall a Type 3 font's text is in text space at a size of 1 ([`FontCtx::em`]), its
+    /// matrix scaling glyph space by `d` upwards. A Type 3 font draws its glyphs
+    /// at any scale, so it is measured by its letters and digits: each one's width against
+    /// the width it usually has (Times' and Helvetica's, averaged), the median of those.
+    /// With none, by its median width as half an em. That the size set is the em, as for
+    /// every other font, stands when it is within a quarter of the measure.
+    fn type3_em(&self, d: f32) -> f32 {
+        if d <= 0.0 {
+            return 1.0;
+        }
+        let codes = (self.first..).zip(&self.widths);
+        let mut ems: Vec<f32> = Vec::new();
+        let mut widths: Vec<f32> = Vec::new();
+        for (code, &w) in codes.filter(|(_, w)| **w > 0.0 && w.is_finite()) {
+            widths.push(w);
+            let text = self.decode_code(code, &[code as u8]);
+            let mut chars = text.chars();
+            let (Some(ch), None) = (chars.next(), chars.next()) else {
+                continue;
+            };
+            if !ch.is_ascii_alphanumeric() {
+                continue;
+            }
+            let usual = std14::width("Times-Roman", ch).zip(std14::width("Helvetica", ch));
+            if let Some((t, h)) = usual {
+                // The em in glyph space, as this letter says it.
+                ems.push(w * 2000.0 / (t + h));
+            }
+        }
+        let median = |v: &mut Vec<f32>| {
+            v.sort_by(f32::total_cmp);
+            v.get(v.len() / 2).copied()
+        };
+        let glyph_em = median(&mut ems).or_else(|| median(&mut widths).map(|w| w * 2.0));
+        // In text space, as tall as the glyphs stand: `d` scales their heights.
+        let Some(em) = glyph_em.map(|e| e * d) else {
+            return 1.0;
+        };
+        if (0.75..=1.0 / 0.75).contains(&em) {
+            1.0
+        } else {
+            em
+        }
     }
 
     /// Read a CID font's `/W` array into `wmap`. CIDs past [`MAX_CID`] are left out, so

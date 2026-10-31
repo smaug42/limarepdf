@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind,
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
     emoji_sequence, unwritten_script, writable, BoxSetting, FontChoice, LineFont, PartFont,
-    TextPart,
+    SetLine, TextPart,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -114,13 +114,20 @@ pub struct Shown {
 /// Whether `c` can be typed in `font`: line breaks, and what LimarePDF can write in it (the
 /// standard font or its embedded face, or the installed family's face).
 fn typable(c: char, font: FontChoice) -> bool {
-    c == '\n' || writable(font, c)
+    matches!(c, '\n' | PARAGRAPH_BREAK | SOFT_HYPHEN) || writable(font, c)
 }
 
+/// What Enter types in a paragraph: a new paragraph in its frame (core's rewrap starts one
+/// there, [`limarepdf_core::ParagraphSetting::set`]); Shift+Enter types a line break.
+pub const PARAGRAPH_BREAK: char = '\u{2029}';
+
+/// A discretionary hyphen in a paragraph's text: shown only where its word ends a line.
+pub const SOFT_HYPHEN: char = '\u{AD}';
+
 /// `s` without the characters that can't be typed in `font` (tabs become spaces, carriage
-/// returns go, and in a `single` line, line breaks become spaces), and the first one
-/// refused. Each character as readers see it (a grapheme cluster) is kept or left out
-/// whole, so an emoji sequence goes whole rather than leave a part that says something
+/// returns go, and in a `single` line, line and paragraph breaks become spaces), and the
+/// first one refused. Each character as readers see it (a grapheme cluster) is kept or left
+/// out whole, so an emoji sequence goes whole rather than leave a part that says something
 /// else (a thumb without its skin tone).
 fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<String>) {
     let s: String = s
@@ -128,7 +135,7 @@ fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<Stri
         .filter_map(|c| match c {
             '\r' => None,
             '\t' => Some(' '),
-            '\n' if single => Some(' '),
+            '\n' | PARAGRAPH_BREAK if single => Some(' '),
             c => Some(c),
         })
         .collect();
@@ -873,6 +880,323 @@ pub fn set_in_box(
     Boxed { galley, margin, px }
 }
 
+/// A paragraph being typed, `text`, laid out on the lines core sets it in (`lines`,
+/// [`limarepdf_core::ParagraphSetting::set`]): each line a row of its own at its place on the
+/// page (`at` puts a place in page points on the screen), its spaces stretched as a
+/// justified line's are written, a soft hyphen shown only at the end of a line that ends
+/// with it, drawn in `runs` ([`runs`], `k` screen points a page point). egui wraps nothing:
+/// the rows are core's lines, so the caret, the selection and an input method go by the
+/// breaks that are written. Also returns where the galley's top left is on the screen.
+pub fn paragraph_galley(
+    ctx: &egui::Context,
+    text: &str,
+    runs: &[Run],
+    lines: &[SetLine],
+    k: f32,
+    at: &dyn Fn(f32, f32) -> Pos2,
+) -> (Arc<Galley>, Pos2) {
+    let chars: Vec<char> = text.chars().collect();
+    // What is laid out: each line ending in a line break (put in where the text has none),
+    // a paragraph break shown as one, a soft hyphen ending a line where it shows as a
+    // hyphen. For each character laid out: the typed character it is (none for a break put
+    // in), what it adds after it (a justified line's spaces), and whether it is hidden (a
+    // soft hyphen inside a line).
+    let mut shown = String::with_capacity(text.len() + lines.len());
+    let mut of: Vec<Option<usize>> = Vec::with_capacity(chars.len() + lines.len());
+    let mut extra: Vec<(usize, f32)> = Vec::new();
+    let mut hidden: Vec<usize> = Vec::new();
+    let mut runs = runs.to_vec();
+    let mut soft: Vec<bool> = Vec::new();
+    let mut done = 0;
+    for (i, l) in lines.iter().enumerate() {
+        let (a, b) = (l.chars.0.min(chars.len()), l.chars.1.min(chars.len()));
+        let mut end = b;
+        while end > a && chars[end - 1].is_whitespace() {
+            end -= 1;
+        }
+        for (j, &c) in chars.iter().enumerate().take(b).skip(a.max(done)) {
+            let n = of.len();
+            shown.push(match c {
+                PARAGRAPH_BREAK => '\n',
+                SOFT_HYPHEN if l.hyphen && j + 1 == end => '-',
+                SOFT_HYPHEN => {
+                    hidden.push(n);
+                    c
+                }
+                ' ' if j < end && l.stretch > 0.0 => {
+                    extra.push((n, l.stretch * k));
+                    c
+                }
+                c => c,
+            });
+            of.push(Some(j));
+        }
+        done = done.max(b);
+        let made = i + 1 < lines.len() && !shown.ends_with('\n');
+        if made {
+            // In the run of the character before it.
+            let mut before = of.len();
+            if let Some(r) = runs.iter_mut().find(|r| {
+                let first = before <= r.chars;
+                before = before.saturating_sub(r.chars);
+                first
+            }) {
+                r.chars += 1;
+            }
+            shown.push('\n');
+            of.push(None);
+        }
+        soft.push(made);
+    }
+    for (j, &c) in chars.iter().enumerate().skip(done) {
+        shown.push(c);
+        of.push(Some(j));
+    }
+    // Each laid-out character's bytes.
+    let bytes: Vec<usize> = (shown.char_indices().map(|(b, _)| b))
+        .chain([shown.len()])
+        .collect();
+    let laid = ctx.fonts_mut(|f| {
+        let (mut job, _) = job(f, &shown, &runs, LEADING);
+        // The stretched spaces and hidden soft hyphens, each a section of its own: what
+        // follows a space starts the stretch further on (egui spaces a section's start, not
+        // its end), on the same line; a soft hyphen, which egui's shaping gives no width,
+        // has no ink.
+        let mut special: Vec<(usize, Option<f32>)> = (extra.iter())
+            .map(|&(n, e)| (n, Some(e)))
+            .chain(hidden.iter().map(|&n| (n, None)))
+            .collect();
+        special.sort_by_key(|s| s.0);
+        let mut sections = Vec::with_capacity(job.sections.len() + 2 * special.len());
+        let mut next = special.iter().peekable();
+        let mut carry = 0.0;
+        // An empty section (empty text) stays, for its look.
+        let mut push = |range: Range<usize>, s: &egui::text::LayoutSection, carry: &mut f32| {
+            if range.is_empty() && !s.byte_range.is_empty() {
+                return;
+            }
+            sections.push(egui::text::LayoutSection {
+                leading_space: s.leading_space + std::mem::take(carry),
+                byte_range: ByteIndex(range.start)..ByteIndex(range.end),
+                format: s.format.clone(),
+            });
+        };
+        for s in std::mem::take(&mut job.sections) {
+            let (from, to) = (s.byte_range.start.0, s.byte_range.end.0);
+            let mut at = from;
+            while let Some(&&(n, e)) = next.peek().filter(|(n, _)| bytes[*n] < to) {
+                next.next();
+                let (a, b) = (bytes[n], bytes[n + 1]);
+                if a < at {
+                    continue;
+                }
+                push(at..a, &s, &mut carry);
+                let mut own = s.clone();
+                if e.is_none() {
+                    own.format.color = Color32::TRANSPARENT;
+                }
+                push(a..b, &own, &mut carry);
+                carry = e.unwrap_or(0.0);
+                at = b;
+            }
+            push(at..to, &s, &mut carry);
+            if shown[from..to].contains('\n') {
+                carry = 0.0;
+            }
+        }
+        job.sections = sections;
+        f.layout_job(job)
+    });
+    let mut g = (*laid).clone();
+    if g.rows.len() != lines.len() {
+        return (laid, at(0.0, 0.0));
+    }
+    // The breaks put in take no character; the job's text is the text as typed, what the
+    // caret, selection and double-click go by.
+    for (row, &made) in g.rows.iter_mut().zip(&soft) {
+        if made {
+            row.ends_with_newline = false;
+        }
+    }
+    let typed_byte: Vec<usize> = {
+        let starts: Vec<usize> = (text.char_indices().map(|(b, _)| b))
+            .chain([text.len()])
+            .collect();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut next = 0;
+        for o in &of {
+            out.push(starts[next]);
+            if let Some(j) = o {
+                next = j + 1;
+            }
+        }
+        out.push(text.len());
+        out
+    };
+    let to_typed = |b: usize| {
+        let n = bytes.partition_point(|&x| x < b);
+        ByteIndex(typed_byte[n.min(typed_byte.len() - 1)])
+    };
+    let mut job = (*g.job).clone();
+    job.text = text.to_string();
+    for s in &mut job.sections {
+        s.byte_range = to_typed(s.byte_range.start.0)..to_typed(s.byte_range.end.0);
+    }
+    g.job = Arc::new(job);
+    // Each row at its line's place: its baseline on the line's, its start at the line's x.
+    let rise = |n: usize| {
+        let mut left = n;
+        (runs.iter())
+            .find(|r| {
+                let here = left < r.chars;
+                left = left.saturating_sub(r.chars);
+                here
+            })
+            .map_or(0.0, |r| r.rise)
+    };
+    // Each row's first character laid out: a glyph a character, and the break ending it.
+    let mut start = 0;
+    let mut places = Vec::with_capacity(lines.len());
+    for (row, l) in g.rows.iter().zip(lines) {
+        let base = match row.row.glyphs.first() {
+            Some(gl) => gl.pos.y + rise(start),
+            None => row.row.size.y * 0.8,
+        };
+        places.push(at(l.x, l.baseline) - Vec2::new(0.0, base));
+        start += row.row.glyphs.len() + 1;
+    }
+    let min = (places.iter()).fold(Pos2::new(f32::MAX, f32::MAX), |m, p| m.min(*p));
+    let (mut rect, mut mesh) = (Rect::NOTHING, Rect::NOTHING);
+    for (row, p) in g.rows.iter_mut().zip(&places) {
+        row.pos = (*p - min).to_pos2();
+        rect = rect.union(row.rect());
+        mesh = mesh.union(row.row.visuals.mesh_bounds.translate(row.pos.to_vec2()));
+    }
+    g.rect = rect;
+    g.mesh_bounds = mesh;
+    (Arc::new(g), min)
+}
+
+/// How a paragraph being typed on the page is drawn this frame ([`paragraph_field`]).
+pub struct ParaStyle<'a> {
+    /// The text as the editor has it laid out on its lines ([`paragraph_galley`]), and
+    /// where its top left is on the screen.
+    pub laid: &'a dyn Fn(&str) -> (Arc<Galley>, Pos2),
+    /// The page colour mode, for the caret and selection: light on dark paper.
+    pub mode: PageColours,
+    /// The outline's colour.
+    pub accent: Color32,
+    /// The frame's left and right edges on the screen, which the outline takes in.
+    pub frame: (f32, f32),
+    /// Why the text, as its lines are laid out on the screen, runs over: past the page's
+    /// edge or over other text or pictures. `None` when it fits.
+    pub warn: &'a dyn Fn(&[Rect]) -> Option<&'static str>,
+}
+
+/// Draw a paragraph, `text`, for typing (the editor `id`) on the lines it will be written
+/// on ([`ParaStyle::laid`]), outlined round its frame. `covers`, rectangles on the screen,
+/// are painted in `fill` under it first: the lines being edited, hidden so they don't show
+/// twice.
+pub fn paragraph_field(
+    ctx: &egui::Context,
+    id: egui::Id,
+    text: &mut String,
+    style: &ParaStyle,
+    covers: &[Rect],
+    fill: Option<Color32>,
+) -> Field {
+    let (galley, origin) = (style.laid)(text);
+    let inner = Rect::from_min_size(origin, galley.size());
+    let rows: Vec<Rect> = (galley.rows.iter())
+        .map(|r| r.rect().translate(origin.to_vec2()))
+        .collect();
+    let warning = (style.warn)(&rows);
+    let (left, right) = style.frame;
+    let x = left.min(inner.min.x)..=right.max(inner.max.x);
+    let outline = Rect::from_x_y_ranges(x, inner.y_range()).expand(3.0);
+    let covered = (covers.iter()).fold(outline, |r, c| r.union(*c));
+    let out = egui::Area::new(id.with("area"))
+        .fixed_pos(covered.min)
+        .constrain(false)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            *ui.visuals_mut() = match style.mode {
+                PageColours::Dark | PageColours::HighContrast => egui::Visuals::dark(),
+                PageColours::Normal | PageColours::Sepia => egui::Visuals::light(),
+            };
+            ui.expand_to_include_rect(covered);
+            if let Some(fill) = fill {
+                for c in covers {
+                    ui.painter().rect_filled(*c, 0.0, fill);
+                }
+            }
+            outline_ui(ui, outline, style.accent, warning);
+            let mut layouter = |_: &egui::Ui, t: &dyn egui::TextBuffer, _: f32| {
+                let (g, at) = (style.laid)(t.as_str());
+                // Laid out with what this frame typed, it starts where the box does.
+                if at == origin {
+                    return g;
+                }
+                let mut g = (*g).clone();
+                for row in &mut g.rows {
+                    row.pos += at - origin;
+                }
+                g.rect = g.rect.translate(at - origin);
+                g.mesh_bounds = g.mesh_bounds.translate(at - origin);
+                Arc::new(g)
+            };
+            let mut buffer = Clusters(text);
+            let te = egui::TextEdit::multiline(&mut buffer)
+                .id(id)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .desired_rows(1)
+                .desired_width(inner.width())
+                .min_size(inner.size())
+                .clip_text(false)
+                .return_key(None)
+                .layouter(&mut layouter);
+            let held = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range());
+            let mut out = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| te.show(ui))
+                .inner;
+            keep_on_right_click(ctx, id, &mut out, held);
+            snap_drawn(ctx, id, &mut out, buffer.0, held);
+            out
+        })
+        .inner;
+    Field {
+        out,
+        grip: None,
+        outline,
+    }
+}
+
+/// The outline round text being typed on the page (ENH-22): the accent, or the caution
+/// colour when it runs over (`warning`, said on a tag just below the outline's right end),
+/// and inside it a line that stands out against it, so it shows on paper of either colour.
+fn outline_ui(ui: &mut egui::Ui, outline: Rect, accent: Color32, warning: Option<&str>) {
+    let edge = match warning {
+        Some(_) => theme::tone(ui.visuals().dark_mode, theme::Tone::Caution),
+        None => None,
+    }
+    .unwrap_or(accent);
+    let halo = Stroke::new(1.0, theme::halo(edge));
+    let painter = ui.painter();
+    painter.rect_stroke(outline, 2.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+    painter.rect_stroke(outline.shrink(1.0), 1.0, halo, StrokeKind::Inside);
+    if let Some(why) = warning {
+        let text = egui::RichText::new(why).size(11.0).color(theme::halo(edge));
+        let g = painter.layout_no_wrap(why.into(), egui::FontId::proportional(11.0), edge);
+        let size = g.size() + Vec2::new(8.0, 4.0);
+        let at = Pos2::new(outline.max.x - size.x, outline.max.y + 2.0);
+        let tag = Rect::from_min_size(at, size);
+        ui.expand_to_include_rect(tag);
+        ui.painter().rect_filled(tag, 3.0, edge);
+        ui.put(tag, egui::Label::new(text).selectable(false));
+    }
+}
+
 /// How text being typed on the page is drawn this frame.
 pub struct Style<'a> {
     /// The runs of the text as the editor has it, which within a frame can be ahead of
@@ -1114,29 +1438,7 @@ pub fn field(
                 dialogs::set_name(&r, "Move the text");
                 r
             });
-            // Two lines (ENH-22): the accent, or the caution colour when the text runs over,
-            // and inside it one that stands out against it, so the outline shows on paper
-            // of either colour.
-            let edge = match warning {
-                Some(_) => theme::tone(ui.visuals().dark_mode, theme::Tone::Caution),
-                None => None,
-            }
-            .unwrap_or(style.accent);
-            let halo = Stroke::new(1.0, theme::halo(edge));
-            let painter = ui.painter();
-            painter.rect_stroke(outline, 2.0, Stroke::new(1.0, edge), StrokeKind::Inside);
-            painter.rect_stroke(outline.shrink(1.0), 1.0, halo, StrokeKind::Inside);
-            // What it runs over, on a tag just below the outline's right end.
-            if let Some(why) = warning {
-                let text = egui::RichText::new(why).size(11.0).color(theme::halo(edge));
-                let g = painter.layout_no_wrap(why.into(), egui::FontId::proportional(11.0), edge);
-                let size = g.size() + Vec2::new(8.0, 4.0);
-                let at = Pos2::new(outline.max.x - size.x, outline.max.y + 2.0);
-                let tag = Rect::from_min_size(at, size);
-                ui.expand_to_include_rect(tag);
-                ui.painter().rect_filled(tag, 3.0, edge);
-                ui.put(tag, egui::Label::new(text).selectable(false));
-            }
+            outline_ui(ui, outline, style.accent, warning);
             let mut layouter =
                 |_: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| laid(text.as_str()).0;
             let mut buffer = Clusters(text);
@@ -1363,6 +1665,77 @@ impl PageText {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paragraph's typing box lays out core's lines ([`paragraph_galley`]): a row a line,
+    /// each starting at its line's place with its baseline on the line's; a soft hyphen
+    /// shown as a hyphen where it ends a line and taking no room inside one; a justified
+    /// line's spaces wider by its stretch; a paragraph break and a line break each ending
+    /// their row; the galley's text the text as typed, which the caret goes by.
+    #[test]
+    fn a_paragraphs_box_lays_out_cores_lines_where_they_are_written() {
+        let ctx = egui::Context::default();
+        (ctx.run_ui(Default::default(), |_| {}).textures_delta).clear();
+        let text = "One two\u{AD}thr\u{AD}ee four five\u{2029}Six\nseven";
+        let chars: Vec<char> = text.chars().collect();
+        let at_char = |s: &str| {
+            let b = text.find(s).unwrap();
+            text[..b].chars().count()
+        };
+        let ends = ["thr", "Six", "seven"].map(at_char);
+        let ends = [ends[0], ends[1], ends[2], chars.len()];
+        let mut lines = Vec::new();
+        let mut from = 0;
+        for (i, &to) in ends.iter().enumerate() {
+            lines.push(SetLine {
+                chars: (from, to),
+                kept: None,
+                x: if i == 1 { 80.0 } else { 72.0 },
+                baseline: 100.0 + 14.0 * i as f32,
+                width: 0.0,
+                stretch: if i == 0 { 2.0 } else { 0.0 },
+                hyphen: i == 0,
+            });
+            from = to;
+        }
+        let k = 2.0;
+        let run = Run {
+            chars: chars.len(),
+            font: egui::FontId::proportional(12.0 * k),
+            coords: VariationCoords::default(),
+            color: Color32::BLACK,
+            rise: 0.0,
+        };
+        let at = |x: f32, y: f32| Pos2::new(10.0 + x * k, 20.0 + y * k);
+        let (g, origin) = paragraph_galley(&ctx, text, &[run], &lines, k, &at);
+        assert_eq!(g.rows.len(), lines.len());
+        assert_eq!(g.job.text, text);
+        for (row, l) in g.rows.iter().zip(&lines) {
+            let start = origin + row.pos.to_vec2();
+            let base = start.y + row.row.glyphs[0].pos.y;
+            let want = at(l.x, l.baseline);
+            assert!((start.x - want.x).abs() < 0.01, "{l:?}: at {}", start.x);
+            assert!((base - want.y).abs() < 0.01, "{l:?}: baseline {base}");
+            // Its characters, the break ending it among them where the text has one.
+            let n = row.row.glyphs.len() + usize::from(row.ends_with_newline);
+            assert_eq!(n, l.chars.1 - l.chars.0, "{l:?}");
+        }
+        let glyphs = |i: usize| &g.rows[i].row.glyphs;
+        // The soft hyphen ending the first line shows; the one inside the second takes no
+        // room.
+        assert_eq!(glyphs(0).last().unwrap().chr, '-');
+        let inside = glyphs(1).iter().position(|c| c.chr == SOFT_HYPHEN).unwrap();
+        let (h, next) = (&glyphs(1)[inside], &glyphs(1)[inside + 1]);
+        assert!((next.pos.x - h.pos.x).abs() < 0.01, "{h:?} {next:?}");
+        // The first line's space, stretched 2 points (4 on the screen).
+        let space = glyphs(0).iter().position(|c| c.chr == ' ').unwrap();
+        let (s, after) = (&glyphs(0)[space], &glyphs(0)[space + 1]);
+        let more = after.pos.x - s.pos.x - s.advance_width;
+        assert!((more - 2.0 * k).abs() < 0.5, "stretched by {more}");
+        // The paragraph break and the line break end their rows as breaks.
+        assert!(g.rows[1].ends_with_newline && g.rows[2].ends_with_newline);
+        // A break put in takes no character.
+        assert!(!g.rows[0].ends_with_newline);
+    }
 
     /// ENH-22: the outline of text being typed is two lines, the accent and inside it one
     /// that contrasts with it, so it shows on paper of the accent's colour too. Text that

@@ -85,10 +85,38 @@ impl Styled {
     /// Line `o` as it is, each character in the style of its part; `font_of` gives the
     /// font a part's PDF font is shown as.
     pub fn of(o: &PageObject, font_of: impl Fn(&str) -> FontChoice) -> Self {
+        let whole = CharStyle {
+            font: font_of(o.font_name.as_deref().unwrap_or("")),
+            span: None,
+            size: o.font_size.unwrap_or(12.0),
+            color: o.fill.unwrap_or([0.0; 3]),
+            rise: 0.0,
+        };
         let text = o.text.clone().unwrap_or_default();
+        Self::read(text, &o.spans, whole, font_of)
+    }
+
+    /// A paragraph of page text as it is ([`limarepdf_core::Paragraph`]), each character in
+    /// the style of its part, as a line's ([`Self::of`]).
+    pub fn of_paragraph(
+        para: &limarepdf_core::Paragraph,
+        font_of: impl Fn(&str) -> FontChoice,
+    ) -> Self {
+        let text = para.text.clone();
+        Self::read(text, &para.spans, CharStyle::default(), font_of)
+    }
+
+    /// `text` as read, in `spans`, its parts, each character in the style of its part (one
+    /// in none in the style of the one before it); `whole` the style of an empty text's
+    /// typing when it has no part.
+    fn read(
+        text: String,
+        spans: &[TextSpan],
+        whole: CharStyle,
+        font_of: impl Fn(&str) -> FontChoice,
+    ) -> Self {
         let n = text.chars().count();
-        let spans: Vec<_> = o
-            .spans
+        let spans: Vec<_> = spans
             .iter()
             .map(|s| (s.clone(), font_of(&s.font_name)))
             .collect();
@@ -114,13 +142,7 @@ impl Styled {
                 color: s.fill.unwrap_or([0.0; 3]),
                 rise: s.rise,
             })
-            .unwrap_or_else(|| CharStyle {
-                font: font_of(o.font_name.as_deref().unwrap_or("")),
-                span: None,
-                size: o.font_size.unwrap_or(12.0),
-                color: o.fill.unwrap_or([0.0; 3]),
-                rise: 0.0,
-            });
+            .unwrap_or(whole);
         // A character in no part takes the style of the one before it.
         let mut last = found.iter().flatten().next().copied().unwrap_or(whole);
         let styles = found
@@ -149,6 +171,11 @@ impl Styled {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Where each character is in the text as it was read, `None` for one typed.
+    pub fn origins(&self) -> &[Option<usize>] {
+        &self.origins
     }
 
     /// Each character's style.

@@ -589,14 +589,6 @@ pub(crate) fn box_refusal(missing: &str) -> String {
     format!("it has \"{missing}\", which no font on this computer has")
 }
 
-/// Whether LimarePDF could write `c` in an installed font that has it: not a control
-/// character, nor of a right-to-left or shaped script, nor a part of an emoji sequence
-/// ([`emoji_part`]), so choosing another font may help. A single emoji can be, in a font
-/// that draws it with an outline (Symbola, say).
-pub fn installed_could_write(c: char) -> bool {
-    !c.is_control() && !unwritten_script(c) && !emoji_part(c)
-}
-
 /// Whether `c` is of a script LimarePDF doesn't write in any font yet: one written right
 /// to left, or whose letters change shape or combine.
 pub fn unwritten_script(c: char) -> bool {
@@ -1741,17 +1733,8 @@ mod tests {
         for c in ['क', 'ก', 'ᄀ', 'ក', 'ꦄ', '𑀅'] {
             assert!(shaped(c), "{c:?}");
         }
-        // Single emoji too: some installed fonts draw them with outlines.
         for c in ['A', 'Ω', 'ж', '中', 'あ', '한', 'ẫ', '😀', '🐋'] {
             assert!(!shaped(c), "{c:?}");
-            assert!(installed_could_write(c), "{c:?}");
-        }
-        for c in ['\n', 'ש', 'ب', 'क', 'ก'] {
-            assert!(!installed_could_write(c), "{c:?}");
-        }
-        // Nor the parts of emoji sequences.
-        for c in ['🇬', '🏽', '\u{FE0F}', '\u{20E3}', '\u{E0067}'] {
-            assert!(!installed_could_write(c), "{c:?}");
         }
         let whale = "No font on this computer has \"🐋\"";
         assert_eq!(refusal(caveat, "🐋"), whale);

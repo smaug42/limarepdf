@@ -419,6 +419,19 @@ pub fn interface_fallback(ctx: &egui::Context) {
     }
 }
 
+/// For tests: the fonts text in the PDF font `name` is drawn in, the installed font of its
+/// name and the bundled face of its kind, held back as if still being read on another
+/// thread, so that text is drawn in Inter, as on a busy computer before they are in.
+#[cfg(test)]
+pub fn hold(ctx: &egui::Context, name: &str) {
+    let loads = loads(ctx);
+    let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+    let bundled = face(FontChoice::from_name(name)).to_string();
+    for key in [installed_key(name), bundled] {
+        l.insert(key, Load::Looking);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

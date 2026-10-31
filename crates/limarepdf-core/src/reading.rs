@@ -45,7 +45,7 @@ pub(crate) fn reading_order(boxes: &[[f32; 4]]) -> Vec<(usize, usize)> {
 
 /// The empty gaps across the boxes `idx` along `axis` (0: x, 1: y), as (start, end),
 /// in order.
-fn gaps(boxes: &[[f32; 4]], idx: &[usize], axis: usize) -> Vec<(f32, f32)> {
+pub(crate) fn gaps(boxes: &[[f32; 4]], idx: &[usize], axis: usize) -> Vec<(f32, f32)> {
     let mut spans: Vec<(f32, f32)> = idx
         .iter()
         .map(|&i| (boxes[i][axis], boxes[i][axis + 2]))

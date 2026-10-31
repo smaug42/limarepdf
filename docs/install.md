@@ -18,8 +18,8 @@ Pick your system:
 - **Windows:** Windows 10 or 11, 64-bit (x64).
 - **macOS:** macOS 11 (Big Sur) or later, on Apple Silicon or Intel.
 - **Linux:** 64-bit (x86_64) with glibc 2.39 or later, as in Ubuntu 24.04, Debian 13, Fedora 40, current Arch
-  Linux and later; a working OpenGL graphics driver; and an X11 or Wayland desktop session. On older systems, you
-  can [build LimarePDF from source](#build-from-source). If you'd like packages for an older system,
+  Linux and later; a working Vulkan or OpenGL graphics driver; and an X11 or Wayland desktop session. On older
+  systems, you can [build LimarePDF from source](#build-from-source). If you'd like packages for an older system,
   [say so](troubleshooting.md#reporting-a-problem): they could be made if enough people need them.
 - **Printing:** CUPS on Linux and macOS (macOS includes it).
 
