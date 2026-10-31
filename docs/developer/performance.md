@@ -500,6 +500,7 @@ characters in 21 lines of Helvetica at 10 points, 440 points wide:
 | The write, a word typed at the start, every line (`Pdf::edit_paragraph`, 10) | 1.94 ms | 2.00 ms | 2.00 ms |
 | The write, a letter changed in the middle (10) | 1.28 ms | 1.29 ms | 1.29 ms |
 | The document's words on the made-up 10,000-page `big.pdf` (`Pdf::document_words`, 3) | 7.49 s | 7.63 s | 7.63 s |
+| The same on two threads, as the app reads them (`document_words_on(2)`, 3; batch 45's 3a, the same day, every core 6.43 s then) | 18.59 s | 18.91 s | 18.91 s |
 | Every page's size on `big.pdf` (`Pdf::page_sizes`, BUG-43's page box, 20) | 16.1 ms | 16.6 ms | 16.6 ms |
 
 Over the corpus edit run's real paragraphs (testing.md, "Editing paragraphs"; two files at a time, so indicative):
@@ -512,8 +513,14 @@ What they show:
 - A keystroke sets a 2,000-character paragraph in about a tenth of NEW-02's budget, wherever it is typed, a word
   in another font included once its face is read; the write is a couple of milliseconds.
 - The document's words (line-end hyphens' evidence) take seconds on a very long document, as they read every
-  page, so stage 3 should start them off the window's thread when a document opens and keep them until it
-  changes; until they are there a paragraph's hyphens read as unknown (kept, marked).
+  page, so the app reads them off the window's thread when a tab gets its document (batch 45's 3a), on two
+  threads of their own so the pages draw meanwhile: under 19 s on 10,000 pages; until they are there a
+  paragraph's hyphens read as unknown (kept, marked).
+- **Typing in a paragraph in the app** (batch 45's 3a): the opt-in `speed_of_typing_in_a_paragraph`
+  (`app/tests/paragraphs.rs`, the `ci-test` profile, the window drawn without a GPU) times a frame of the whole
+  window for each of 40 keystrokes in the first line of a paragraph of 2,021 characters, which each set it again
+  on its lines and lay its box out: median 6.80 ms, slowest 18.72 ms, the app's own share against REL-07's "none
+  over 50 ms" (6.3); reading a paragraph to open it is the row above, a few milliseconds.
 - `page_sizes` reads a page's media box and crop box as before (a page without a crop box read both before too):
   16 ms over 10,000 pages.
 

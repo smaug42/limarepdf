@@ -23,7 +23,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   Help, so every command is in it.
 - **The command band**, under the names: the buttons of the name you chose, in groups (see
   [The command band](#the-command-band)).
-- **Bottom:** what is selected or the tool in use (**Editing one line** while you edit a line on the page), and
+- **Bottom:** what is selected or the tool in use (**Editing one line** while you edit a line on the page,
+  **Editing a paragraph** while you edit a paragraph), and
   messages, at the left; at the right the page you are on (in Organise, how many pages are selected, such as
   "4 of 12 pages selected"), **Show planned features**, the view buttons **Page view** and **Organise pages**, and
   the zoom: − and + (Zoom out and Zoom in) with a slider between them (in windows 900 points wide or more), then
@@ -49,8 +50,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   760 the side panel folds away, leaving its icons. They come back when the window is wide enough again, unless
   you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
   panel is remembered between runs. The command band folds groups without room into a button with the group's
-  name, which opens them; groups of planned features go first. Under about 560 points wide, Print shows its icon
-  alone.
+  name, which opens them; groups of planned features go first, and a group of one command (Text flow's
+  Paragraph) folds to that command's icon. Under about 560 points wide, Print shows its icon alone.
 - **Short windows:** below 600 points high the commands are compact by themselves (see
   [The command band](#the-command-band)).
 - **Panel widths:** drag the edge of the side panel or the inspector to make it wider or narrower. From the
@@ -95,7 +96,7 @@ undo.", "Select some text first." or "Click in a form field first."
 | View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
-Underline, Replace, Paragraph and Align in Edit; Link and Blank document in Insert; Spelling and Export comments in
+Underline, Replace and Align in Edit; Link and Blank document in Insert; Spelling and Export comments in
 Review; Create fields in Forms and sign; Your AI in View; Print preview and Reduce file size in
 the File menu. They do nothing, and Tab passes them by. In the inspector, selected text ends with **Future text
 tools**, marked Planned: open it to see which text tools are coming. Turn off **Show planned features** in the
@@ -393,7 +394,7 @@ click a section's name to open or fold it.
 | --- | --- |
 | Nothing | Headed **Document**. Facts: Pages; Paper (Letter, Legal, Tabloid, Executive, A3, A4, A5 or B5, either way round; the size in points for others; Mixed when the pages differ); Security (None, Open password or Permissions password, as the document will be saved; Removed on save for a protected document you opened, until you set a password again); Form fields, how many, for a form; Signatures, how many, for a document with signature fields. Folded: [Properties](#document-properties), [Opening view](#opening-view) and, for a form, [Form](forms.md#the-form-section) |
 | Pages (click thumbnails or Organise's cards; Shift for a range, Ctrl for one more) | Headed **Selected page** or **Selected pages**, with which ones, such as "Pages 1–2, 5 of 9". Facts: Paper, and Orientation (Portrait, Landscape, Square or Mixed, as the pages are shown, after rotating). Buttons: rotate either way, delete, extract to a new tab, and insert images after them. Folded: **Insert blank page**, and **Page properties**, which holds **Crop** and **Page labels** ([Organising pages](organising-pages.md)) |
-| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
+| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (the **Editing** switch, **Paragraph** or **One line**, for page text, the one in use pressed, Paragraph greyed with the reason for a line on its own, in a table or turned; New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
 | A form field you are typing in | Headed **Form field**. Words selected on the page before are let go, so Edit > Font and Ctrl+B don't change them meanwhile |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
 | Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
@@ -510,7 +511,8 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool or Text tool) |
 | Ctrl+X | Cut the words selected with the read tool, the lines of text selected with the arrow, or what is selected in text being typed; or cut the selected pages, to paste elsewhere in the document |
 | Ctrl+V (pages cut) | Move the pages cut to Organise's insertion bar, or after the selected pages (or the page you are on) |
-| Typing, Ctrl+V (words selected with the read tool, in one line) | Replace the words, in their line opened for editing |
+| Typing, Ctrl+V (words selected with the read tool, in one line or one paragraph) | Replace the words, in their line or paragraph opened for editing |
+| Enter, Shift+Enter (in a paragraph being edited) | Start a new paragraph within its frame; start a new line |
 | Ctrl+A (arrow) | Select every object on the page |
 | Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
 | Shift+drag (arrow) | Add what a rectangle holds to the selection |

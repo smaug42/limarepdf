@@ -4,6 +4,20 @@
 
 ### Added
 
+- Paragraphs can be edited as one, their lines rewrapping as you type, as in a word processor. Double-click a line
+  of the paragraph, then choose **Paragraph** in the inspector's new **Editing** row, in **Edit > Text flow** in
+  the band (no longer marked Planned), or **Edit as paragraph** in the right-click menu or the command search; the
+  paragraph opens as one from then on while the document is open, and **One line** goes back to editing a line at
+  a time. The paragraph is drawn on the lines it will be written on, in its own fonts, inside its frame's edges and
+  alignment (justified lines stretched to the edge); Enter starts a new paragraph and Shift+Enter a new line; the
+  status bar says **Editing a paragraph**. Lines whose breaks don't change stay exactly as they were, and the edit
+  is one undo step. A hyphen that ended a line is read by the document's own words: one only put in to break the
+  word goes when the word moves inside a line, and one LimarePDF can't tell is kept and dotted under, with **Join
+  the hyphenated word** and **Keep the line-end hyphen** on its right-click menu and **Join all** in the inspector.
+  Text running past the page or over other text, a picture or a shape says so on the outline. Words selected
+  across the lines of one paragraph are typed over and deleted there, the paragraph rewrapping. A line on its own,
+  text in a table and turned text are still edited a line at a time, the switch saying why. LimarePDF doesn't open
+  paragraphs as paragraphs by itself yet: its check of how well it finds them isn't passed.
 - Editing a line keeps the PDF's own font wherever it can, embedded fonts and their subsets included (Chinese,
   Japanese and Korean fonts that number their glyphs too): the letters you leave as they were keep their exact
   spacing, new letters are written in the font when it holds them, and only a word with a letter the font lacks
@@ -111,6 +125,10 @@
 
 ### Changed
 
+- A group of the command band with one command in it (Edit > Text flow's Paragraph), short of room, folds to
+  that command's icon rather than to a button with the group's name that opens it.
+- Typing over words selected in different paragraphs now says "Type over words within one paragraph." (before:
+  within one line).
 - Undo and Redo in the commands row act on what you are typing, as Ctrl+Z and Ctrl+Y do, in a line, new text, a
   note, a text box, a form field or a box of the inspector: the keyboard stays where you are typing, and they are
   greyed when there is nothing there to undo or redo. Before, Undo kept the typing and then took the whole of it

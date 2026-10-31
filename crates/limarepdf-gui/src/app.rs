@@ -2953,12 +2953,21 @@ impl App {
                     self.open_inspector();
                 } else if t.ed.one_line_selected() {
                     self.open_inspector();
-                    self.tabs[self.active].ed.edit_selected_text();
+                    let t = &mut self.tabs[self.active];
+                    t.ed.edit_selected_text(&t.pdf);
                 } else {
                     t.ed.set_tool(Tool::Text);
                 }
             }
             Act::MoveText => self.tabs[self.active].ed.move_text(),
+            Act::EditParagraph => {
+                let t = &mut self.tabs[self.active];
+                let on = !t.ed.editing_paragraph();
+                t.ed.set_paragraph(&t.pdf, on);
+                self.open_inspector();
+            }
+            Act::JoinHyphen => self.tabs[self.active].ed.settle_hyphen(ctx, true, false),
+            Act::KeepHyphen => self.tabs[self.active].ed.settle_hyphen(ctx, false, false),
             Act::SignWith(pick) => {
                 let ed = &mut self.tabs[self.active].ed;
                 ed.set_tool(Tool::Sign);
@@ -6313,8 +6322,10 @@ impl eframe::App for App {
                 let small = |text: &str| egui::RichText::new(text).size(12.0).color(muted);
                 let status = |ui: &mut egui::Ui| {
                     let mut said = Vec::new();
-                    // A line edited on the page: how much the typing can change.
-                    if t.is_some_and(|t| t.ed.editing_line()) {
+                    // A line or paragraph edited on the page: how much the typing can change.
+                    if t.is_some_and(|t| t.ed.editing_paragraph()) {
+                        said.push("Editing a paragraph".into());
+                    } else if t.is_some_and(|t| t.ed.editing_line()) {
                         said.push("Editing one line".into());
                     } else if let Some(n) = t.and_then(Tab::cropping) {
                         // Setting the crop: what is cropped, and the way out.
@@ -6817,6 +6828,7 @@ mod tests {
     mod history;
     mod input_methods;
     mod organise;
+    mod paragraphs;
     mod redact_marks;
     mod review;
     mod sign;
@@ -8279,7 +8291,8 @@ mod tests {
     }
 
     /// ENH-38: groups without room fold from the right into a button with the group's
-    /// name, which opens them; groups of planned features alone are left out first.
+    /// name, which opens them; groups of planned features alone are left out first; a group
+    /// of one command folds to that command's icon.
     #[test]
     fn groups_without_room_fold_into_their_names() {
         let ctx = egui::Context::default();
@@ -8293,6 +8306,9 @@ mod tests {
         assert!(node(&tree, "Find").is_some(), "Editing folded at 1000");
         let align = node(&tree, "Align — Planned");
         assert!(align.is_none(), "Align shown at 1000");
+        // Text flow's Paragraph, its one command, folded to its icon.
+        assert!(node(&tree, "Text flow").is_none(), "folded to its name");
+        assert!(node(&tree, "Paragraph").is_some(), "no Paragraph at 1000");
         let tree = settled_at(&mut app, &ctx, 700.0);
         let (at, _) = node(&tree, "Editing").expect("Editing folded");
         assert!(node(&tree, "Find").is_none(), "Find shown");
@@ -8704,9 +8720,9 @@ mod tests {
             app.tabs[0].ed.typing_on_page(),
             "the line isn't being edited"
         );
-        // Below the inspector's facts, clear of them.
+        // Below the inspector's facts (its Editing switch's One line), clear of them.
         let (_, fact) = (tree.nodes.iter())
-            .find(|(_, n)| n.value() == Some("One line"))
+            .find(|(_, n)| n.label() == Some("One line"))
             .expect("the inspector's facts");
         let b = fact.bounds().expect("where they are");
         let was = egui::pos2(b.x0 as f32 + 4.0, b.y1 as f32 + 200.0);
@@ -9825,9 +9841,11 @@ mod tests {
         let (font, _) = node(&tree, "Font").expect("the font list");
         let above = font.bottom() < section.top();
         assert!(above, "{font:?} not above {section:?}");
-        for fact in ["Editing", "One line", "Source font"] {
+        for fact in ["Editing", "Source font"] {
             assert!(shown(&tree, fact), "no {fact}");
         }
+        // How it is edited: the switch, One line pressed.
+        assert!(node(&tree, "One line").is_some() && node(&tree, "Paragraph").is_some());
         // Tab goes through the look in the band, then position and size, then Delete.
         let reached = tab_walk(&mut app, &ctx, 1400.0, 60);
         let look = [
@@ -10234,8 +10252,8 @@ mod tests {
         assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
         assert!(node(&tree, planned).is_some(), "no planned text tools");
         click_named(&mut app, &ctx, planned);
-        let note = "Paragraph reflow, underline and strike-through are planned. Your existing \
-                    text tools keep working.";
+        let note = "Underline and strike-through are planned. Your existing text tools keep \
+                    working.";
         let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
         assert!(says.iter().any(|s| s == note), "no note: {says:?}");
         // Words selected with the read tool.
@@ -18566,9 +18584,10 @@ mod tests {
         let ctx = egui::Context::default();
         let (del, back) = (Key::Delete, Key::Backspace);
         // The words: their first and last by page and index, and by line and index there.
+        // Across lines of a paragraph LimarePDF is sure of, they are taken out in it, which
+        // rewraps (`tests/paragraphs.rs`); across pages, from each line, which stay apart.
         for (case, key, anchor, end, cut) in [
             ("a word", del, (0, 1), (0, 1), ((0, 1), (0, 1))),
-            ("across lines", back, (0, 14), (0, 17), ((0, 14), (1, 1))),
             ("a whole line", back, (0, 16), (0, 31), ((1, 0), (1, 15))),
             ("across pages", del, (0, 46), (1, 1), ((2, 14), (3, 1))),
         ] {
@@ -18658,17 +18677,18 @@ mod tests {
     /// Typing with words selected with the read tool in one line types over them, as in a
     /// word processor: their line opens for editing on the page, what is typed in their
     /// place, the keys after it going on in the line; Ctrl+V pastes over them the same way.
-    /// Esc keeps it, one Undo takes it back. Across lines nothing is typed; a note at the
-    /// selection's end says why.
+    /// Esc keeps it, one Undo takes it back. Across paragraphs (here pages) nothing is
+    /// typed; a note at the selection's end says why. (Across lines of one paragraph it is
+    /// typed there: `tests/paragraphs.rs`.)
     #[test]
     fn typing_over_words_selected_with_the_read_tool_replaces_them() {
         let ctx = egui::Context::default();
         let otter = "The otter ate fish by the sea and the seal ate fish by the shore 1";
         let seal = "The seal fish by the sea and the seal ate fish by the shore 1";
-        for case in ["typed", "pasted", "across lines"] {
+        for case in ["typed", "pasted", "across paragraphs"] {
             let mut app = two_pages_tab(&ctx);
             let (anchor, end) = match case {
-                "across lines" => ((0, 14), (0, 17)),
+                "across paragraphs" => ((0, 46), (1, 1)),
                 // "otter ate".
                 _ => ((0, 17), (0, 18)),
             };
@@ -18687,12 +18707,12 @@ mod tests {
                 }
             }
             let tree = settled_at(&mut app, &ctx, 1400.0);
-            if case == "across lines" {
+            // The note at the selection's end is on the second page, out of view here
+            // (`tests/paragraphs.rs` reads it on one page).
+            if case == "across paragraphs" {
                 let t = &app.tabs[0];
                 assert_eq!(t.ed.typing_id(), None, "{case}: typing");
                 assert_eq!(t.ed.selection, Selection::Words { anchor, end }, "{case}");
-                let note = "Type over words within one line. Paragraph editing is planned.";
-                assert!(shows(&tree, note), "{case}: no note");
                 assert_eq!(line_texts(&t.pdf, 0)[1], otter, "{case}");
                 continue;
             }
@@ -18717,26 +18737,27 @@ mod tests {
     }
 
     /// Edit text with words selected with the read tool edits their line on the page with
-    /// them selected there; across lines, the line where the selection ends, with its part
-    /// of it selected.
+    /// them selected there; across lines of a paragraph LimarePDF is sure of, the
+    /// paragraph, with them all selected in it, whichever way they were selected.
     #[test]
     fn edit_text_edits_the_line_of_the_words_selected() {
         let ctx = egui::Context::default();
-        for (case, anchor, end, line, chars) in [
+        let para = "Editing a paragraph: The walrus ate fish by the sea and";
+        for (case, anchor, end, name, chars) in [
             // "otter ate".
-            ("one line", (0, 17), (0, 18), 1, (4, 13)),
-            // "shore 0 The otter": "The otter".
-            ("across lines", (0, 14), (0, 17), 1, (0, 9)),
-            // From "otter" back to "shore": "shore 0".
-            ("backwards", (0, 17), (0, 14), 0, (60, 67)),
+            ("one line", (0, 17), (0, 18), None, (4, 13)),
+            // "shore 0 The otter", in the paragraph's text.
+            ("across lines", (0, 14), (0, 17), Some(para), (60, 77)),
+            // From "otter" back to "shore".
+            ("backwards", (0, 17), (0, 14), Some(para), (60, 77)),
         ] {
             let mut app = two_pages_tab(&ctx);
             app.tabs[0].ed.selection = Selection::Words { anchor, end };
             settled_at(&mut app, &ctx, 1400.0);
             app.act(&ctx, Act::EditObjectText);
             let tree = settled_at(&mut app, &ctx, 1400.0);
-            let text = &paragraph(72.0, 100.0, 3, 1, true)[line].0;
-            let name = format!("Editing text: {text}");
+            let text = &paragraph(72.0, 100.0, 3, 1, true)[1].0;
+            let name = name.map_or(format!("Editing text: {text}"), str::to_string);
             let (_, focused) = node(&tree, &name).unwrap_or_else(|| panic!("{case}: not editing"));
             assert!(focused, "{case}: the line hasn't the keyboard");
             let id = app.tabs[0].ed.typing_id().expect("typing");

@@ -3,8 +3,9 @@
 # Editing text and pictures
 
 Change the text already on a page, add new text and pictures, and move, resize, restyle or delete what is there.
-Edits are made line by line: a paragraph doesn't rewrap as you type (see [Limits](#limits)). Shortcuts are written
-with Ctrl; on a Mac, use ⌘ (Command) instead.
+A double-click edits a line; switch its paragraph to **Paragraph** to edit it as one, its lines rewrapping as you
+type (see [Edit a paragraph](#edit-a-paragraph)). Shortcuts are written with Ctrl; on a Mac, use ⌘ (Command)
+instead.
 
 ## Edit a line of text
 
@@ -58,6 +59,54 @@ While you type:
 A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
 its fonts, sizes and colours; invisible recognised (OCR) text is edited in a plain box. The caret goes by the
 character you clicked along the line, and a double-click selects the word you clicked, whichever way the line runs.
+
+## Edit a paragraph
+
+To edit a whole paragraph, its lines rewrapping as you type, as in a word processor:
+
+1. Double-click a line in it with the read tool, or click it with the Text tool.
+2. Choose **Paragraph** in the inspector's **Editing** row, or **Paragraph** in **Edit > Text flow** in the band.
+   It is also **Edit as paragraph** in the right-click menu and the command search (Ctrl+K).
+3. Type your change. Press Esc or Tab, or click elsewhere, to keep it.
+
+The paragraph stays a paragraph while the document is open: a double-click, a Text-tool click or **Edit > Edit
+text** in it opens the whole paragraph from then on. **One line** in the inspector (or **Paragraph** again) goes back
+to editing it a line at a time, at the line where the caret is; what you typed is kept first.
+
+LimarePDF finds paragraphs from where their lines sit on the page. It doesn't yet open them as paragraphs by
+itself, as it doesn't find every paragraph reliably enough on its own. A line on its own, text in a table and
+turned text are edited a line at a time: **Paragraph** is greyed for them, and says why when you point at it.
+
+While you type:
+
+- The paragraph is drawn on the lines it will be written on, in the fonts it will be written in, with an outline
+  round its frame and its old lines hidden underneath in the colour around them. The status bar says **Editing a
+  paragraph**.
+- Lines break where Word and Google Docs would break them, inside the paragraph's own edges and alignment (left,
+  centred, right or justified, a justified line's spaces stretched to its edge). Lines before the change, and
+  after the point where the line breaks fall where they did, stay exactly as they were: a typo fixed usually
+  rewrites only its own line.
+- **Enter** starts a new paragraph within the frame, with the first line's indent if it has one; **Shift+Enter**
+  starts a new line.
+- Each word keeps its own style, and letters keep their font, as in a line (see
+  [Edit a line of text](#edit-a-line-of-text)). Ctrl+B, Ctrl+I, **Edit > Font**, the floating toolbar and the
+  right-click menu act on what is selected in the paragraph. The inspector shows its font and size, the PDF's font
+  and how what you type is written, and names the words that go to another font.
+- A hyphen that ended a line: LimarePDF reads from the rest of the document whether it belongs to its word
+  ("well-known") or was only put in to break it ("exam-ple"). One put in to break a word goes when the word moves
+  inside a line, and comes back if it ends a line again. One it can't tell is kept as a hyphen and, once a rewrap
+  brings it inside a line, marked with a dotted line under it: right-click the word for **Join the hyphenated
+  word** or **Keep the line-end hyphen**, or choose **Join all** in the inspector.
+- When the paragraph grows past the page's edge, or over text, a picture or a shape it wasn't already over, the
+  outline turns the caution colour and a tag says **Past the page edge**, **Over other text**, **Over a picture**
+  or **Over a shape**. Nothing else on the page moves: a longer paragraph is written over what follows it, so make
+  room or shorten it.
+- Ctrl+Z and Ctrl+Y undo and redo your typing inside the paragraph. Once kept, the whole change is one undo step.
+  Opening a paragraph and leaving it as it was changes nothing.
+
+Words you select with the read tool across the lines of one paragraph (one switched to **Paragraph**, or one
+LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragraph, which rewraps; see
+[Type over, delete or cut words](#type-over-delete-or-cut-words).
 
 ## Style words in a line
 
@@ -114,17 +163,22 @@ Words you select with the read tool can be changed as in a word processor, witho
 
 - **Type** to replace them. Their line opens for editing with what you typed in their place, and you go on typing
   there; press Enter, Esc or Tab, or click elsewhere, to keep it. **Ctrl+V**, or **Paste** (in **Edit** in the
-  band, the right-click menu or the floating toolbar), pastes over them the same way. Over words on more than one
-  line nothing is typed, and a note says "Type over words within one line. Paragraph editing is planned." With no
-  words selected and nothing being typed, Ctrl+V says where to click to paste. An input method types over them
-  too: the line opens with what you compose in their place.
+  band, the right-click menu or the floating toolbar), pastes over them the same way. Over words on several lines
+  of one paragraph (one switched to **Paragraph**, or one LimarePDF is sure is a paragraph), the paragraph opens
+  with what you typed in their place (see [Edit a paragraph](#edit-a-paragraph)). Over words in different
+  paragraphs nothing is typed, and a note says "Type over words within one paragraph." With no words selected and
+  nothing being typed, Ctrl+V says where to click to paste. An input method types over them too: the line opens
+  with what you compose in their place.
 - **Delete** or **Backspace** removes them, across lines and pages, in one step that Undo takes back. As in Word,
-  a space beside them goes too when two would be left together, or one at the start or end of a line. A line left
-  empty is gone; the lines around it stay where they are, as lines aren't joined together.
+  a space beside them goes too when two would be left together, or one at the start or end of a line. In one
+  paragraph (as for typing), they are taken out of the paragraph, which rewraps and stays open with the caret where
+  they were. Elsewhere a line left empty is gone, and the lines around it stay where they are, as lines aren't
+  joined together.
 - **Cut** (Ctrl+X, in **Edit** in the band, the right-click menu or the floating toolbar) copies them, then removes
   them as Delete does.
 - **Edit > Edit text** (also in the right-click menu and the floating toolbar) opens their line with them selected,
-  to type over them or style them. Over more than one line, it opens the line where the selection ends.
+  to type over them or style them. Over more than one line of one paragraph, it opens the paragraph with them
+  selected; over lines of different paragraphs, the line where the selection ends.
 
 To select them from the keyboard, hold **Shift** and use the arrow keys: Left and Right add or take off a word, Up
 and Down go to the line above or below, and Home and End to the start or end of the line, across pages; the view
@@ -263,7 +317,7 @@ will be written, and changes as you type:
 (See [How it works](#how-it-works).) For shapes it shows the fill, outline and width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
 stays open or closed as you left it. For selected text, **Future text tools**, marked Planned, comes last: open it
-to see what is planned (paragraphs that reflow, underline and strike-through). Changes in the band and the
+to see what is planned (underline and strike-through). Changes in the band and the
 inspector are kept as you make them,
 without an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or
 leave its box, a colour when its picker closes. Each is one undo step.
@@ -292,6 +346,12 @@ the page itself.
   size and colour, in the font you chose, else in the installed family its font comes from, else in the nearest of
   Helvetica, Times and Courier, the line staying in place. While you edit a line it is drawn in the fonts it will
   have, and the old line underneath is hidden in the colour around it.
+- **Editing a paragraph** finds the paragraph's lines and its frame (its edges, line spacing, alignment and first
+  line's indent), and sets the edited text in that frame. Each rewritten line goes where its old line was in the
+  page's content, so what draws over what and the text's tags for screen readers stay; lines that don't change are
+  left exactly as they were. Each written line is read back before the change is kept, and one that would read as
+  other words is written in the similar font instead, with a notice; if it still wouldn't, nothing is changed and a
+  message says so.
 - **Adding** text, shapes or pictures draws them over the page. Each typed line becomes its own line of page text,
   1.2 times the size below the one before (as Acrobat does); with sizes that differ, 1.2 times a quarter of the
   line above's largest size and three quarters of its own. Text in Helvetica, Times or Courier with characters
@@ -314,11 +374,19 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 
 ## Limits
 
-- Text objects are lines recovered from the content stream by heuristics, not paragraphs. There is no reflow and no
-  multi-line editing: typing over words selected on more than one line types nothing, and deleting words leaves
-  each line where it was, an emptied one blank. Text boxes are estimated from font metrics, so they can be
-  slightly off for unusual fonts. A line the page draws twice (as maps draw a label over a halo of its own) is
-  changed where you click it; the copy under it keeps the old words.
+- Text objects are lines recovered from the content stream by heuristics. Paragraphs are found from where those
+  lines sit, and open as paragraphs only once switched to **Paragraph**: LimarePDF's check of how well it finds
+  them isn't passed yet, so a double-click edits a line. Outside a paragraph, typing over words selected in
+  different paragraphs types nothing, and deleting words leaves each line where it was, an emptied one blank. Text
+  boxes are estimated from font metrics, so they can be slightly off for unusual fonts. A line the page draws twice
+  (as maps draw a label over a halo of its own) is changed where you click it; the copy under it keeps the old
+  words.
+- A paragraph grows and shrinks downwards in its frame; nothing else on the page moves, and text doesn't flow on
+  to the next column or page. Its old lines are hidden in one colour while you type, so over a picture or shading
+  that part looks flat until the change is kept. A typed word takes the style of the character before it, so typed
+  right after a symbol (a bullet, say) it is in the symbol's font. A letter TeX draws as its accent over its letter (an older way of writing
+  "ü") reads as the accent, then the letter ("Pr¨ufung"), in the paragraph you type in too; it is written back as
+  it was drawn, so other readers still read it as one letter.
 - A changed line keeps its font only for letters the font verifiably holds: one that is cut down to the letters
   the file uses (a subset) can't take others, and a Type 3 font, a font not held in the PDF (beyond plain English
   letters in a standard one), vertical writing and fonts whose codes LimarePDF can't read take none. A word with

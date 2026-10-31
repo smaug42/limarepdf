@@ -335,6 +335,16 @@ impl Pdf {
                     let spacing = setting.spacing(p);
                     let items =
                         kept_items(setting, plan, chars, a..b, end, l.stretch, size, spacing);
+                    // A letter TeX's accent was drawn over, from another text object, keeps
+                    // the move back to it under the accent, as the measure does (PB-73).
+                    let last = (out.last_mut()).and_then(|w| Some((w.size, w.shows.last_mut()?)));
+                    if let (Some(d), Some((size, (spacing, show)))) =
+                        (under_accent(setting, parts, plan, chars, a), last)
+                    {
+                        let [tc, _, th] = *spacing;
+                        let units = (size * th).max(1e-3);
+                        push_items(show, vec![r(-(d - tc * th) * 1000.0 / units)]);
+                    }
                     out.push(Written {
                         font: part.font.clone(),
                         size,
@@ -374,10 +384,7 @@ impl Pdf {
                     if let Some(w) = out.last_mut() {
                         let units = (w.size * w.shows.last().map_or(1.0, |s| s.0[2])).max(1e-3);
                         if let Some((_, show)) = w.shows.last_mut() {
-                            let shown = show.operands.first().and_then(|o| o.as_array().ok());
-                            let mut items = shown.cloned().unwrap_or_default();
-                            items.push(r(-d * 1000.0 / units));
-                            *show = tj(items);
+                            push_items(show, vec![r(-d * 1000.0 / units)]);
                         }
                     }
                 }
@@ -407,6 +414,39 @@ enum Stretch {
     Kept(usize, usize),
     Word(usize, FontChoice, usize),
     Space(usize),
+}
+
+/// How far from the end of the letter before it the stretch of kept letters starting at
+/// character `a` of an edit (`parts`, written as `plan` says, its characters `chars`) starts,
+/// in points as the measure sets it ([`ParagraphSetting::measure`]), when that letter is
+/// TeX's accent drawn over it from another text object ([`Paragraph::accent_over`]), both
+/// kept in their own codes and still next to each other: the move back under the accent.
+fn under_accent(
+    setting: &ParagraphSetting,
+    parts: &[TextPart],
+    plan: &[Planned],
+    chars: &[char],
+    a: usize,
+) -> Option<f32> {
+    let para = setting.paragraph();
+    let own = |pl: &Planned| matches!(pl.kept, Some((_, Way::Own(_) | Way::WithBefore)));
+    let (before, pl) = (&plan[a.checked_sub(1)?], &plan[a]);
+    let k = before.from?;
+    let next = own(before) && own(pl) && pl.from == Some(k + 1);
+    if !next || chars[a].is_whitespace() || !para.accent_over(k) {
+        return None;
+    }
+    let (i, _) = before.kept?;
+    let scale = parts[before.part].size / para.spans[i].font_size.max(1e-3);
+    Some(para.gap_after(k) * scale)
+}
+
+/// `items` added at the end of the text show `show` (a `TJ`).
+fn push_items(show: &mut Operation, items: Vec<Object>) {
+    let shown = show.operands.first().and_then(|o| o.as_array().ok());
+    let mut all = shown.cloned().unwrap_or_default();
+    all.extend(items);
+    *show = tj(all);
 }
 
 /// The strings and moves of characters `range` of an edit (`chars`, written as `plan`

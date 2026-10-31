@@ -192,12 +192,6 @@ const REPLACE: Planned = Planned {
     item: "NEW-04",
     what: "Find text and replace it.",
 };
-const PARAGRAPH: Planned = Planned {
-    label: "Paragraph",
-    icon: icon::TEXT_ALIGN_LEFT,
-    item: "NEW-01",
-    what: "Edit a paragraph as one, its lines rewrapping as you type.",
-};
 const ALIGN: Planned = Planned {
     label: "Align",
     icon: icon::ALIGN_LEFT,
@@ -285,7 +279,10 @@ static EDIT: &[Group] = &[
             ),
         ],
     ),
-    group("Text flow", &[Item::Planned(&PARAGRAPH)]),
+    group(
+        "Text flow",
+        &[b(Act::EditParagraph, "Paragraph", icon::TEXT_ALIGN_LEFT)],
+    ),
     group("Arrange", &[Item::Planned(&ALIGN)]),
 ];
 
@@ -801,6 +798,18 @@ fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<
     let height = controls(parts.compact);
     let row = egui::vec2(ui.available_width(), height);
     let centred = egui::Layout::left_to_right(egui::Align::Center);
+    // A group of one command folds to that command's icon, named on hover, as Compact
+    // commands shows it: narrower than its name, and still one click.
+    if let [Item::Button(b)] = g.items {
+        let c = parts.c;
+        let r = ui.allocate_ui_with_layout(row, centred, |ui| {
+            ui.set_min_height(height);
+            ui.add_space(2.0);
+            button(ui, b, c, acts, true);
+            ui.add_space(2.0);
+        });
+        return r.response.rect;
+    }
     let r = ui.allocate_ui_with_layout(row, centred, |ui| {
         ui.set_min_height(height);
         ui.add_space(2.0);
@@ -1217,8 +1226,9 @@ mod tests {
         }
         // The rest: File's commands in the File menu, Undo and Redo beside it; the Font
         // group's Bold and Italic; the marks and Create signature in Highlight's and Fill
-        // and sign's own menus; what acts on a selection in its right-click menu and
-        // floating bar; and keys. Each is in the File menu's groups too.
+        // and sign's own menus; what acts on a selection, or on a paragraph's marked
+        // hyphen, in its right-click menu and floating bar; and keys. Each is in the File
+        // menu's groups too.
         let elsewhere = |a: Act| {
             actions::get(a).group == actions::Group::File
                 || matches!(
@@ -1236,6 +1246,8 @@ mod tests {
                         | Act::DeleteSelection
                         | Act::DeleteObject
                         | Act::MoveText
+                        | Act::JoinHyphen
+                        | Act::KeepHyphen
                         | Act::ReplaceImage
                         | Act::Escape
                         | Act::Nudge(..)

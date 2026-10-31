@@ -107,7 +107,8 @@ pub use pagerange::{format_page_range, parse_page_range};
 pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
 pub use redact::{PageRedaction, RedactReport};
 pub use rewrap::{
-    DocWords, Hyphen, LineEndHyphen, Paragraph, ParagraphSetting, SetLine, SetParagraph,
+    DocWords, Hyphen, LineEndHyphen, Paragraph, ParagraphPiece, ParagraphSetting, SetLine,
+    SetParagraph,
 };
 pub use sanitise::{Hidden, HiddenReport, LayersDamaged};
 pub use scan::{ScanMode, ScanOptions, ScanResult};

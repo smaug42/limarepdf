@@ -15,13 +15,18 @@ use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    words_text, Annot, AnnotKind, BoxSetting, FieldValue, FontChoice, FontRefusal, LineFont, Link,
-    LinkTarget, ObjectKind, PageObject, PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace,
-    StampColor, StampKind, StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
+    words_text, Annot, AnnotKind, BoxSetting, DocWords, FieldValue, FontChoice, FontRefusal,
+    LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord, ParagraphSetting, PartFont,
+    PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace, TextEdit, TextPart,
+    TextStyle, MIN_SIGNATURE_BOX,
 };
+use paragraph::{para_id, ParaEdit, Then};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
+
+mod paragraph;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -143,6 +148,8 @@ pub enum Typed {
     Writing,
     /// The selected object's changes, in the inspector or typed over its line.
     Object,
+    /// A paragraph of page text being edited on the page.
+    Paragraph,
     /// A form field.
     Field,
     /// The selected comment's changes in the inspector.
@@ -157,10 +164,11 @@ pub enum Typed {
 }
 
 impl Typed {
-    pub const ALL: [Typed; 8] = [
+    pub const ALL: [Typed; 9] = [
         Typed::Text,
         Typed::Writing,
         Typed::Object,
+        Typed::Paragraph,
         Typed::Field,
         Typed::Comment,
         Typed::Reply,
@@ -171,10 +179,11 @@ impl Typed {
     /// What Undo and Redo keep first: all but draft replies, which stay drafts, as Word and
     /// Google Docs keep them. Added first, Undo would take one back instead of the change
     /// before.
-    pub const BUT_DRAFTS: [Typed; 7] = [
+    pub const BUT_DRAFTS: [Typed; 8] = [
         Typed::Text,
         Typed::Writing,
         Typed::Object,
+        Typed::Paragraph,
         Typed::Field,
         Typed::Comment,
         Typed::Words,
@@ -206,6 +215,7 @@ enum Kept {
     Text(Box<PageText>),
     Writing(Writing),
     Object(Box<(Insp, Option<LineEdit>)>),
+    Paragraph(Box<ParaEdit>),
     /// The value the field had before.
     Field(String),
     Comment,
@@ -221,6 +231,8 @@ enum NotKept {
     Text(Styled),
     Writing(String),
     Object((usize, usize), Styled, Look),
+    /// A paragraph's page and the line it was opened from, and its text.
+    Paragraph((usize, usize), Styled),
 }
 
 impl NotKept {
@@ -229,6 +241,7 @@ impl NotKept {
             Kept::Text(a) => Some(Self::Text(a.text.clone())),
             Kept::Writing(w) => Some(Self::Writing(w.text.clone())),
             Kept::Object(o) => Some(Self::Object(o.0.key, o.0.text.clone(), o.0.look())),
+            Kept::Paragraph(p) => Some(Self::Paragraph((p.page, p.line), p.text.clone())),
             _ => None,
         }
     }
@@ -348,6 +361,9 @@ pub enum Action {
     /// A line's change; true when only its words changed, not their styles, so it can join
     /// a recent change of the same line.
     EditText(usize, usize, TextEdit, bool),
+    /// A paragraph of a page edited to these parts, as its setting sets them
+    /// ([`limarepdf_core::Pdf::edit_paragraph`]).
+    EditParagraph(usize, Arc<ParagraphSetting>, Vec<TextPart>),
     /// Words selected with the read tool restyled: each page's changed lines, by object, and
     /// the lines with selected words left as they were. The words stay selected.
     Restyle(Vec<(usize, Vec<(usize, TextEdit)>)>, Left),
@@ -1071,6 +1087,9 @@ struct LineEdit {
     typed: Vec<egui::Event>,
     /// What an input method is composing in it, from and to ([`page_text::composition`]).
     composing: Option<(usize, usize)>,
+    /// Where the caret was last frame (page points, the middle of the line): switching to
+    /// Paragraph edits the paragraph there.
+    caret_at: Option<Pos2>,
 }
 
 /// Take what an input method was still composing in the line being edited, `le`, whose
@@ -1511,6 +1530,25 @@ pub struct Editor {
     chosen: Option<Chosen>,
     /// A line of page text being edited on the page (read tool).
     line_edit: Option<LineEdit>,
+    /// A paragraph of page text being edited on the page.
+    para: Option<ParaEdit>,
+    /// The blocks of text of each page ([`limarepdf_core::Pdf::page_blocks`]), read when one
+    /// of its lines is selected, kept as `objs` is.
+    blocks: HashMap<usize, Vec<limarepdf_core::Block>>,
+    /// The blocks switched to Paragraph while the document is open: page, left edge and
+    /// first baseline.
+    as_paragraph: Vec<(usize, f32, f32)>,
+    /// The editor a switch between Paragraph and One line opens once what was typed is in
+    /// the document.
+    then: Option<Then>,
+    /// The inspector's Editing switch was pressed: Paragraph (true) or One line. The tab
+    /// makes the switch ([`Editor::set_paragraph`]).
+    pub switch: Option<bool>,
+    /// The inspector's Join all was pressed for the paragraph's marked hyphens.
+    pub hyphens_wanted: Option<bool>,
+    /// The words of the document, which line-end hyphens are read by (`Pdf::document_words`):
+    /// read by the tab off the window's thread when the document opens.
+    pub doc_words: Option<Arc<DocWords>>,
     /// The placing tools kept active after putting something down, each pinned on its own
     /// (from the settings).
     pub keep: Vec<Tool>,
@@ -1656,6 +1694,13 @@ impl Default for Editor {
             group: None,
             chosen: None,
             line_edit: None,
+            para: None,
+            blocks: HashMap::new(),
+            as_paragraph: Vec::new(),
+            then: None,
+            switch: None,
+            hyphens_wanted: None,
+            doc_words: None,
             keep: Vec::new(),
             actions: Vec::new(),
             later: Vec::new(),
@@ -1890,6 +1935,9 @@ impl Editor {
         if let Some(le) = &self.line_edit {
             return Some(line_edit_id(self.scope, le.page));
         }
+        if let Some(pe) = &self.para {
+            return Some(para_id(self.scope, pe.page));
+        }
         self.writing_id()
     }
 
@@ -1908,7 +1956,10 @@ impl Editor {
             (_, Some(le)) if line_edit_id(self.scope, le.page) == id => {
                 &self.insp.as_ref()?.history
             }
-            _ => return None,
+            _ => match self.para.as_ref() {
+                Some(pe) if para_id(self.scope, pe.page) == id => &pe.history,
+                _ => return None,
+            },
         };
         Some((history.can_undo(), history.can_redo()))
     }
@@ -1921,6 +1972,9 @@ impl Editor {
         }
         if let Some(le) = self.line_edit.as_mut() {
             le.refocus = true;
+        }
+        if let Some(pe) = self.para.as_mut() {
+            pe.refocus = true;
         }
         if let Some(w) = self.writing.as_mut() {
             w.refocus = true;
@@ -1939,6 +1993,8 @@ impl Editor {
         self.group = None;
         self.chosen = None;
         self.line_edit = None;
+        self.para = None;
+        self.blocks.clear();
         self.words.clear();
         self.selection.clear_words();
         self.text_drag = false;
@@ -2033,6 +2089,7 @@ impl Editor {
                     _ => None,
                 }
             }
+            Typed::Paragraph => self.para.as_mut().and_then(paragraph::commit_composition),
             _ => None,
         };
         if self.left_composing.is_none() {
@@ -2060,6 +2117,10 @@ impl Editor {
                 let a = self.insp_change()?;
                 let held = (self.insp.take()?, self.line_edit.take());
                 (a, Kept::Object(Box::new(held)))
+            }
+            Typed::Paragraph => {
+                let a = self.para_change()?;
+                (a, Kept::Paragraph(Box::new(self.para.take()?)))
             }
             Typed::Field => {
                 let mut acts = Vec::new();
@@ -2101,6 +2162,12 @@ impl Editor {
                 }
                 (self.insp, self.line_edit) = (Some(insp), line);
             }
+            Kept::Paragraph(pe) => {
+                if self.sel() != Some((pe.page, pe.line)) {
+                    self.select_object(pe.page, pe.line);
+                }
+                self.para = Some(*pe);
+            }
             Kept::Field(original) => self.form.uncommit(original),
             Kept::Comment => {}
             Kept::Reply(id, d) => {
@@ -2132,6 +2199,7 @@ impl Editor {
             match piece {
                 Typed::Text => self.adding = None,
                 Typed::Writing => self.writing = None,
+                Typed::Paragraph => self.para = None,
                 _ => (self.insp, self.line_edit) = (None, None),
             }
             self.not_kept = None;
@@ -2158,6 +2226,10 @@ impl Editor {
             (Some(NotKept::Object(key, t, look)), Typed::Object) => {
                 let same = |i: &Insp| i.key == *key && i.text.same_as(t) && i.look().same_as(look);
                 self.insp.as_ref().is_some_and(same)
+            }
+            (Some(NotKept::Paragraph(key, t)), Typed::Paragraph) => {
+                let same = |p: &ParaEdit| (p.page, p.line) == *key && p.text.same_as(t);
+                self.para.as_ref().is_some_and(same)
             }
             _ => false,
         }
@@ -2203,6 +2275,7 @@ impl Editor {
             || self.annot_changes().is_some()
             || self.drafts.values().any(Draft::ready)
             || self.insp_change().is_some()
+            || self.para_change().is_some()
             || self.chosen.as_ref().is_some_and(Chosen::changed)
             || self.group.as_ref().is_some_and(|g| g.change().is_some())
     }
@@ -2288,6 +2361,7 @@ impl Editor {
             area: Rect::NOTHING,
             typed: Vec::new(),
             composing: None,
+            caret_at: None,
         });
     }
 
@@ -2316,10 +2390,13 @@ impl Editor {
     /// selected there (Edit text; across lines, the line where the selection ends, its part
     /// selected). Whether there was such a line.
     pub fn edit_words(&mut self, pdf: &limarepdf_core::Pdf) -> bool {
-        let Some((page, id, pick, _)) = self.words_line(pdf) else {
+        let Some((page, id, pick, one)) = self.words_line(pdf) else {
             return false;
         };
-        self.start_line_edit(page, id, pick);
+        if self.words_paragraph(pdf, !one) {
+            return true;
+        }
+        self.start_text_edit(pdf, page, id, pick);
         true
     }
 
@@ -2340,6 +2417,10 @@ impl Editor {
             le.typed.extend(typed);
             return true;
         }
+        if let Some(pe) = self.para.as_mut().filter(|pe| pe.fresh) {
+            pe.typed.extend(typed);
+            return true;
+        }
         // An input method's empty composition (one ended, or the method turned on) types
         // nothing.
         let something = typed.iter().any(|e| match e {
@@ -2354,13 +2435,22 @@ impl Editor {
         }
         match self.words_line(pdf) {
             Some((page, id, pick, true)) => {
-                self.start_line_edit(page, id, pick);
+                self.start_text_edit(pdf, page, id, pick);
                 if let Some(le) = self.line_edit.as_mut() {
                     le.typed = typed;
+                } else if let Some(pe) = self.para.as_mut() {
+                    pe.typed = typed;
+                }
+            }
+            // Across lines of one paragraph, it is typed over there (Q3 of stage 3's plan:
+            // a block LimarePDF is sure of, or switched to Paragraph).
+            Some((.., false)) if self.words_paragraph(pdf, true) => {
+                if let Some(pe) = self.para.as_mut() {
+                    pe.typed = typed;
                 }
             }
             Some((.., false)) => {
-                let note = "Type over words within one line. Paragraph editing is planned.";
+                let note = "Type over words within one paragraph.";
                 self.words_note.mark(ctx, note.into());
             }
             None => {
@@ -2419,12 +2509,20 @@ impl Editor {
     /// Whether a line of page text is being edited, or new text, a note or a text box
     /// typed, on the page.
     pub fn typing_on_page(&self) -> bool {
-        self.line_edit.is_some() || self.adding.is_some() || self.writing.is_some()
+        self.line_edit.is_some()
+            || self.para.is_some()
+            || self.adding.is_some()
+            || self.writing.is_some()
     }
 
-    /// The line being edited drawn in place, as its page and the box to hide (page
-    /// points): the tab finds the colour around it for [`Self::cover`].
+    /// The line being edited drawn in place, or the paragraph being edited, as its page
+    /// and the box to hide (page points): the tab finds the colour around it for
+    /// [`Self::cover`].
     pub fn cover_wanted(&self) -> Option<(usize, [f32; 4])> {
+        if let Some(pe) = &self.para {
+            let b = (pe.block.lines.iter()).map(|l| l.bbox).reduce(union)?;
+            return Some((pe.page, b));
+        }
         let le = self.line_edit.as_ref()?;
         let o = self.objs.get(&le.page)?.get(le.id)?;
         drawn_in_place(o).then(|| (le.page, cover_box(o)))
@@ -2626,6 +2724,11 @@ impl Editor {
         }
         let now = ctx.input(|i| i.time);
         insp.history.observe(&insp.text, sel, now, settled(&ctx));
+        // Where the caret is, for a switch to Paragraph.
+        if let Some(c) = out.cursor_range.filter(|_| drawn) {
+            let at = out.galley.pos_from_cursor(c.primary).center() + out.galley_pos.to_vec2();
+            le.caret_at = Some(Pos2::new((at.x - r.min.x) / k, (at.y - r.min.y) / k));
+        }
         let edit = &out.response.response;
         // What an input method composes shows unchecked; left without the keyboard, it is
         // taken as committed (PB-54).
@@ -2929,6 +3032,7 @@ impl Editor {
     pub fn set_tool(&mut self, t: Tool) {
         self.finish_adding();
         self.finish_writing();
+        self.end_paragraph(true);
         self.commit_insp();
         self.line_edit = None;
         if Tool::COMMENTING.contains(&t) {
@@ -2976,6 +3080,8 @@ impl Editor {
         self.insp = None;
         self.group = None;
         self.line_edit = None;
+        self.para = None;
+        self.then = None;
         self.annot_insp = None;
         self.digital_place = None;
         self.digital_error = None;
@@ -2994,10 +3100,12 @@ impl Editor {
     /// Let the selected line of page text be moved and resized with the read tool, as
     /// text just added is, until something else is selected (Move or resize text).
     pub fn move_text(&mut self) {
-        // A line being edited on the page is finished first, what was typed kept.
+        // A line or paragraph being edited on the page is finished first, what was typed
+        // kept.
         if self.line_edit.take().is_some() {
             self.commit_insp();
         }
+        self.end_paragraph(true);
         if self.tool != Tool::Read {
             self.set_tool_keep_sel(Tool::Read);
         }
@@ -3648,6 +3756,8 @@ impl Editor {
             self.sync_insp();
         }
         self.read_line_fonts(pdf, page);
+        self.read_blocks(pdf, page);
+        self.follow_then(pdf, page, k);
         self.sync_group();
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
@@ -3885,6 +3995,7 @@ impl Editor {
         if self.adding_ui(ui, page, r, k)
             || self.writing_ui(ui, page, r, k)
             || self.line_edit_ui(ui, page, r, k)
+            || self.para_ui(ui, page, r, k)
         {
             return resp;
         }
@@ -3987,7 +4098,7 @@ impl Editor {
                     if let (true, Some((on, i)), Some(p)) = (text, self.sel(), at) {
                         let words = self.words(pdf, on).to_vec();
                         let pick = self.word_pick(on, i, p, &words);
-                        self.start_line_edit(on, i, pick);
+                        self.start_text_edit(pdf, on, i, pick);
                     }
                 }
             }
@@ -4076,7 +4187,7 @@ impl Editor {
                         self.write_selected();
                     } else if let Some((p, i)) = line {
                         let pick = self.word_pick(page, i, p, &words);
-                        self.start_line_edit(page, i, pick);
+                        self.start_text_edit(pdf, page, i, pick);
                     } else if let Some(i) = on_line(click_at()) {
                         self.selection = Selection::word((page, i));
                     }
@@ -4133,9 +4244,9 @@ impl Editor {
                         // A click elsewhere finishes the text being typed.
                         self.finish_adding();
                     } else if let Some(i) = self.text_hit(page, p, tol) {
-                        // On page text: edit its line, the caret where clicked.
+                        // On page text: edit its line (or paragraph), the caret where clicked.
                         self.adding = None;
-                        self.start_line_edit(page, i, Pick::At(p, false));
+                        self.start_text_edit(pdf, page, i, Pick::At(p, false));
                     } else {
                         // New text there; with nothing typed yet, it moves there.
                         let look = self.new_look();
@@ -4865,7 +4976,7 @@ impl Editor {
     /// Whether the Text tool is adding text: not while it edits a line of the page, which
     /// the band and the inspector show as the other tools do.
     fn adding_text(&self) -> bool {
-        self.tool == Tool::Text && self.line_edit.is_none()
+        self.tool == Tool::Text && self.line_edit.is_none() && self.para.is_none()
     }
 
     /// The heading of a tool's options in the inspector.
@@ -4929,13 +5040,18 @@ impl Editor {
         Some((page, bbox))
     }
 
-    /// A line of page text is being edited on the page.
+    /// A line or paragraph of page text is being edited on the page: Bold, Italic and the
+    /// floating bar act in it.
     pub fn editing_line(&self) -> bool {
-        self.line_edit.is_some()
+        self.line_edit.is_some() || self.para.is_some()
     }
 
-    /// Where the line being edited on `page` was drawn last on the screen, as typed.
+    /// Where the line or paragraph being edited on `page` was drawn last on the screen, as
+    /// typed.
     pub fn line_area(&self, page: usize) -> Option<Rect> {
+        if let Some(pe) = self.para.as_ref().filter(|pe| pe.page == page) {
+            return pe.area.is_positive().then_some(pe.area);
+        }
         let le = self.line_edit.as_ref().filter(|le| le.page == page)?;
         le.area.is_positive().then_some(le.area)
     }
@@ -4979,8 +5095,13 @@ impl Editor {
             .is_some_and(|o| o.kind == ObjectKind::Text)
     }
 
-    /// Edit the selected line of page text on the page, the caret at its end (Edit text).
-    pub fn edit_selected_text(&mut self) {
+    /// Edit the selected line of page text on the page, the caret at its end (Edit text):
+    /// its paragraph when that opens as one ([`Self::opens_as_paragraph`]).
+    pub fn edit_selected_text(&mut self, pdf: &limarepdf_core::Pdf) {
+        // A paragraph open already goes on as it is, with what was typed in it.
+        if self.para.is_some() {
+            return;
+        }
         let Some((page, id)) = self.sel() else {
             return;
         };
@@ -4989,7 +5110,7 @@ impl Editor {
         };
         if o.kind == ObjectKind::Text {
             let end = o.text.as_deref().unwrap_or("").chars().count();
-            self.start_line_edit(page, id, Pick::Chars(end, end));
+            self.start_text_edit(pdf, page, id, Pick::Chars(end, end));
         }
     }
 
@@ -5073,6 +5194,10 @@ impl Editor {
             self.end_line_edit();
             return;
         }
+        if self.para.is_some() {
+            self.end_paragraph(false);
+            return;
+        }
         if self.selection.annot().is_some() {
             self.selection.clear_annot();
             return;
@@ -5147,6 +5272,11 @@ impl Editor {
         let key = self.sel();
         if key.is_some() && self.insp.as_ref().map(|i| i.key) == key {
             return;
+        }
+        // Something else selected: a paragraph being edited is kept, as a click away keeps it.
+        let line = self.para.as_ref().map(|p| (p.page, p.line));
+        if line.is_some() && line != key {
+            self.end_paragraph(true);
         }
         self.commit_insp();
         self.line_edit = None;
@@ -5321,6 +5451,16 @@ impl Editor {
             self.keep(Typed::Words);
             return None;
         }
+        let scope = self.scope;
+        if let Some(pe) = self.para.as_mut() {
+            let sel = page_text::held(ctx, para_id(scope, pe.page)).unwrap_or((0, 0));
+            match bold {
+                true => pe.text.bold(sel),
+                false => pe.text.italic(sel),
+            }
+            pe.refocus = true;
+            return None;
+        }
         let (page, id) = self.sel()?;
         let visible = self.objs.get(&page)?.get(id)?;
         if visible.kind != ObjectKind::Text || visible.hidden {
@@ -5328,7 +5468,6 @@ impl Editor {
         }
         self.sync_insp();
         let insp = self.insp.as_mut()?;
-        let scope = self.scope;
         if let Some(le) = (self.line_edit.as_mut()).filter(|le| (le.page, le.id) == (page, id)) {
             let sel = page_text::held(ctx, line_edit_id(scope, page)).unwrap_or((0, 0));
             match bold {
@@ -5354,6 +5493,27 @@ impl Editor {
     pub fn delete_words(&mut self, pdf: &limarepdf_core::Pdf) -> Option<String> {
         self.selection.words()?;
         self.sync_chosen(pdf);
+        let across = self.chosen.as_ref().is_some_and(|c| !c.one_line());
+        // In a paragraph switched to Paragraph, or across lines of one LimarePDF is sure
+        // of, it is taken out there and the paragraph rewraps, the caret where it was, as in
+        // a word processor.
+        if self.words_paragraph(pdf, across) {
+            if let Some(pe) = self.para.as_mut() {
+                if let paragraph::ParaPick::Chars(a, b) = pe.pick {
+                    let (a, b) = (a.min(b), a.max(b));
+                    pe.text.delete((a, b));
+                    // A space left on both sides of where they were: one goes too, by
+                    // Word's rule, as it does across lines ([`crate::styled::Across`]).
+                    let chars: Vec<char> = pe.text.text().chars().collect();
+                    let space = |i: usize| chars.get(i).is_some_and(|&c| c == ' ');
+                    if a > 0 && space(a - 1) && space(a) {
+                        pe.text.delete((a, a + 1));
+                    }
+                    pe.pick = paragraph::ParaPick::Chars(a, a);
+                }
+            }
+            return None;
+        }
         let c = self.chosen.as_mut()?;
         if !c.restylable() {
             return c.left.said();
@@ -5411,8 +5571,8 @@ impl Editor {
             .show(ui, |ui| {
                 note(
                     ui,
-                    "Paragraph reflow, underline and strike-through are planned. Your \
-                     existing text tools keep working.",
+                    "Underline and strike-through are planned. Your existing text tools \
+                     keep working.",
                 );
             });
         let said = "Future text tools — Planned";
@@ -5450,6 +5610,34 @@ impl Editor {
                 styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf, planned, compact);
                 return;
             }
+        }
+        // The paragraph being edited: what is selected in it, else the caret's look.
+        let scope = self.scope;
+        if let Some(pe) = self.para.as_mut() {
+            let n = pe.text.text().chars().count();
+            let sel = page_text::held(ui.ctx(), para_id(scope, pe.page)).unwrap_or((n, n));
+            let para = pe.setting.paragraph();
+            let origins = pe.text.origins();
+            let (a, b) = (sel.0.min(sel.1), sel.0.max(sel.1));
+            let mut in_pdf: Vec<String> = Vec::new();
+            for k in (a.saturating_sub(usize::from(a == b))..b.max(a + 1))
+                .filter_map(|j| origins.get(j).copied().flatten())
+            {
+                let name = para.span_at(k).and_then(|i| para.spans.get(i));
+                if let Some(name) = name.map(|s| s.font_name.clone()) {
+                    if !in_pdf.contains(&name) {
+                        in_pdf.push(name);
+                    }
+                }
+            }
+            let mut text = InLine {
+                text: &mut pe.text,
+                sel,
+            };
+            if styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, planned, compact) {
+                pe.refocus = true;
+            }
+            return;
         }
         self.sync_insp();
         let line = self.insp.as_ref().and_then(|insp| {
@@ -5510,7 +5698,8 @@ impl Editor {
     /// typing). Each frame, whether or not the inspector is shown.
     pub fn settle_look(&mut self, ctx: &egui::Context) {
         let settled = settled(ctx);
-        let object = self.line_edit.is_none() && self.selection.object().is_some();
+        let object =
+            self.line_edit.is_none() && self.para.is_none() && self.selection.object().is_some();
         if let Some(insp) = self.insp.as_mut().filter(|_| object) {
             // The line being edited on the page watches its own changes.
             let now = ctx.input(|i| i.time);
@@ -6097,6 +6286,17 @@ impl Editor {
 
         // Below a tool's options, the object's own heading.
         let heading = self.tool_heading().and_then(|_| self.object_heading());
+        // A paragraph being edited: its look and fonts, not its first line's place.
+        if self.para.is_some() {
+            if let Some(heading) = heading {
+                ui.strong(heading);
+            }
+            ui.add_space(4.0);
+            self.paragraph_inspector(ui);
+            self.planned_text_tools(ui);
+            return;
+        }
+        let para_state = self.para_state();
         let Some(insp) = self.insp.as_mut() else {
             return;
         };
@@ -6134,8 +6334,10 @@ impl Editor {
                     // The selection's fonts as the PDF names them, without a subset's tag.
                     let names = pdf_fonts(&obj, sel);
                     let named: Vec<&str> = names.iter().map(|n| untagged(n)).collect();
+                    if let Some(on) = paragraph::editing_switch(ui, para_state) {
+                        self.switch = Some(on);
+                    }
                     let rows = [
-                        ("Editing", "One line".to_string()),
                         font,
                         size,
                         ("PDF font", named.join(", ")),

@@ -968,6 +968,39 @@ fn a_letter_changed_rewrites_its_line_alone() {
     assert!(near((l.x, l.baseline), (72.0, down)), "{l:?}");
 }
 
+#[test]
+fn an_edit_is_written_in_stretches_kept_in_the_paragraphs_font_or_sent_to_another() {
+    let (_, _, setting) = ragged(300.0);
+    let para = setting.paragraph();
+    // A word unembedded Helvetica can't write (it writes plain ASCII as itself).
+    let new = para.text.replacen("quiet", "quiet Ωmega", 1);
+    let parts = typed(para, &new);
+    let chars: Vec<char> = new.chars().collect();
+    let (mut at, mut away) = (0, String::new());
+    for p in setting.pieces(&parts) {
+        let text: Vec<char> = parts[p.part].text.chars().collect();
+        let piece = &text[p.chars.0..p.chars.1];
+        assert_eq!(piece, &chars[at..at + piece.len()], "{p:?}");
+        at += piece.len();
+        // Kept in its line's own part (a part a text object here).
+        match p.kept {
+            Some(i) => assert_eq!(parts[p.part].font, PartFont::Span(i), "{p:?}"),
+            None => away.extend(piece),
+        }
+    }
+    assert_eq!(at, chars.len());
+    assert_eq!(away.trim(), "Ωmega");
+    assert!(setting.part_font(0).is_some_and(|f| f.takes_new_text()));
+    assert!(setting.part_font(para.spans.len()).is_none());
+}
+
+#[test]
+fn the_documents_words_are_the_same_on_fewer_threads() {
+    let (p, _, _) = ragged(300.0);
+    assert_eq!(p.document_words_on(2), p.document_words());
+    assert!(!p.document_words_on(1).is_empty());
+}
+
 /// Whether two points on the page are the same to within 0.05 points.
 fn near(a: (f32, f32), b: (f32, f32)) -> bool {
     (a.0 - b.0).abs() < 0.05 && (a.1 - b.1).abs() < 0.05
@@ -1417,6 +1450,82 @@ fn a_paragraphs_character_spacing_is_kept_on_its_rewritten_lines() {
         let (drawn, set) = (o.bbox[2] - o.bbox[0], l.width);
         assert!((drawn - set).abs() < 0.6, "{drawn} drawn, {set} set: {o:?}");
     }
+}
+
+/// `TEXT` with "Prüfung" in it, broken at 300 points, its "ü" drawn as TeX draws an accented
+/// letter (pdf.js `issue1127`, PB-73): the diaeresis alone (WinAnsi's ¨), moved over where
+/// the "u" goes and a little lower, then the "u" and the rest of the line from a move back.
+fn accented_page() -> Pdf {
+    let text = TEXT.replacen("worrying", "Prüfung", 1);
+    let lines = wrap(&text, 300.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let Some(at) = l.find('ü') else {
+            content.push_str(&format!("BT /F1 11 Tf 72 {y} Td ({l}) Tj ET\n"));
+            continue;
+        };
+        let (head, tail) = (&l[..at], &l[at + 'ü'.len_utf8()..]);
+        // Helvetica's u is 556 wide and its ¨ 333: the accent centred over the u.
+        let u = text_width(head, 11.0);
+        let over = (556.0 - 333.0) / 2.0 * 11.0 / 1000.0;
+        content.push_str(&format!(
+            "BT /F1 11 Tf 72 {y} Td ({head}) Tj {} -0.4 Td (\\250) Tj {} 0.4 Td (u{tail}) Tj ET\n",
+            u + over,
+            -over
+        ));
+    }
+    letter(&content)
+}
+
+/// How far the "u" of the accented line starts from its accent ([`accented_page`]), as the
+/// page draws them: left of it, under it. The parser reads them as two lines when the "u"
+/// is drawn from a move back too far to carry on from the accent, as `issue1127`'s are, and
+/// as one when the move is in the accent's show.
+fn accent_to_letter(p: &Pdf) -> f32 {
+    // Each character of the page's lines, in content order, and where it starts across the
+    // page (along each line from its baseline's start).
+    let drawn: Vec<(char, f32)> = (lines(p).iter())
+        .flat_map(|o| {
+            let x = o.baseline.unwrap().0;
+            let stops: Vec<f32> = o.stops.iter().map(|s| x + s).collect();
+            let text = o.text.as_deref().unwrap_or("");
+            text.chars().zip(stops).collect::<Vec<_>>()
+        })
+        .collect();
+    let k = (drawn.iter().position(|d| d.0 == '\u{A8}')).expect("the accent");
+    assert_eq!(drawn[k + 1].0, 'u', "{drawn:?}");
+    drawn[k + 1].1 - drawn[k].1
+}
+
+#[test]
+fn a_letter_drawn_as_its_accent_and_base_keeps_the_accent_over_it_when_its_line_is_rewritten() {
+    let p = accented_page();
+    let before = accent_to_letter(&p);
+    assert!((before + 1.23).abs() < 0.05, "{before}");
+    // A word typed before it: its line written again.
+    let (p, new) = edited_to(p, |para| {
+        para.text.replacen("Pr\u{A8}ufung", "big Pr\u{A8}ufung", 1)
+    });
+    assert!(new.contains("big Pr\u{A8}ufung"), "{new:?}");
+    let after = accent_to_letter(&p);
+    assert!((after - before).abs() < 0.05, "{after}, was {before}");
+}
+
+/// The accented letter of a rewritten line ([`accented_page`]) reads to Poppler as it did
+/// before: the letter, then the accent as its combining mark (PB-73: after a rewrite,
+/// `issue1127`'s read the mark first). Opt-in, as the cross-check above.
+#[test]
+#[ignore]
+fn cross_check_an_accent_drawn_over_its_letter_reads_with_it_in_poppler() {
+    let mut p = accented_page();
+    let was = plain(&tools::pdftotext(&p.to_bytes().unwrap()));
+    assert!(was.contains("Pru\u{308}fung"), "{was:?}");
+    let (mut p, _) = edited_to(p, |para| {
+        para.text.replacen("Pr\u{A8}ufung", "big Pr\u{A8}ufung", 1)
+    });
+    let got = plain(&tools::pdftotext(&p.to_bytes().unwrap()));
+    assert!(got.contains("big Pru\u{308}fung"), "{got:?}");
 }
 
 /// A page turned a quarter for showing, `TEXT` and `MORE` drawn up the page so that they

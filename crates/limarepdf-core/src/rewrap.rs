@@ -148,6 +148,30 @@ impl Paragraph {
         matches!((at(k), at(k + 1)), (Some((a, i)), Some((b, j))) if a == b && j == i + 1)
     }
 
+    /// Whether character `k` of [`Paragraph::text`] is a spacing accent drawn over the
+    /// letter after it, in another text object on its line, nothing put between them: the
+    /// letter starts inside the accent's width, as TeX draws "ü" (PB-73). The move back
+    /// between them as drawn is kept while they stay next to each other, as between
+    /// [`Paragraph::neighbours`]; other pieces of a line keep the gap a word's text has.
+    pub(crate) fn accent_over(&self, k: usize) -> bool {
+        let (Some(c), Some(next)) = (self.chars.get(k), self.chars.get(k + 1)) else {
+            return false;
+        };
+        let apart = matches!((c.from, next.from), (Some((a, _)), Some((b, _))) if a != b);
+        let width = c.x.1 - c.x.0;
+        let under = next.x.0 <= c.x.1 && next.x.0 >= c.x.0 - width;
+        apart
+            && under
+            && self.lines.iter().any(|&(a, b)| a <= k && k + 1 < b)
+            && self.text.chars().nth(k).is_some_and(spacing_accent)
+    }
+
+    /// What was drawn from the end of character `k`'s glyph to the start of character
+    /// `k + 1`'s, across the page, in points.
+    pub(crate) fn gap_after(&self, k: usize) -> f32 {
+        self.chars[k + 1].x.0 - self.chars[k].x.1
+    }
+
     /// How wide a line may be, the first line of a paragraph (`first`) taking its indent.
     fn room(&self, first: bool) -> f32 {
         let f = &self.frame;
@@ -157,6 +181,13 @@ impl Paragraph {
         };
         (f.right - f.left - indent).max(0.0)
     }
+}
+
+/// Whether `c` is an accent drawn on its own, with a width of its own (Unicode's modifier
+/// symbols): what TeX draws over a letter to make "ü" or "é" where its font has no such
+/// letter.
+fn spacing_accent(c: char) -> bool {
+    "^`~\u{A8}\u{AF}\u{B4}\u{B8}\u{2C6}\u{2C7}".contains(c) || ('\u{2D8}'..='\u{2DD}').contains(&c)
 }
 
 /// The words of a document as its lines show them, counted: the evidence a line-end hyphen
@@ -263,6 +294,16 @@ impl Pdf {
             })
             .collect();
         DocWords::of(pages.iter().flatten().map(String::as_str))
+    }
+
+    /// [`Pdf::document_words`] on `threads` threads of their own, so a long document's
+    /// pages don't take every core from what else runs (the app's page drawing).
+    pub fn document_words_on(&self, threads: usize) -> DocWords {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads.max(1));
+        match pool.build() {
+            Ok(pool) => pool.install(|| self.document_words()),
+            Err(_) => self.document_words(),
+        }
     }
 
     /// Block `block` of page `page_index` ([`Pdf::page_blocks`]) read for editing as a
@@ -537,6 +578,19 @@ pub struct SetLine {
     pub hyphen: bool,
 }
 
+/// A stretch of an edit's part written in one font ([`ParagraphSetting::pieces`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParagraphPiece {
+    /// The edit's part it is in, and its characters there, from and to.
+    pub part: usize,
+    pub chars: (usize, usize),
+    /// Written in the font of the paragraph's part with this index ([`Paragraph::spans`]),
+    /// its letters keeping their codes; `None` when written in `away`.
+    pub kept: Option<usize>,
+    /// The font its words go to where it isn't kept (a part in a font chosen: that font).
+    pub away: FontChoice,
+}
+
 /// An edited paragraph set in its frame ([`ParagraphSetting::set`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SetParagraph {
@@ -695,6 +749,35 @@ impl ParagraphSetting {
     /// The font of the paragraph's part `i`, as it takes new text.
     pub(crate) fn font(&self, i: usize) -> &LineFont {
         &self.fonts[i].0
+    }
+
+    /// The font of the paragraph's part `i` ([`Paragraph::spans`]) as it takes new text,
+    /// for drawing what is typed in it as it will be written.
+    pub fn part_font(&self, i: usize) -> Option<&LineFont> {
+        self.fonts.get(i).map(|f| &f.0)
+    }
+
+    /// How `parts` (as [`ParagraphSetting::set`] takes them) are written, in stretches of
+    /// one font each, in order: kept in the font of the paragraph's part they are in where
+    /// they can be, else in the font their words go to. What the typing box draws each
+    /// stretch in.
+    pub fn pieces(&self, parts: &[TextPart]) -> Vec<ParagraphPiece> {
+        let mut out: Vec<ParagraphPiece> = Vec::new();
+        for pl in self.planned(parts) {
+            let kept = pl.kept.map(|k| k.0);
+            match out.last_mut() {
+                Some(p) if p.part == pl.part && p.kept == kept && p.away == pl.away => {
+                    p.chars.1 = pl.at + 1;
+                }
+                _ => out.push(ParagraphPiece {
+                    part: pl.part,
+                    chars: (pl.at, pl.at + 1),
+                    kept,
+                    away: pl.away,
+                }),
+            }
+        }
+        out
     }
 
     /// How character `k` of the paragraph's text was drawn, when that is known.
@@ -1019,9 +1102,9 @@ impl ParagraphSetting {
                         matches!(q.kept, Some((_, Way::Own(_) | Way::WithBefore)))
                             && q.from == Some(k + 1)
                             && !m.chars[j + 1].is_whitespace()
-                    }) && para.neighbours(k);
+                    }) && (para.neighbours(k) || para.accent_over(k));
                     let after = match neighbour {
-                        true => (para.chars[k + 1].x.0 - para.chars[k].x.1) * scale,
+                        true => para.gap_after(k) * scale,
                         false => tc * th,
                     };
                     glyph(k) + after
