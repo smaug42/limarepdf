@@ -532,27 +532,8 @@ fn paragraph_check() {
         );
     }
     let variants = [
-        (
-            "geometry",
-            Detect {
-                tags: false,
-                fonts: true,
-            },
-        ),
-        (
-            "tags",
-            Detect {
-                tags: true,
-                fonts: true,
-            },
-        ),
-        (
-            "geometry, any font",
-            Detect {
-                tags: false,
-                fonts: false,
-            },
-        ),
+        ("geometry", Detect { tags: false }),
+        ("tags", Detect { tags: true }),
     ];
     let mut verdict: Vec<(String, bool)> = Vec::new();
     let mut all_times: Times = Vec::new();

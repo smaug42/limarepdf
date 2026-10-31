@@ -43,6 +43,7 @@ mod own_font;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
+mod para_write;
 mod paragraph;
 mod pkcs12;
 mod preview_font;
@@ -55,6 +56,7 @@ mod redact;
 mod redact_img;
 pub mod render;
 mod repair;
+mod rewrap;
 mod sanitise;
 mod scan;
 mod security;
@@ -104,6 +106,9 @@ pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
 pub use redact::{PageRedaction, RedactReport};
+pub use rewrap::{
+    DocWords, Hyphen, LineEndHyphen, Paragraph, ParagraphSetting, SetLine, SetParagraph,
+};
 pub use sanitise::{Hidden, HiddenReport, LayersDamaged};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};

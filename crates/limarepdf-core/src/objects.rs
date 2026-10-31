@@ -120,6 +120,27 @@ pub(crate) struct Run {
     pub spacing: [f32; 3],
     /// The gap in points before the next show of the line, when it was read as a space.
     pub gap: f32,
+    /// The text state the show was drawn in, as the content set it.
+    pub state: TextState,
+}
+
+/// The text state a show is drawn in, as the content set it (in text space, not scaled by
+/// the text matrix): what text written before the show puts back after it, inside its
+/// text object (`para_write.rs`). The font and the colour are its part's ([`Span`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextState {
+    /// The size `Tf` set.
+    pub size: f32,
+    pub tc: f32,
+    pub tw: f32,
+    /// Horizontal scaling, 1 being none.
+    pub th: f32,
+    pub tl: f32,
+    pub rise: f32,
+    /// The render mode.
+    pub tr: i64,
+    /// The text line matrix at the start of the show (after any line move of ' and ").
+    pub tlm: M,
 }
 
 #[derive(Clone, Debug)]
@@ -628,6 +649,16 @@ impl Pdf {
                             tm: start_tm,
                             spacing: [gs.tc * lin, gs.tw * lin, th],
                             gap: 0.0,
+                            state: TextState {
+                                size: gs.size,
+                                tc: gs.tc,
+                                tw: gs.tw,
+                                th,
+                                tl: gs.tl,
+                                rise: gs.rise,
+                                tr: gs.tr,
+                                tlm,
+                            },
                         },
                         text,
                         font: gs.font.clone(),

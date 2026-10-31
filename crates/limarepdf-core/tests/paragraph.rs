@@ -9,7 +9,8 @@
 //! are drawn (PB-56), reads upright, at the size it is drawn, in whole lines.
 
 use limarepdf_core::{
-    text_width, Align, Block, Detect, Doubt, ObjectKind, PageObject, Pdf, TextEdit,
+    text_width, Align, Block, Detect, Doubt, Hyphen, ObjectKind, PageObject, Paragraph,
+    ParagraphSetting, PartFont, Pdf, SetLine, SetParagraph, TextEdit, TextPart,
 };
 use lopdf::{dictionary, Dictionary, Object, Stream};
 
@@ -214,6 +215,13 @@ fn tagged(lines: &[String], elements: &[usize]) -> Pdf {
         ));
     }
     let mut p = letter(&content);
+    add_tree(&mut p, elements);
+    p
+}
+
+/// A structure tree holding `elements` as paragraphs: marked content `k` in element
+/// `elements[k]`.
+fn add_tree(p: &mut Pdf, elements: &[usize]) {
     let root = p.doc.new_object_id();
     let n = elements.iter().max().unwrap() + 1;
     let elems: Vec<lopdf::ObjectId> = (0..n)
@@ -240,7 +248,6 @@ fn tagged(lines: &[String], elements: &[usize]) -> Pdf {
     let c = p.doc.get_dictionary_mut(catalog).unwrap();
     c.set("StructTreeRoot", root);
     c.set("MarkInfo", dictionary! { "Marked" => true });
-    p
 }
 
 #[test]
@@ -255,15 +262,7 @@ fn lines_of_different_tagged_paragraphs_are_never_joined() {
     assert_eq!(blocks.len(), 2, "{blocks:?}");
     assert_eq!(blocks[0].lines.len(), n);
     // Without the tags, the next word's fit says the first ends short of its measure.
-    let geometry = p
-        .page_blocks_by(
-            0,
-            Detect {
-                tags: false,
-                fonts: true,
-            },
-        )
-        .unwrap();
+    let geometry = p.page_blocks_by(0, Detect { tags: false }).unwrap();
     assert_eq!(geometry.len(), 2, "{geometry:?}");
     // One element for all: the tags don't keep apart what is one.
     let one = tagged(&lines, &vec![0; lines.len()]);
@@ -335,10 +334,8 @@ fn hidden_and_turned_text_is_in_no_paragraph() {
     assert!(blocks.iter().any(|b| b.confident() && b.lines.len() == n));
 }
 
-#[test]
-fn a_paragraph_in_a_flipped_type3_font_is_found_and_its_font_said() {
-    // Three lines in TeX's bitmap font, the second reading on from the first: upright and
-    // whole (PB-56), but new text in the font goes to another face (the plan's Q3).
+/// Three lines in TeX's bitmap font, the second reading on from the first.
+fn tex_paragraph() -> Pdf {
     let mut content = String::from("BT /T3 1 Tf\n");
     for (k, line) in ["Stony Brook ton tony", "rook torn knot Brook", "tony rook"]
         .iter()
@@ -349,12 +346,15 @@ fn a_paragraph_in_a_flipped_type3_font_is_found_and_its_font_said() {
     }
     content.push_str("ET");
     let letters = [STONY_BROOK, &[(' ', 30)]].concat();
-    let p = page_with(|p| tex_bitmap_font(p, &letters), &content);
-    let any_font = Detect {
-        tags: false,
-        fonts: false,
-    };
-    let blocks = p.page_blocks_by(0, any_font).unwrap();
+    page_with(|p| tex_bitmap_font(p, &letters), &content)
+}
+
+#[test]
+fn a_paragraph_in_a_flipped_type3_font_is_found_and_confident() {
+    // Upright and whole (PB-56); new text in the font goes to another face, but an edit
+    // keeps the paragraph's own letters, so the font doesn't make it uncertain.
+    let p = tex_paragraph();
+    let blocks = p.page_blocks(0).unwrap();
     assert_eq!(blocks.len(), 1, "{blocks:?}");
     assert_eq!(blocks[0].lines.len(), 3);
     assert!(blocks[0].confident(), "{:?}", blocks[0].doubt);
@@ -363,9 +363,25 @@ fn a_paragraph_in_a_flipped_type3_font_is_found_and_its_font_said() {
         "{:?}",
         blocks[0].frame
     );
-    let blocks = p.page_blocks(0).unwrap();
-    assert_eq!(blocks[0].lines.len(), 3);
-    assert_eq!(blocks[0].doubt, Some(Doubt::Font));
+}
+
+#[test]
+fn a_paragraph_in_a_flipped_type3_font_keeps_its_letters_upright_across_its_lines() {
+    let mut p = tex_paragraph();
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    // A word typed (in another font: the bitmap font takes no new text), and letters moved
+    // to other lines by the rewrap.
+    let new = para.text.replacen("ton tony", "ton big tony", 1);
+    p.edit_paragraph(&setting, &typed(&para, &new)).unwrap();
+    let again = only_paragraph(&p);
+    assert_eq!(again.text, new);
+    // Every line upright, its own letters drawn the right way up: nothing below the lines.
+    assert!(lines(&p).iter().all(|o| o.upright), "{:?}", lines(&p));
+    let rows = dark_rows(&mut p, 60..140);
+    assert!(rows.iter().any(|&n| n > 0), "nothing drawn: {rows:?}");
+    let last = rows.iter().rposition(|&n| n > 0).unwrap();
+    assert!(last < 60, "drawn below the paragraph: {rows:?}");
 }
 
 /// The page's lines of text, as read.
@@ -665,5 +681,724 @@ fn an_edited_line_in_a_type3_font_of_its_own_scale_keeps_its_letters_at_their_si
             (s.font_size - size).abs() < 0.05 * size,
             "{s:?} against {size}"
         );
+    }
+}
+
+// ---- A block read for editing as a paragraph (`Pdf::paragraph`).
+
+/// Page 0's only block of `p` read as a paragraph, with the document's words.
+fn only_paragraph(p: &Pdf) -> Paragraph {
+    let blocks = p.page_blocks(0).unwrap();
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    p.paragraph(0, &blocks[0], &p.document_words()).unwrap()
+}
+
+#[test]
+fn a_paragraphs_lines_are_read_as_one_text() {
+    let lines = wrap(TEXT, 440.0, 11.0);
+    let p = letter(&lines_at(&lines, 72.0, 0.0, 700.0, 13.2, "F1", 11.0));
+    let para = only_paragraph(&p);
+    assert_eq!(para.text, lines.join(" "));
+    // Each line's characters, the space joining two in neither.
+    let mut at = 0;
+    for (l, &(a, b)) in lines.iter().zip(&para.lines) {
+        assert_eq!((a, b), (at, at + l.chars().count()));
+        at = b + 1;
+    }
+    // A part for each line's text object, the space after it in it.
+    assert_eq!(para.spans.len(), lines.len());
+    assert_eq!(para.spans[0].chars, (0, para.lines[0].1 + 1));
+    assert_eq!(para.spans[0].font_name, "Helvetica");
+    assert_eq!(para.source(0), Some((0, 0)));
+    assert_eq!(para.source(para.lines[0].1), None);
+    assert_eq!(para.source(para.lines[1].0), Some((1, 0)));
+    assert!(para.hyphens.is_empty());
+}
+
+#[test]
+fn pieces_of_a_line_join_with_a_space_only_where_they_stand_a_word_apart() {
+    // The first line's words each in a text object of their own, the second's last word cut
+    // in two across two text objects, as Word draws some.
+    let lines = wrap(TEXT, 440.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        match k {
+            0 => {
+                let mut x = 72.0;
+                for word in l.split(' ') {
+                    content.push_str(&format!("BT /F1 11 Tf {x} {y} Td ({word}) Tj ET\n"));
+                    x += text_width(&format!("{word} "), 11.0);
+                }
+            }
+            1 => {
+                let cut = l.len() - 3;
+                let (a, b) = l.split_at(cut);
+                let x = 72.0 + text_width(a, 11.0);
+                content.push_str(&format!("BT /F1 11 Tf 72 {y} Td ({a}) Tj ET\n"));
+                content.push_str(&format!("BT /F1 11 Tf {x} {y} Td ({b}) Tj ET\n"));
+            }
+            _ => content.push_str(&format!("BT /F1 11 Tf 72 {y} Td ({l}) Tj ET\n")),
+        }
+    }
+    let p = letter(&content);
+    let para = only_paragraph(&p);
+    assert_eq!(para.text, lines.join(" "));
+    // A part for each of the first line's words, the second's two pieces and each other line.
+    let first = lines[0].split(' ').count();
+    assert_eq!(para.spans.len(), first + 2 + lines.len() - 2);
+}
+
+#[test]
+fn line_end_hyphens_are_read_by_the_documents_own_words() {
+    // "exam-ple" broken where the document also has "example" whole; "well-known" where it
+    // also has "well-known"; "co-op" where it has neither.
+    let lines = [
+        "The harbour master gave one exam-",
+        "ple of a well-",
+        "known catch, a co-",
+        "op of the fishing boats in the bay.",
+    ];
+    let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let mut content = lines_at(&lines, 72.0, 0.0, 700.0, 13.2, "F1", 11.0);
+    content.push_str("BT /F1 11 Tf 72 400 Td (An example of a well-known name.) Tj ET\n");
+    let p = letter(&content);
+    let blocks = p.page_blocks(0).unwrap();
+    let b = block_from(&p, &blocks, "The harbour");
+    let para = p.paragraph(0, b, &p.document_words()).unwrap();
+    assert_eq!(
+        para.text,
+        "The harbour master gave one exam\u{AD}ple of a well-known catch, a co-op of the \
+         fishing boats in the bay."
+    );
+    let kinds: Vec<Hyphen> = para.hyphens.iter().map(|h| h.kind).collect();
+    use Hyphen::{Discretionary, Hard, Unknown};
+    assert_eq!(kinds, [Discretionary, Hard, Unknown]);
+    let chars: Vec<char> = para.text.chars().collect();
+    let at: Vec<char> = para.hyphens.iter().map(|h| chars[h.at]).collect();
+    assert_eq!(at, ['\u{AD}', '-', '-']);
+    // The hyphen is still the line's own character, drawn where it was.
+    assert_eq!(para.source(para.hyphens[0].at), Some((0, 32)));
+}
+
+#[test]
+fn a_raised_piece_keeps_its_rise_from_its_lines_baseline() {
+    let lines = wrap(TEXT, 440.0, 11.0);
+    let mut content = lines_at(&lines, 72.0, 0.0, 700.0, 13.2, "F1", 11.0);
+    // A footnote mark after the first line's end, smaller and raised.
+    let x = 72.0 + text_width(&lines[0], 11.0) + 1.0;
+    content.push_str(&format!("BT /F1 7 Tf {x} 704 Td (1) Tj ET\n"));
+    let p = letter(&content);
+    let para = only_paragraph(&p);
+    let k = para.lines[0].1 - 1;
+    assert_eq!(para.text.chars().nth(k), Some('1'));
+    let s = &para.spans[para.span_at(k).unwrap()];
+    assert!((s.rise - 4.0).abs() < 0.1, "{s:?}");
+    assert!((s.font_size - 7.0).abs() < 0.01, "{s:?}");
+}
+
+// ---- Rewrapping an edited paragraph (`ParagraphSetting::set`).
+
+#[test]
+fn a_rewrap_hides_a_discretionary_hyphen_inside_a_line_and_marks_an_unknown_one() {
+    let lines = [
+        "The harbour master gave one exam-",
+        "ple to the crews of the boats, a co-",
+        "op of the fishing boats in the bay.",
+    ];
+    let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let mut content = lines_at(&lines, 72.0, 0.0, 700.0, 13.2, "F1", 11.0);
+    content.push_str("BT /F1 11 Tf 72 400 Td (An example of the harbour master's.) Tj ET\n");
+    let p = letter(&content);
+    let blocks = p.page_blocks(0).unwrap();
+    let b = block_from(&p, &blocks, "The harbour");
+    let para = p.paragraph(0, b, &p.document_words()).unwrap();
+    let kinds: Vec<Hyphen> = para.hyphens.iter().map(|h| h.kind).collect();
+    assert_eq!(kinds, [Hyphen::Discretionary, Hyphen::Unknown]);
+    let setting = p.paragraph_setting(&para).unwrap();
+    // As it is, the first line shows its hyphen.
+    assert!(setting.set(&para.parts()).lines[0].hyphen);
+    let new = para.text.replacen("The harbour master ", "", 1);
+    let set = setting.set(&typed(&para, &new));
+    let chars: Vec<char> = new.chars().collect();
+    let soft = chars.iter().position(|&c| c == '\u{AD}').unwrap();
+    let first = &set.lines[0];
+    assert!(first.chars.0 <= soft && soft + 1 < first.chars.1, "{set:?}");
+    assert!(!first.hyphen);
+    // The hyphen of "co-op" is marked where it is inside a line, not where it ends one.
+    let co = new[..new.find("co-op").unwrap()].chars().count() + 2;
+    let line = (set.lines.iter())
+        .find(|l| l.chars.0 <= co && co < l.chars.1)
+        .unwrap();
+    let ends = set_texts(&set, &new)[set.lines.iter().position(|l| l == line).unwrap()]
+        .chars()
+        .count();
+    match co + 1 < line.chars.0 + ends {
+        true => assert_eq!(set.marked, [co]),
+        false => assert!(set.marked.is_empty()),
+    }
+}
+
+/// The paragraph's text changed to `new` as typing changes it: the characters it starts and
+/// ends with unchanged kept where they were, in their parts' styles; those typed take the
+/// style of the character before them.
+fn typed(para: &Paragraph, new: &str) -> Vec<TextPart> {
+    let (old, new): (Vec<char>, Vec<char>) = (para.text.chars().collect(), new.chars().collect());
+    let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let room = old.len().min(new.len()) - head;
+    let tail = (old.iter().rev().zip(new.iter().rev()))
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(room);
+    let mut parts: Vec<TextPart> = Vec::new();
+    let mut span = 0;
+    for (j, &c) in new.iter().enumerate() {
+        let origin = match j {
+            _ if j < head => Some(j),
+            _ if j >= new.len() - tail => Some(old.len() + j - new.len()),
+            _ => None,
+        };
+        if let Some(k) = origin {
+            span = para.span_at(k).unwrap();
+        }
+        let s = &para.spans[span];
+        match parts.last_mut() {
+            Some(p) if p.font == PartFont::Span(span) => {
+                p.text.push(c);
+                p.origins.push(origin);
+            }
+            _ => parts.push(TextPart {
+                text: c.to_string(),
+                font: PartFont::Span(span),
+                size: s.font_size,
+                color: s.fill.unwrap_or([0.0; 3]),
+                rise: s.rise,
+                from: None,
+                origins: vec![origin],
+            }),
+        }
+    }
+    parts
+}
+
+/// The text of each of `set`'s lines in `text`, the spaces they end with left out.
+fn set_texts(set: &SetParagraph, text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let text = |l: &SetLine| chars[l.chars.0..l.chars.1].iter().collect::<String>();
+    (set.lines.iter())
+        .map(|l| text(l).trim_end().to_string())
+        .collect()
+}
+
+/// A left-aligned paragraph of `TEXT` and `MORE` broken greedily at `room` points, as one
+/// block, and its setting.
+fn ragged(room: f32) -> (Pdf, Vec<String>, ParagraphSetting) {
+    let lines = wrap(&format!("{TEXT} {MORE}"), room, 11.0);
+    let p = letter(&lines_at(&lines, 72.0, 0.0, 700.0, 13.2, "F1", 11.0));
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    (p, lines, setting)
+}
+
+#[test]
+fn a_paragraph_set_unchanged_keeps_every_line() {
+    let (_, lines, setting) = ragged(300.0);
+    let para = setting.paragraph();
+    let set = setting.set(&para.parts());
+    assert!(set.unchanged());
+    assert_eq!(set.lines.len(), lines.len());
+    assert_eq!(set_texts(&set, &para.text), lines);
+    // Typing that puts the text back as it was is no change either.
+    let set = setting.set(&typed(para, &para.text.clone()));
+    assert!(set.unchanged());
+}
+
+#[test]
+fn a_letter_changed_rewrites_its_line_alone() {
+    let (_, lines, setting) = ragged(300.0);
+    let para = setting.paragraph();
+    // An "e" in the third line made an "o", as wide in Helvetica.
+    let (a, b) = para.lines[2];
+    let chars: Vec<char> = para.text.chars().collect();
+    let k = (a..b).find(|&k| chars[k] == 'e').unwrap();
+    let mut new = chars.clone();
+    new[k] = 'o';
+    let new: String = new.into_iter().collect();
+    let set = setting.set(&typed(para, &new));
+    let kept: Vec<Option<usize>> = set.lines.iter().map(|l| l.kept).collect();
+    let mut want: Vec<Option<usize>> = (0..lines.len()).map(Some).collect();
+    want[2] = None;
+    assert_eq!(kept, want);
+    let mut texts = lines.clone();
+    texts[2] = set_texts(&set, &new)[2].clone();
+    assert_eq!(set_texts(&set, &new), texts);
+    // Where the line was: 72 points in, its baseline as it was down the page.
+    let l = &set.lines[2];
+    let down = 792.0 - (700.0 - 13.2 * 2.0);
+    assert!(near((l.x, l.baseline), (72.0, down)), "{l:?}");
+}
+
+/// Whether two points on the page are the same to within 0.05 points.
+fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+    (a.0 - b.0).abs() < 0.05 && (a.1 - b.1).abs() < 0.05
+}
+
+#[test]
+fn a_word_deleted_pulls_the_next_up_only_where_it_fits_now_and_didnt_before() {
+    let room = 300.0;
+    let (_, lines, setting) = ragged(room);
+    let para = setting.paragraph();
+    // A line whose next line's second word would fit on it once the first is deleted.
+    let words: Vec<Vec<&str>> = lines.iter().map(|l| l.split(' ').collect()).collect();
+    let takes = |k: usize| {
+        let longer = format!("{} {}", lines[k], words[k + 1][1]);
+        words[k + 1].len() > 2 && text_width(&longer, 11.0) <= room - 1.0
+    };
+    let k = (0..lines.len() - 1)
+        .find(|&k| takes(k))
+        .expect("a line that can take a word");
+    let mut new_lines = lines.clone();
+    new_lines[k + 1] = words[k + 1][1..].join(" ");
+    let new = new_lines.join(" ");
+    let set = setting.set(&typed(para, &new));
+    let texts = set_texts(&set, &new);
+    // The line before takes the word, and the lines after it are set again.
+    assert_eq!(texts[k], format!("{} {}", lines[k], words[k + 1][1]));
+    assert_eq!(set.lines[k].kept, None);
+    for n in 0..k {
+        assert_eq!(set.lines[n].kept, Some(n));
+    }
+    for l in &set.lines {
+        assert!(l.width <= room + 0.01, "{l:?}");
+    }
+    assert_eq!(texts.join(" "), new);
+}
+
+#[test]
+fn words_typed_into_a_line_rewrap_the_lines_after_it_within_the_frame() {
+    let room = 300.0;
+    let (_, lines, setting) = ragged(room);
+    let para = setting.paragraph();
+    let right = para.frame.right - para.frame.left;
+    // Words typed after the second line's first word.
+    let (a, _) = para.lines[1];
+    let chars: Vec<char> = para.text.chars().collect();
+    let at = a + chars[a..].iter().position(|&c| c == ' ').unwrap();
+    let mut new: String = chars[..at].iter().collect();
+    new.push_str(" very slowly and rather quietly");
+    new.extend(&chars[at..]);
+    let set = setting.set(&typed(para, &new));
+    let texts = set_texts(&set, &new);
+    assert_eq!(texts.join(" "), new);
+    assert!(set.lines.len() >= lines.len());
+    assert_eq!(set.lines[0].kept, Some(0));
+    for l in &set.lines {
+        assert!(l.width <= right + 0.01, "{l:?} in {right}");
+        assert!((l.x - 72.0).abs() < 0.01, "{l:?}");
+    }
+    // Each line a line spacing below the one before.
+    for w in set.lines.windows(2) {
+        assert!((w[1].baseline - w[0].baseline - 13.2).abs() < 0.05, "{w:?}");
+    }
+}
+
+#[test]
+fn a_justified_line_set_again_reaches_the_right_edge() {
+    // Justified as `justified_text_has_a_justified_frame` sets it: each line but the last
+    // stretched by word spacing to 440 points.
+    let lines = wrap(TEXT, 440.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let gaps = l.matches(' ').count() as f32;
+        let tw = match k + 1 < lines.len() {
+            true => (440.0 - text_width(l, 11.0)) / gaps,
+            false => 0.0,
+        };
+        content.push_str(&format!("BT /F1 11 Tf {tw} Tw 72 {y} Td ({l}) Tj ET\n"));
+    }
+    let p = letter(&content);
+    let para = only_paragraph(&p);
+    assert_eq!(para.frame.align, Align::Justified);
+    let setting = p.paragraph_setting(&para).unwrap();
+    let new = para.text.replacen("quiet", "still", 1);
+    let set = setting.set(&typed(&para, &new));
+    let chars: Vec<char> = new.chars().collect();
+    for l in &set.lines[..set.lines.len() - 1] {
+        let line: String = chars[l.chars.0..l.chars.1].iter().collect();
+        let gaps = line.trim_end().matches(' ').count() as f32;
+        let end = l.x + l.width + l.stretch * gaps;
+        if l.kept.is_none() {
+            assert!((end - (72.0 + 440.0)).abs() < 0.5, "{l:?} ends at {end}");
+        }
+    }
+    assert_eq!(set.lines.last().unwrap().stretch, 0.0);
+}
+
+// ---- Writing an edited paragraph in place (`Pdf::edit_paragraph`).
+
+/// Page 0's content operators.
+fn ops(p: &Pdf) -> Vec<lopdf::content::Operation> {
+    let page = p.page_ids()[0];
+    lopdf::content::Content::decode(&p.doc.get_page_content(page))
+        .unwrap()
+        .operations
+}
+
+/// Page 0's text objects, `BT` to `ET`, each as its content bytes.
+fn text_objects(p: &Pdf) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<lopdf::content::Operation>> = Vec::new();
+    let mut inside = false;
+    for o in ops(p) {
+        match o.operator.as_str() {
+            "BT" => {
+                inside = true;
+                out.push(vec![o]);
+            }
+            "ET" => {
+                inside = false;
+                out.last_mut().unwrap().push(o);
+            }
+            _ if inside => out.last_mut().unwrap().push(o),
+            _ => {}
+        }
+    }
+    (out.into_iter())
+        .map(|operations| lopdf::content::Content { operations }.encode().unwrap())
+        .collect()
+}
+
+/// The document as saved, for comparing.
+fn saved(p: &Pdf) -> Vec<u8> {
+    let mut copy = p.clone();
+    copy.doc.max_id = copy.doc.objects.keys().map(|id| id.0).max().unwrap_or(0);
+    copy.snapshot().unwrap()
+}
+
+/// Page 0's text lines' texts, in content order.
+fn line_texts(p: &Pdf) -> Vec<String> {
+    lines(p).into_iter().filter_map(|o| o.text).collect()
+}
+
+#[test]
+fn a_paragraph_kept_as_it_is_is_not_written() {
+    let (mut p, _, setting) = ragged(300.0);
+    let was = saved(&p);
+    let parts = setting.paragraph().parts();
+    let lost = p.edit_paragraph(&setting, &parts).unwrap();
+    assert!(lost.is_empty());
+    assert!(saved(&p) == was, "the document changed");
+}
+
+#[test]
+fn a_letter_changed_is_written_in_its_lines_place_the_other_lines_byte_for_byte() {
+    let (mut p, lines, setting) = ragged(300.0);
+    let before = text_objects(&p);
+    let para = setting.paragraph();
+    let (a, b) = para.lines[2];
+    let chars: Vec<char> = para.text.chars().collect();
+    let k = (a..b).find(|&k| chars[k] == 'e').unwrap();
+    let mut new = chars.clone();
+    new[k] = 'o';
+    let new: String = new.into_iter().collect();
+    p.edit_paragraph(&setting, &typed(para, &new)).unwrap();
+    let after = text_objects(&p);
+    assert_eq!(after.len(), before.len(), "a text object added or lost");
+    for (n, (x, y)) in before.iter().zip(&after).enumerate() {
+        if n != 2 {
+            assert!(x == y, "line {n} changed");
+        }
+    }
+    let mut want = lines.clone();
+    want[2] = new.chars().skip(a).take(b - a).collect();
+    assert_eq!(line_texts(&p), want);
+    // Where it was: the third line's baseline, 72 points in.
+    let third = &lines_of(&p)[2];
+    let at = third.baseline.unwrap();
+    assert!(near(at, (72.0, 792.0 - 673.6)), "{third:?}");
+    // Its letters still the line's font, Helvetica, nothing added to the page's fonts.
+    assert_eq!(third.font_name.as_deref(), Some("Helvetica"));
+}
+
+/// Page 0's text lines.
+fn lines_of(p: &Pdf) -> Vec<PageObject> {
+    lines(p)
+}
+
+#[test]
+fn words_typed_are_written_in_the_old_lines_places_and_read_back_as_typed() {
+    let (mut p, lines, setting) = ragged(300.0);
+    let objects_before = text_objects(&p).len();
+    let ops_before = ops(&p).len();
+    let para = setting.paragraph().clone();
+    let (a, _) = para.lines[1];
+    let chars: Vec<char> = para.text.chars().collect();
+    let at = a + chars[a..].iter().position(|&c| c == ' ').unwrap();
+    let mut new: String = chars[..at].iter().collect();
+    new.push_str(" very slowly and rather quietly");
+    new.extend(&chars[at..]);
+    let set = setting.set(&typed(&para, &new));
+    let lost = p.edit_paragraph(&setting, &typed(&para, &new)).unwrap();
+    assert!(lost.is_empty(), "{lost:?}");
+    // No text object added: the lines added are in the last one's.
+    assert_eq!(text_objects(&p).len(), objects_before);
+    let after = ops(&p);
+    assert!(after.len() > ops_before);
+    assert_eq!(after.last().unwrap().operator, "ET");
+    // The page reads as typed, line by line as set.
+    let texts = line_texts(&p);
+    assert_eq!(texts.join(" "), new, "{texts:?}");
+    assert_eq!(texts, set_texts(&set, &new));
+    assert_eq!(texts[0], lines[0]);
+    // Each line on its baseline, the first two where they were.
+    let objs = lines_of(&p);
+    let right = para.frame.right;
+    for (o, l) in objs.iter().zip(&set.lines) {
+        let at = o.baseline.unwrap();
+        assert!(near(at, (l.x, l.baseline)), "{o:?} against {l:?}");
+        assert!(o.bbox[2] <= right + 0.5, "{o:?} past {right}");
+    }
+    // Found again as one paragraph, its text as typed.
+    let again = only_paragraph(&p);
+    assert_eq!(again.text, new);
+}
+
+#[test]
+fn a_paragraph_made_shorter_takes_out_the_lines_left_over_and_leaves_their_space() {
+    let (mut p, lines, setting) = ragged(300.0);
+    let objects_before = text_objects(&p).len();
+    let para = setting.paragraph().clone();
+    // The second and third lines' words deleted.
+    let (a, _) = para.lines[1];
+    let (b, _) = para.lines[3];
+    let chars: Vec<char> = para.text.chars().collect();
+    let new: String = chars[..a].iter().chain(&chars[b..]).collect();
+    let set = setting.set(&typed(&para, &new));
+    assert_eq!(set.lines.len(), lines.len() - 2, "{set:?}");
+    p.edit_paragraph(&setting, &typed(&para, &new)).unwrap();
+    // The text objects stay, the last two with nothing shown in them.
+    assert_eq!(text_objects(&p).len(), objects_before);
+    assert_eq!(line_texts(&p), set_texts(&set, &new));
+    let objs = lines_of(&p);
+    let last = objs.last().unwrap().baseline.unwrap().1;
+    let was_last = 792.0 - (700.0 - 13.2 * (lines.len() - 3) as f32);
+    assert!((last - was_last).abs() < 0.05, "{last} against {was_last}");
+}
+
+#[test]
+fn one_undo_puts_an_edited_paragraph_back_byte_for_byte() {
+    let (mut p, _, setting) = ragged(300.0);
+    let para = setting.paragraph().clone();
+    let new = para.text.replacen("harbour", "small harbour", 1);
+    let was = saved(&p);
+    let before = p.before();
+    p.edit_paragraph(&setting, &typed(&para, &new)).unwrap();
+    assert!(saved(&p) != was);
+    let undo = before.undo(&p);
+    p.restore(undo);
+    assert!(saved(&p) == was, "Undo didn't put the document back");
+}
+
+#[test]
+fn an_edited_paragraph_saved_and_reopened_is_found_again_as_typed() {
+    let (mut p, _, setting) = ragged(300.0);
+    let para = setting.paragraph().clone();
+    let new = (para.text).replacen("the old men", "the old women and men", 1);
+    p.edit_paragraph(&setting, &typed(&para, &new)).unwrap();
+    let bytes = p.to_bytes().unwrap();
+    let mut q = Pdf::from_bytes(&bytes, None).unwrap();
+    let again = only_paragraph(&q);
+    assert_eq!(again.text, new);
+    // And edited again.
+    let setting = q.paragraph_setting(&again).unwrap();
+    let newer = again.text.replacen("women and ", "", 1);
+    q.edit_paragraph(&setting, &typed(&again, &newer)).unwrap();
+    assert_eq!(only_paragraph(&q).text, newer);
+}
+
+/// `p`'s paragraph starting "The harbour" edited by typing `word` after the second line's
+/// first word: the paragraph, the edit's text, and how it is set.
+fn type_into_second_line(p: &mut Pdf, word: &str) -> (Paragraph, String, SetParagraph) {
+    let blocks = p.page_blocks(0).unwrap();
+    let block = block_from(p, &blocks, "The harbour");
+    let para = p.paragraph(0, block, &p.document_words()).unwrap();
+    let setting = p.paragraph_setting(&para).unwrap();
+    let (a, _) = para.lines[1];
+    let chars: Vec<char> = para.text.chars().collect();
+    let at = a + chars[a..].iter().position(|&c| c == ' ').unwrap();
+    let mut new: String = chars[..at].iter().collect();
+    new.push(' ');
+    new.push_str(word);
+    new.extend(&chars[at..]);
+    let set = setting.set(&typed(&para, &new));
+    let lost = p.edit_paragraph(&setting, &typed(&para, &new)).unwrap();
+    assert!(lost.is_empty(), "{lost:?}");
+    (para, new, set)
+}
+
+/// The text of page 0's lines in the paragraph starting "The harbour", in content order.
+fn paragraph_texts(p: &Pdf) -> Vec<String> {
+    let blocks = p.page_blocks(0).unwrap();
+    let b = block_from(p, &blocks, "The harbour");
+    let objs = p.page_objects(0).unwrap();
+    (b.lines.iter())
+        .map(|l| {
+            (l.pieces.iter())
+                .map(|&id| objs[id].text.clone().unwrap())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .collect()
+}
+
+#[test]
+fn lines_in_one_text_object_are_written_in_it_and_what_follows_stays_put() {
+    // One text object, a line move between lines, ' for some, and a line after the
+    // paragraph placed from where the paragraph's last line is.
+    let lines = wrap(TEXT, 300.0, 11.0);
+    let mut content = String::from("BT /F1 11 Tf 13.2 TL 72 700 Td\n");
+    for (k, l) in lines.iter().enumerate() {
+        content.push_str(&match (k, k % 2) {
+            (0, _) => format!("({l}) Tj\n"),
+            (_, 0) => format!("({l}) '\n"),
+            _ => format!("T* ({l}) Tj\n"),
+        });
+    }
+    content.push_str("0 -40 Td (After the paragraph.) Tj ET\n");
+    let mut p = letter(&content);
+    let after = |p: &Pdf| {
+        let after = |o: &PageObject| o.text.as_deref() == Some("After the paragraph.");
+        let line = lines_of(p).into_iter().find(after).unwrap();
+        line.baseline.unwrap()
+    };
+    let was = after(&p);
+    let (_, new, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
+    assert_eq!(text_objects(&p).len(), 1);
+    assert_eq!(paragraph_texts(&p), set_texts(&set, &new));
+    let now = after(&p);
+    assert!(near(now, was), "{was:?} to {now:?}");
+}
+
+/// The text each marked content of page 0 shows, by its MCID, in Helvetica's single bytes.
+fn marked_texts(p: &Pdf) -> Vec<(i64, String)> {
+    let mut out: Vec<(i64, String)> = Vec::new();
+    let mut mcid: Option<i64> = None;
+    for o in ops(p) {
+        match o.operator.as_str() {
+            "BDC" => {
+                let d = o.operands.get(1).and_then(|d| d.as_dict().ok());
+                let id = d.and_then(|d| d.get(b"MCID").ok());
+                mcid = id.and_then(|m| m.as_i64().ok());
+                out.extend(mcid.map(|m| (m, String::new())));
+            }
+            "EMC" => mcid = None,
+            "Tj" | "TJ" | "'" if mcid.is_some() => {
+                let items = match o.operator.as_str() {
+                    "TJ" => o.operands[0].as_array().unwrap().clone(),
+                    _ => o.operands.clone(),
+                };
+                let text = &mut out.last_mut().unwrap().1;
+                for it in items {
+                    if let Object::String(b, _) = it {
+                        text.extend(b.iter().map(|&c| c as char));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn lines_tagged_one_by_one_keep_each_written_line_in_its_tag() {
+    let lines = wrap(&format!("{TEXT} {MORE}"), 300.0, 11.0);
+    let mut p = tagged(&lines, &vec![0; lines.len()]);
+    let (para, new, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
+    assert!(set.lines.len() > para.lines.len(), "no line added");
+    let chars: Vec<char> = new.chars().collect();
+    let marked = marked_texts(&p);
+    assert_eq!(marked.len(), lines.len(), "a tag added or lost");
+    // Each line in its old line's tag, the lines added in the last one's.
+    let rows = para.lines.len();
+    for (k, (mcid, text)) in marked.iter().enumerate() {
+        assert_eq!(*mcid, k as i64);
+        let ls = match k + 1 == rows {
+            true => &set.lines[k..],
+            false => &set.lines[k..k + 1],
+        };
+        let line = |l: &SetLine| chars[l.chars.0..l.chars.1].iter().collect::<String>();
+        let want: String = ls.iter().map(|l| line(l).trim_end().to_string()).collect();
+        assert_eq!(text.replace(' ', ""), want.replace(' ', ""), "tag {k}");
+    }
+}
+
+#[test]
+fn a_paragraph_tagged_as_one_is_written_inside_its_tag() {
+    let lines = wrap(&format!("{TEXT} {MORE}"), 300.0, 11.0);
+    let mut content = String::from("/P <</MCID 0>> BDC\n");
+    content.push_str(&lines_at(&lines, 72.0, 0.0, 700.0, 13.2, "F1", 11.0));
+    content.push_str("EMC\n");
+    let mut p = letter(&content);
+    add_tree(&mut p, &[0]);
+    let (_, new, _) = type_into_second_line(&mut p, "very slowly and rather quietly");
+    let marked = marked_texts(&p);
+    assert_eq!(marked.len(), 1);
+    assert_eq!(marked[0].1.replace(' ', ""), new.replace(' ', ""));
+    assert_eq!(ops(&p).last().unwrap().operator, "EMC");
+}
+
+#[test]
+fn a_paragraphs_character_spacing_is_kept_on_its_rewritten_lines() {
+    // Every line drawn with 0.5 points between letters, broken at 300 points as drawn.
+    let tc = 0.5;
+    let mut lines: Vec<String> = Vec::new();
+    for word in format!("{TEXT} {MORE}").split(' ') {
+        let width = |s: &str| text_width(s, 11.0) + tc * s.chars().count() as f32;
+        match lines.last_mut() {
+            Some(l) if width(&format!("{l} {word}")) <= 300.0 => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        content.push_str(&format!("BT /F1 11 Tf {tc} Tc 72 {y} Td ({l}) Tj ET\n"));
+    }
+    let mut p = letter(&content);
+    let right = only_paragraph(&p).frame.right;
+    let (_, new, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
+    assert_eq!(paragraph_texts(&p), set_texts(&set, &new));
+    // Each rewritten line as wide as it was set: its letters still 0.5 points apart.
+    let objs = lines_of(&p);
+    for (o, l) in objs.iter().zip(&set.lines) {
+        assert!(o.bbox[2] <= right + 0.5, "{o:?} past {right}");
+        let (drawn, set) = (o.bbox[2] - o.bbox[0], l.width);
+        assert!((drawn - set).abs() < 0.6, "{drawn} drawn, {set} set: {o:?}");
+    }
+}
+
+#[test]
+fn a_paragraph_on_a_turned_page_is_written_where_it_shows() {
+    // A page turned a quarter for showing, its text drawn up the page so that it reads
+    // across when shown.
+    let lines = wrap(&format!("{TEXT} {MORE}"), 300.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let x = 100.0 + 13.2 * k as f32;
+        content.push_str(&format!("BT /F1 11 Tf 0 1 -1 0 {x} 72 Tm ({l}) Tj ET\n"));
+    }
+    let mut p = letter(&content);
+    let page = p.page_ids()[0];
+    p.doc.get_dictionary_mut(page).unwrap().set("Rotate", 90);
+    let (_, new, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
+    assert_eq!(paragraph_texts(&p), set_texts(&set, &new));
+    for (o, l) in lines_of(&p).iter().zip(&set.lines) {
+        assert!(o.upright, "{o:?}");
+        let at = o.baseline.unwrap();
+        assert!(near(at, (l.x, l.baseline)), "{o:?} against {l:?}");
     }
 }

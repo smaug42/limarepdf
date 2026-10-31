@@ -59,7 +59,7 @@ pub struct TextPart {
 impl TextPart {
     /// Where character `j` of the part is in the edited line as it was read, if it is the
     /// line's own character there ([`TextPart::origins`], else [`TextPart::from`]).
-    fn origin(&self, j: usize) -> Option<usize> {
+    pub(crate) fn origin(&self, j: usize) -> Option<usize> {
         match self.origins.is_empty() {
             true => self.from.map(|f| f + j),
             false => self.origins.get(j).copied().flatten(),
@@ -205,14 +205,15 @@ impl PageObject {
             return all(true);
         }
         let drawn = font.and_then(LineFont::drawn);
-        let ways = plan(&line, s.chars, drawn, font, &text, |j| part.origin(j));
+        let at = |o: usize| drawn?.get(o);
+        let ways = plan(&line, s.chars, at, font, &text, |j| part.origin(j));
         pieces(&text, &ways)
     }
 }
 
 /// How a character of a part is written in the font of the line's part it names ([`plan`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Way {
+pub(crate) enum Way {
     /// With what drew the line's character `o` as it was read ([`Drawn`]): its code (and
     /// the letters after it of a ligature, which follow it unchanged), or the move that is
     /// a space.
@@ -228,12 +229,13 @@ enum Way {
 }
 
 /// How each of `text`'s characters is written in the font `font` of the part of `line` at
-/// `span`, whose characters are drawn as `drawn` says (when known); `origin` says where a
-/// character of `text` was in the line as read ([`TextPart::origin`]).
-fn plan(
+/// `span`, whose characters are drawn as `drawn` says (when known, by their place in
+/// `line`); `origin` says where a character of `text` was in the line as read
+/// ([`TextPart::origin`]).
+pub(crate) fn plan<'d>(
     line: &[char],
     span: (usize, usize),
-    drawn: Option<&[Drawn]>,
+    drawn: impl Fn(usize) -> Option<&'d Drawn>,
     font: Option<&LineFont>,
     text: &[char],
     origin: impl Fn(usize) -> Option<usize>,
@@ -245,7 +247,7 @@ fn plan(
     let mut j = 0;
     while j < text.len() {
         let c = text[j];
-        let ink = own(j).and_then(|o| Some((o, &drawn?.get(o)?.ink)));
+        let ink = own(j).and_then(|o| Some((o, &drawn(o)?.ink)));
         let (way, n) = match ink {
             Some((o, Ink::Code { at, n, .. }))
                 if *at == o && (1..*n).all(|i| own(j + i) == Some(o + i)) =>
@@ -271,7 +273,7 @@ fn plan(
 /// (`ways`, [`plan`]): a word, as Unicode's word rule finds it (UAX #29: each Chinese or
 /// Japanese ideograph is one, and punctuation stands apart), with a character the font
 /// can't write goes to another font, with the spaces between two such words.
-fn pieces(text: &[char], ways: &[Way]) -> Vec<KeptPiece> {
+pub(crate) fn pieces(text: &[char], ways: &[Way]) -> Vec<KeptPiece> {
     let n = text.len();
     // Whether each character's word goes to another font; spaces belong to none.
     let mut lost = vec![false; n];
@@ -334,28 +336,31 @@ struct Edited {
 
 /// Where an edited line is in a page's operators, to read it back ([`Pdf::misread`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Check {
+pub(crate) enum Check {
     /// Written on top, as these operators, from and to.
     OnTop(usize, usize),
     /// Changed in place: the show at this operator.
     InPlace(usize),
+    /// Written in place inside a text object, as these operators, from and to: read with
+    /// the lines it may join there (a paragraph's, `para_write.rs`).
+    Within(usize, usize),
 }
 
 /// A part of a line as it is written by [`line_ops`]: the font's name in the page's
 /// resources, its size, colour (and what set it, when that is written as it was) and rise,
 /// and its shows, each with the character spacing, word spacing and horizontal scaling (1
 /// is none) it is drawn with.
-struct Written {
-    font: Vec<u8>,
-    size: f32,
-    color: [f32; 3],
-    paint: Option<Paint>,
-    rise: f32,
+pub(crate) struct Written {
+    pub font: Vec<u8>,
+    pub size: f32,
+    pub color: [f32; 3],
+    pub paint: Option<Paint>,
+    pub rise: f32,
     /// In a font that stands its glyphs up only where text space is turned over (TeX's
     /// bitmap fonts, `FontCtx::flipped`): written in text space turned over
     /// ([`Pdf::turned`]), its rise the other way.
-    flipped: bool,
-    shows: Vec<([f32; 3], Operation)>,
+    pub flipped: bool,
+    pub shows: Vec<([f32; 3], Operation)>,
 }
 
 /// What sets colour `color` for a part of line `t` in font `font`, when the line has it in a
@@ -375,9 +380,23 @@ fn kept_paint(t: &TextData, font: PartFont, color: [f32; 3]) -> Option<Paint> {
 /// font, colour, rise and spacing set where they change, then its shows.
 fn line_ops(tm: M, parts: &[Written]) -> Vec<Operation> {
     let mut v = vec![op("BT", vec![])];
+    v.extend(line_body(tm, parts, false));
+    v.push(op("ET", vec![]));
+    v
+}
+
+/// [`line_ops`] inside a text object: from the first part's font, colour and rise to the
+/// last show. With `all`, the rise and spacing are set at the start whatever they are
+/// (inside a text object already drawing, they are what it set); else they start as a
+/// text object starts.
+pub(crate) fn line_body(tm: M, parts: &[Written], all: bool) -> Vec<Operation> {
+    let mut v = Vec::new();
     let mut font: Option<(&[u8], f32)> = None;
     let mut color = None;
-    let (mut rise, mut spacing) = (0.0, [0.0, 0.0, 1.0]);
+    let (mut rise, mut spacing) = match all {
+        true => (f32::NAN, [f32::NAN; 3]),
+        false => (0.0, [0.0, 0.0, 1.0]),
+    };
     for (k, p) in parts.iter().enumerate() {
         if font != Some((&p.font, p.size)) {
             v.push(op("Tf", vec![Object::Name(p.font.clone()), r(p.size)]));
@@ -409,7 +428,6 @@ fn line_ops(tm: M, parts: &[Written]) -> Vec<Operation> {
             v.push(show.clone());
         }
     }
-    v.push(op("ET", vec![]));
     v
 }
 
@@ -462,18 +480,31 @@ fn gap_move(run: &Run, s: &Span) -> Option<Object> {
 pub(crate) struct Drawn {
     /// The show it is in ([`TextData::runs`]).
     run: usize,
-    ink: Ink,
+    pub ink: Ink,
     /// What the shows draw between the character before it and this one: what follows the
     /// one before in its show (spacing numbers, glyphs that read as no character, and the
     /// move to this one's show when that is another), in that show's units; then what comes
     /// before this one in its own show.
-    after_last: Vec<Object>,
-    before: Vec<Object>,
+    pub after_last: Vec<Object>,
+    pub before: Vec<Object>,
+}
+
+impl Drawn {
+    /// The same drawing of a character read as character `to` of a longer text, not `from`
+    /// of its line (a paragraph's, `rewrap.rs`, `to` at least `from`): a code's characters
+    /// said by their places there.
+    pub(crate) fn moved(&self, from: usize, to: usize) -> Drawn {
+        let mut d = self.clone();
+        if let Ink::Code { at, .. } = &mut d.ink {
+            *at += to - from;
+        }
+        d
+    }
 }
 
 /// What draws a character of a line ([`Drawn`]).
 #[derive(Clone, Debug)]
-enum Ink {
+pub(crate) enum Ink {
     /// The line's characters `at..at + n` are drawn by these bytes: one code (of several
     /// characters for a ligature), or a whole string whose codes LimarePDF can't be sure it
     /// parts as they are drawn ([`FontCtx::codes_known`], [`FontCtx::drawn_alike`]).
@@ -624,7 +655,7 @@ fn then_move(show: &mut Operation, more: Vec<Object>) {
 /// A `TJ` showing `items`, spacing numbers next to each other written as one and none left
 /// that moves nothing: a reader takes each number alone, so a move back followed by one
 /// forward again (across a `Tm` of the line as read) would read as a word gap.
-fn tj(items: Vec<Object>) -> Operation {
+pub(crate) fn tj(items: Vec<Object>) -> Operation {
     let number = |o: &Object| match o {
         Object::Integer(_) | Object::Real(_) => o.as_float().ok(),
         _ => None,
@@ -675,7 +706,7 @@ fn in_place(t: &TextData, parts: &[TextPart], written: &[Written]) -> Option<(us
 
 /// Bytes `bytes` put at the end of a show's items `items`: in the string there when it is
 /// in format `format`, else in a new one.
-fn put_code(items: &mut Vec<Object>, bytes: &[u8], format: StringFormat) {
+pub(crate) fn put_code(items: &mut Vec<Object>, bytes: &[u8], format: StringFormat) {
     match items.last_mut() {
         Some(Object::String(b, f)) if *f == format => b.extend_from_slice(bytes),
         _ => items.push(Object::String(bytes.to_vec(), format)),
@@ -878,10 +909,10 @@ pub enum Shape {
     Line,
 }
 
-fn op(name: &str, operands: Vec<Object>) -> Operation {
+pub(crate) fn op(name: &str, operands: Vec<Object>) -> Operation {
     Operation::new(name, operands)
 }
-fn r(x: f32) -> Object {
+pub(crate) fn r(x: f32) -> Object {
     Object::Real(x)
 }
 fn name(n: &str) -> Object {
@@ -904,7 +935,7 @@ fn lit(b: Vec<u8>) -> Object {
 }
 
 /// What a show operation leaves behind when its text is removed (the line move of ' and ").
-fn move_only(show: Show) -> Vec<Operation> {
+pub(crate) fn move_only(show: Show) -> Vec<Operation> {
     match show {
         Show::Tj | Show::TJ => vec![],
         Show::Quote => vec![op("T*", vec![])],
@@ -962,7 +993,7 @@ fn closed(mut ops: Vec<Operation>, depth_left: usize) -> Vec<Operation> {
 /// shows never changed, another `Tm` puts that back before the next line move. Not after
 /// vertical writing, whose end isn't known (it is measured as if it ran across).
 #[derive(Clone, Copy)]
-struct Following {
+pub(crate) struct Following {
     /// The show that carries on from the line, and the first line move after it.
     show: Option<usize>,
     line: Option<usize>,
@@ -972,7 +1003,7 @@ struct Following {
 }
 
 impl Following {
-    fn of(ops: &[Operation], obj: &Obj) -> Self {
+    pub(crate) fn of(ops: &[Operation], obj: &Obj) -> Self {
         let (tm, tlm) = obj
             .text
             .as_ref()
@@ -1022,7 +1053,7 @@ impl Following {
     /// What goes in before which operators after several lines, `fs` in the page's order:
     /// for each operator, what each line puts in before it ([`Following::before`]), the
     /// later lines' last. Found once, so a page of many lines is gone through once.
-    fn all(fs: impl IntoIterator<Item = Following>) -> HashMap<usize, Vec<Operation>> {
+    pub(crate) fn all(fs: impl IntoIterator<Item = Following>) -> HashMap<usize, Vec<Operation>> {
         let mut out: HashMap<usize, Vec<Operation>> = HashMap::new();
         for f in fs {
             for i in [f.show, f.line].into_iter().flatten() {
@@ -1122,7 +1153,7 @@ impl Pdf {
     /// The pen that writes `texts` as `setter` sets them ([`Pdf::pen_with`]: the standard
     /// font, or its embedded face when the text needs it, and the fonts it falls back to),
     /// its fonts added to the page's resources: their names there, and the pen.
-    fn text_pen(
+    pub(crate) fn text_pen(
         &mut self,
         page: ObjectId,
         setter: &Setter,
@@ -1573,7 +1604,7 @@ impl Pdf {
     /// they are in `ops`, and the text they should read) don't read as the same words, as
     /// the page will be read with `ops` as its content. A line changed in place may now read
     /// as one with the text next to it.
-    fn misread(
+    pub(crate) fn misread(
         &self,
         page: ObjectId,
         inline: &Inline,
@@ -1612,6 +1643,10 @@ impl Pdf {
                         let got = words(&read(&|o| o.first <= i && i <= o.last));
                         want.is_empty() || !got.windows(want.len()).any(|w| w == want)
                     }
+                    Check::Within(from, to) => {
+                        let got = words(&read(&|o| o.first < to && from <= o.last));
+                        !want.is_empty() && !got.windows(want.len()).any(|w| w == want)
+                    }
                 }
             })
             .map(|(k, ..)| *k)
@@ -1624,7 +1659,7 @@ impl Pdf {
     /// got to there, and one the right way up before the next part's. Where the line has got
     /// to is read from the line as written, as the page will read it; turning text space
     /// over doesn't move it along the line.
-    fn turned(
+    pub(crate) fn turned(
         &self,
         page: ObjectId,
         ops: Vec<Operation>,
@@ -1740,7 +1775,8 @@ impl Pdf {
                     line_hows.push((p.clone(), How::New(other), Tail::default()));
                     continue;
                 }
-                let ways = plan(&chars, s.chars, drawn, font, &text, |j| p.origin(j));
+                let at = |o: usize| drawn?.get(o);
+                let ways = plan(&chars, s.chars, at, font, &text, |j| p.origin(j));
                 for piece in pieces(&text, &ways) {
                     let (a, b) = piece.chars;
                     let sub = TextPart {

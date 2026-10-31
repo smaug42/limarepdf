@@ -99,6 +99,9 @@ pub struct LineFont {
     /// (`FontCtx::flipped`, PB-56): an edited line written anew turns text space over for
     /// what it keeps in the font (`edit.rs`).
     flipped: bool,
+    /// A simple font's widths by code (in 1/1000 em), as the page reads them
+    /// (`FontCtx::width`): what text written in it is measured by (`rewrap.rs`).
+    widths: Option<Arc<[f32]>>,
 }
 
 impl std::fmt::Debug for LineFont {
@@ -210,6 +213,23 @@ impl LineFont {
         Some(h.finish())
     }
 
+    /// How wide `c` is when it is written in this font ([`LineFont::code`]), in 1/1000 em as
+    /// the page reads it; `None` when it can't be written.
+    pub(crate) fn advance(&self, c: char) -> Option<f32> {
+        let bytes = self.code(c).ok()?;
+        match &bytes[..] {
+            [b] => self.widths.as_ref()?.get(*b as usize).copied(),
+            [hi, lo] => {
+                let code = u32::from(*hi) << 8 | u32::from(*lo);
+                let font = self.font.as_ref().ok()?;
+                let codes = font.by_char.get(&c)?;
+                let found = codes.iter().find(|(k, _)| *k == code);
+                found.and_then(|(_, w)| *w)
+            }
+            _ => None,
+        }
+    }
+
     /// How each of the line's characters is drawn, when that is known.
     pub(crate) fn drawn(&self) -> Option<&[Drawn]> {
         self.drawn.as_deref()
@@ -297,6 +317,7 @@ impl<'a> PageFonts<'a> {
                 }
                 let font = OwnFont::read(doc, dict, &ctx).map(Arc::new);
                 let unembedded = matches!(font, Err(FontRefusal::NotEmbedded));
+                let widths = (!ctx.type0).then(|| (0..=255).map(|k| ctx.width(k, 1)).collect());
                 let font = LineFont {
                     font,
                     ascii: unembedded && ctx.reusable(),
@@ -304,6 +325,7 @@ impl<'a> PageFonts<'a> {
                     page: Arc::new(page),
                     drawn: None,
                     flipped: ctx.flipped,
+                    widths,
                 };
                 Some((ctx, font))
             });
@@ -315,6 +337,7 @@ impl<'a> PageFonts<'a> {
                     page: Arc::default(),
                     drawn: None,
                     flipped: false,
+                    widths: None,
                 });
                 continue;
             };

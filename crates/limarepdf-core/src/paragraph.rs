@@ -13,7 +13,6 @@
 //! sizes.
 
 use crate::objects::{ObjectKind, PageObject, Parsed};
-use crate::own_font::{FontRefusal, PageFonts};
 use crate::reading::gaps;
 use crate::{Pdf, Result};
 use lopdf::{Object, ObjectId};
@@ -218,9 +217,6 @@ pub enum Doubt {
     PictureInTheWay,
     /// A drawn shape in its frame.
     ShapeInTheWay,
-    /// Its font sends new text to another face (a Type 3 font, say, or one whose program
-    /// can't be used).
-    Font,
 }
 
 /// What [`Pdf::page_blocks_by`] reads besides the lines, for measuring detection.
@@ -229,16 +225,11 @@ pub struct Detect {
     /// Lines whose marked content belongs to different block elements of the document's
     /// tags are never joined.
     pub tags: bool,
-    /// A block whose font can't take new text isn't confident ([`Doubt::Font`]).
-    pub fonts: bool,
 }
 
 impl Default for Detect {
     fn default() -> Self {
-        Self {
-            tags: true,
-            fonts: true,
-        }
+        Self { tags: true }
     }
 }
 
@@ -250,7 +241,7 @@ impl Pdf {
         self.page_blocks_by(page_index, Detect::default())
     }
 
-    /// [`Pdf::page_blocks`] reading the tags and fonts as `how` says.
+    /// [`Pdf::page_blocks`] reading the tags as `how` says.
     pub fn page_blocks_by(&self, page_index: usize, how: Detect) -> Result<Vec<Block>> {
         let page = self.page_id_at(page_index)?;
         let parsed = self.parse_page(page_index)?;
@@ -259,11 +250,7 @@ impl Pdf {
             true => self.line_elements(page, &parsed),
             false => vec![None; objs.len()],
         };
-        let fonts = match how.fonts {
-            true => self.line_main_fonts(page, &parsed),
-            false => vec![None; objs.len()],
-        };
-        Ok(blocks(&objs, &tags, &fonts))
+        Ok(blocks(&objs, &tags))
     }
 
     /// For each of the page's objects, the block element of the document's tags (a
@@ -368,36 +355,6 @@ impl Pdf {
         }
         None
     }
-
-    /// For each of the page's objects that is text, its font with the most of its
-    /// characters (untagged) and whether new text is written in its face: its own program
-    /// takes it, or it is one of LimarePDF's own (which grow), or it isn't embedded (the
-    /// reader draws it in a face of its own, and new text goes to the face of that name or
-    /// the standard one in its place). A Type 3 font, a CMap other than Identity, vertical
-    /// writing or a program that can't be used send new text to another face.
-    fn line_main_fonts(&self, page: ObjectId, parsed: &Parsed) -> Vec<Option<(String, bool)>> {
-        let res = self.font_resources(page);
-        let mut read = PageFonts::new(&self.doc, &res);
-        let lines = parsed.objs.iter().map(|o| o.text.as_ref());
-        lines
-            .map(|t| {
-                let t = t?;
-                let fonts = read.of(parsed, t);
-                let (s, f) =
-                    (t.spans.iter().zip(&fonts)).max_by_key(|(s, _)| s.chars.1 - s.chars.0)?;
-                let other_face = matches!(
-                    f.refused(),
-                    Some(
-                        FontRefusal::Type3
-                            | FontRefusal::Cmap
-                            | FontRefusal::Vertical
-                            | FontRefusal::Unreadable
-                    )
-                );
-                Some((untagged(&s.base).to_string(), !other_face))
-            })
-            .collect()
-    }
 }
 
 /// A font name without its subset tag (`ABCDEF+`).
@@ -415,7 +372,6 @@ struct Line<'a> {
     size: f32,
     text: &'a str,
     tag: Option<ObjectId>,
-    font: Option<&'a (String, bool)>,
 }
 
 /// A visual line while blocks are found.
@@ -552,12 +508,8 @@ fn median(v: &[f32]) -> Option<f32> {
 }
 
 /// The blocks of a page whose objects are `objs`, with each object's tag element (`tags`)
-/// and main font (`fonts`) where those are read.
-fn blocks(
-    objs: &[PageObject],
-    tags: &[Option<ObjectId>],
-    fonts: &[Option<(String, bool)>],
-) -> Vec<Block> {
+/// where those are read.
+fn blocks(objs: &[PageObject], tags: &[Option<ObjectId>]) -> Vec<Block> {
     let lines: Vec<Line> = (objs.iter().enumerate())
         .filter(|(_, o)| o.kind == ObjectKind::Text && !o.hidden && !o.vertical)
         .filter_map(|(i, o)| {
@@ -570,7 +522,6 @@ fn blocks(
                 size,
                 text,
                 tag: tags.get(i).copied().flatten(),
-                font: fonts.get(i).and_then(Option::as_ref),
             })
         })
         .collect();
@@ -626,7 +577,7 @@ fn blocks(
     let body = (sizes.into_iter().max_by_key(|&(s, n)| (n, s))).map(|(s, _)| s as f32 / 10.0);
     let mut out: Vec<Block> = (groups.iter())
         .map(|g| {
-            let doubt = doubt(g, &vlines, &lines, &others, body);
+            let doubt = doubt(g, &vlines, &others, body);
             let frame = frame(g, &vlines);
             let lines = (g.lines.iter())
                 .map(|&k| {
@@ -1348,13 +1299,7 @@ fn group(vl: &[VLine], mut list: Vec<usize>, page_gap: f32, beside: &[[f32; 4]])
 
 /// Why block `b` isn't confident, if it isn't. `body` is the page's body size; `others`
 /// its pictures, forms and shapes.
-fn doubt(
-    b: &Group,
-    vl: &[VLine],
-    lines: &[Line],
-    others: &[&PageObject],
-    body: Option<f32>,
-) -> Option<Doubt> {
+fn doubt(b: &Group, vl: &[VLine], others: &[&PageObject], body: Option<f32>) -> Option<Doubt> {
     let ls: Vec<&VLine> = b.lines.iter().map(|&k| &vl[k]).collect();
     if ls.len() < 2 {
         return Some(Doubt::OneLine);
@@ -1451,20 +1396,6 @@ fn doubt(
             ObjectKind::Path => Doubt::ShapeInTheWay,
             _ => Doubt::PictureInTheWay,
         });
-    }
-    // Its main font: the one with the most of its characters.
-    let mut fonts: HashMap<&str, (usize, bool)> = HashMap::new();
-    for v in &ls {
-        for &m in &v.members {
-            if let Some((name, takes)) = lines[m].font {
-                let e = fonts.entry(name.as_str()).or_insert((0, *takes));
-                e.0 += lines[m].text.chars().count();
-            }
-        }
-    }
-    let main = fonts.into_iter().max_by_key(|&(name, (n, _))| (n, name));
-    if main.is_some_and(|(_, (_, takes))| !takes) {
-        return Some(Doubt::Font);
     }
     None
 }

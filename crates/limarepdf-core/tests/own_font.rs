@@ -2248,3 +2248,143 @@ fn cross_check_edited_lines_with_poppler() {
         poppler_sees(&why, p, &o, part, None);
     }
 }
+
+// ---- A paragraph edited across its lines (NEW-01, batch 45's 2b-2): each letter keeps its
+// own code in the paragraph's font, typed ones that font's code, a word it can't write
+// alone going to another font.
+
+const PARAGRAPH: [&str; 4] = [
+    "the harbour was quiet that morning and",
+    "the fishing boats sat low in the water",
+    "while gulls argued over the nets that",
+    "dried along the wall of the old quay.",
+];
+
+/// A page with [`PARAGRAPH`] in `font` at 10 points, each line in a text object of its own,
+/// its text as `hex` writes it.
+fn paragraph_page(font: &dyn AddFont, hex: impl Fn(&str) -> String) -> Pdf {
+    let line = |k: usize, l: &str| {
+        let y = 150 - 12 * k as i32;
+        format!("BT /F1 10 Tf 10 {y} Td <{}> Tj ET\n", hex(l))
+    };
+    let content: String = (PARAGRAPH.iter().enumerate())
+        .map(|(k, l)| line(k, l))
+        .collect();
+    page(&[("F1", font)], &content)
+}
+
+/// Page 0's only block edited as a paragraph to `new`: the characters it starts and ends
+/// with unchanged kept where they were, those typed in the style before them.
+fn edit_paragraph_to(p: &mut Pdf, new: &str) -> Vec<usize> {
+    let blocks = p.page_blocks(0).unwrap();
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let para = p.paragraph(0, &blocks[0], &p.document_words()).unwrap();
+    let setting = p.paragraph_setting(&para).unwrap();
+    let (old, new): (Vec<char>, Vec<char>) = (para.text.chars().collect(), new.chars().collect());
+    let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let room = old.len().min(new.len()) - head;
+    let tail = (old.iter().rev().zip(new.iter().rev()))
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(room);
+    let mut parts: Vec<TextPart> = Vec::new();
+    let mut span = 0;
+    for (j, &c) in new.iter().enumerate() {
+        let origin = match j {
+            _ if j < head => Some(j),
+            _ if j >= new.len() - tail => Some(old.len() + j - new.len()),
+            _ => None,
+        };
+        if let Some(k) = origin {
+            span = para.span_at(k).unwrap();
+        }
+        let s = &para.spans[span];
+        match parts.last_mut() {
+            Some(p) if p.font == PartFont::Span(span) => {
+                p.text.push(c);
+                p.origins.push(origin);
+            }
+            _ => parts.push(TextPart {
+                text: c.to_string(),
+                font: PartFont::Span(span),
+                size: s.font_size,
+                color: s.fill.unwrap_or([0.0; 3]),
+                rise: s.rise,
+                from: None,
+                origins: vec![origin],
+            }),
+        }
+    }
+    p.edit_paragraph(&setting, &parts).unwrap()
+}
+
+/// The bytes page 0 shows in font resource `font`, one string after another.
+fn shown_in(p: &Pdf, font: &str) -> Vec<u8> {
+    let page = p.page_ids()[0];
+    let content = Content::decode(&p.doc.get_page_content(page)).unwrap();
+    let mut out = Vec::new();
+    let mut now: Vec<u8> = Vec::new();
+    for o in content.operations {
+        match o.operator.as_str() {
+            "Tf" => now = o.operands[0].as_name().unwrap().to_vec(),
+            "Tj" | "TJ" if now == font.as_bytes() => {
+                let items = match o.operator.as_str() {
+                    "TJ" => o.operands[0].as_array().unwrap().clone(),
+                    _ => o.operands.clone(),
+                };
+                for it in items {
+                    if let Object::String(b, _) = it {
+                        out.extend(b);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn a_paragraph_in_a_subset_truetype_font_keeps_its_codes_across_its_lines() {
+    let ascii = |s: &str| s.bytes().map(|b| format!("{b:02X}")).collect::<String>();
+    let mut p = paragraph_page(&sans_simple(), ascii);
+    let joined = PARAGRAPH.join(" ");
+    let new = joined.replacen("quiet", "very quiet and still", 1);
+    let lost = edit_paragraph_to(&mut p, &new);
+    assert!(lost.is_empty(), "{lost:?}");
+    // Every letter in the paragraph's own font, nothing added to the page's fonts.
+    assert_eq!(font_names(&p), ["F1"]);
+    // (The spaces lines end with hang, unwritten.)
+    let shown: String = shown_in(&p, "F1").iter().map(|&b| b as char).collect();
+    assert_eq!(shown.replace(' ', ""), new.replace(' ', ""));
+    assert_eq!(texts(&p).join(" "), new);
+}
+
+#[test]
+fn a_paragraph_in_a_cid_font_keeps_its_codes_and_sends_a_word_it_cant_write_away() {
+    // Liberation Sans as Identity-H, mapping only the paragraph's own letters.
+    let letters: String = {
+        let mut l: Vec<char> = PARAGRAPH.concat().chars().collect();
+        l.sort_unstable();
+        l.dedup();
+        l.into_iter().collect()
+    };
+    let font = sans_type0(&letters, true);
+    let mut p = paragraph_page(&font, |s| hex2(&sans_codes(s)));
+    // "tall" is written in its letters' codes; "Zebra" has a "Z" the font lacks.
+    let joined = PARAGRAPH.join(" ");
+    let new = joined.replacen("boats", "tall boats near Zebra", 1);
+    let lost = edit_paragraph_to(&mut p, &new);
+    assert!(lost.is_empty(), "{lost:?}");
+    let read = texts(&p).join(" ");
+    assert_eq!(read.split_whitespace().collect::<Vec<_>>().join(" "), new);
+    let shown = shown_in(&p, "F1");
+    let tall: Vec<u8> = sans_codes("tall").into_iter().flat_map(two).collect();
+    let has = |codes: &[u8]| shown.windows(codes.len()).any(|w| w == codes);
+    assert!(has(&tall), "\"tall\" not in the font's codes");
+    // "Zebra" went to another font, added to the page; nothing else did.
+    let names = font_names(&p);
+    assert_eq!(names.len(), 2, "{names:?}");
+    let zebra: Vec<u8> = sans_codes("ebra").into_iter().flat_map(two).collect();
+    assert!(!has(&zebra), "\"Zebra\" kept in the font");
+}
