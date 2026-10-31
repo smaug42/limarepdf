@@ -439,8 +439,12 @@ built from exactly the versions in `Cargo.lock`; security problems are reported 
   block LimarePDF finds with confidence edits it as a paragraph, a single line or a block it isn't sure of edits a
   line as today, and a switch turns either into the other ("Edit as paragraph"). It becomes the default only if
   LimarePDF's check of how well it finds paragraphs passes; otherwise the switch comes first. One undo step.
-  Finding paragraphs is built (batch 45's stage 2, not yet in the app) and its check doesn't pass yet (testing.md,
-  "Finding paragraphs"), so the switch will come first.
+  The core half is built (batch 45's stage 2): finding paragraphs, reading one for editing (its line-end hyphens
+  by the document's own words), rewrapping it as you type and writing it in place, each letter in its own code;
+  none of it is in the app yet (stage 3). The finding check doesn't pass yet (testing.md, "Finding paragraphs"),
+  so the switch will come first. Known limits of the writer (testing.md, "Editing paragraphs"): marked content's
+  alternative text (`ActualText`) isn't read, so a letter marked as another (a small capital) reads as its glyph's
+  own and loses its mark when its line is rewritten (PB-71).
 - **Incremental saving.** Save only what changed, which is faster for large files. Signed documents are already
   saved this way (above); this item is about using it for every document.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.

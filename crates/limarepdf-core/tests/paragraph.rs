@@ -8,6 +8,9 @@
 //! Text in a Type 3 font whose matrix flips its glyphs back upright, as TeX's bitmap fonts
 //! are drawn (PB-56), reads upright, at the size it is drawn, in whole lines.
 
+mod common;
+
+use common::saved::tools;
 use limarepdf_core::{
     text_width, Align, Block, Detect, Doubt, Hyphen, ObjectKind, PageObject, Paragraph,
     ParagraphSetting, PartFont, Pdf, SetLine, SetParagraph, TextEdit, TextPart,
@@ -312,6 +315,33 @@ fn justified_text_has_a_justified_frame() {
         "{:?}",
         blocks[0].frame
     );
+}
+
+#[test]
+fn two_lines_are_justified_only_when_the_first_lines_spaces_are_stretched() {
+    // Two lines broken at 300 points, the first the longer: its end is no edge.
+    let text = "By noon the wind had freshened from the west, and the first of the boats \
+        slipped its moorings.";
+    let lines = wrap(text, 300.0, 11.0);
+    assert_eq!(lines.len(), 2);
+    assert!(text_width(&lines[0], 11.0) > text_width(&lines[1], 11.0));
+    let p = letter(&lines_at(&lines, 72.0, 0.0, 700.0, 13.2, "F1", 11.0));
+    let para = only_paragraph(&p);
+    assert_eq!(para.frame.align, Align::Left);
+    // A word typed in the first line moves its break: set again unstretched.
+    let setting = p.paragraph_setting(&para).unwrap();
+    let new = para.text.replacen("By noon", "By early noon", 1);
+    let set = setting.set(&typed(&para, &new));
+    assert!(set.lines.iter().all(|l| l.stretch == 0.0), "{set:?}");
+    // The first line spread to 320 points by word spacing, the last as set: justified.
+    let gaps = lines[0].matches(' ').count() as f32;
+    let tw = (320.0 - text_width(&lines[0], 11.0)) / gaps;
+    let content = format!(
+        "BT /F1 11 Tf {tw} Tw 72 700 Td ({}) Tj ET\nBT 0 Tw 72 686.8 Td ({}) Tj ET\n",
+        lines[0], lines[1]
+    );
+    let p = letter(&content);
+    assert_eq!(only_paragraph(&p).frame.align, Align::Justified);
 }
 
 #[test]
@@ -1251,10 +1281,9 @@ fn paragraph_texts(p: &Pdf) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn lines_in_one_text_object_are_written_in_it_and_what_follows_stays_put() {
-    // One text object, a line move between lines, ' for some, and a line after the
-    // paragraph placed from where the paragraph's last line is.
+/// `TEXT` broken at 300 points in one text object, a line move between lines and ' for some,
+/// and a line after the paragraph placed from where its last line is.
+fn one_object_page() -> Pdf {
     let lines = wrap(TEXT, 300.0, 11.0);
     let mut content = String::from("BT /F1 11 Tf 13.2 TL 72 700 Td\n");
     for (k, l) in lines.iter().enumerate() {
@@ -1265,7 +1294,12 @@ fn lines_in_one_text_object_are_written_in_it_and_what_follows_stays_put() {
         });
     }
     content.push_str("0 -40 Td (After the paragraph.) Tj ET\n");
-    let mut p = letter(&content);
+    letter(&content)
+}
+
+#[test]
+fn lines_in_one_text_object_are_written_in_it_and_what_follows_stays_put() {
+    let mut p = one_object_page();
     let after = |p: &Pdf| {
         let after = |o: &PageObject| o.text.as_deref() == Some("After the paragraph.");
         let line = lines_of(p).into_iter().find(after).unwrap();
@@ -1348,9 +1382,8 @@ fn a_paragraph_tagged_as_one_is_written_inside_its_tag() {
     assert_eq!(ops(&p).last().unwrap().operator, "EMC");
 }
 
-#[test]
-fn a_paragraphs_character_spacing_is_kept_on_its_rewritten_lines() {
-    // Every line drawn with 0.5 points between letters, broken at 300 points as drawn.
+/// `TEXT` and `MORE` drawn with 0.5 points between letters, broken at 300 points as drawn.
+fn spaced_page() -> Pdf {
     let tc = 0.5;
     let mut lines: Vec<String> = Vec::new();
     for word in format!("{TEXT} {MORE}").split(' ') {
@@ -1368,7 +1401,12 @@ fn a_paragraphs_character_spacing_is_kept_on_its_rewritten_lines() {
         let y = 700.0 - 13.2 * k as f32;
         content.push_str(&format!("BT /F1 11 Tf {tc} Tc 72 {y} Td ({l}) Tj ET\n"));
     }
-    let mut p = letter(&content);
+    letter(&content)
+}
+
+#[test]
+fn a_paragraphs_character_spacing_is_kept_on_its_rewritten_lines() {
+    let mut p = spaced_page();
     let right = only_paragraph(&p).frame.right;
     let (_, new, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
     assert_eq!(paragraph_texts(&p), set_texts(&set, &new));
@@ -1381,10 +1419,9 @@ fn a_paragraphs_character_spacing_is_kept_on_its_rewritten_lines() {
     }
 }
 
-#[test]
-fn a_paragraph_on_a_turned_page_is_written_where_it_shows() {
-    // A page turned a quarter for showing, its text drawn up the page so that it reads
-    // across when shown.
+/// A page turned a quarter for showing, `TEXT` and `MORE` drawn up the page so that they
+/// read across when shown.
+fn turned_page() -> Pdf {
     let lines = wrap(&format!("{TEXT} {MORE}"), 300.0, 11.0);
     let mut content = String::new();
     for (k, l) in lines.iter().enumerate() {
@@ -1394,11 +1431,275 @@ fn a_paragraph_on_a_turned_page_is_written_where_it_shows() {
     let mut p = letter(&content);
     let page = p.page_ids()[0];
     p.doc.get_dictionary_mut(page).unwrap().set("Rotate", 90);
+    p
+}
+
+#[test]
+fn a_paragraph_on_a_turned_page_is_written_where_it_shows() {
+    let mut p = turned_page();
     let (_, new, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
     assert_eq!(paragraph_texts(&p), set_texts(&set, &new));
     for (o, l) in lines_of(&p).iter().zip(&set.lines) {
         assert!(o.upright, "{o:?}");
         let at = o.baseline.unwrap();
         assert!(near(at, (l.x, l.baseline)), "{o:?} against {l:?}");
+    }
+}
+
+/// `TEXT` and `MORE` justified to 440 points by word spacing, every line but the last, the
+/// first indented 18 points.
+fn indented_justified() -> Pdf {
+    let lines = wrap(&format!("{TEXT} {MORE}"), 422.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let x = if k == 0 { 90.0 } else { 72.0 };
+        let gaps = l.matches(' ').count() as f32;
+        let tw = match k + 1 < lines.len() {
+            true => (512.0 - x - text_width(l, 11.0)) / gaps,
+            false => 0.0,
+        };
+        content.push_str(&format!("BT /F1 11 Tf {tw} Tw {x} {y} Td ({l}) Tj ET\n"));
+    }
+    letter(&content)
+}
+
+/// The paragraph's text with `brk` typed after the second line's second word.
+fn with_break(para: &Paragraph, brk: char) -> String {
+    let (a, _) = para.lines[1];
+    let chars: Vec<char> = para.text.chars().collect();
+    let spaces = (a..).filter(|&k| chars[k] == ' ');
+    let at = spaces.take(2).last().unwrap();
+    let mut new: String = chars[..=at].iter().collect();
+    new.push(brk);
+    new.extend(&chars[at + 1..]);
+    new
+}
+
+#[test]
+fn enter_typed_starts_a_paragraph_indented_and_shift_enter_a_line_neither_justified_before() {
+    let p = indented_justified();
+    let para = only_paragraph(&p);
+    assert_eq!(para.frame.align, Align::Justified);
+    assert!((para.frame.indent - 18.0).abs() < 0.05, "{:?}", para.frame);
+    let setting = p.paragraph_setting(&para).unwrap();
+    for (brk, indent) in [('\u{2029}', 18.0), ('\n', 0.0)] {
+        let new = with_break(&para, brk);
+        let set = setting.set(&typed(&para, &new));
+        let texts = set_texts(&set, &new);
+        assert_eq!(texts.join(" "), new.replace(brk, ""), "{brk:?}");
+        // The line the break ends starts at the frame's edge, unstretched; the next starts
+        // with the first line's indent after Enter only.
+        let at = new.chars().position(|c| c == brk).unwrap();
+        let n = set.lines.iter().position(|l| l.chars.1 == at + 1).unwrap();
+        assert_eq!(n, 1, "{brk:?}: {set:?}");
+        assert_eq!(set.lines[n].stretch, 0.0);
+        assert!((set.lines[n].x - 72.0).abs() < 0.01, "{:?}", set.lines[n]);
+        let next = &set.lines[n + 1];
+        assert!((next.x - 72.0 - indent).abs() < 0.01, "{next:?}");
+        // The other lines rewritten reach the right edge, but the last.
+        let chars: Vec<char> = new.chars().collect();
+        let last = set.lines.len() - 1;
+        for l in (set.lines[n + 1..last].iter()).filter(|l| l.kept.is_none()) {
+            let gaps = (chars[l.chars.0..l.chars.1].iter().collect::<String>())
+                .trim_end()
+                .matches(' ')
+                .count();
+            let end = l.x + l.width + l.stretch * gaps as f32;
+            assert!((end - 512.0).abs() < 0.5, "{brk:?}: {l:?} ends at {end}");
+        }
+        // Written so: the break isn't written, the lines are where they were set.
+        let mut q = p.clone();
+        q.edit_paragraph(&setting, &typed(&para, &new)).unwrap();
+        assert_eq!(line_texts(&q), texts, "{brk:?}");
+        for (o, l) in lines_of(&q).iter().zip(&set.lines) {
+            let at = o.baseline.unwrap();
+            assert!(near(at, (l.x, l.baseline)), "{o:?} against {l:?}");
+        }
+        let before = &lines_of(&q)[n];
+        assert!(before.bbox[2] < 500.0, "stretched: {before:?}");
+    }
+}
+
+/// `TEXT` and `MORE` broken at 300 points, each line starting where `x` says for its width.
+fn aligned_page(x: fn(f32) -> f32) -> Pdf {
+    let lines = wrap(&format!("{TEXT} {MORE}"), 300.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let at = x(text_width(l, 11.0));
+        content.push_str(&format!("BT /F1 11 Tf {at} {y} Td ({l}) Tj ET\n"));
+    }
+    letter(&content)
+}
+
+/// Each line centred on 306 points across the page.
+fn centred(w: f32) -> f32 {
+    306.0 - w / 2.0
+}
+
+/// Each line ending 456 points across the page.
+fn right_aligned(w: f32) -> f32 {
+    456.0 - w
+}
+
+#[test]
+fn a_centred_paragraph_is_set_again_on_its_centre_and_a_right_aligned_one_to_its_edge() {
+    let cases = [
+        (Align::Centre, centred as fn(f32) -> f32, 306.0),
+        (Align::Right, right_aligned, 456.0),
+    ];
+    for (align, x, want) in cases {
+        // Where a line from `x0` to `x1` is placed by: its centre, or its end.
+        let by = |x0: f32, x1: f32| match align {
+            Align::Centre => (x0 + x1) / 2.0,
+            _ => x1,
+        };
+        let mut p = aligned_page(x);
+        assert_eq!(only_paragraph(&p).frame.align, align);
+        let (_, new, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
+        for l in &set.lines {
+            let at = by(l.x, l.x + l.width);
+            assert!((at - want).abs() < 0.01, "{align:?}: {l:?}");
+        }
+        // Written there.
+        assert_eq!(paragraph_texts(&p), set_texts(&set, &new));
+        for (o, l) in lines_of(&p).iter().zip(&set.lines) {
+            let at = o.baseline.unwrap();
+            assert!(near(at, (l.x, l.baseline)), "{o:?} against {l:?}");
+            let drawn = by(o.bbox[0], o.bbox[2]);
+            assert!((drawn - want).abs() < 0.6, "{align:?}: {o:?}");
+        }
+    }
+}
+
+/// The paragraph's parts with `word` typed before character `at` of its text, in the style
+/// of the part it goes into but `size` points high.
+fn with_typed(para: &Paragraph, at: usize, word: &str, size: f32) -> Vec<TextPart> {
+    let mut out = Vec::new();
+    for p in para.parts() {
+        let from = p.from.unwrap();
+        let chars: Vec<char> = p.text.chars().collect();
+        if !(from <= at && at < from + chars.len()) {
+            out.push(p);
+            continue;
+        }
+        let (head, tail) = chars.split_at(at - from);
+        let typed = TextPart {
+            text: word.to_string(),
+            size,
+            from: None,
+            origins: vec![None; word.chars().count()],
+            ..p.clone()
+        };
+        let tail = TextPart {
+            text: tail.iter().collect(),
+            from: Some(at),
+            ..p.clone()
+        };
+        let head = TextPart {
+            text: head.iter().collect(),
+            ..p
+        };
+        let parts = [head, typed, tail].into_iter();
+        out.extend(parts.filter(|p| !p.text.is_empty()));
+    }
+    out
+}
+
+#[test]
+fn a_line_given_larger_text_moves_down_to_fit_it_and_the_lines_after_it_with_it() {
+    let (mut p, _, setting) = ragged(300.0);
+    let para = setting.paragraph().clone();
+    // A 20-point word typed after the second line's first word.
+    let (a, _) = para.lines[1];
+    let chars: Vec<char> = para.text.chars().collect();
+    let at = a + chars[a..].iter().position(|&c| c == ' ').unwrap();
+    let parts = with_typed(&para, at, " Big", 20.0);
+    let set = setting.set(&parts);
+    let k = (set.lines.iter())
+        .position(|l| l.chars.0 <= at + 1 && at + 1 < l.chars.1)
+        .unwrap();
+    assert_eq!(k, 1, "{set:?}");
+    // Its baseline 1.2 times 20 points below the line before, 10.8 more than the
+    // paragraph's spacing, and each line after it as much lower.
+    let down = |n: usize| 792.0 - (700.0 - 13.2 * n as f32);
+    for (n, l) in set.lines.iter().enumerate() {
+        let push = if n >= k { 1.2 * 20.0 - 13.2 } else { 0.0 };
+        let want = down(n) + push;
+        assert!((l.baseline - want).abs() < 0.05, "line {n}: {l:?}");
+    }
+    p.edit_paragraph(&setting, &parts).unwrap();
+    for (o, l) in lines_of(&p).iter().zip(&set.lines) {
+        let at = o.baseline.unwrap();
+        assert!(near(at, (l.x, l.baseline)), "{o:?} against {l:?}");
+    }
+}
+
+#[test]
+fn a_paragraph_set_tighter_than_single_spacing_keeps_its_spacing_when_rewrapped() {
+    // 10-point text on 11-point baselines, words typed in the second line: each line set
+    // again on the paragraph's own spacing, not pushed apart line after line.
+    let lines = wrap(&format!("{TEXT} {MORE}"), 300.0, 10.0);
+    let mut p = letter(&lines_at(&lines, 72.0, 0.0, 700.0, 11.0, "F1", 10.0));
+    let (_, _, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
+    let down = |n: usize| 792.0 - (700.0 - 11.0 * n as f32);
+    for (n, l) in set.lines.iter().enumerate() {
+        assert!((l.baseline - down(n)).abs() < 0.05, "line {n}: {l:?}");
+    }
+}
+
+/// Page 0's only paragraph edited to the text `new` makes of it ([`typed`]), and that text.
+fn edited_to(mut p: Pdf, new: impl Fn(&Paragraph) -> String) -> (Pdf, String) {
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    let new = new(&para);
+    p.edit_paragraph(&setting, &typed(&para, &new)).unwrap();
+    (p, new)
+}
+
+/// Every kind of paragraph the tests above write, written: what each is, the document, and
+/// the paragraph's text as typed.
+fn written_paragraphs() -> Vec<(&'static str, Pdf, String)> {
+    let into_second = |mut p: Pdf| {
+        let (_, new, _) = type_into_second_line(&mut p, "very slowly and rather quietly");
+        (p, new)
+    };
+    let deleted = |para: &Paragraph| para.text.replacen(" fishing boats sat low in the", "", 1);
+    let lines = wrap(&format!("{TEXT} {MORE}"), 300.0, 11.0);
+    let per_line = tagged(&lines, &vec![0; lines.len()]);
+    let tex = |para: &Paragraph| para.text.replacen("ton tony", "ton big tony", 1);
+    [
+        ("words typed", into_second(ragged(300.0).0)),
+        ("words deleted", edited_to(ragged(300.0).0, deleted)),
+        ("one text object", into_second(one_object_page())),
+        ("tagged line by line", into_second(per_line)),
+        ("character spacing", into_second(spaced_page())),
+        ("a turned page", into_second(turned_page())),
+        ("justified, Enter typed", {
+            edited_to(indented_justified(), |para| with_break(para, '\u{2029}'))
+        }),
+        ("centred", into_second(aligned_page(centred))),
+        ("right-aligned", into_second(aligned_page(right_aligned))),
+        ("TeX's bitmap font", edited_to(tex_paragraph(), tex)),
+    ]
+    .into_iter()
+    .map(|(what, (p, new))| (what, p, new))
+    .collect()
+}
+
+/// Text with its whitespace made single spaces.
+fn plain(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Every kind of paragraph written, read by Poppler (`pdftotext`) as typed. Opt-in: `cargo
+/// test -p limarepdf-core --test paragraph -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_written_paragraphs_with_pdftotext() {
+    for (what, mut p, new) in written_paragraphs() {
+        let got = plain(&tools::pdftotext(&p.to_bytes().unwrap()));
+        assert!(got.contains(&plain(&new)), "{what}: {got:?}");
     }
 }

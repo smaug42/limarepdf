@@ -1,6 +1,7 @@
 use limarepdf_core::{
     render, Bates, Cipher, Encryption, HeaderFooter, Pdf, Restrictions, Watermark,
 };
+use lopdf::{dictionary, Dictionary, Stream};
 
 fn doc_with_text() -> Pdf {
     let mut p = Pdf::new();
@@ -259,6 +260,50 @@ fn crop_margins_follow_rotation() {
     assert!(p.set_crop_margins(0, [-1.0, 0.0, 0.0, 0.0]).is_err());
     assert!(p.set_crop_margins(0, [100.0, 0.0, 100.0, 0.0]).is_err());
     assert!(p.crop_margins(1).is_err());
+}
+
+/// A crop box reaching past the media box shows only their overlap, as the PDF standard
+/// says and as the page is drawn (BUG-43, as in PDFBox's `1727`): the page's size and the
+/// places of what is on it are the overlap's.
+#[test]
+fn a_crop_box_past_the_media_box_shows_their_overlap() {
+    let mut p = Pdf::new();
+    p.insert_blank(0, 612.0, 792.0).unwrap();
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    let content = b"BT /F1 10 Tf 64 549 Td (Enter your TIN) Tj ET".to_vec();
+    let s = p.doc.add_object(Stream::new(Dictionary::new(), content));
+    let page = p.page_ids()[0];
+    let media: Vec<lopdf::Object> = vec![18.into(), 20.5.into(), 630.into(), 812.5.into()];
+    let res = dictionary! { "Font" => dictionary! { "F1" => font } };
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set("MediaBox", media);
+    d.set("CropBox", vec![0.into(), 0.into(), 648.into(), 1043.into()]);
+    d.set("Contents", s);
+    d.set("Resources", res);
+    assert_eq!(p.page_size(0).unwrap(), (612.0, 792.0));
+    assert_eq!(p.page_sizes(), [(612.0, 792.0)]);
+    assert_eq!(p.crop_margins(0).unwrap(), [0.0; 4]);
+    // As drawn.
+    let drawn = render::load(p.to_bytes().unwrap(), None).unwrap();
+    let r = render::Renderer::new(&drawn);
+    assert_eq!(r.page_size(0).unwrap(), (612.0, 792.0));
+    // The line where it shows: 46 points in from the overlap's left, 263.5 down from its
+    // top.
+    let objs = p.page_objects(0).unwrap();
+    let o = objs.iter().find(|o| o.text.is_some()).unwrap();
+    let (x, y) = o.baseline.unwrap();
+    assert!((x - 46.0).abs() < 0.01 && (y - 263.5).abs() < 0.01, "{o:?}");
+    // With no boxes at all, the page is A4, as drawn.
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.remove(b"MediaBox");
+    d.remove(b"CropBox");
+    let drawn = render::load(p.to_bytes().unwrap(), None).unwrap();
+    let a4 = render::Renderer::new(&drawn).page_size(0).unwrap();
+    let a4_sized = (a4.0 - 595.28).abs() < 0.01 && (a4.1 - 841.89).abs() < 0.01;
+    assert!(a4_sized, "{a4:?}");
+    assert_eq!(p.page_size(0).unwrap(), a4);
 }
 
 #[test]

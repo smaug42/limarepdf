@@ -1624,12 +1624,21 @@ impl Pdf {
             let s: String = s.nfc().collect();
             s.split_whitespace().map(str::to_string).collect::<Vec<_>>()
         };
+        // The lines of text it reads as, joined as the parser joins a line's pieces: a line
+        // written with a wide move in it (a font with no space of its own) reads as two a
+        // word apart, a raised mark as one touching its word.
         let read = |keep: &dyn Fn(&Obj) -> bool| -> String {
-            (parsed.objs.iter())
-                .filter(|o| keep(o))
-                .filter_map(|o| o.text.as_ref())
-                .map(|t| t.text.as_str())
-                .collect()
+            let mut out = String::new();
+            let mut last: Option<&TextData> = None;
+            let lines = parsed.objs.iter().filter(|o| keep(o));
+            for t in lines.filter_map(|o| o.text.as_ref()) {
+                if last.is_some_and(|l| apart(l, t)) {
+                    out.push(' ');
+                }
+                out.push_str(&t.text);
+                last = Some(t);
+            }
+            out
         };
         Ok(checks
             .iter()
@@ -2143,6 +2152,27 @@ impl Pdf {
     }
 }
 
+/// Whether line of text `b`, read after line `a`, is a word apart from it: it starts more
+/// than 0.18 of the smaller size along the line past `a`'s end (the parser's word gap), or
+/// on another line. A raised mark right after its word isn't.
+fn apart(a: &TextData, b: &TextData) -> bool {
+    let (Some(end), Some(start)) = (a.pieces.last(), b.pieces.first()) else {
+        return true;
+    };
+    // Where along a piece's box (which starts before a show's opening move) a character
+    // starts or ends, by its share of the box.
+    let at = |p: &crate::objects::Piece, f: f32| {
+        let (c0, c1) = (p.corners[0], p.corners[1]);
+        (c0.0 + (c1.0 - c0.0) * f, c0.1 + (c1.1 - c0.1) * f)
+    };
+    let e = at(end, end.spans.last().map_or(1.0, |s| s.1));
+    let s = at(start, start.spans.first().map_or(0.0, |s| s.0));
+    let (dx, dy) = (s.0 - e.0, s.1 - e.1);
+    let along = dx * a.dir.0 + dy * a.dir.1;
+    let across = (-dx * a.dir.1 + dy * a.dir.0).abs();
+    along > 0.18 * a.size.min(b.size) || across > 0.7 * a.size.max(b.size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2179,5 +2209,60 @@ mod tests {
         assert_eq!(misread("one two"), [3]);
         assert_eq!(misread("onetwo"), Vec::<usize>::new());
         assert_eq!(misread(" onetwo "), Vec::<usize>::new());
+    }
+
+    /// A line written with a word's space as a move wide enough to read as two lines of text
+    /// (a font with no space of its own) reads as its words, the two a word apart: so it
+    /// isn't written again in another font for nothing.
+    #[test]
+    fn a_line_read_back_in_two_pieces_reads_as_their_words() {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 300.0, 200.0).unwrap();
+        let font = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        });
+        let page = p.page_ids()[0];
+        let res = dictionary! { "Font" => dictionary! { "F1" => font } };
+        p.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Resources", res);
+        // "two" a whole em after "one": two lines of text as read.
+        let ops = vec![
+            op("BT", vec![]),
+            op("Tf", vec![name("F1"), r(20.0)]),
+            op("Tj", vec![lit(b"one".to_vec())]),
+            op(
+                "TJ",
+                vec![Object::Array(vec![r(-1000.0), lit(b"two".to_vec())])],
+            ),
+            op("ET", vec![]),
+        ];
+        let (_, inline) = crate::inline::extract(b"").unwrap();
+        let parsed = p.parse_as_page(page, b"BT /F1 20 Tf (one) Tj [-1000 (two)] TJ ET");
+        assert_eq!(parsed.unwrap().text_lines().count(), 2);
+        for at in [Check::OnTop(0, 5), Check::Within(0, 5)] {
+            let check = |text: &str| vec![(0, at, text.to_string())];
+            let misread = |text: &str| p.misread(page, &inline, &ops, &check(text)).unwrap();
+            assert_eq!(misread("one two"), Vec::<usize>::new(), "{at:?}");
+        }
+        // A footnote mark raised right after its word reads as a line of its own, touching
+        // it: "one2" (the corpus edit run's pdfbox `2296`, "U.S.1", taken as misread when
+        // every two lines read were a word apart).
+        let ops = vec![
+            op("BT", vec![]),
+            op("Tf", vec![name("F1"), r(20.0)]),
+            op("Tj", vec![lit(b"one".to_vec())]),
+            op("Ts", vec![r(8.0)]),
+            op("Tf", vec![name("F1"), r(10.0)]),
+            op("Tj", vec![lit(b"2".to_vec())]),
+            op("ET", vec![]),
+        ];
+        let parsed = p.parse_as_page(page, b"BT /F1 20 Tf (one) Tj 8 Ts /F1 10 Tf (2) Tj ET");
+        assert_eq!(parsed.unwrap().text_lines().count(), 2);
+        let check = |text: &str| vec![(0, Check::Within(0, 7), text.to_string())];
+        let misread = |text: &str| p.misread(page, &inline, &ops, &check(text)).unwrap();
+        assert_eq!(misread("one2"), Vec::<usize>::new());
+        assert_eq!(misread("one 2"), [0]);
     }
 }

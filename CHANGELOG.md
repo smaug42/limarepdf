@@ -232,6 +232,13 @@
 
 ### Fixed
 
+- On a page whose crop box reaches past its paper (as some forms have), clicks, selections, search highlights and
+  edits landed away from the text they were meant for, and the page's size was given as the larger box. The page
+  is now measured as it is drawn, by the part of the crop box on the paper. A page that doesn't give its paper size
+  is taken as A4, as it is drawn.
+- An edited line with a wide gap between two of its words (as some justified lines have) was taken, once
+  written, as reading wrongly, so the words changed in it went to another font for nothing. They now keep the
+  PDF's own font there.
 - On Linux in a Wayland session, LimarePDF left open for a long while (an hour, say, so the screen had turned off)
   could freeze the whole desktop until it was closed by force; seen with NVIDIA's graphics driver under KDE Plasma
   6.8. Each picture of the window was handed to the screen and waited for the screen to take it, which then could

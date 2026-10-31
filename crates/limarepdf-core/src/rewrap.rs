@@ -775,6 +775,8 @@ impl ParagraphSetting {
         let mut a = starts[first];
         let mut n = first;
         let mut push = 0.0f32;
+        // The largest text the paragraph's spacing holds as it is.
+        let holds = old.sizes.iter().copied().fold(0.0, f32::max);
         let size = para.spans.first().map_or(12.0, |s| s.font_size);
         let spacing = match para.frame.spacing {
             s if s > 0.0 => s,
@@ -806,11 +808,13 @@ impl ParagraphSetting {
             }
             let end = new.trimmed(a, e);
             let width = new.width(a, e);
-            // A line whose largest text needs more room below the one before gets it.
-            if n > 0 && n > first {
-                let big = new.sizes[a..e].iter().copied().fold(0.0, f32::max);
+            // A line with larger text than the paragraph's gets the room below the one
+            // before that it needs, 1.2 times its size, at most what its size grew by: a
+            // paragraph set tighter keeps its spacing.
+            if n > 0 {
+                let big = new.sizes[a..end].iter().copied().fold(0.0, f32::max);
                 let gap = baseline(n) - baseline(n - 1);
-                push += (1.2 * big - gap).max(0.0);
+                push += (1.2 * big - gap).min(1.2 * (big - holds)).max(0.0);
             }
             let f = &para.frame;
             let last = e >= nl || new.chars[e - 1] == '\u{2029}' || new.chars[e - 1] == '\n';

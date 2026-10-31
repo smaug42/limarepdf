@@ -59,6 +59,13 @@ pub struct Info {
 
 const INHERITABLE: [&[u8]; 4] = [b"Resources", b"MediaBox", b"CropBox", b"Rotate"];
 
+/// An A4 page in points (210 by 297 mm), worked out as hayro does: what it draws a page
+/// without a media box as.
+const A4: (f32, f32) = {
+    const MM: f64 = 1.0 / (10.0 * 2.54) * 72.0;
+    ((210.0 * MM) as f32, (297.0 * MM) as f32)
+};
+
 impl Pdf {
     // ---------------------------------------------------------------- I/O
 
@@ -484,18 +491,28 @@ impl Pdf {
         ])
     }
 
-    /// Visible box (CropBox, else MediaBox, else Letter) of a page in user space.
+    /// Visible box of a page in user space: its CropBox where it overlaps the MediaBox, as
+    /// the PDF standard reduces a crop box reaching past it and as hayro draws the page
+    /// (BUG-43); an overlap with no area is an A4 page from its corner, as hayro's.
     pub(crate) fn page_box(&self, id: ObjectId) -> [f32; 4] {
-        self.inherited(id, b"CropBox")
-            .and_then(|o| self.rect(&o))
-            .unwrap_or_else(|| self.media_box(id))
+        let media = self.media_box(id);
+        let Some(crop) = self.inherited(id, b"CropBox").and_then(|o| self.rect(&o)) else {
+            return media;
+        };
+        let (x0, y0) = (crop[0].max(media[0]), crop[1].max(media[1]));
+        let (x1, y1) = (crop[2].min(media[2]).max(x0), crop[3].min(media[3]).max(y0));
+        if x1 - x0 < 1e-3 || y1 - y0 < 1e-3 {
+            return [x0, y0, x0 + A4.0, y0 + A4.1];
+        }
+        [x0, y0, x1, y1]
     }
 
-    /// Full box (MediaBox, else Letter) of a page in user space.
+    /// Full box of a page in user space: its MediaBox, else A4, as hayro draws a page
+    /// without one (BUG-43).
     pub(crate) fn media_box(&self, id: ObjectId) -> [f32; 4] {
         self.inherited(id, b"MediaBox")
             .and_then(|o| self.rect(&o))
-            .unwrap_or([0.0, 0.0, 612.0, 792.0])
+            .unwrap_or([0.0, 0.0, A4.0, A4.1])
     }
 
     pub(crate) fn page_rotation(&self, id: ObjectId) -> i64 {

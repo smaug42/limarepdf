@@ -1495,6 +1495,11 @@ form XObject, and per inline image.
   written (`Pdf::turned`, so the parser and the writer agree), its rise written the other way; a line changed in
   place keeps the page's own matrix. A kept Type 3 font's letters are written at the size in the font's own terms
   (`Span::em`).
+- **The displayed page** every position is on (`page_box`, `visual_matrix`): the crop box where it overlaps the
+  media box, as the PDF standard reduces a crop box reaching past it, turned with the page; a page without a
+  media box is A4, and an overlap with no area an A4 page from its corner. These are hayro's rules, so the page as
+  drawn and core's positions and sizes agree (BUG-43: pdfbox `1727`'s crop box, 648 by 1043 round a 612 by 792
+  media box, put everything core gave on it up to 230 points off).
 - **Where a line's characters are** on the displayed page: `PageObject::dir`, the way the line runs (a unit vector),
   and `PageObject::stops`, where each character starts along it from `baseline` and where the last ends, from the
   same measured positions as search boxes (`caret_stops`). A line edited in a plain box (turned, or invisible OCR
@@ -1524,13 +1529,56 @@ form XObject, and per inline image.
   fitted at the end of the line above (measured against the paragraph's own width, up to a picture beside it).
   Breaks are clear or weak; a block is confident with two lines or more (three centred), clear breaks both sides,
   even gaps and edges, at least 8 sizes wide and half its column, no table or form signs, some line reading on
-  into the next, not a heading's size, nothing else in its frame, and a font that writes new text in its own face
-  (not Type 3, a CMap other than Identity, vertical or an unusable program: the plan's Q3). In a tagged document,
+  into the next, not a heading's size and nothing else in its frame (its font no longer counts since 2b-2: an edit
+  keeps every letter's own code, so a font that sends typed words elsewhere, Type 3 or a CMap other than Identity,
+  doesn't make it uncertain; the plan's Q3 dropped). The frame's alignment is justified when both edges agree on
+  every line but the last, and for a block of two lines only when the first line's word gaps are also over 1.1
+  times the last line's (`JUSTIFY_GAPS`): the longer line's end alone is no edge (batch 45's 2b-2, found by the
+  corpus edit run, pdfbox `1570`: a ragged pair taken as justified had its rewritten first line stretched 1.2
+  sizes a space). In a tagged document,
   lines whose marked content (`BDC` MCIDs through the parent tree, `struct_parents`) belongs to different block
   elements (P, H1 to H6, LBody, Lbl, TD, TH, Caption, Note and the like, by the role map) are never joined.
   `Pdf::page_blocks_by` turns the tags or the fonts off, for the opt-in check (`tests/paragraph_check.rs`, which
-  judged the default off: testing.md). Not yet in the app, and nothing written yet (stage 2's second part,
-  `Pdf::edit_paragraph`).
+  judged the default off: testing.md). Not yet in the app (stage 3).
+- **Editing a paragraph** (NEW-01, batch 45's 2b-2; `rewrap.rs`, `para_write.rs`, the paragraph design's sections
+  6 and 7). `Pdf::paragraph(page, &Block, &DocWords)` reads a block for editing: its text as one (each line's
+  pieces left to right, a space between two only a word's gap apart, 0.18 sizes; lines joined by a space except
+  after a hyphen or dash, where a line ends or starts with one, or between Chinese or Japanese characters), a part
+  (`TextSpan`) for each part of each line's text objects, each character's text object and place (`source`), each
+  line's characters, and its line-end hyphens read by the document's own words (`Pdf::document_words`, every
+  page's visible lines' words, built in parallel): discretionary (a soft hyphen there, or the word found joined
+  elsewhere and not hyphenated) held in the text as a soft hyphen, hard, or unknown (kept, marked when a rewrap
+  brings it inside a line). Refused for a turned, hidden or vertical line, or a text mode that clips (`Tr` 4 to 7).
+  `Pdf::paragraph_setting` reads the parts' fonts once (`LineFont`, and the font each part's typed words go to,
+  `FontChoice::of_font`); `ParagraphSetting::set(&[TextPart])` lays an edit out (`SetParagraph`: each line's
+  characters, the old line it keeps or none, x, baseline, width, the stretch a space when justified, a soft hyphen
+  shown), measured as written: a kept letter by where it was drawn, and what was drawn between it and its old
+  neighbour while they stay neighbours; a typed one by its font's PDF width (`LineFont::advance`); a space by the
+  font's space or, where it has none, the narrower quarter of the paragraph's drawn spaces; words in another font
+  by a `Setter` holding all of that font's words. Greedy breaking at UAX #14's places from the line the edit can
+  first change: the line before is rewritten only when the next line's first word fits now and didn't before; a
+  line that starts where it did ends where it did when the words greedy breaking would add fitted before too (the
+  producer's breaks stand where the edit doesn't move them); once a line starts at an old line's start with the
+  rest unchanged and nothing pushed down, the rest are kept. Baselines: the old lines', the frame's spacing past
+  them; a line whose text is larger than any the paragraph had gets 1.2 times its size below the line before, at
+  most 1.2 times what the size grew by, so a paragraph set tighter than single spacing keeps its spacing (2b-2's
+  tests: the first rewritten line wasn't pushed, and a 10-on-11 paragraph drifted a point a line). Justified lines
+  stretch each space to the edge, but the last and one before a typed break (U+2029 for Enter, a new paragraph
+  with the first line's indent; `\n` for Shift+Enter); centred and right-aligned lines are placed on the frame's
+  centre or edge. `Pdf::edit_paragraph(&ParagraphSetting, &[TextPart])` writes it in one rewrite (section 7): line
+  *i* in place of old line *i*'s first show, lines added after the last old line's last show, the old lines'
+  shows taken out (`move_only`, `Following` keeping what follows each in place); inside the text object a `Tm` in
+  its CTM, the font, colour (as set, `Paint`), rise, `Tc`, `Tw` and `Tz` set, then put back as the show had them
+  with `Tm` to its line matrix; no text object added, nothing appended, unchanged lines byte for byte. Each kept
+  letter keeps its own code across the paragraph's lines (TeX's flipped fonts too, through `Pdf::turned`), a typed
+  one its font's code, a word the font can't write goes by one pen a font with the paragraph's `Tc` and `Tz`.
+  Each written line is read back (`misread`, `Check::Within`, with what it may join in its text object; the lines
+  of text it reads as join as the parser joins a line's pieces, a space where one starts a word's gap past the
+  other or on another line, `apart`, so a line whose wide move reads it as two isn't taken as misread, nor one
+  with a raised footnote mark: 2b-2, found by the corpus edit run); one that misreads is written again with its
+  letters in the fonts their words go to, and a second misread refuses the edit with nothing changed. Returns the lines whose letters went to another font.
+  Building `DocWords` reads every page (stage 3 runs it off the window's thread; until it is there, hyphens read as
+  unknown).
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.
@@ -1551,8 +1599,9 @@ form XObject, and per inline image.
   taken out, each line's `Following` in the page's order, the lines on top in the order given), the parts of all
   its lines sharing the fonts they add (`written_lines`); `edit_text` is it for one line. A line in one style and
   spacing changed in words all in its own font is one `TJ` in place of its first show. Before committing, each
-  line with characters written in its own font is read back as the page will be (`misread`): one that reads as
-  other words is written again with only its unchanged parts in its own font, and reported. While a line is
+  line with characters written in its own font is read back as the page will be (`misread`; the lines of text it
+  reads as joined by the parser's word gap, batch 45's 2b-2): one that reads as other words is written again with
+  only its unchanged parts in its own font, and reported. While a line is
   edited on the page, the app makes the same decision as it goes, from the line's `LineFont`s (`Insp::fonts`;
   `PageObject::kept_pieces`, `editor::drawn_pieces`): the fonts of all a page's lines are read together the first
   time one of them is selected and kept with the page's objects until the document changes

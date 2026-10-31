@@ -124,6 +124,10 @@ const OBJ_THIN: f32 = 3.0;
 /// A region where this share of visual lines have another on their baseline is a table or
 /// a form.
 const GRID_ROWMATES: f32 = 0.3;
+/// A block of two lines is justified when its first line's word gaps are this many times
+/// its last line's, which justifying leaves as they are: the longer line's end alone is no
+/// edge.
+const JUSTIFY_GAPS: f32 = 1.1;
 
 /// A block of a page's text: a paragraph, or lines LimarePDF isn't sure are one.
 #[derive(Clone, Debug, PartialEq)]
@@ -578,7 +582,7 @@ fn blocks(objs: &[PageObject], tags: &[Option<ObjectId>]) -> Vec<Block> {
     let mut out: Vec<Block> = (groups.iter())
         .map(|g| {
             let doubt = doubt(g, &vlines, &others, body);
-            let frame = frame(g, &vlines);
+            let frame = frame(g, &vlines, &lines);
             let lines = (g.lines.iter())
                 .map(|&k| {
                     let v = &vlines[k];
@@ -1459,18 +1463,24 @@ fn continued(ls: &[&VLine]) -> bool {
     })
 }
 
-/// The frame of block `b`: what it is rewrapped in (the paragraph design's 6.1).
-fn frame(b: &Group, vl: &[VLine]) -> Frame {
+/// The frame of block `b` (its visual lines in `vl`, made of `lines`): what it is rewrapped
+/// in (the paragraph design's 6.1).
+fn frame(b: &Group, vl: &[VLine], lines: &[Line]) -> Frame {
     let ls: Vec<&VLine> = b.lines.iter().map(|&k| &vl[k]).collect();
     let first = ls[0];
     let right = ls.iter().map(|v| v.x1).fold(f32::MIN, f32::max);
     let left = if ls.len() > 1 { b.left } else { first.x0 };
     let tol = edge_tol(first.size);
+    let stretched = || {
+        let gap = |v: &VLine| word_gap(lines, &v.members);
+        matches!((gap(first), gap(ls[1])), (Some(a), Some(z)) if a > JUSTIFY_GAPS * z)
+    };
     let align = match b.align() {
         LEFT if ls.len() >= 2
             && ls[..ls.len() - 1]
                 .iter()
-                .all(|v| (v.x1 - right).abs() <= tol) =>
+                .all(|v| (v.x1 - right).abs() <= tol)
+            && (ls.len() > 2 || stretched()) =>
         {
             Align::Justified
         }

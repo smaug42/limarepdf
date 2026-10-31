@@ -519,3 +519,75 @@ fn matrix(m: M) -> Vec<Object> {
     let plain = |x: f32| if x == 0.0 { 0.0 } else { x };
     m.iter().map(|&x| r(plain(x))).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::{dictionary, Dictionary, Stream};
+
+    /// A line that didn't read back as typed in its own font is written again with its
+    /// letters in the font its words go to ([`Pdf::edit_paragraph`]'s second try): it reads
+    /// as typed, and the other lines stay as they were.
+    #[test]
+    fn a_line_written_again_in_the_font_its_words_go_to_reads_as_typed() {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 612.0, 792.0).unwrap();
+        let font = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let lines = [
+            "The harbour was quiet that morning and",
+            "the fishing boats sat low in the water",
+            "while gulls argued over the nets that",
+            "dried along the wall of the old quay.",
+        ];
+        let mut content = String::new();
+        for (k, l) in lines.iter().enumerate() {
+            let y = 700.0 - 13.2 * k as f32;
+            content.push_str(&format!("BT /F1 11 Tf 72 {y} Td ({l}) Tj ET\n"));
+        }
+        let s = p
+            .doc
+            .add_object(Stream::new(Dictionary::new(), content.into_bytes()));
+        let page = p.page_ids()[0];
+        let res = dictionary! { "Font" => dictionary! { "F1" => font } };
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", s);
+        d.set("Resources", res);
+        let blocks = p.page_blocks(0).unwrap();
+        let para = p.paragraph(0, &blocks[0], &p.document_words()).unwrap();
+        let setting = p.paragraph_setting(&para).unwrap();
+        // The second line's "low" typed as "lot", as wide: that line alone set again.
+        let mut parts = para.parts();
+        parts[1].text = parts[1].text.replacen("low", "lot", 1);
+        let k = parts[1].text.find("lot").unwrap() + 2;
+        let from = parts[1].from.unwrap();
+        parts[1].origins = (0..parts[1].text.chars().count())
+            .map(|j| (j != k).then_some(from + j))
+            .collect();
+        let set = setting.set(&parts);
+        let kept: Vec<Option<usize>> = set.lines.iter().map(|l| l.kept).collect();
+        assert_eq!(kept, [Some(0), None, Some(2), Some(3)]);
+        let (id, parsed) = p.load_edit(0).unwrap();
+        let own = [true, false, true, true];
+        let (ops, checks) = p
+            .paragraph_ops(id, &parsed, &setting, &parts, &set.lines, &own)
+            .unwrap();
+        let misread = p.misread(id, &parsed.inline, &ops, &checks).unwrap();
+        assert!(misread.is_empty(), "{misread:?}");
+        // Its show in a font added to the page, the others' in /F1 as they were.
+        let fonts: Vec<Vec<u8>> = (ops.iter().filter(|o| o.operator == "Tf"))
+            .map(|o| o.operands[0].as_name().unwrap().to_vec())
+            .collect();
+        assert!(fonts.iter().any(|f| f != b"F1"), "{fonts:?}");
+        let depth = parsed.depth_left;
+        p.commit(id, ops, depth, &parsed.inline).unwrap();
+        let texts: Vec<String> = (p.page_objects(0).unwrap().into_iter())
+            .filter_map(|o| o.text)
+            .collect();
+        let mut want: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        want[1] = want[1].replacen("low", "lot", 1);
+        assert_eq!(texts, want);
+    }
+}

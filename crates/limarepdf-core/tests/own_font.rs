@@ -2247,6 +2247,27 @@ fn cross_check_edited_lines_with_poppler() {
         let why = format!("{}, a word sent to another font", kind.name);
         poppler_sees(&why, p, &o, part, None);
     }
+    // Paragraphs rewrapped across their lines, as the paragraph tests below write them.
+    let joined = PARAGRAPH.join(" ");
+    let ascii = |s: &str| s.bytes().map(|b| format!("{b:02X}")).collect::<String>();
+    let simple = paragraph_page(&sans_simple(), ascii);
+    let letters: String = {
+        let mut l: Vec<char> = PARAGRAPH.concat().chars().collect();
+        l.sort_unstable();
+        l.dedup();
+        l.into_iter().collect()
+    };
+    let cid = paragraph_page(&sans_type0(&letters, true), |s| hex2(&sans_codes(s)));
+    // In the subset TrueType font, every letter; in the CID font, "Zebra" sent away.
+    let cases = [
+        (simple, joined.replacen("quiet", "very quiet and still", 1)),
+        (cid, joined.replacen("boats", "tall boats near Zebra", 1)),
+    ];
+    for (mut p, new) in cases {
+        edit_paragraph_to(&mut p, &new);
+        let (read, want) = (poppler_text(&p.to_bytes().unwrap()), spaced(&new));
+        assert!(read.contains(&want), "Poppler reads {read:?}");
+    }
 }
 
 // ---- A paragraph edited across its lines (NEW-01, batch 45's 2b-2): each letter keeps its
