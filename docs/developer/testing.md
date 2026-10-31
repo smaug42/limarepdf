@@ -794,6 +794,61 @@ there are 2.90% with them and 23 / 713 = 3.23% without. Detection per page: medi
 before); its slowest pages, timed best of five, unchanged (`issue6737` p7 74 against 75 to 77 ms, `pdfbox-4996`
 p1 35 against 36 ms).
 
+**Batch 45's 2b-2** (30 October 2026) dropped the rule that a block whose font sends typed words to another face
+isn't confident (the plan's Q3: an edit keeps every letter's own code) and changed two-line blocks' frames
+(justified only when the first line's spaces are stretched, which the check doesn't measure). Judged again: made-up
+test half 0 / 865 = 0% over, 5 / 865 = 0.58% under, 805 / 823 = 97.8% coverage (passes; 2b-1: 0%, 0.59%, 95.1%,
+Chromium's Type 3 Chinese and Japanese file now confident); corpus test half unchanged at 6.59% / 12.64% / 52.9%
+(fails), so paragraph editing stays off by default. Detection per page: median 1.9 ms over 541 pages, the fonts no
+longer read for it; the slowest `issue6165` p4 91 ms and `issue6737` p7 75 ms.
+
+### Editing paragraphs
+
+Batch 45's 2b-2 corpus edit run (30 October 2026; the paragraph design's 14, "Writing" and "Preservation"): a
+throwaway probe (`target/b31s3/para/`, `run_para.sh`, `check_para.py`, `summarise_para.py`; core as a path
+dependency, built with the release-like `ci-test` profile) took each render corpus file's first page with a block
+of two lines or more (of the first 30 pages; 441 of the 1,089 files have one, 9 don't open) and edited **every**
+such block as a paragraph through core as the app will (`Pdf::paragraph`, `paragraph_setting`, `set`,
+`edit_paragraph`): a copy of the paragraph's longest word typed after its middle word (in text without spaces,
+the two characters before its middle typed again there), its characters typed in the style before them. One
+process per file under `prlimit` (1.5 GB), two at a time; one file timed out (300 s). Each edit was saved and
+reopened; `pdftotext` read the page and Poppler drew it at 72 dpi (its crop box) against the page written again
+unchanged (lopdf writes a page's numbers in their shortest form, which can move a line a pixel in Poppler: PB-69,
+in about 8% of batch 31's line edits too). Confident and uncertain blocks apart:
+
+| | Confident | Uncertain |
+| --- | --- | --- |
+| Blocks edited (lines) | 1,031 (4,718) | 3,013 (8,861) |
+| Written | 989 (95.9%) | 2,538 (84.2%) |
+| No word to type | 34 | 430 |
+| Refused: right to left, or no font has a character | 3 and 1 (PB-72) | 14 |
+| Refused: a line read back otherwise twice | 4 | 30 |
+| A line written again in other fonts after reading back otherwise | 38 (3.8%) | 159 (6.3%) |
+| Lines set, kept byte for byte | 5,108, 1,772 (34.7%) | 9,544, 3,238 (33.9%) |
+| LimarePDF's page text: as before with the word typed in | 796 exact, 193 reordered | 1,187, 1,351 |
+| Poppler's page text: as before with the word typed in | 699 exact, 192 reordered, 98 other | 1,129, 1,141, 268 |
+| Poppler's render changed only in the lines written | 901 (91.1%) | 2,382 (93.9%) |
+
+The unchanged text kept every line in every block (nothing written). Reordered page text is the paragraph grown
+by a line over what follows it (the design's 9: said, not refused; stage 3's overflow warning) in 159 of the 193
+confident ones; the paragraph is found again as typed in 790 of 989 (80%), the rest mostly grown into the block
+below. Of Poppler's 98 other readings, 31 are exact against the original page and 8 reordered (the baseline
+written again reads differently there); the rest are control characters a rewritten line drops (`\x03`, `\x07`:
+Word's unmapped spaces, `aboutstacks`, `1451`, `4996`), `ActualText` (PB-71, `1570`), fonts whose text reads as
+junk anyway, words a justified line spreads far apart that Poppler reads as columns (`issue4883`), and
+`issue1127`'s letters drawn as a base and an accent, which Poppler reads with the accent first after a rewrite
+(PB-73). Of the 88 renders with pixels changed outside the lines written, 53 changed more than 20 further than a
+line's height from them: 39 on pages with inline images, which the written-again baseline breaks and core's
+writer keeps, the others a pixel's rounding of text that stays where it was (pdfbox `5963`: the same words in the
+same places, the same ink and colour). The run found three
+writer problems, fixed with failing tests first (the test table above): two-line ragged blocks taken as justified
+(pdfbox `1570`, a rewritten first line's spaces stretched 1.2 sizes), the read-back joining a line split by a wide
+move into one word (`1689`, lines sent to another font for nothing) and then, fixed first with a space between
+every two lines, a footnote mark a word apart from its word (`2296`, 34 confident edits refused until the
+parser's word gap was used); and BUG-43 (`1727`: a crop box past the media box), fixed at the user's yes. Two
+earlier runs before the fixes are kept beside it (`run-para-1`, `run-para-2`). Timings are in performance.md's
+"Editing a paragraph".
+
 ### Export and printing
 
 - Export: `crates/limarepdf-core/tests/export.rs` (sizes, content, re-import, names) and by running the CLI.

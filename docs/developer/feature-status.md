@@ -444,7 +444,8 @@ built from exactly the versions in `Cargo.lock`; security problems are reported 
   none of it is in the app yet (stage 3). The finding check doesn't pass yet (testing.md, "Finding paragraphs"),
   so the switch will come first. Known limits of the writer (testing.md, "Editing paragraphs"): marked content's
   alternative text (`ActualText`) isn't read, so a letter marked as another (a small capital) reads as its glyph's
-  own and loses its mark when its line is rewritten (PB-71).
+  own and loses its mark when its line is rewritten (PB-71); a letter drawn as its base and an accent reads to
+  other apps with the accent first once its line is rewritten (PB-73).
 - **Incremental saving.** Save only what changed, which is faster for large files. Signed documents are already
   saved this way (above); this item is about using it for every document.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.

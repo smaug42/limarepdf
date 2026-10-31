@@ -477,6 +477,46 @@ pages: median 4.9 ms (4.4 ms on 26f236f in the same run order); a single run's w
 81 ms for `issue6737` p7, which best of five gives as 75 to 77 ms against 74 ms; `pdfbox-4996` p1 36 against
 35 ms). Every page's words over the corpus's 1,089 files read in 8.2 s against 8.1 s (three at a time).
 
+Batch 45's 2b-2 (30 October 2026) dropped Q3's rule, so detection no longer reads the page's fonts: median 1.9 ms
+a page over the check's 541 pages; the slowest `issue6165` p4 91 ms and `issue6737` p7 75 ms (one run each).
+
+## Editing a paragraph
+
+Batch 45's 2b-2 (NEW-01) reads a block for editing, sets it again at each keystroke and writes it once
+(architecture.md, "Editing a paragraph"). The budgets (the paragraph design's 11): setting within NEW-02's 2 ms
+for 2,000 characters a keystroke, so typing stays within REL-07's rows; the write once, about a line edit's cost
+a line. Measured on 30 October 2026 on the machine above, with nothing else running, by the throwaway probe
+(`target/b31s3/para/`, `b45para time BIG`, built with the `ci-test` profile) on a made-up paragraph of 2,000
+characters in 21 lines of Helvetica at 10 points, 440 points wide:
+
+| What | Median | 95th percentile | Most |
+| --- | --- | --- | --- |
+| Reading it (`Pdf::paragraph` and `paragraph_setting`, 20 runs) | 2.39 ms | 2.64 ms | 25.6 ms (the first) |
+| A keystroke at the start (`ParagraphSetting::set`, 200) | 0.20 ms | 0.24 ms | 0.32 ms |
+| A keystroke in the middle (200) | 0.19 ms | 0.20 ms | 0.23 ms |
+| A keystroke at the end (200) | 0.18 ms | 0.19 ms | 0.20 ms |
+| Greek typed in the middle, in another font (200) | 0.21 ms | 0.22 ms | 8.6 ms (the first) |
+| A character deleted in the middle (200) | 0.17 ms | 0.18 ms | 0.21 ms |
+| The write, a word typed at the start, every line (`Pdf::edit_paragraph`, 10) | 1.94 ms | 2.00 ms | 2.00 ms |
+| The write, a letter changed in the middle (10) | 1.28 ms | 1.29 ms | 1.29 ms |
+| The document's words on the made-up 10,000-page `big.pdf` (`Pdf::document_words`, 3) | 7.49 s | 7.63 s | 7.63 s |
+| Every page's size on `big.pdf` (`Pdf::page_sizes`, BUG-43's page box, 20) | 16.1 ms | 16.6 ms | 16.6 ms |
+
+Over the corpus edit run's real paragraphs (testing.md, "Editing paragraphs"; two files at a time, so indicative):
+reading a block median 5.8 ms, setting it 0.05 ms, writing it 4.8 ms for confident blocks; the slowest reads and
+writes, up to about 1.7 s, are pages whose fonts take that long to read (PB-52) and the first word in a fallback
+face.
+
+What they show:
+
+- A keystroke sets a 2,000-character paragraph in about a tenth of NEW-02's budget, wherever it is typed, a word
+  in another font included once its face is read; the write is a couple of milliseconds.
+- The document's words (line-end hyphens' evidence) take seconds on a very long document, as they read every
+  page, so stage 3 should start them off the window's thread when a document opens and keep them until it
+  changes; until they are there a paragraph's hyphens read as unknown (kept, marked).
+- `page_sizes` reads a page's media box and crop box as before (a page without a crop box read both before too):
+  16 ms over 10,000 pages.
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted
