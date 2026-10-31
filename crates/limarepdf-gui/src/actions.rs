@@ -93,6 +93,13 @@ pub enum Act {
     EditObjectText,
     /// Move or resize the selected line of page text: the arrow tool, keeping it selected.
     MoveText,
+    /// Edit the selected line's block as a paragraph, or the paragraph being edited a line
+    /// at a time (Edit > Text flow's Paragraph; NEW-01).
+    EditParagraph,
+    /// Join the word of the line-end hyphen marked in the paragraph being edited.
+    JoinHyphen,
+    /// Keep the marked line-end hyphen in the paragraph being edited as a typed hyphen.
+    KeepHyphen,
     /// The Fill and sign tool, putting this down next (its button's menu).
     SignWith(SignPick),
     /// The Fill and sign tool, with the Create window open for a new signature or
@@ -292,6 +299,9 @@ impl Act {
             | Act::CommentName
             | Act::CopyObjectText
             | Act::EditObjectText
+            | Act::EditParagraph
+            | Act::JoinHyphen
+            | Act::KeepHyphen
             | Act::SignWith(_)
             | Act::CreateSign(_)
             | Act::Escape
@@ -458,8 +468,13 @@ pub struct Ctx {
     /// Text is being typed on the page: new text, a line of page text, a note or a text
     /// box, open whether or not it has the keyboard just now.
     pub typing: bool,
-    /// A line of page text is being edited on the page.
+    /// A line or paragraph of page text is being edited on the page.
     pub line_edit: bool,
+    /// Paragraph editing is on: page text opens as paragraphs where it can be one.
+    pub paragraph: bool,
+    /// The paragraph being edited has a marked line-end hyphen at the right-click or the
+    /// caret.
+    pub hyphen: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -937,6 +952,33 @@ pub static ACTIONS: &[Action] = &[
         enabled: fixed_text,
         hint: "Move or resize the selected line of page text: drag it or its handles, \
                until you select something else.",
+        ..BASE
+    },
+    Action {
+        act: Act::EditParagraph,
+        group: Group::Edit,
+        label: "Edit as paragraph",
+        icon: icon::TEXT_ALIGN_LEFT,
+        enabled: doc_idle,
+        checked: Some(|c| c.paragraph),
+        hint: "Edit page text a paragraph at a time, its lines rewrapping as you type, the \
+               text being edited too. Off, it is edited a line at a time.",
+        ..BASE
+    },
+    Action {
+        act: Act::JoinHyphen,
+        group: Group::Edit,
+        label: "Join the hyphenated word",
+        enabled: |c| c.hyphen,
+        hint: "Take out the marked hyphen, which ended a line, making the word one.",
+        ..BASE
+    },
+    Action {
+        act: Act::KeepHyphen,
+        group: Group::Edit,
+        label: "Keep the line-end hyphen",
+        enabled: |c| c.hyphen,
+        hint: "Keep the marked hyphen, which ended a line, as part of the word.",
         ..BASE
     },
     Action {
@@ -2068,7 +2110,12 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
             if (held.iter()).any(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText)) =>
         {
             &[
-                &[Act::EditObjectText, Act::MoveText, Act::CopyObjectText],
+                &[
+                    Act::EditObjectText,
+                    Act::EditParagraph,
+                    Act::MoveText,
+                    Act::CopyObjectText,
+                ],
                 &[Act::Cut, Act::DeleteObject],
             ]
         }
@@ -2100,8 +2147,10 @@ pub const MOVES: [Act; 4] = [
 /// The right-click menu of text being typed on the page, as word processors' menu for
 /// text: Cut, Copy and Paste, then Bold and Italic where they apply.
 const TYPING: &[&[Act]] = &[
+    &[Act::JoinHyphen, Act::KeepHyphen],
     &[Act::Cut, Act::Copy, Act::Paste],
     &[Act::Bold, Act::Italic],
+    &[Act::EditParagraph],
 ];
 
 /// Fill the right-click menu of what is selected: only the commands that are available now.
@@ -2153,6 +2202,8 @@ fn menu_of(ui: &mut egui::Ui, groups: &[&[Act]], c: &Ctx, acts: &mut Vec<Act>) {
 const NOT_NOW: &str = "Not available just now.";
 /// What a greyed command that acts on words says.
 const SELECT_TEXT: &str = "Select some text first.";
+const SELECT_LINE: &str = "Select a line of text first.";
+const BUSY: &str = "Waits until the task under way finishes.";
 
 /// Why command `a` can't be used in `c`, for its greyed button or menu item: the first of
 /// the things it may wait for, in the order people meet them, that would let it be used.
@@ -2160,13 +2211,14 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     if !c.doc {
         return "Open a document first.";
     }
+    // Where the hyphen commands act.
+    if matches!(a.act, Act::JoinHyphen | Act::KeepHyphen) {
+        return "Click in a word whose hyphen is marked in a paragraph first.";
+    }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
     let fixes: [Fix; 24] = [
-        (
-            |d| d.busy = false,
-            "Waits until the task under way finishes.",
-        ),
+        (|d| d.busy = false, BUSY),
         (|d| d.saving = false, "Waits until the document is saved."),
         (|d| d.file = true, "Save the document as a file first."),
         (|d| d.docs = 2, "Open another document first."),
@@ -2186,7 +2238,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
                 (d.object, d.obj_kind) = (true, Some(ObjKind::Text));
                 (d.obj_text, d.obj_lines, d.obj_only_text) = (true, true, true);
             },
-            "Select a line of text first.",
+            SELECT_LINE,
         ),
         (
             |d| (d.object, d.obj_kind) = (true, Some(ObjKind::Image)),

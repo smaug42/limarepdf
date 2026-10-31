@@ -21,6 +21,13 @@ It uses:
   it: interface text falls back to installed fonts through LimarePDF's own `typing_fonts::interface_fallback`,
   ENH-33, below); winit, which eframe then gives only its X11 and Wayland features, is named in `limarepdf-gui`'s
   `Cargo.toml` for its defaults (Wayland window decorations, libwayland loaded at run time), at eframe's version.
+  The window is drawn by eframe's wgpu renderer (on Linux Vulkan, OpenGL where Vulkan fails). On Wayland its
+  frames go to the screen without waiting for the display (wgpu's `AutoNoVsync`, set each frame by
+  `src/present.rs`, BUG-42): with NVIDIA's driver under KWin 6.8 a frame handed over while the screen is off, or
+  after a long idle gap, can wait for ever, and the desktop with it. winit already paces drawing there, asking for
+  a frame only after the compositor's frame callback, as eframe's OpenGL renderer relies on too (egui #5136). X11,
+  Windows and macOS keep eframe's waiting `AutoVsync`. NVIDIA takes immediate for it and marks its frames as fine
+  to tear, which KWin allows only for a full-screen window it shows directly, with its tearing setting on (PB-66).
   The icons are the Phosphor fonts in `crates/limarepdf-gui/assets/fonts/`, by name in `src/icon.rs`;
 - [`skrifa`](https://crates.io/crates/skrifa) to read font programs and [`subsetter`](https://crates.io/crates/subsetter)
   to cut embedded fonts down to the glyphs used; [`harfrust`](https://crates.io/crates/harfrust) 0.13.3 to shape
@@ -189,7 +196,8 @@ also holds how each of the line's characters is drawn (`edit::drawn`, below), sh
 An edited line is written in its own fonts from that (ENH-31's writer, batch 31, stage 2; `edit.rs`). `drawn`
 walks the line's shows as the parser reads them and gives each character what draws it (`Ink`: a code, or a
 whole string where `codes_known` and `drawn_alike` can't vouch for its parting, as one unit; or a move read as
-a space, a spacing number under -150 or the gap to the next show measured from piece to piece) and what lies
+a space, a spacing number under -150 times the part's em (`Span::em`, as the parser reads it) or the gap to the
+next show measured from piece to piece) and what lies
 between it and the character before (that one's show's trailing numbers and no-character glyphs, the move to
 this one's show, then this show's leading items). The app sends each character's place in the line as read
 (`TextPart::origins`, `None` once typed or pasted; a words-only `TextEdit` gets them from the common start and
@@ -347,11 +355,20 @@ off a line's box select nothing (`Editor::word_on_line`: within the hit toleranc
 The typing says what it does (batch 40's third stage). `page_text::field` draws the outline in two lines (ENH-22):
 the edge in the accent, or `theme::Tone::Caution` when a warning applies, and a 1-point line inside it
 (`outline.shrink(1.0)`) in `theme::halo` of the edge, white or black, whichever contrasts more, so it shows on
-paper of any colour, the accent's own too. `page_text::Style::warn` checks the text's laid-out rect each frame:
-new text (`PageText::ui`) with `page_text::past_edge` (the page's rect, a point's leeway); a line being edited
-(`line_edit_ui`'s `warn`) with that, then the part typed past the line's end (from `line.max.x` plus a point,
-the middle half of the line's height) against the page's other visible lines (`others`). A warning puts a tag
-under the outline's right end, a `Label` so screen readers have it. A line being edited has the inspector rows
+paper of any colour, the accent's own too. `page_text::Style::warn` (and `ParaStyle::warn`) checks the text's
+rows as laid out each frame by one rule for the three editors (PB-35, batch 45's 3b-2): `page_text::overflow`
+takes the first row that leaves the page's rect (a point's leeway) or, across the middle half of its height
+(where rows above and below touch), meets one of the obstacles, and says what (`page_text::over`: "Over other
+text", "Over a picture", "Over a shape") and where: at the leftmost thing it meets, or the side of the page it
+crosses (`Overflow { why, at, leftward }`). The obstacles are `Editor::obstacles`: the page's visible objects but
+invisible text, a background over 80% of the page (`background`) and what each editor leaves out: a line being
+edited (`line_edit_ui`) its own object and whatever its old box meets (`meet`); a paragraph its pieces and
+whatever its old lines' box meets; new text (`adding_ui`, the user's Q3) a picture or shape its first line's start
+meets where it sits now, so a label put on a coloured box isn't warned about the box (other text always counts,
+and moving the box by its outline re-reads what it starts on). `outline_ui` puts the tag just below that row at
+that place (its right end at the page's edge when the right edge is crossed), a `Label` so screen readers have
+it, and returns its rect: `Field::tag`, which the line's and paragraph's `area` (`Editor::line_area`) take in, so
+the floating bar (`bar_place`) keeps clear of it as of the text. A line being edited has the inspector rows
 "PDF font" (`editor::pdf_fonts` of the selection, a subset's six-letter tag cut by `editor::untagged`) and "Source
 font" (`editor::source_font`: `part_font` for each part still in a font of the line's own, a part given a chosen
 font skipped, named Preserved, Installed family or Nearest standard; several, Partly preserved when one is
@@ -1461,23 +1478,207 @@ form XObject, and per inline image.
   to 0.7 forward along it. Font, size and colour don't split a line: its parts in one style each are its spans
   (`PageObject::spans`: characters, font, size, colour, and rise, how far a part such as a superscript sits above
   the baseline of the line's largest text). A gap wider than 0.18 of the smaller text's size reads as a space,
-  which belongs to the part before it. The line's box (`line_box`) covers its shows' boxes less those showing only
+  which belongs to the part before it, and so does a `TJ` spacing number under -150 times the font's em
+  (`FontCtx::em`): the number is in thousandths of a unit of text space, which is a thousandth of an em only in
+  a font of the usual scale (PB-64: in TeX's bitmap fonts, about 83 units to the em, dvips moves the pen inside a
+  word by thousands, "Op erating"). A part's colour is the colour its fill shows as (`Span::fill`) and what set
+  it (`Span::paint`, `colour.rs`, PB-65): the operators as read (`g`, `rg`, `k`, or `cs` then `sc` or `scn`), the
+  colour worked out from the space a `cs` names in the page's resources, each read once a parse: device,
+  calibrated and ICC-based spaces by their components, Lab to sRGB (its white taken as sRGB's), Indexed through
+  its table, Separation and DeviceN through their tint transforms (`colour::Function`: types 0, 2, 3 and 4, the
+  calculator's stack held to 100 values) into the alternate space; a pattern, or a space that can't be read,
+  leaves the colour shown as it was. Parts in one font, size and rise split where the colour or what set it
+  differs (grey and RGB judged by the colour alone). The line's box (`line_box`) covers its shows' boxes less those showing only
   whitespace and less the whitespace at the line's two ends, cut off at the characters' measured positions; the
   text keeps them (BUG-25: a label's tab in a larger font reached over the next label, which a click, the selection
-  and the edit cover then took as the first label's).
+  and the edit cover then took as the first label's). A Type 3 font draws its glyphs in a space of its own
+  (`/FontMatrix`), so besides its widths (`FontCtx::scale`) its text's size is the size set times `FontCtx::em`:
+  1, unless the font's letters and digits, each against its usual width (Times' and Helvetica's averaged), put
+  its em more than a quarter away (TeX's bitmap fonts, glyphs in pixels at a size of 1, about 83); and a matrix
+  that turns its glyphs over stands the line up again where the text matrix turns text space over
+  (`FontCtx::flipped`, which way the glyphs stand read from their `d1` boxes, else the font's box; PB-56). A
+  bitmap stored upside down stands only in its pixels, so such a font reads as it stands by its boxes. An edited
+  line written anew keeps a flipped font's letters (`LineFont::flipped`, `Written::flipped`): each stretch of its
+  parts in one is drawn in text space turned over, a `Tm` with its second row negated where the stretch starts
+  and one the right way up where the next part starts, placed where the line has got to by reading the line as
+  written (`Pdf::turned`, so the parser and the writer agree), its rise written the other way; a line changed in
+  place keeps the page's own matrix. A kept Type 3 font's letters are written at the size in the font's own terms
+  (`Span::em`).
+- **The displayed page** every position is on (`page_box`, `visual_matrix`): the crop box where it overlaps the
+  media box, as the PDF standard reduces a crop box reaching past it, turned with the page; a page without a
+  media box is A4, and an overlap with no area an A4 page from its corner. These are hayro's rules, so the page as
+  drawn and core's positions and sizes agree (BUG-43: pdfbox `1727`'s crop box, 648 by 1043 round a 612 by 792
+  media box, put everything core gave on it up to 230 points off).
 - **Where a line's characters are** on the displayed page: `PageObject::dir`, the way the line runs (a unit vector),
   and `PageObject::stops`, where each character starts along it from `baseline` and where the last ends, from the
   same measured positions as search boxes (`caret_stops`). A line edited in a plain box (turned, or invisible OCR
   text) puts the caret at the stop nearest a click, measured along `dir` (`editor::caret_along`), and a
   double-click finds the word by the words' order along `dir`, a repeated word too (BUG-26: the caret went by how
   far across the box the click was, which a quarter-turned line doesn't run along).
+- **Paragraphs** (NEW-01, batch 45's stage 2; `paragraph.rs`, the paragraph design's section 4):
+  `Pdf::page_blocks` reads a page once (its objects, its lines' marked content and fonts from one parse) and
+  gives its blocks of text, each a run of visual lines with its frame (left and right edges, first baseline,
+  spacing, alignment, first-line indent) and, unless it is confident, why not (`Doubt`). Visible horizontal text
+  outside form XObjects only. The steps, each rule a named constant from batch 44's prototype: an XY cut of the
+  lines' boxes into regions (a band 0.5 line heights empty cuts across, as against reading order's 0.8), each
+  region in the column the nearest cut down the page made, columns cut in different bands one where they line up;
+  bands are cut widest first (those at least 0.75 of a region's widest together), and a cut down a region comes
+  before its bands when every band is the space between lines (under 0.8 line heights), the cut is wider than
+  each, and the lines on both sides are typically a column's width (their median at least 10 line heights): so
+  columns of lines on common baselines with loose spacing, each gap under a line a band across all the columns,
+  are cut whole rather than into one-line pieces of different widths that don't line up (batch 45's 2b-1, made-up
+  `lo06`; a table's narrow cells keep their bands first, so its rows still read as a table);
+  in each region, lines on one baseline (and smaller raised pieces) a visual line, across text objects, split
+  where a gap is over 1.5 sizes and over 2.5 times the line's word gap (its spaces' median; with none, its gaps',
+  three or more); in each column, top to bottom, a line joining the block of the line above when that is the
+  block's last and size, colour and font agree (a line under 80% one colour or font is emphasis), the baseline gap
+  is 1 to 2 sizes (or the page's own spacing, up to 3) and within 15% of the block's median, the edges agree
+  (left, right or centre; a first-line or hanging indent with the second line), no list label starts it (a bullet,
+  "1." or "1)" always; "1.2", "(3)", "a)", "iv." only with a gap after them) and its first word wouldn't have
+  fitted at the end of the line above (measured against the paragraph's own width, up to a picture beside it).
+  Breaks are clear or weak; a block is confident with two lines or more (three centred), clear breaks both sides,
+  even gaps and edges, at least 8 sizes wide and half its column, no table or form signs, some line reading on
+  into the next, not a heading's size and nothing else in its frame (its font no longer counts since 2b-2: an edit
+  keeps every letter's own code, so a font that sends typed words elsewhere, Type 3 or a CMap other than Identity,
+  doesn't make it uncertain; the plan's Q3 dropped). The frame's alignment is justified when both edges agree on
+  every line but the last, and for a block of two lines only when the first line's word gaps are also over 1.1
+  times the last line's (`JUSTIFY_GAPS`): the longer line's end alone is no edge (batch 45's 2b-2, found by the
+  corpus edit run, pdfbox `1570`: a ragged pair taken as justified had its rewritten first line stretched 1.2
+  sizes a space). In a tagged document,
+  lines whose marked content (`BDC` MCIDs through the parent tree, `struct_parents`) belongs to different block
+  elements (P, H1 to H6, LBody, Lbl, TD, TH, Caption, Note and the like, by the role map) are never joined.
+  `Pdf::page_blocks_by` turns the tags or the fonts off, for the opt-in check (`tests/paragraph_check.rs`, which
+  judged the default off: testing.md). The app reads a page's blocks when one of its lines is selected (below,
+  "Editing a paragraph in the app").
+- **Editing a paragraph** (NEW-01, batch 45's 2b-2; `rewrap.rs`, `para_write.rs`, the paragraph design's sections
+  6 and 7). `Pdf::paragraph(page, &Block, &DocWords)` reads a block for editing: its text as one (each line's
+  pieces left to right, a space between two only a word's gap apart, 0.18 sizes; lines joined by a space except
+  after a hyphen or dash, where a line ends or starts with one, or between Chinese or Japanese characters), a part
+  (`TextSpan`) for each part of each line's text objects, each character's text object and place (`source`), each
+  line's characters, and its line-end hyphens read by the document's own words (`Pdf::document_words`, every
+  page's visible lines' words, built in parallel): discretionary (a soft hyphen there, or the word found joined
+  elsewhere and not hyphenated) held in the text as a soft hyphen, hard, or unknown (kept, marked when a rewrap
+  brings it inside a line). Refused for a turned, hidden or vertical line, or a text mode that clips (`Tr` 4 to 7).
+  `Pdf::paragraph_setting` reads the parts' fonts once (`LineFont`, and the font each part's typed words go to,
+  `FontChoice::of_font`); `ParagraphSetting::set(&[TextPart])` lays an edit out (`SetParagraph`: each line's
+  characters, the old line it keeps or none, x, baseline, width, the stretch a space when justified, a soft hyphen
+  shown), measured as written: a kept letter by where it was drawn, and what was drawn between it and its old
+  neighbour while they stay neighbours (in one text object, or a spacing accent TeX drew over the letter after it
+  from another, `Paragraph::accent_over`: the letter starts inside the accent's width, as `\"u` is drawn, PB-73;
+  the writer writes that move back after the accent, so Poppler reads the letter and its mark in order again, where
+  it had read "̈u" once the line was rewritten, pdf.js `issue1127`; other abutting objects keep a word's own
+  gap, as keeping theirs misread more lines in the corpus edit run); a typed one by its font's PDF width
+  (`LineFont::advance`); a space by the
+  font's space or, where it has none, the narrower quarter of the paragraph's drawn spaces; words in another font
+  by a `Setter` holding all of that font's words. Greedy breaking at UAX #14's places from the line the edit can
+  first change: the line before is rewritten only when the next line's first word fits now and didn't before; a
+  line that starts where it did ends where it did when the words greedy breaking would add fitted before too (the
+  producer's breaks stand where the edit doesn't move them); once a line starts at an old line's start with the
+  rest unchanged and nothing pushed down, the rest are kept. Baselines: the old lines', the frame's spacing past
+  them; a line whose text is larger than any the paragraph had gets 1.2 times its size below the line before, at
+  most 1.2 times what the size grew by, so a paragraph set tighter than single spacing keeps its spacing (2b-2's
+  tests: the first rewritten line wasn't pushed, and a 10-on-11 paragraph drifted a point a line). Justified lines
+  stretch each space to the edge, but the last and one before a typed break (U+2029 for Enter, a new paragraph
+  with the first line's indent; `\n` for Shift+Enter); centred and right-aligned lines are placed on the frame's
+  centre or edge (`Placing::on`, a frame's room by `room_in`). `ParagraphSetting::set_between(parts, (left,
+  right))` sets it with the frame's edges dragged there (3b-2; `set` is it with the frame's own): moved, every line
+  is broken anew to the new width from the first (no line before the edit kept, no producer's break standing, no
+  rest kept), and a line is kept only where it starts and ends as an old line did in text that hasn't changed and
+  `Placing::on` places it under the new edges as under the old ones (its x and, justified, its stretch), so a ragged
+  paragraph's right edge moved keeps every line whose break stays, and a left edge moved or a justified edge moved
+  writes them anew. `ParagraphSetting::narrowest(parts)` is the widest stretch between break places, plus the first
+  line's indent where it takes one: how narrow the app lets the frame go. `Pdf::edit_paragraph_between` writes
+  that (`edit_paragraph` is it with the frame's own edges). `Pdf::edit_paragraph(&ParagraphSetting,
+  &[TextPart])` writes it in one rewrite (section 7): line
+  *i* in place of old line *i*'s first show, lines added after the last old line's last show, the old lines'
+  shows taken out (`move_only`, `Following` keeping what follows each in place); inside the text object a `Tm` in
+  its CTM, the font, colour (as set, `Paint`), rise, `Tc`, `Tw` and `Tz` set, then put back as the show had them
+  with `Tm` to its line matrix; no text object added, nothing appended, unchanged lines byte for byte. Each kept
+  letter keeps its own code across the paragraph's lines (TeX's flipped fonts too, through `Pdf::turned`), a typed
+  one its font's code, a word the font can't write goes by one pen a font with the paragraph's `Tc` and `Tz`.
+  Each written line is read back (`misread`, `Check::Within`, with what it may join in its text object; the lines
+  of text it reads as join as the parser joins a line's pieces, a space where one starts a word's gap past the
+  other or on another line, `apart`, so a line whose wide move reads it as two isn't taken as misread, nor one
+  with a raised footnote mark: 2b-2, found by the corpus edit run); one that misreads is written again with its
+  letters in the fonts their words go to, and a second misread refuses the edit with nothing changed. Returns the lines whose letters went to another font.
+  Building `DocWords` reads every page (the app runs it off the window's thread, `Pdf::document_words_on` with two
+  threads of its own, when a tab gets its document; until it is there, hyphens read as unknown).
+  `ParagraphSetting::pieces` gives an edit's stretches in one font each, kept in a part's own font or sent to the
+  font its words go to, as the writer plans them (`planned`), for the typing box to draw each in its face;
+  `part_font(i)` the parts' `LineFont`s.
+- **Editing a paragraph in the app** (NEW-01, batch 45's stage 3a; `editor/paragraph.rs`, the paragraph design's
+  sections 5, 6.4, 8 and 9). Paragraph editing is a mode, off unless chosen (`PARAGRAPH_DEFAULT` stays off, as
+  the check judged): the app's `Settings::paragraphs` (`text_editing` in settings.txt), set by `App::set_paragraphs`
+  from `Act::EditParagraph` (a toggle: the band's Text flow, the menus, the command search) and the inspector's
+  Editing row (`Editor::switch`, read by the app), lent to every tab's `Editor::paragraphs` each frame; it switches
+  the text being edited in the tab in front (`Editor::set_paragraph`). `start_text_edit` opens the paragraph for a
+  double-click, a Text-tool click or Edit text while it is on and the block can be one, else the line. The band's
+  Text flow group keeps typing open (`Group::keeps_typing`), so that its click doesn't end the line being edited
+  before the switch (the user's finding after 3a: it went back to reading). The page's blocks are read when one of
+  its lines is selected (`read_blocks`, cached with the objects); the inspector's switch, and why its Paragraph is
+  greyed (`para_state`: on its own, a table, turned, invisible), come from them. Edit text (`band::is_on`) is
+  pressed while the Text tool is on or text is edited on the page, and clicked when pressed goes back to the read
+  tool: the app reads that from the commands' state as the frame drew them (`App::shown`), as the click itself ends
+  a line being edited first. A switch keeps what was
+  typed first (`keep_later`) and opens the other editor at the caret's place once that is in the document
+  (`Then`, `follow_then`: the line under that point, as ids change with a rewrite, or else the line in its row
+  nearest it, `row_hit`, as a caret placed while the line's font is still loading, drawn in Inter, can sit past the
+  line's end). `ParaEdit` holds the block, the
+  `ParagraphSetting` (built on the window's thread: the installed fonts' list is read at start, so reading one is
+  a few milliseconds, the cost line editing's fonts already pay on heavy pages), the text as `Styled`
+  (`Styled::of_paragraph`, every character's origin kept, so `parts` names what is kept), its own `History`, and
+  the unknown hyphens kept as typed, and the frame's edges as dragged (`edges`). Each frame the text is set
+  between them (`ParagraphSetting::set_between`) and drawn by
+  `page_text::paragraph_field` on `paragraph_galley`: the text laid out with a line break after each of core's
+  lines (put in, taking no character, as `boxed_galley` does), each row then moved to its line's x and baseline
+  (rows' positions are public; a glyph's `pos.y` is its baseline), a justified line's spaces widened by a
+  section's `leading_space` after them (egui's `extra_letter_spacing` spaces only between a section's glyphs), a
+  soft hyphen shown as "-" where it ends a line and inkless elsewhere (egui's shaping gives it no width), U+2029 as
+  a row's break; the galley's text is the text as typed, so the caret, selection, double-click and input methods
+  go by it. Enter and Shift+Enter are taken before the box sees them and put U+2029 or `\n` into the text at the
+  selection (egui types no break from a text event). The old lines are hidden, each in the box a line being edited
+  is hidden in (`paragraph::covers`), by the page drawn without them (below, "The page under text being edited"),
+  the flat colour around the block standing in until it comes (`cover_wanted`, one sample round the block's box).
+  Overflow by the one rule above (`page_text::overflow`). **The frame's edges** (3b-2): `paragraph_field` gives the
+  outline a handle on its left and right edges (`edge_ui`: an 8-point strip over the edge's height and a 7-point
+  square at its middle, drawn as an object's handles, filled while dragged or holding the keyboard, a 2-point line
+  along the edge then; `Sense::click_and_drag`, a horizontal-resize pointer; named "Paragraph's left edge" and
+  "Paragraph's right edge" as AccessKit splitters; ids `page_text::edge_id`), registered after the text so they
+  win where they meet it, and focusable, so Tab from the text reaches them. A drag moves the edge by the pointer's
+  travel from its press (`ParaEdit::dragging` keeps the side and the edges it started from), the text keeping the
+  keyboard (a drag doesn't surrender it); a click gives the handle the keyboard (`request_focus`: egui gives none
+  on a click). While one has it, a focus lock filter keeps Left, Right and Esc for it: the arrows move it a point,
+  ten with Shift (Shift taken first, as a plain key's match takes it too), Esc ends the editing as from the text,
+  and the paragraph stays open (`on_edge`), as it does for the text; Ctrl+Z and Ctrl+Y go to the paragraph's
+  history there too (`page_text::take_undo`; `App::shortcuts` counts `Editor::edge_held` as typing, so the
+  document's Undo doesn't take them), as do the band's Undo and Redo (`App::state` and `Editor::typing_history`
+  read the paragraph's history for a handle's id, and `undo_held` keeps the handle's keyboard through the click). `edge_to` keeps an edge on the page and no nearer the other than
+  `ParagraphSetting::narrowest`. Each frame's edges go to the history (`History::observe_edges`, the user's Q2): a
+  drag is one step however long, key moves within the pause typing joins over one, and Undo and Redo put the edges
+  back with the text (`History::edges`). Core sets the lines between the new edges (`set_between`: every line
+  broken anew, one kept only where it starts and ends as it did in unchanged text and the move places it as it
+  was, across and in its stretch) and writes them (`Pdf::edit_paragraph_between`). **Links and comments**: when
+  the editor opens, the page's annotations and links are read into the editor's caches (`annots`, `links`), and
+  each frame `ParaEdit::marked_over` says whether one not hidden meets the old lines or the outline; the
+  inspector then says "Links and comments over this paragraph stay in place." Kept through `Typed::Paragraph`
+  (`keep`, `put_back`, `settle_kept`, `refused_again` with the edges too, `pending`), as `Action::EditParagraph`
+  (the edges with it) through `Tab::edit_inner`, one step; no action when the text, the edges or what they set is
+  unchanged. Words selected across a paragraph's lines (`words_paragraph`:
+  one block, with paragraph editing on or confident; within one line, with it on only) are typed over, deleted (Word's space rule)
+  and cut in it, and Edit text opens it with them selected. Marked hyphens (`SetParagraph::marked`, less those kept)
+  are dotted under; `Act::JoinHyphen` and `KeepHyphen` act on the one at the right-click or the caret. The
+  inspector's Editing row is a horizontal row as wide as the panel, not a grid of its own, which widened the panel.
+  A band group of one command folds to that command's icon (`band::folded_group`), as a menu of one item would be
+  wider and no nearer.
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.
 - **Editing text** keeps the line's own fonts where it can (ENH-31; the writer is described after "Which code
   writes a character" above). A line in parts (`TextEdit::parts`, each part text and a style; a words-only edit
   is one part in the first part's style) is written as one `BT … ET` with each part's font, colour, rise (`Ts`)
-  and spacing set where they change. A part keeps the font of the span it names when its text is that span's,
+  and spacing set where they change; a part in a colour of the line's that `rg` wouldn't write as it was (a spot
+  colour, CMYK, Lab) is set with the operators that set it there, the span it names first (`kept_paint`), the
+  words that fall back to another font too (PB-65). A part keeps the font of the span it names when its text is that span's,
   unchanged (its shows are copied as they were, with their character spacing, word spacing and scaling, and a
   gap read as a space put back as the same move); otherwise character by character, each the line's own code
   where it is the line's own, unchanged, else the font's code for it (`LineFont::code`; for an unembedded
@@ -1489,22 +1690,61 @@ form XObject, and per inline image.
   taken out, each line's `Following` in the page's order, the lines on top in the order given), the parts of all
   its lines sharing the fonts they add (`written_lines`); `edit_text` is it for one line. A line in one style and
   spacing changed in words all in its own font is one `TJ` in place of its first show. Before committing, each
-  line with characters written in its own font is read back as the page will be (`misread`): one that reads as
-  other words is written again with only its unchanged parts in its own font, and reported. While a line is
+  line with characters written in its own font is read back as the page will be (`misread`; the lines of text it
+  reads as joined by the parser's word gap, batch 45's 2b-2): one that reads as other words is written again with
+  only its unchanged parts in its own font, and reported. While a line is
   edited on the page, the app makes the same decision as it goes, from the line's `LineFont`s (`Insp::fonts`;
   `PageObject::kept_pieces`, `editor::drawn_pieces`): the fonts of all a page's lines are read together the first
   time one of them is selected and kept with the page's objects until the document changes
   (`Editor::read_line_fonts`, `Pdf::page_line_fonts`), so selecting one line after another doesn't read the page
   again (up to a third of a second each time on a heavy page; performance.md). It draws each piece in the
-  font it will have: a kept embedded font in its own glyphs (its preview font), a kept unembedded one in the
-  installed font of its name or else the Liberation face of its kind; the installed family's font, or the
+  font it will have: a kept embedded font in its own glyphs (its preview font), a kept unembedded one in the face
+  LimarePDF's pages draw it in once kept (ENH-25, batch 45's 3b-1; `LineFont::stand_in`, `stand_in.rs`): hayro
+  0.8 draws a simple font it doesn't hold in one of its standard faces, the one its name is, else by a word in the
+  name ("helvetica", then "arial" or "sans", "courier", "mono", "times", "serif", in that order; bold by a
+  descriptor weight of 700 or "bold" or "demi", italic by a non-zero italic angle or "italic" or "oblique"), else
+  by the descriptor's serif flag, bold and italic by "Bold" and "Italic" in the PostScript name and the italic
+  flag (it reads no fixed-pitch flag or weight there), so the typing box draws the Liberation face of that
+  standard font; a CID font without such a word goes to `InstalledFonts::find` with hayro's question
+  (`InstalledQuery`: its names, style by name and character collection, the CMap's unless Identity, else
+  `/CIDSystemInfo`), drawn in what that finds (`typing_fonts`' `Candidate::Found`, a stand-in too), else the
+  standard face by the same rule. `tests/stand_in.rs` checks the rule against hayro's own drawing (each case's
+  page against a font hayro can take one way only, at the same widths, pixel for pixel). Symbol, ZapfDingbats
+  and a line whose fonts aren't read yet keep the installed font of the name, else the Liberation face of its
+  kind by the name. The installed family's font, or the
   Liberation face of the standard font replacing it, otherwise. The inspector names the typed words, as typed and
   each once, with a character the font has no code for, and the family they use (batch 45: before, it listed the
   letters, each once and spaced, which read as a word spaced out), or that the font can't take new text at all (Type 3,
-  not embedded, vertical writing, unreadable codes; `editor::font_note`). The old line is covered with the most
-  common colour in a 3-point ring around its box, from a separate drawing of that part of the page in the current
-  page colours. Below that note the inspector names the words that then fall back from the font they go to
+  not embedded, vertical writing, unreadable codes; `editor::font_note`). The old line is hidden by the page drawn
+  without it (below), the most common colour in a 3-point ring around its box standing in until that comes, from a
+  separate drawing of that part of the page in the current page colours. Below that note the inspector names the words that then fall back from the font they go to
   (`page_text::fallback_note`), and the typing box draws each in the face it will be written in.
+- **The page under text being edited** (ENH-21, batch 45's 3b-1; `tab/backdrop.rs`, `excerpt.rs`). A line drawn
+  in place, or a paragraph, being edited asks for the page drawn without its text objects
+  (`Editor::backdrop_wanted`: the page, the objects, the box the editor hides). Core's
+  `Pdf::page_without(page, ids)` makes that page alone as a new document's bytes: its content with those objects
+  taken out as `delete_objects` takes them (`Pdf::without_objects`, shared: a text object's shows by `move_only`,
+  what follows kept in place by `Following`), its boxes, turn, inherited resources and transparency group put on
+  it, the catalogue's optional content settings kept (a hidden layer stays hidden), the objects its resources and
+  those settings reach copied with their numbers (`copy_used`, never a page or the page tree), and the
+  annotations the app's pages draw (`drawn_annots`, PB-76, batch 45's 3b-2: those with an appearance, not Hidden
+  or NoView, not sticky notes, which the app draws over the page itself, as `app_snapshot` leaves them out), each
+  under its own number, cut from what reaches the rest of the document (`/P`, `/Parent`, `/Kids`, `/Popup`,
+  `/IRT`, `/A`, `/AA`, `/Dest`, `/V`), their appearances copied by `copy_used`. A comment without an appearance,
+  which `app_snapshot` draws for the page (`draw_annotations`), isn't drawn here, so it is hidden with the old
+  text while typing; a form field's appearance is copied as it stands, not refreshed as `app_snapshot` refreshes
+  fields in a signed document. It never walks the page tree beyond finding
+  the page (`extract` goes through every page), so it costs per page: 3.4 ms on big.pdf's pages, about 1 ms on
+  corpus pages with large pictures, 68 ms on the heaviest corpus page, less than deleting one object there
+  (performance.md); it runs on the window's thread when editing starts, once for the text edited (the tab's
+  `Backdrop`, keyed by page, objects, box and the document's revision). A thread of its own (`backdrop::draw`)
+  draws the box's part of it at the scale the page is shown at (its tiles' at a high zoom; at most 4,096 pixels a
+  side, stretched past that) and in its colours (`render_region_in`, as the page worker draws tiles); the editor
+  draws it under the typing (`Editor::backdrop`, `page_text::Cover::Page`, each hidden box taking its part of the
+  picture). A zoom or colour change draws it again from the same bytes, one drawing at a time, the newest asked
+  for once one ends; after a zoom the last drawing is shown stretched meanwhile, after a colour change the flat
+  colour (`Cover::Flat`, the ring's), which also stands in until the first drawing comes and stays if it fails
+  (the failure in the timing log). Nothing is drawn again as the text is typed.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
   text line each, their baselines 1.2 times the size apart (Acrobat's spacing). In a standard font it is written
   in one of the 12 standard fonts with the WinAnsi encoding, kerned with its Liberation face's pairs; a line with

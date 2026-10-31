@@ -1265,7 +1265,7 @@ impl Pdf {
     /// The structure elements of `page`'s marked content, by MCID: its entry in the structure
     /// tree's parent tree, or nothing. Fails when the parent tree is nested too deep to look
     /// the page up, as alternative text could then be left behind.
-    fn struct_parents(&self, page: ObjectId) -> Result<Vec<Object>> {
+    pub(crate) fn struct_parents(&self, page: ObjectId) -> Result<Vec<Object>> {
         let key = self
             .doc
             .get_dictionary(page)

@@ -1,6 +1,9 @@
-//! New documents from part of a document: cropped pages, and text laid out afresh.
+//! New documents from part of a document: cropped pages, text laid out afresh, and a page
+//! alone without some of its objects (ENH-21).
 
+use limarepdf_core::render;
 use limarepdf_core::{FontChoice, Pdf};
+use lopdf::{dictionary, Object, Stream};
 
 /// Two 300×200 pages with words at known places.
 fn two_pages() -> Pdf {
@@ -85,4 +88,286 @@ fn from_text_lays_out_lines_and_pages() {
 fn from_text_refuses_nothing_and_tiny_pages() {
     assert!(Pdf::from_text("  \n ", (612.0, 792.0)).is_err());
     assert!(Pdf::from_text("text", (40.0, 40.0)).is_err());
+}
+
+/// A 300×200 page: a gradient from red to green across it, a blue box, and over both, in
+/// one text object, "Walrus" in yellow and a line below it "Otter" in black, the content
+/// being `text` in place of that text object.
+fn scene(text: &str) -> Pdf {
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let content = format!(
+        "q 0 0 300 200 re W n /Sh0 sh Q 0 0 1 rg 20 60 200 90 re f {text} \
+         BT /F1 12 Tf 0 g 200 20 Td (Seal) Tj ET"
+    );
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    let shading = p.doc.add_object(dictionary! {
+        "ShadingType" => 2, "ColorSpace" => "DeviceRGB",
+        "Coords" => vec![0.into(), 0.into(), 300.into(), 0.into()],
+        "Function" => dictionary! {
+            "FunctionType" => 2, "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![1.into(), 0.into(), 0.into()], "C1" => vec![0.into(), 1.into(), 0.into()],
+            "N" => 1,
+        },
+        "Extend" => vec![true.into(), true.into()],
+    });
+    let s = p
+        .doc
+        .add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set("Contents", Object::Reference(s));
+    d.set(
+        "Resources",
+        dictionary! {
+            "Font" => dictionary! { "F1" => font },
+            "Shading" => dictionary! { "Sh0" => shading },
+        },
+    );
+    p
+}
+
+const BOTH: &str = "BT /F1 24 Tf 1 1 0 rg 30 120 Td (Walrus) Tj 0 -40 Td 0 g (Otter) Tj ET";
+const OTTER: &str = "BT /F1 24 Tf 1 1 0 rg 30 120 Td 0 -40 Td 0 g (Otter) Tj ET";
+
+/// The ids of page `page`'s lines reading `text`.
+fn lines_reading(p: &Pdf, page: usize, text: &str) -> Vec<usize> {
+    let objects = p.page_objects(page).unwrap();
+    (objects.iter())
+        .filter(|o| o.text.as_deref() == Some(text))
+        .map(|o| o.id)
+        .collect()
+}
+
+/// The first page of a document's bytes as LimarePDF draws it, at 2 pixels a point.
+fn drawn(bytes: Vec<u8>) -> render::Bitmap {
+    let h = render::load(bytes, None).unwrap();
+    render::Renderer::new(&h).render(0, 2.0).unwrap()
+}
+
+/// The page drawn without "Walrus" is the page drawn as if it had never been written: the
+/// gradient and the box under it, the line after it in its place.
+#[test]
+fn a_page_without_a_line_is_drawn_as_if_it_had_never_been_there() {
+    let mut p = scene(BOTH);
+    let before = p.snapshot().unwrap();
+    let walrus = lines_reading(&p, 0, "Walrus");
+    assert_eq!(walrus.len(), 1);
+    let without = p.page_without(0, &walrus).unwrap();
+    let want = drawn(scene(OTTER).app_snapshot().unwrap());
+    let got = drawn(without.clone());
+    assert_eq!((got.width, got.height), (want.width, want.height));
+    assert!(got.rgba == want.rgba, "not drawn as without the line");
+    assert!(drawn(p.app_snapshot().unwrap()).rgba != want.rgba);
+    let alone = Pdf::from_bytes(&without, None).unwrap();
+    assert_eq!(alone.page_count(), 1);
+    let text = alone.page_text(0);
+    assert!(
+        text.contains("Otter") && !text.contains("Walrus"),
+        "{text:?}"
+    );
+    // The document is as it was.
+    assert_eq!(p.snapshot().unwrap(), before);
+}
+
+/// A turned and cropped page whose box and resources come from the page tree keeps its
+/// place and look: as the page with the line deleted is drawn.
+#[test]
+fn a_turned_cropped_page_without_a_line_is_drawn_in_place() {
+    let mut p = scene(BOTH);
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let res = d.remove(b"Resources").unwrap();
+    let media = d.remove(b"MediaBox").unwrap();
+    d.set("Rotate", 90);
+    let crop = vec![10.into(), 15.into(), 280.into(), 190.into()];
+    d.set("CropBox", crop);
+    let pages = d.get(b"Parent").unwrap().as_reference().unwrap();
+    let tree = p.doc.get_dictionary_mut(pages).unwrap();
+    tree.set("Resources", res);
+    tree.set("MediaBox", media);
+    let walrus = lines_reading(&p, 0, "Walrus");
+    let got = drawn(p.page_without(0, &walrus).unwrap());
+    let mut deleted = p.clone();
+    deleted.delete_objects(0, &walrus).unwrap();
+    let want = drawn(deleted.app_snapshot().unwrap());
+    assert_eq!((got.width, got.height), (want.width, want.height));
+    assert_eq!((got.width, got.height), (350, 540));
+    assert!(got.rgba == want.rgba, "not drawn in place");
+}
+
+/// What a hidden layer holds stays hidden, and the page's annotations are drawn as on the
+/// page.
+#[test]
+fn a_hidden_layer_stays_hidden_and_annotations_are_drawn() {
+    let mut p = scene("/OC /L0 BDC 1 0 0 rg 240 150 40 40 re f EMC");
+    let layer = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCG", "Name" => Object::string_literal("Secret") });
+    let catalog = p.doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    p.doc.get_dictionary_mut(catalog).unwrap().set(
+        "OCProperties",
+        dictionary! {
+            "OCGs" => vec![layer.into()],
+            "D" => dictionary! { "OFF" => vec![layer.into()] },
+        },
+    );
+    let look = p.doc.add_object(Stream::new(
+        dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 40.into(), 40.into()] },
+        b"0 0 0 rg 0 0 40 40 re f".to_vec(),
+    ));
+    let square = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Square",
+        "Rect" => vec![240.into(), 10.into(), 280.into(), 50.into()],
+        "AP" => dictionary! { "N" => look },
+    });
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let res = d.get_mut(b"Resources").unwrap().as_dict_mut().unwrap();
+    res.set("Properties", dictionary! { "L0" => layer });
+    d.set("Annots", vec![square.into()]);
+    let page_drawn = drawn(p.app_snapshot().unwrap());
+    let got = drawn(p.page_without(0, &[]).unwrap());
+    let px = |b: &render::Bitmap, x: usize, y: usize| {
+        let i = (y * b.width + x) * 4;
+        [b.rgba[i], b.rgba[i + 1], b.rgba[i + 2]]
+    };
+    // The layer's red box (at 260, 30 as shown) isn't drawn in either, as it would be
+    // without the document's layer settings.
+    assert_eq!(px(&got, 520, 60), px(&page_drawn, 520, 60));
+    assert!(px(&got, 520, 60)[0] < 200 || px(&got, 520, 60)[1] > 50);
+    let mut shown = p.clone();
+    let catalog = shown.doc.get_dictionary_mut(catalog).unwrap();
+    catalog.remove(b"OCProperties");
+    assert_eq!(
+        px(&drawn(shown.app_snapshot().unwrap()), 520, 60),
+        [255, 0, 0]
+    );
+    // The square (at 260, 170 as shown) is on the page, and in the page alone (PB-76).
+    assert_eq!(px(&page_drawn, 520, 340), [0, 0, 0]);
+    assert_eq!(px(&got, 520, 340), [0, 0, 0]);
+}
+
+/// A form of `w` by `h` points drawing `ops`: an annotation's appearance.
+fn look(p: &mut Pdf, ops: &str, w: i64, h: i64) -> lopdf::ObjectId {
+    let bbox = vec![0.into(), 0.into(), w.into(), h.into()];
+    p.doc.add_object(Stream::new(
+        dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox },
+        ops.as_bytes().to_vec(),
+    ))
+}
+
+/// A rectangle as a PDF array.
+fn rect(r: [i64; 4]) -> Object {
+    Object::Array(r.iter().map(|&v| v.into()).collect())
+}
+
+/// The comments and fields on the page are drawn in the page alone as on the page (PB-76):
+/// a highlight over the text taken out still shows, and a field's look. What reaches the
+/// rest of the document (the page, the field's other parts, the pop-up) isn't copied. A
+/// sticky note, which the app draws over the page itself, and an annotation hidden from
+/// view are left out, as the app's pages leave them out.
+#[test]
+fn comments_and_fields_on_the_page_are_drawn_in_the_page_alone() {
+    let mut p = scene(BOTH);
+    p.insert_blank(1, 300.0, 200.0).unwrap();
+    let (page, other) = (p.page_ids()[0], p.page_ids()[1]);
+    // A magenta highlight over "Walrus", a field's black box, a green note, a grey square
+    // not for viewing.
+    let mark = look(&mut p, "1 0 1 rg 0 0 100 30 re f", 100, 30);
+    let field_look = look(&mut p, "0 0 0 rg 0 0 40 20 re f", 40, 20);
+    let note_look = look(&mut p, "0 1 0 rg 0 0 20 20 re f", 20, 20);
+    let grey = look(&mut p, "0.5 g 0 0 20 20 re f", 20, 20);
+    let popup = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Popup", "Rect" => rect([150, 150, 250, 190]), "P" => page,
+    });
+    let highlight = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Highlight", "Rect" => rect([25, 115, 125, 145]),
+        "AP" => dictionary! { "N" => mark }, "P" => page, "Popup" => popup,
+    });
+    let field = p.doc.new_object_id();
+    let widget = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "Rect" => rect([240, 10, 280, 30]),
+        "AP" => dictionary! { "N" => field_look }, "P" => page, "Parent" => field,
+    });
+    let elsewhere = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "Rect" => rect([10, 10, 50, 30]),
+        "AP" => dictionary! { "N" => field_look }, "P" => other, "Parent" => field,
+    });
+    let kids = vec![widget.into(), elsewhere.into()];
+    let name = Object::string_literal("name");
+    let parent = dictionary! { "FT" => "Tx", "T" => name, "Kids" => kids };
+    p.doc.objects.insert(field, Object::Dictionary(parent));
+    let note = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Text", "Rect" => rect([250, 150, 270, 170]),
+        "AP" => dictionary! { "N" => note_look }, "P" => page,
+    });
+    let unseen = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Square", "Rect" => rect([200, 160, 220, 180]),
+        "AP" => dictionary! { "N" => grey }, "F" => 32,
+    });
+    let annots: Vec<Object> = [highlight, popup, widget, note, unseen]
+        .into_iter()
+        .map(Object::Reference)
+        .collect();
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", annots);
+    let walrus = lines_reading(&p, 0, "Walrus");
+    let without = p.page_without(0, &walrus).unwrap();
+    // Drawn as the page with "Walrus" deleted is drawn, its comments and field and all.
+    let mut deleted = p.clone();
+    deleted.delete_objects(0, &walrus).unwrap();
+    let want = drawn(deleted.app_snapshot().unwrap());
+    let got = drawn(without.clone());
+    assert_eq!((got.width, got.height), (want.width, want.height));
+    assert!(got.rgba == want.rgba, "not drawn as the page");
+    let px = |b: &render::Bitmap, x: usize, y: usize| {
+        let i = (y * b.width + x) * 4;
+        [b.rgba[i], b.rgba[i + 1], b.rgba[i + 2]]
+    };
+    // The highlight (at 75, 70 as shown) and the field (at 260, 180).
+    assert_eq!(px(&got, 150, 140), [255, 0, 255]);
+    assert_eq!(px(&got, 520, 360), [0, 0, 0]);
+    // Copied: the highlight and the field's part on this page, cut from the rest.
+    let alone = lopdf::Document::load_mem(&without).unwrap();
+    let mut kinds: Vec<String> = Vec::new();
+    for o in alone.objects.values() {
+        let Ok(d) = o.as_dict() else { continue };
+        if d.has_type(b"Annot") {
+            let sub = d.get(b"Subtype").unwrap().as_name().unwrap();
+            kinds.push(String::from_utf8_lossy(sub).into());
+            for key in [&b"P"[..], b"Parent", b"Popup"] {
+                assert!(!d.has(key), "{d:?}");
+            }
+        }
+        assert!(!d.has(b"FT"), "the field copied: {d:?}");
+    }
+    kinds.sort();
+    assert_eq!(kinds, ["Highlight", "Widget"]);
+}
+
+/// Only what the page uses is copied: the page alone from a long document is as small as
+/// from a document of that page.
+#[test]
+fn a_page_alone_holds_only_what_it_uses() {
+    let mut long = Pdf::new();
+    for i in 0..200 {
+        long.insert_blank(i, 300.0, 200.0).unwrap();
+        let content = format!("0 0 1 rg {} 10 20 20 re f ", i % 250).repeat(500);
+        let s = long
+            .doc
+            .add_object(Stream::new(dictionary! {}, content.into_bytes()));
+        let id = long.page_ids()[i];
+        long.doc.get_dictionary_mut(id).unwrap().set("Contents", s);
+    }
+    let whole = long.snapshot().unwrap().len();
+    let alone = long.page_without(120, &[]).unwrap().len();
+    let one = long.excerpt(&[(120, [0.0, 0.0, 300.0, 200.0])]).unwrap();
+    let one = one.clone().snapshot().unwrap().len();
+    assert!(whole > 100 * alone, "{whole} vs {alone}");
+    assert!(alone < one + 1000, "{alone} vs {one}");
 }

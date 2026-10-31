@@ -442,6 +442,121 @@ What they show:
   for the first ideograph in a serif font on another system (PB-61), a few milliseconds for a character no font
   has.
 
+## Finding paragraphs
+
+Batch 45's stage 2 (NEW-01) finds a page's paragraphs once, with its lines' fonts (`Pdf::page_blocks`;
+architecture.md). The paragraph design's budget (section 11): REL-07's "none over 50 ms" for a click on ordinary
+pages, sharing PB-52's read of the page's fonts. Measured on 30 October 2026 on the machine above, built with the
+release-like `ci-test` profile:
+
+- **Over the paragraph check's 508 pages** (both answer sets, `tests/paragraph_check.rs`, tags and fonts read):
+  median 4.5 ms a page; the worst 96, 83 and 63 ms (PDFBox `4996` page 1, pdf.js `issue6737` page 7 and `issue6165`
+  page 4), then 41 ms and under.
+- **What a page's time is**, best of five with a throwaway checker crate (`target/b45s2/`, `timing`): reading the
+  page's objects, then everything, then everything but the fonts and tags, then the fonts alone.
+
+  | Page | Objects | Blocks | Without fonts and tags | Fonts (`page_line_fonts`) |
+  | --- | --- | --- | --- | --- |
+  | made-up `lo01_ragged_serif11` p2 | 1.2 ms | 3.0 ms | 1.4 ms | 2.8 ms |
+  | made-up `ch05_cols3_softhyph` p2 | 15.6 ms | 25.9 ms | 16.1 ms | 25.3 ms |
+  | pdf.js `issue12294-print` p3 | 4.7 ms | 15.4 ms | 5.4 ms | 14.9 ms |
+  | PDFBox `4996` p1 | 29.2 ms | 33.4 ms | 29.4 ms | 33.4 ms |
+  | pdf.js `issue6165` p4 | 23.6 ms | 25.5 ms | 23.7 ms | 25.3 ms |
+  | pdf.js `issue6737` p7 | 68.5 ms | 72.2 ms | 67.5 ms | 72.6 ms |
+
+What they show:
+
+- Finding the blocks costs under a millisecond beyond reading the page (the "without" column against the objects).
+  The rest is the page's own read, which showing its objects already pays, and the fonts' read, which selecting a
+  line on the page already pays (PB-52); so the app, keeping both for the page as it keeps the fonts today, adds
+  little. The pages over 50 ms are over it in reading their objects alone (PB-52's heavy pages).
+
+Batch 45's 2b-1 (30 October 2026) cut regions widest band first and some columns before their bands, and reads
+the colour spaces a page names (PB-65, each space and its tint transform once a parse). Over the check's 541
+pages: median 4.9 ms (4.4 ms on 26f236f in the same run order); a single run's worst is noise (174 ms against
+81 ms for `issue6737` p7, which best of five gives as 75 to 77 ms against 74 ms; `pdfbox-4996` p1 36 against
+35 ms). Every page's words over the corpus's 1,089 files read in 8.2 s against 8.1 s (three at a time).
+
+Batch 45's 2b-2 (30 October 2026) dropped Q3's rule, so detection no longer reads the page's fonts: median 1.9 ms
+a page over the check's 541 pages; the slowest `issue6165` p4 91 ms and `issue6737` p7 75 ms (one run each).
+
+## Editing a paragraph
+
+Batch 45's 2b-2 (NEW-01) reads a block for editing, sets it again at each keystroke and writes it once
+(architecture.md, "Editing a paragraph"). The budgets (the paragraph design's 11): setting within NEW-02's 2 ms
+for 2,000 characters a keystroke, so typing stays within REL-07's rows; the write once, about a line edit's cost
+a line. Measured on 30 October 2026 on the machine above, with nothing else running, by the throwaway probe
+(`target/b31s3/para/`, `b45para time BIG`, built with the `ci-test` profile) on a made-up paragraph of 2,000
+characters in 21 lines of Helvetica at 10 points, 440 points wide:
+
+| What | Median | 95th percentile | Most |
+| --- | --- | --- | --- |
+| Reading it (`Pdf::paragraph` and `paragraph_setting`, 20 runs) | 2.39 ms | 2.64 ms | 25.6 ms (the first) |
+| A keystroke at the start (`ParagraphSetting::set`, 200) | 0.20 ms | 0.24 ms | 0.32 ms |
+| A keystroke in the middle (200) | 0.19 ms | 0.20 ms | 0.23 ms |
+| A keystroke at the end (200) | 0.18 ms | 0.19 ms | 0.20 ms |
+| Greek typed in the middle, in another font (200) | 0.21 ms | 0.22 ms | 8.6 ms (the first) |
+| A character deleted in the middle (200) | 0.17 ms | 0.18 ms | 0.21 ms |
+| The write, a word typed at the start, every line (`Pdf::edit_paragraph`, 10) | 1.94 ms | 2.00 ms | 2.00 ms |
+| The write, a letter changed in the middle (10) | 1.28 ms | 1.29 ms | 1.29 ms |
+| The document's words on the made-up 10,000-page `big.pdf` (`Pdf::document_words`, 3) | 7.49 s | 7.63 s | 7.63 s |
+| The same on two threads, as the app reads them (`document_words_on(2)`, 3; batch 45's 3a, the same day, every core 6.43 s then) | 18.59 s | 18.91 s | 18.91 s |
+| Every page's size on `big.pdf` (`Pdf::page_sizes`, BUG-43's page box, 20) | 16.1 ms | 16.6 ms | 16.6 ms |
+
+Over the corpus edit run's real paragraphs (testing.md, "Editing paragraphs"; two files at a time, so indicative):
+reading a block median 5.8 ms, setting it 0.05 ms, writing it 4.8 ms for confident blocks; the slowest reads and
+writes, up to about 1.7 s, are pages whose fonts take that long to read (PB-52) and the first word in a fallback
+face.
+
+What they show:
+
+- A keystroke sets a 2,000-character paragraph in about a tenth of NEW-02's budget, wherever it is typed, a word
+  in another font included once its face is read; the write is a couple of milliseconds.
+- The document's words (line-end hyphens' evidence) take seconds on a very long document, as they read every
+  page, so the app reads them off the window's thread when a tab gets its document (batch 45's 3a), on two
+  threads of their own so the pages draw meanwhile: under 19 s on 10,000 pages; until they are there a
+  paragraph's hyphens read as unknown (kept, marked).
+- **Typing in a paragraph in the app** (batch 45's 3a): the opt-in `speed_of_typing_in_a_paragraph`
+  (`app/tests/paragraphs.rs`, the `ci-test` profile, the window drawn without a GPU) times a frame of the whole
+  window for each of 40 keystrokes in the first line of a paragraph of 2,021 characters, which each set it again
+  on its lines and lay its box out: median 6.80 ms, slowest 18.72 ms, the app's own share against REL-07's "none
+  over 50 ms" (6.3); reading a paragraph to open it is the row above, a few milliseconds.
+- `page_sizes` reads a page's media box and crop box as before (a page without a crop box read both before too):
+  16 ms over 10,000 pages.
+- **A frame edge dragged** (batch 45's 3b-2, measured 31 October 2026 the same way, `b45para time`, nothing else
+  running): each frame of a drag reads how narrow the frame may go (`ParagraphSetting::narrowest`, 200 frames:
+  median 0.16 ms, 95th percentile 0.17 ms) and sets the 2,000 characters between the moved edges
+  (`set_between`, every line broken anew: median 0.18 ms, 95th percentile 0.19 ms, most 0.25 ms), as a keystroke
+  costs; the write narrowed 100 points, every line (`Pdf::edit_paragraph_between`, 10): median 2.13 ms, as a word
+  typed at the start. Keystrokes measured again the same day: 0.17 to 0.21 ms at the median, as above. The corpus
+  edit run again after 3b-2 (edges as they were) gave every block's record as 3a's run did, timings aside.
+
+## The page under text being edited
+
+Batch 45's 3b-1 (ENH-21) makes the page alone without the text being edited once when a line or paragraph starts
+being edited, on the window's thread, and draws the hidden part of it on a thread of its own (architecture.md,
+"The page under text being edited"). Measured on 31 October 2026 on the machine above by the throwaway probe
+(`target/b31s3/para/`, `b45para without FILE PAGE…`, the `ci-test` profile), each page's largest block, 20 runs
+(the heavy page 3); "drawn" is a one-page load and `render_region_in` of the block's box at 2.67 pixels a point,
+as the app draws it at 100% on a 2× screen:
+
+| Page | `Pdf::page_without` (median / most) | Its size | Drawn (median / most) |
+| --- | --- | --- | --- |
+| `big.pdf` (10,000 pages), pages 1, 5,001 and 10,000 | 3.35 to 3.55 / 4.46 ms | 0.9 KB | 0.14 to 0.16 / 0.43 ms |
+| pdf.js `bug810214`, two pages with pictures | 0.70 and 1.37 / 1.47 ms | 50 and 58 KB | 4.7 and 31.3 / 32.5 ms |
+| pdf.js `issue11306`, a 2 MB picture on page 1 | 0.75 / 2.18 ms | 2.1 MB | 15.8 / 19.8 ms |
+| PDFBox `4060` page 1 (a 5 MB page of 2,750 objects) | 68.3 / 70.7 ms | 5.4 MB | 6.09 s (one run) |
+
+What they show:
+
+- Making the page alone costs per page, not per document: about 3.5 ms on any page of 10,000, mostly finding the
+  page in the page tree (a whole copy of that document, as a thread would need, takes 23.5 ms). On the heaviest
+  page it is 68 ms, less than reading that page's objects and deleting one of them (38.5 and 92.7 ms), which
+  editing there already costs.
+- Drawing is off the window's thread, a few milliseconds as a rule; on the heaviest page, seconds, during which
+  the colour around the text stands in. It isn't done again as the text is typed, only after a zoom or a change
+  of page colours.
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted
@@ -541,6 +656,19 @@ its outline turns to the caution colour; that change is the first the poller see
 credits them with it (834, 702, 600, 470, 322 and 193 ms in the first run, falling as later keys were sent
 closer to it), each of which the app built in 0.7 to 3.2 ms. The line's whole run had 4 keys shown in 52 to 71 ms, past key 105, none
 over 100 ms.
+
+Run again on 31 October 2026 for batch 45's 3b-1 (ENH-21: the line being edited hidden by the page drawn without
+it, a picture drawn under the typing each frame in place of one colour), the release builds of 459b53e and of
+3b-1 one after the other, the same way:
+
+| Editing a line (letter.pdf) | Built | Shown, keys 0 to 50 | Over 50 ms shown | Over 100 ms shown |
+| --- | --- | --- | --- | --- |
+| 459b53e (before) | 3.5 / 23.0 ms | 28.2 / 47.3 ms | 0 | 0 |
+| 3b-1 | 2.8 / 24.1 ms | 26.8 / 46.6 ms | 0 | 0 |
+
+The same within the runs' spread, and within the accepted thresholds; the whole runs' shown worst, past the
+captured area, 65.3 and 60.0 ms. The paper behind letter.pdf's line is white, but what the picture shows doesn't
+change a frame's cost: it is one picture drawn in place of one rectangle, made off the window's thread.
 
 ### Working while something runs
 

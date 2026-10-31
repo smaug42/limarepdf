@@ -4,6 +4,25 @@
 
 ### Added
 
+- Paragraphs can be edited as one, their lines rewrapping as you type, as in a word processor. Turn on
+  **Paragraph** in **Edit > Text flow** in the band (no longer marked Planned; also **Edit as paragraph** in the
+  right-click menu and the command search, and **Paragraph** in the inspector's new **Editing** row); a
+  double-click, a Text-tool click or Edit text then opens the paragraph, and the choice is remembered between runs.
+  Turned on or off while a line or paragraph is being edited, it switches that text where the caret is. The
+  paragraph is drawn on the lines it will be written on, in its own fonts, inside its frame's edges and
+  alignment (justified lines stretched to the edge); Enter starts a new paragraph and Shift+Enter a new line; the
+  status bar says **Editing a paragraph**. Lines whose breaks don't change stay exactly as they were, and the edit
+  is one undo step. A hyphen that ended a line is read by the document's own words: one only put in to break the
+  word goes when the word moves inside a line, and one LimarePDF can't tell is kept and dotted under, with **Join
+  the hyphenated word** and **Keep the line-end hyphen** on its right-click menu and **Join all** in the inspector.
+  Text running past the page or over other text, a picture or a shape says so on the outline, where it happens.
+  Drag the small square on the frame's left or right edge to make the paragraph narrower or wider, the lines
+  rewrapping as you drag, as a resized text box does; click the square (or press Tab from the text) and Left and
+  Right move that edge a point, ten with Shift. Each move is a step in the paragraph's own Ctrl+Z. While a link or
+  comment is over the paragraph, the inspector says it stays in place. Words selected across the lines of one
+  paragraph are typed over and deleted there, the paragraph rewrapping. A line on its own,
+  text in a table and turned text are still edited a line at a time, the switch saying why. LimarePDF doesn't open
+  paragraphs as paragraphs by itself yet: its check of how well it finds them isn't passed.
 - Editing a line keeps the PDF's own font wherever it can, embedded fonts and their subsets included (Chinese,
   Japanese and Korean fonts that number their glyphs too): the letters you leave as they were keep their exact
   spacing, new letters are written in the font when it holds them, and only a word with a letter the font lacks
@@ -59,9 +78,11 @@
   nothing to style.
 - While a line is edited on the page, the status bar says "Editing one line", and the inspector shows the line's
   font as the PDF names it (**PDF font**, without a subset's tag) above its **Source font**.
-- Text typed on the page that runs past the page's edge has its outline in the caution colour, with a tag under it
-  saying "Past the page edge". In a line being edited, typing on past its end into the text beside it says "Over
-  other text" the same way.
+- Text typed on the page that runs past the page's edge, or into text, a picture or a shape it wasn't already
+  over, has its outline in the caution colour, with a tag just below the line where it happens saying "Past the
+  page edge", "Over other text", "Over a picture" or "Over a shape"; the floating toolbar keeps clear of it. The
+  same rule holds for a line being edited, a paragraph and new text; new text isn't warned about a picture or
+  coloured box its first line starts on.
 - Organise: **Pages > Organise**, ☰ > View > Organise pages or **Organise pages** in the status bar shows every
   page of the document as a card in a grid, in place of the pages, as a slide sorter does: the page, with a
   checkbox and its name. The heading and the status bar count the pages and those selected ("12 pages · 4
@@ -111,6 +132,21 @@
 
 ### Changed
 
+- A line or paragraph being edited on the page hides its old text with the page as it is without it, so a photo,
+  shading or coloured box behind the text still shows while you type, with the page's comments and form fields
+  over it; for a moment as you start, the colour around it stands in. Before, the old text was hidden under that
+  one colour until the change was kept, a highlight over it with it.
+- A line whose font isn't held in the PDF is drawn while you type in the face LimarePDF's pages show it in once
+  kept: the Liberation look-alike of the Helvetica, Times or Courier its name and its font description give (a
+  Calibri the PDF doesn't hold shows as Helvetica, a Cambria marked serif as Times), Chinese, Japanese and Korean
+  in the installed font the page uses. Before, it was drawn in the installed font of its name, or a look-alike
+  chosen by the name alone, and could change look when kept.
+- A group of the command band with one command in it (Edit > Text flow's Paragraph), short of room, folds to
+  that command's icon rather than to a button with the group's name that opens it.
+- Typing over words selected in different paragraphs now says "Type over words within one paragraph." (before:
+  within one line).
+- **Edit > Edit text** shows pressed while text is being edited on the page, as well as while the Text tool is
+  on, and clicked again it goes back to the read tool, keeping what was typed. Before, it stayed on the Text tool.
 - Undo and Redo in the commands row act on what you are typing, as Ctrl+Z and Ctrl+Y do, in a line, new text, a
   note, a text box, a form field or a box of the inspector: the keyboard stays where you are typing, and they are
   greyed when there is nothing there to undo or redo. Before, Undo kept the typing and then took the whole of it
@@ -232,6 +268,30 @@
 
 ### Fixed
 
+- On a page whose crop box reaches past its paper (as some forms have), clicks, selections, search highlights and
+  edits landed away from the text they were meant for, and the page's size was given as the larger box. The page
+  is now measured as it is drawn, by the part of the crop box on the paper. A page that doesn't give its paper size
+  is taken as A4, as it is drawn.
+- An edited line with a wide gap between two of its words (as some justified lines have) was taken, once
+  written, as reading wrongly, so the words changed in it went to another font for nothing. They now keep the
+  PDF's own font there.
+- On Linux in a Wayland session, LimarePDF left open for a long while (an hour, say, so the screen had turned off)
+  could freeze the whole desktop until it was closed by force; seen with NVIDIA's graphics driver under KDE Plasma
+  6.8. Each picture of the window was handed to the screen and waited for the screen to take it, which then could
+  last for ever. On Wayland it no longer waits: the desktop already sets the pace of drawing there, so nothing else
+  changes. Other systems are as they were.
+- Text in a Type 3 font drawn the way TeX's bitmap fonts are (in many older papers) was read at a tiny fraction of
+  its size and upside down: selecting, searching and copying it went a word or less at a time, the line was edited
+  in a box rather than where it is, and an edited line was written at 1 point. It now reads at the size it shows,
+  upright, in whole lines and whole words (the small moves dvips makes inside a word no longer read as spaces, as
+  in "Op erating System Pro jects"), is edited where it is, and keeps its size and its own letters when edited:
+  the letters left as they were stay in the PDF's font, the right way up, and only the words typed go to another
+  font. Other Type 3 fonts drawn at a scale of their own read at their size too. A Type 3 font whose pictures of
+  letters are stored upside down still reads as turned.
+- Text in a spot colour (a named ink, such as a Pantone colour) or in another colour space a PDF names (Lab, an
+  indexed palette) was read as white or grey: the inspector showed the wrong colour, and an edited line could be
+  written in white, unseen on the page. It now reads in the colour it shows, and an edited line keeps the ink it
+  was in, the words typed in it too; text in CMYK stays in CMYK.
 - Typing on the page was lost when the change keeping it failed: ending a line's typing, new text, a note or a text
   box (Esc, Enter, Tab, a click away or another tool) showed the reason and threw the typing away. It now comes
   back on the page to go on with, the document as it was; ended again unchanged, it is left out and a message says

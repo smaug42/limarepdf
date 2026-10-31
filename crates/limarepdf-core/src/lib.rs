@@ -12,6 +12,7 @@ mod base_encodings;
 mod blank;
 mod cms_check;
 mod cms_write;
+mod colour;
 pub mod disk;
 mod display;
 mod doc;
@@ -42,6 +43,8 @@ mod own_font;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
+mod para_write;
+mod paragraph;
 mod pkcs12;
 mod preview_font;
 pub mod print;
@@ -53,6 +56,7 @@ mod redact;
 mod redact_img;
 pub mod render;
 mod repair;
+mod rewrap;
 mod sanitise;
 mod scan;
 mod security;
@@ -62,6 +66,7 @@ mod sig_sign;
 mod sig_verify;
 mod sign;
 mod stamps;
+mod stand_in;
 mod std14;
 mod text;
 mod tounicode;
@@ -78,8 +83,7 @@ pub use display::{display_line, display_text, local_date, local_time, quoted_lis
 pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{KeptPiece, PartFont, PathStyle, Shape, TextEdit, TextPart};
 pub use embed::{
-    bundled_face, emoji_sequence, installed_could_write, liberation, refusal, unwritten_script,
-    writable, LIBERATION,
+    bundled_face, emoji_sequence, liberation, refusal, unwritten_script, writable, LIBERATION,
 };
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use form_ap::BoxSetting;
@@ -101,7 +105,12 @@ pub use overlay::{
 };
 pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
+pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
 pub use redact::{PageRedaction, RedactReport};
+pub use rewrap::{
+    DocWords, Hyphen, LineEndHyphen, Paragraph, ParagraphPiece, ParagraphSetting, SetLine,
+    SetParagraph,
+};
 pub use sanitise::{Hidden, HiddenReport, LayersDamaged};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
@@ -119,6 +128,7 @@ pub use sign::{
     SignStyle, SIGN_TEXT,
 };
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
+pub use stand_in::{InstalledQuery, StandIn};
 pub use text::{match_count, Matches, Query, SearchHit, Snippet, TextIndex};
 pub use trust::{is_authority, read_certificates, Added, Trust, TrustEntry, TrustList, TrustRole};
 pub use typefaces::{add_font_files, typeface, typefaces, typefaces_ready, FaceFile, Typeface};

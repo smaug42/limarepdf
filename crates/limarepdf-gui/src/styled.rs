@@ -85,10 +85,38 @@ impl Styled {
     /// Line `o` as it is, each character in the style of its part; `font_of` gives the
     /// font a part's PDF font is shown as.
     pub fn of(o: &PageObject, font_of: impl Fn(&str) -> FontChoice) -> Self {
+        let whole = CharStyle {
+            font: font_of(o.font_name.as_deref().unwrap_or("")),
+            span: None,
+            size: o.font_size.unwrap_or(12.0),
+            color: o.fill.unwrap_or([0.0; 3]),
+            rise: 0.0,
+        };
         let text = o.text.clone().unwrap_or_default();
+        Self::read(text, &o.spans, whole, font_of)
+    }
+
+    /// A paragraph of page text as it is ([`limarepdf_core::Paragraph`]), each character in
+    /// the style of its part, as a line's ([`Self::of`]).
+    pub fn of_paragraph(
+        para: &limarepdf_core::Paragraph,
+        font_of: impl Fn(&str) -> FontChoice,
+    ) -> Self {
+        let text = para.text.clone();
+        Self::read(text, &para.spans, CharStyle::default(), font_of)
+    }
+
+    /// `text` as read, in `spans`, its parts, each character in the style of its part (one
+    /// in none in the style of the one before it); `whole` the style of an empty text's
+    /// typing when it has no part.
+    fn read(
+        text: String,
+        spans: &[TextSpan],
+        whole: CharStyle,
+        font_of: impl Fn(&str) -> FontChoice,
+    ) -> Self {
         let n = text.chars().count();
-        let spans: Vec<_> = o
-            .spans
+        let spans: Vec<_> = spans
             .iter()
             .map(|s| (s.clone(), font_of(&s.font_name)))
             .collect();
@@ -114,13 +142,7 @@ impl Styled {
                 color: s.fill.unwrap_or([0.0; 3]),
                 rise: s.rise,
             })
-            .unwrap_or_else(|| CharStyle {
-                font: font_of(o.font_name.as_deref().unwrap_or("")),
-                span: None,
-                size: o.font_size.unwrap_or(12.0),
-                color: o.fill.unwrap_or([0.0; 3]),
-                rise: 0.0,
-            });
+            .unwrap_or(whole);
         // A character in no part takes the style of the one before it.
         let mut last = found.iter().flatten().next().copied().unwrap_or(whole);
         let styles = found
@@ -149,6 +171,11 @@ impl Styled {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Where each character is in the text as it was read, `None` for one typed.
+    pub fn origins(&self) -> &[Option<usize>] {
+        &self.origins
     }
 
     /// Each character's style.
@@ -791,18 +818,33 @@ const STEPS: usize = 100;
 /// Undo and redo inside a line being typed (the design, section 6.5): typing and style
 /// changes in order. It watches the text once a frame ([`Self::observe`]): typing joins
 /// the step before it as text editors join it, and each style change is a step of its own,
-/// changes made while a list or colour picker is open joining into one.
+/// changes made while a list or colour picker is open joining into one. For a paragraph, it
+/// watches its frame's edges too ([`Self::observe_edges`]): a drag of an edge is a step, as
+/// Word undoes a resize, and moves by the arrow keys close together one.
 #[derive(Clone, Debug, Default)]
 pub struct History {
-    undo: Vec<(Styled, (usize, usize))>,
-    redo: Vec<(Styled, (usize, usize))>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     /// The text when last watched, and the selection then.
     last: Styled,
     sel: (usize, usize),
+    /// A paragraph's frame's left and right edges when last watched; `None` for other text.
+    edges: Option<(f32, f32)>,
     /// The last change was typing, at this time, leaving the caret here.
     typing: Option<(f64, usize)>,
     /// The last change was a style change not yet finished.
     styling: bool,
+    /// The last change moved the frame's edges, at this time, by a drag still under way
+    /// (`true`) or by a key.
+    moving: Option<(f64, bool)>,
+}
+
+/// What a step takes the text back or forward to.
+#[derive(Clone, Debug)]
+struct Step {
+    text: Styled,
+    edges: Option<(f32, f32)>,
+    sel: (usize, usize),
 }
 
 impl History {
@@ -812,6 +854,45 @@ impl History {
             last: text.clone(),
             ..Default::default()
         }
+    }
+
+    /// Nothing to undo yet in a paragraph's `text` set between its frame's `edges`.
+    pub fn with_edges(text: &Styled, edges: (f32, f32)) -> Self {
+        Self {
+            edges: Some(edges),
+            ..Self::new(text)
+        }
+    }
+
+    /// The paragraph's frame's edges as the last step taken back or forward left them.
+    pub fn edges(&self) -> Option<(f32, f32)> {
+        self.edges
+    }
+
+    /// Watch a paragraph's frame's `edges` this frame, at time `now`, one of them being
+    /// dragged when `dragging`: a move since the last frame becomes a step to undo, unless it
+    /// carries on the drag before or, by a key, the key moves before it within the pause
+    /// typing joins over.
+    pub fn observe_edges(&mut self, edges: (f32, f32), now: f64, dragging: bool) {
+        if self.edges == Some(edges) {
+            // A drag that ended: the next move is a step of its own.
+            if self.moving.is_some_and(|(_, drag)| drag) && !dragging {
+                self.moving = None;
+            }
+            return;
+        }
+        let joins = self.moving.is_some_and(|(at, drag)| match dragging {
+            true => drag,
+            false => !drag && now - at < JOIN,
+        });
+        if !joins {
+            self.push(self.sel);
+        }
+        self.moving = Some((now, dragging));
+        self.typing = None;
+        self.styling = false;
+        self.edges = Some(edges);
+        self.redo.clear();
     }
 
     /// Watch `text` this frame, at time `now`, with `sel` selected when known: a change
@@ -839,6 +920,7 @@ impl History {
             self.styling &= !settled;
             return;
         }
+        self.moving = None;
         self.last = text.clone();
         self.redo.clear();
     }
@@ -847,7 +929,11 @@ impl History {
     fn push(&mut self, sel: (usize, usize)) {
         let mut was = self.last.clone();
         was.next = None;
-        self.undo.push((was, sel));
+        self.undo.push(Step {
+            text: was,
+            edges: self.edges,
+            sel,
+        });
         if self.undo.len() > STEPS {
             self.undo.remove(0);
         }
@@ -864,26 +950,42 @@ impl History {
     }
 
     /// Take `text` back a step: returns the selection it had then, or `None` with nothing
-    /// to undo.
+    /// to undo. A paragraph's frame's edges go back with it ([`Self::edges`]).
     pub fn undo(&mut self, text: &mut Styled) -> Option<(usize, usize)> {
-        let (was, sel) = self.undo.pop()?;
-        self.redo.push((std::mem::replace(text, was), self.sel));
-        Some(self.went_to(text, sel))
+        let was = self.undo.pop()?;
+        self.redo.push(Step {
+            text: std::mem::replace(text, was.text),
+            edges: self.edges,
+            sel: self.sel,
+        });
+        Some(self.went_to(text, was.edges, was.sel))
     }
 
     /// Take `text` forward a step undone: returns the selection it had then.
     pub fn redo(&mut self, text: &mut Styled) -> Option<(usize, usize)> {
-        let (next, sel) = self.redo.pop()?;
-        self.undo.push((std::mem::replace(text, next), self.sel));
-        Some(self.went_to(text, sel))
+        let next = self.redo.pop()?;
+        self.undo.push(Step {
+            text: std::mem::replace(text, next.text),
+            edges: self.edges,
+            sel: self.sel,
+        });
+        Some(self.went_to(text, next.edges, next.sel))
     }
 
-    /// `text` is now a step taken back or forward, with `sel` selected.
-    fn went_to(&mut self, text: &Styled, sel: (usize, usize)) -> (usize, usize) {
+    /// `text` is now a step taken back or forward, set between `edges`, with `sel`
+    /// selected.
+    fn went_to(
+        &mut self,
+        text: &Styled,
+        edges: Option<(f32, f32)>,
+        sel: (usize, usize),
+    ) -> (usize, usize) {
         self.last = text.clone();
+        self.edges = edges;
         self.sel = sel;
         self.typing = None;
         self.styling = false;
+        self.moving = None;
         sel
     }
 }
@@ -1110,6 +1212,45 @@ mod tests {
         assert_eq!(s.styles()[0].color, [0.6, 0.0, 0.0]);
         h.undo(&mut s);
         assert_eq!(s.styles()[0].color, [0.0; 3]);
+    }
+
+    /// A paragraph's frame's edges are undone with its typing (batch 45's 3b-2, Q2): a drag
+    /// is one step however long it takes, a second drag another, key moves close together
+    /// one, and typing between them a step of its own; Undo and Redo put the edges back.
+    #[test]
+    fn undo_takes_back_a_frames_edges_with_the_typing() {
+        let mut s = Styled::plain("ab", CharStyle::default());
+        let mut h = History::with_edges(&s, (72.0, 400.0));
+        // A drag over five seconds, then let go.
+        for i in 0..5 {
+            h.observe_edges((72.0, 390.0 - i as f32), i as f64, true);
+        }
+        h.observe_edges((72.0, 386.0), 5.0, false);
+        // A second drag at once.
+        h.observe_edges((72.0, 380.0), 5.1, true);
+        h.observe_edges((72.0, 380.0), 5.2, false);
+        // Typing, then three key moves.
+        s.sync("abc", Some(3));
+        h.observe(&s, Some((3, 3)), 6.0, true);
+        for i in 0..3 {
+            h.observe_edges((72.0, 379.0 - i as f32), 7.0 + 0.2 * i as f64, false);
+        }
+        let mut back = Vec::new();
+        while h.undo(&mut s).is_some() {
+            back.push((s.text().to_string(), h.edges().unwrap().1));
+        }
+        let want = [("abc", 380.0), ("ab", 380.0), ("ab", 386.0), ("ab", 400.0)];
+        let want: Vec<(String, f32)> = want.iter().map(|(t, e)| (t.to_string(), *e)).collect();
+        assert_eq!(back, want);
+        h.redo(&mut s);
+        assert_eq!(h.edges(), Some((72.0, 386.0)));
+        // Text with no frame has no edges to put back.
+        let mut t = Styled::plain("ab", CharStyle::default());
+        let mut h = History::new(&t);
+        t.sync("abc", Some(3));
+        h.observe(&t, Some((3, 3)), 1.0, true);
+        h.undo(&mut t);
+        assert_eq!(h.edges(), None);
     }
 
     #[test]

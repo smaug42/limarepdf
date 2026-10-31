@@ -228,6 +228,9 @@ pub struct Settings {
     pub show_planned: bool,
     /// The band's commands on one row, as icons (their names on hover); off unless chosen.
     pub compact_commands: bool,
+    /// Page text is edited a paragraph at a time where it can be (Edit > Text flow's
+    /// Paragraph, NEW-01); off, a line at a time, unless chosen.
+    pub paragraphs: bool,
     /// The zoom Organise shows the pages at, as cards (NEW-14).
     pub organise_zoom: f32,
     pub accent: Accent,
@@ -299,6 +302,7 @@ impl Settings {
             page_labels: true,
             show_planned: true,
             compact_commands: false,
+            paragraphs: false,
             organise_zoom: ORGANISE_ZOOM,
             accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
@@ -374,6 +378,7 @@ impl Settings {
                 "page_names" => s.page_labels = value != "numbers",
                 "planned_features" => s.show_planned = value != "hidden",
                 "commands" => s.compact_commands = value == "compact",
+                "text_editing" => s.paragraphs = value == "paragraphs",
                 "organise_size" => {
                     if let Ok(percent) = value.parse::<f32>() {
                         let zoom = percent / 100.0;
@@ -524,6 +529,12 @@ impl Settings {
             Accent::LimarePdf => "limarepdf",
         };
         text += &format!("commands = {commands}\naccent_colour = {accent}\n");
+        let editing = if self.paragraphs {
+            "paragraphs"
+        } else {
+            "lines"
+        };
+        text += &format!("text_editing = {editing}\n");
         text += &format!("organise_size = {:.0}\n", self.organise_zoom * 100.0);
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
@@ -708,6 +719,20 @@ mod tests {
         assert!(!Settings::from_file(Some(f.clone())).show_planned);
         std::fs::write(&f, "planned_features = walrus\n").unwrap();
         assert!(Settings::from_file(Some(f)).show_planned);
+    }
+
+    /// Page text edited a line at a time unless paragraphs are chosen (NEW-01), and the
+    /// choice is kept.
+    #[test]
+    fn paragraph_editing_chosen_is_remembered() {
+        let f = file("paragraphs");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(!s.paragraphs);
+        s.paragraphs = true;
+        s.save();
+        assert!(Settings::from_file(Some(f.clone())).paragraphs);
+        std::fs::write(&f, "text_editing = walrus\n").unwrap();
+        assert!(!Settings::from_file(Some(f)).paragraphs);
     }
 
     /// The band's commands full unless made compact, and the desktop's accent unless

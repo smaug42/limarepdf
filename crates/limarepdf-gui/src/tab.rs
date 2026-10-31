@@ -19,13 +19,14 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptio
 use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
-    Annot, BookmarkPlace, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf, Query, Restore,
-    SearchHit, Shape, ShapeLook, StampPlace,
+    Annot, BookmarkPlace, DocWords, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf,
+    Query, Restore, SearchHit, Shape, ShapeLook, StampPlace,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod backdrop;
 mod comments;
 mod organise;
 mod previews;
@@ -281,6 +282,11 @@ pub struct Tab {
     colours: Colours,
     /// The colour around the line being edited, found for that box in those colours.
     line_cover: Option<(Sample, Colours, Color32)>,
+    /// The page drawn without the text being edited, to show under the typing (ENH-21).
+    backdrop: Option<backdrop::Backdrop>,
+    /// The document's words, which a paragraph's line-end hyphens are read by, coming from
+    /// a thread of their own ([`words_of`]); given to the editor when they come.
+    words: Option<std::sync::mpsc::Receiver<Arc<DocWords>>>,
     pub sizes: Vec<(f32, f32)>,
     /// Each page's object, in page order: who a page is, wherever it moves, for the
     /// selection and the pictures to follow it (NEW-14).
@@ -484,6 +490,7 @@ impl Tab {
         let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
         let sizes = pdf.page_sizes();
         let labels = pdf.page_labels();
+        let words = words_of(ctx, pdf.clone());
         Ok(Self {
             ids: pdf.page_ids(),
             organise: None,
@@ -514,6 +521,8 @@ impl Tab {
             worker: Worker::spawn(ctx.clone(), bytes, colours),
             colours,
             line_cover: None,
+            backdrop: None,
+            words: Some(words),
             sizes,
             pages: HashMap::new(),
             tiles: HashMap::new(),
@@ -1111,6 +1120,11 @@ impl Tab {
 
     /// Carry out the changes queued by the editing interface.
     pub fn apply_actions(&mut self, ctx: &egui::Context) {
+        // The inspector's Join all for a paragraph's hyphens (its Editing switch is the
+        // app's: `App::set_paragraphs`).
+        if let Some(all) = self.ed.hyphens_wanted.take() {
+            self.ed.settle_hyphen(ctx, true, all);
+        }
         let acts = std::mem::take(&mut self.ed.actions);
         let n = acts.len();
         // The changes that failed, by their place, with the document's revision then: what
@@ -1225,6 +1239,22 @@ impl Tab {
                         }
                         self.last_line =
                             words_only.then_some(((p, at), self.revision, self.undo.len(), now));
+                    }
+                }
+                Action::EditParagraph(p, setting, parts, edges) => {
+                    // The whole paragraph in one change, which one Undo takes back.
+                    let mut lost = false;
+                    let edit = |pdf: &mut Pdf| {
+                        lost = !pdf
+                            .edit_paragraph_between(&setting, &parts, edges)?
+                            .is_empty();
+                        Ok(())
+                    };
+                    if self.edit_inner(ctx, Redraw::Pages(&[p]), false, false, edit) {
+                        self.last_line = None;
+                        if lost {
+                            self.info = Some(SIMILAR_FONT.into());
+                        }
                     }
                 }
                 Action::Restyle(changes, left) => {
@@ -2579,6 +2609,11 @@ impl Tab {
 
     fn collect(&mut self, ctx: &egui::Context) {
         self.sync_cover();
+        self.sync_backdrop(ctx);
+        if let Some(Ok(words)) = self.words.as_ref().map(|rx| rx.try_recv()) {
+            self.ed.doc_words = Some(words);
+            self.words = None;
+        }
         while let Ok(r) = self.worker.rx.try_recv() {
             self.pending.remove(&r.key);
             self.note_missing(&r.missing);
@@ -2806,6 +2841,8 @@ impl Tab {
         c.cropping = self.crop_view();
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
+        c.paragraph = self.ed.paragraphs;
+        c.hyphen = self.ed.hyphen_here();
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The
@@ -3587,6 +3624,25 @@ enum Place {
 /// The pages of an `n`-page document in rows, for continuous or facing pages (single
 /// page shows one of these rows at a time). Facing with `cover` puts the first page
 /// alone on the right, as in a book.
+/// The words of `pdf` (`Pdf::document_words`), which a paragraph's line-end hyphens are
+/// read by, read on a thread of their own, two pages at a time so the pages draw meanwhile:
+/// seconds on a very long document (performance.md). They come on the receiver; until then
+/// hyphens read as unknown (kept, and marked when a rewrap moves them).
+fn words_of(ctx: &egui::Context, pdf: Pdf) -> std::sync::mpsc::Receiver<Arc<DocWords>> {
+    const THREADS: usize = 2;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        // A panic leaves the hyphens unknown, as they are until the words come.
+        if let Ok(words) = crate::guard(|| Ok(pdf.document_words_on(THREADS))) {
+            if tx.send(Arc::new(words)).is_ok() {
+                ctx.request_repaint();
+            }
+        }
+    });
+    rx
+}
+
 fn rows_of(n: usize, layout: Layout, cover: bool) -> Vec<Vec<(usize, Place)>> {
     if layout != Layout::Facing {
         return (0..n).map(|p| vec![(p, Place::Middle)]).collect();

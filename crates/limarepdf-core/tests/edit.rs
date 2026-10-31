@@ -1,5 +1,6 @@
 use limarepdf_core::{
-    render, FontChoice, ImageWatermark, ObjectKind, PathStyle, Pdf, Shape, TextEdit,
+    render, FontChoice, ImageWatermark, ObjectKind, PartFont, PathStyle, Pdf, Shape, TextEdit,
+    TextPart,
 };
 use lopdf::{dictionary, Dictionary, Object, Stream};
 
@@ -554,6 +555,100 @@ fn moved_text_keeps_the_spacing_its_double_quote_set() {
     );
 }
 
+/// A page drawing `content` with `/F1` Helvetica and `/CS0` a spot colour, an ink a tint
+/// transform shows as CMYK red, as a design program writes one.
+fn spot(content: &str) -> Pdf {
+    let mut p = make(content);
+    let tint = p.doc.add_object(dictionary! {
+        "FunctionType" => 2, "Domain" => vec![0.into(), 1.into()],
+        "C0" => vec![0.into(), 0.into(), 0.into(), 0.into()],
+        "C1" => vec![0.into(), 1.into(), 1.into(), 0.into()], "N" => 1,
+    });
+    let ink = vec![
+        "Separation".into(),
+        Object::Name(b"PANTONE Red".to_vec()),
+        "DeviceCMYK".into(),
+        tint.into(),
+    ];
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let mut res = d.get(b"Resources").unwrap().as_dict().unwrap().clone();
+    res.set("ColorSpace", dictionary! { "CS0" => ink });
+    d.set("Resources", res);
+    p
+}
+
+/// How many red pixels there are left and right of column `x`: CMYK red drawn through a
+/// profile, not pure red.
+fn red_around(s: &Shot, x: usize) -> (usize, usize) {
+    let red = |px: [u8; 3]| px[0] > 180 && px[1] < 100 && px[2] < 100;
+    let mut out = (0, 0);
+    for y in 0..s.0.height {
+        for i in 0..s.0.width {
+            if red(s.px(i, y)) {
+                *(if i < x { &mut out.0 } else { &mut out.1 }) += 1;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn text_in_a_spot_colour_reads_and_stays_in_its_ink() {
+    // Full ink of a red spot colour, which reads as its colour, not as white (PB-65).
+    let mut p = spot("BT /F1 24 Tf /CS0 cs 1 scn 60 150 Td (Hello) Tj ET\n");
+    let line = p.page_objects(0).unwrap().remove(0);
+    let fill = line.spans[0].fill.unwrap();
+    assert!(
+        fill[0] > 0.9 && fill[1] < 0.1 && fill[2] < 0.1,
+        "{:?}",
+        line.spans
+    );
+    let hello = 60 + limarepdf_core::text_width("Hello ", 24.0) as usize;
+    assert!(red_around(&shot(&mut p), hello).0 > 50);
+    // Edited with a word in another font, the line is written anew: both its parts in the
+    // ink they were in.
+    let part = |text: &str, font: PartFont, from: Option<usize>| TextPart {
+        text: text.into(),
+        font,
+        size: 24.0,
+        color: fill,
+        rise: 0.0,
+        from,
+        origins: Vec::new(),
+    };
+    let bold = FontChoice {
+        bold: true,
+        ..FontChoice::default()
+    };
+    let e = TextEdit::in_parts(vec![
+        part("Hello", PartFont::Span(0), Some(0)),
+        part(" there", PartFont::Choice(bold), None),
+    ]);
+    p.edit_text(0, line.id, &e).unwrap();
+    let edited = p.page_objects(0).unwrap().remove(0);
+    assert_eq!(edited.text.as_deref(), Some("Hello there"));
+    assert!(
+        edited.spans.iter().all(|s| s.fill == Some(fill)),
+        "{:?}",
+        edited.spans
+    );
+    let (left, right) = red_around(&shot(&mut p), hello);
+    assert!(left > 50 && right > 50, "{left} and {right} red pixels");
+    // In the spot colour itself, not an RGB stand-in for it.
+    let page = p.page_ids()[0];
+    let content = p.doc.get_page_content(page);
+    let ops = lopdf::content::Content::decode(&content)
+        .unwrap()
+        .operations;
+    let count = |name: &str| ops.iter().filter(|o| o.operator == name).count();
+    assert_eq!(
+        (count("rg"), count("cs"), count("scn")),
+        (0, 2, 2),
+        "{ops:?}"
+    );
+}
+
 /// Where the ink of colour `c` starts: its leftmost column and lowest row.
 fn ink(s: &Shot, c: [u8; 3]) -> Option<(usize, usize)> {
     let mut at: Option<(usize, usize)> = None;
@@ -706,6 +801,62 @@ fn edit_text_in_place_and_with_new_font() {
     let bytes = p.to_bytes().unwrap();
     let q = Pdf::from_bytes(&bytes, None).unwrap();
     assert_eq!(q.page_objects(0).unwrap().len(), o.len());
+}
+
+/// A line read with control characters in it, as a UTF-16 string shown in a simple font
+/// reads (PDFBox's `491`: "þÿ\0m\0y..."), edits like any other: the control characters, which
+/// draw nothing, are left out of what is written, as new text leaves them out, never named
+/// as missing from every font (PB-62: refused so during batch 45's stage 1, not by its end).
+#[test]
+fn a_line_read_with_control_characters_can_be_edited() {
+    let mut p = Pdf::new();
+    p.insert_blank(0, W as f32, H as f32).unwrap();
+    let utf16 = "<FEFF006D0079002000740065007800740020>";
+    set_content_in(
+        &mut p,
+        "Helvetica-Bold",
+        &format!("BT /F1 12 Tf 20 100 Td {utf16} Tj ET"),
+    );
+    let line = p.page_objects(0).unwrap().remove(0);
+    let read: Vec<char> = line.text.clone().unwrap().chars().collect();
+    assert_eq!(
+        read.iter().collect::<String>(),
+        "þÿ\0m\0y\0 \0t\0e\0x\0t\0 "
+    );
+    // The second word cut and pasted before the first, as the app writes it: the pasted
+    // characters typed (no origin), the rest the line's own where they were.
+    let pasted = "\0t\0e\0x\0t ";
+    let mut origins: Vec<Option<usize>> = vec![None; pasted.chars().count()];
+    origins.extend((0..8).map(Some));
+    origins.extend((16..read.len()).map(Some));
+    let text: String = pasted
+        .chars()
+        .chain(read[..8].iter().copied())
+        .chain(read[16..].iter().copied())
+        .collect();
+    assert_eq!(text, "\0t\0e\0x\0t þÿ\0m\0y\0 \0 ");
+    let s = &line.spans[0];
+    let part = TextPart {
+        text: text.clone(),
+        font: PartFont::Span(0),
+        size: s.font_size,
+        color: s.fill.unwrap_or([0.0; 3]),
+        rise: s.rise,
+        from: None,
+        origins,
+    };
+    let e = TextEdit {
+        text,
+        font: None,
+        size: None,
+        color: None,
+        parts: vec![part],
+    };
+    p.edit_text(0, line.id, &e).unwrap();
+    let texts: Vec<String> = (p.page_objects(0).unwrap().into_iter())
+        .filter_map(|o| o.text)
+        .collect();
+    assert_eq!(texts, ["text þÿmy  "]);
 }
 
 /// What `keeps_font` says is what `edit_text` writes: the line's own font, or a standard
