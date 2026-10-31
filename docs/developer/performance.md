@@ -524,6 +524,32 @@ What they show:
 - `page_sizes` reads a page's media box and crop box as before (a page without a crop box read both before too):
   16 ms over 10,000 pages.
 
+## The page under text being edited
+
+Batch 45's 3b-1 (ENH-21) makes the page alone without the text being edited once when a line or paragraph starts
+being edited, on the window's thread, and draws the hidden part of it on a thread of its own (architecture.md,
+"The page under text being edited"). Measured on 31 October 2026 on the machine above by the throwaway probe
+(`target/b31s3/para/`, `b45para without FILE PAGE…`, the `ci-test` profile), each page's largest block, 20 runs
+(the heavy page 3); "drawn" is a one-page load and `render_region_in` of the block's box at 2.67 pixels a point,
+as the app draws it at 100% on a 2× screen:
+
+| Page | `Pdf::page_without` (median / most) | Its size | Drawn (median / most) |
+| --- | --- | --- | --- |
+| `big.pdf` (10,000 pages), pages 1, 5,001 and 10,000 | 3.35 to 3.55 / 4.46 ms | 0.9 KB | 0.14 to 0.16 / 0.43 ms |
+| pdf.js `bug810214`, two pages with pictures | 0.70 and 1.37 / 1.47 ms | 50 and 58 KB | 4.7 and 31.3 / 32.5 ms |
+| pdf.js `issue11306`, a 2 MB picture on page 1 | 0.75 / 2.18 ms | 2.1 MB | 15.8 / 19.8 ms |
+| PDFBox `4060` page 1 (a 5 MB page of 2,750 objects) | 68.3 / 70.7 ms | 5.4 MB | 6.09 s (one run) |
+
+What they show:
+
+- Making the page alone costs per page, not per document: about 3.5 ms on any page of 10,000, mostly finding the
+  page in the page tree (a whole copy of that document, as a thread would need, takes 23.5 ms). On the heaviest
+  page it is 68 ms, less than reading that page's objects and deleting one of them (38.5 and 92.7 ms), which
+  editing there already costs.
+- Drawing is off the window's thread, a few milliseconds as a rule; on the heaviest page, seconds, during which
+  the colour around the text stands in. It isn't done again as the text is typed, only after a zoom or a change
+  of page colours.
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted
@@ -623,6 +649,19 @@ its outline turns to the caution colour; that change is the first the poller see
 credits them with it (834, 702, 600, 470, 322 and 193 ms in the first run, falling as later keys were sent
 closer to it), each of which the app built in 0.7 to 3.2 ms. The line's whole run had 4 keys shown in 52 to 71 ms, past key 105, none
 over 100 ms.
+
+Run again on 31 October 2026 for batch 45's 3b-1 (ENH-21: the line being edited hidden by the page drawn without
+it, a picture drawn under the typing each frame in place of one colour), the release builds of 459b53e and of
+3b-1 one after the other, the same way:
+
+| Editing a line (letter.pdf) | Built | Shown, keys 0 to 50 | Over 50 ms shown | Over 100 ms shown |
+| --- | --- | --- | --- | --- |
+| 459b53e (before) | 3.5 / 23.0 ms | 28.2 / 47.3 ms | 0 | 0 |
+| 3b-1 | 2.8 / 24.1 ms | 26.8 / 46.6 ms | 0 | 0 |
+
+The same within the runs' spread, and within the accepted thresholds; the whole runs' shown worst, past the
+captured area, 65.3 and 60.0 ms. The paper behind letter.pdf's line is white, but what the picture shows doesn't
+change a frame's cost: it is one picture drawn in place of one rectangle, made off the window's thread.
 
 ### Working while something runs
 

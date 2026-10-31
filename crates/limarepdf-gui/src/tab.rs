@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod backdrop;
 mod comments;
 mod organise;
 mod previews;
@@ -281,6 +282,8 @@ pub struct Tab {
     colours: Colours,
     /// The colour around the line being edited, found for that box in those colours.
     line_cover: Option<(Sample, Colours, Color32)>,
+    /// The page drawn without the text being edited, to show under the typing (ENH-21).
+    backdrop: Option<backdrop::Backdrop>,
     /// The document's words, which a paragraph's line-end hyphens are read by, coming from
     /// a thread of their own ([`words_of`]); given to the editor when they come.
     words: Option<std::sync::mpsc::Receiver<Arc<DocWords>>>,
@@ -518,6 +521,7 @@ impl Tab {
             worker: Worker::spawn(ctx.clone(), bytes, colours),
             colours,
             line_cover: None,
+            backdrop: None,
             words: Some(words),
             sizes,
             pages: HashMap::new(),
@@ -2603,6 +2607,7 @@ impl Tab {
 
     fn collect(&mut self, ctx: &egui::Context) {
         self.sync_cover();
+        self.sync_backdrop(ctx);
         if let Some(Ok(words)) = self.words.as_ref().map(|rx| rx.try_recv()) {
             self.ed.doc_words = Some(words);
             self.words = None;

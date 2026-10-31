@@ -4,7 +4,9 @@ use crate::own_encoding;
 use crate::own_font;
 use crate::std14;
 use crate::tounicode::ToUnicode;
-use hayro::hayro_interpret::hayro_cmap::{load_embedded, BfString, CMap, CMapName, CidFamily};
+use hayro::hayro_interpret::hayro_cmap::{
+    load_embedded, BfString, CMap, CMapName, CharacterCollection, CidFamily,
+};
 use lopdf::Encoding;
 use lopdf::{Dictionary, Document, Object};
 use std::collections::HashMap;
@@ -242,6 +244,15 @@ fn system_family(doc: &Document, desc: &Dictionary) -> Option<CidFamily> {
         &s(b"Registry")?,
         &s(b"Ordering")?,
     ))
+}
+
+/// The character collection the predefined CMap `name` names (`UniJIS-UCS2-H`: Adobe-Japan1),
+/// if it is one.
+pub(crate) fn predefined_collection(name: &[u8]) -> Option<CharacterCollection> {
+    predefined(CMapName::from_bytes(name))?
+        .metadata()
+        .character_collection
+        .clone()
 }
 
 /// A predefined CMap by name (`Identity-H`, `UniJIS-UCS2-H`, `90ms-RKSJ-H`, ...). Each is

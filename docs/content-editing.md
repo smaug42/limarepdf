@@ -20,7 +20,8 @@ instead.
 While you type:
 
 - The line is drawn as it will be written, with an outline around it (the accent colour with a white or black line
-  inside, so it shows on any page) and the old line hidden underneath in the colour around it. The status bar says
+  inside, so it shows on any page) and the old line hidden underneath by the page as it is without it, so a photo,
+  shading or coloured box behind it still shows (for a moment as you start, the colour around it). The status bar says
   **Editing one line**: what you type changes this line only. A line with words in other fonts, sizes or colours
   (a bold word, a superscript) is edited whole, each word in its own style. Each keeps its own font, embedded in
   the PDF or not, letter by letter: letters you leave as they are keep their exact spacing, and new letters are
@@ -84,8 +85,8 @@ greyed for them, and says why when you point at it.
 While you type:
 
 - The paragraph is drawn on the lines it will be written on, in the fonts it will be written in, with an outline
-  round its frame and its old lines hidden underneath in the colour around them. The status bar says **Editing a
-  paragraph**.
+  round its frame and its old lines hidden underneath by the page as it is without them, as a line's are. The
+  status bar says **Editing a paragraph**.
 - Lines break where Word and Google Docs would break them, inside the paragraph's own edges and alignment (left,
   centred, right or justified, a justified line's spaces stretched to its edge). Lines before the change, and
   after the point where the line breaks fall where they did, stay exactly as they were: a typo fixed usually
@@ -386,8 +387,8 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   (as maps draw a label over a halo of its own) is changed where you click it; the copy under it keeps the old
   words.
 - A paragraph grows and shrinks downwards in its frame; nothing else on the page moves, and text doesn't flow on
-  to the next column or page. Its old lines are hidden in one colour while you type, so over a picture or shading
-  that part looks flat until the change is kept. A typed word takes the style of the character before it, so typed
+  to the next column or page. While you type in a line or a paragraph, a highlight or other comment over its old
+  text is hidden with it until the change is kept. A typed word takes the style of the character before it, so typed
   right after a symbol (a bullet, say) it is in the symbol's font. A letter TeX draws as its accent over its letter (an older way of writing
   "ü") reads as the accent, then the letter ("Pr¨ufung"), in the paragraph you type in too; it is written back as
   it was drawn, so other readers still read it as one letter.
@@ -411,8 +412,9 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   is read once, when the app starts (on another thread), with the fonts for emoji, and for Chinese, Japanese and
   Korean when your computer's language is one of them: fonts installed while it runs are used after a restart.
 - While a line that keeps its font is edited, its character and word spacing, horizontal scaling (`Tc`, `Tw`,
-  `Tz`) and the fine spacing between its letters aren't drawn, a font not held in the PDF is drawn in the installed
-  or Liberation look-alike, and the letters of a ligature in the Liberation look-alike, so the line can look
+  `Tz`) and the fine spacing between its letters aren't drawn, a font not held in the PDF is drawn in the Liberation
+  look-alike of the Helvetica, Times or Courier LimarePDF's pages show it in (Chinese, Japanese and Korean in the
+  installed font they show it in), and the letters of a ligature in the Liberation look-alike, so the line can look
   slightly different until you finish. A part raised high above the line (a large
   superscript) is drawn lower while you type, within the line, and is written where it was. Turned lines are
   edited in a box over the line, and invisible text in a plain box.

@@ -7,10 +7,12 @@
 //! that keeps its own embedded font is drawn in that font's own glyphs, in a small font core
 //! makes of them with the PDF's widths ([`LineFont::preview`], made on another thread),
 //! falling back to the Liberation face of its kind for what it lacks; a font the PDF doesn't
-//! hold is drawn in the installed font of its name when the computer has it (found through
-//! core's installed fonts and loaded the first time it is needed), else in the Liberation
-//! face of its kind. Inter is the last resort, and the stand-in while a font loads, and
-//! every family falls back to Inter for characters its font lacks.
+//! hold is drawn in the face LimarePDF's pages draw it in once kept ([`LineFont::stand_in`],
+//! ENH-25): the Liberation face of the standard font the renderer takes for it, or for a CID
+//! font the installed font it finds (loaded the first time it is needed). A line whose fonts
+//! aren't read yet is drawn in the installed font of its font's name, else the Liberation
+//! face of its kind by the name. Inter is the last resort, and the stand-in while a font
+//! loads, and every family falls back to Inter for characters its font lacks.
 //!
 //! Text in an installed family (the Unicode text design, section 7) is drawn in the
 //! family's font file, at the weight chosen when it is a variable font ([`coords`]); the
@@ -19,7 +21,9 @@
 use eframe::egui::epaint::text::VariationCoords;
 use eframe::egui::{self, FontData, FontFamily};
 use limarepdf_core::render::InstalledFonts;
-use limarepdf_core::{bundled_face, liberation, FaceFile, FontChoice, LineFont};
+use limarepdf_core::{
+    bundled_face, liberation, FaceFile, FontChoice, InstalledQuery, LineFont, StandIn,
+};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -52,6 +56,9 @@ enum Candidate {
     Preview(Own),
     /// An installed font, by a PDF font name.
     Installed(String),
+    /// The installed font the pages draw a CID font the PDF doesn't hold in, by the
+    /// renderer's question for it.
+    Found(InstalledQuery),
     /// An installed family's font file, and the face's index in it.
     File(PathBuf, u32),
     /// A bundled Liberation face, a family of its own named as in core's `LIBERATION`.
@@ -81,13 +88,19 @@ fn candidates(w: Wanted) -> Vec<Candidate> {
                 .map(|file| Candidate::File(file.path, file.index));
             (file.into_iter().collect(), f.standard())
         }
-        Wanted::Kept(name, font) => {
-            let f = FontChoice::from_name(name);
-            let own = font.and_then(|font| Some(Own(font.preview_key()?, font.clone(), face(f))));
-            let mut out: Vec<Candidate> = own.map(Candidate::Preview).into_iter().collect();
-            out.push(Candidate::Installed(name.to_string()));
-            (out, f)
-        }
+        Wanted::Kept(name, font) => match font.and_then(LineFont::stand_in) {
+            // A font the PDF doesn't hold: the face the pages draw it in (ENH-25).
+            Some(StandIn::Installed(q, f)) => (vec![Candidate::Found(q.clone())], *f),
+            Some(StandIn::Standard(f)) => (Vec::new(), *f),
+            None => {
+                let f = FontChoice::from_name(name);
+                let own =
+                    font.and_then(|font| Some(Own(font.preview_key()?, font.clone(), face(f))));
+                let mut out: Vec<Candidate> = own.map(Candidate::Preview).into_iter().collect();
+                out.push(Candidate::Installed(name.to_string()));
+                (out, f)
+            }
+        },
     };
     // The bundled face is always there, ready a frame or two after it is first asked for:
     // Inter meanwhile, rather than loading an installed font that would soon go unused.
@@ -102,6 +115,7 @@ fn pick(w: Wanted, mut ready: impl FnMut(&Candidate) -> bool) -> FontFamily {
     match candidates(w).into_iter().find(|c| ready(c)) {
         Some(Candidate::Preview(own)) => named(&preview_key(own.0)),
         Some(Candidate::Installed(name)) => named(&installed_key(&name)),
+        Some(Candidate::Found(q)) => named(&found_key(&q)),
         Some(Candidate::File(path, index)) => named(&file_key(&path, index)),
         Some(Candidate::Bundled(name)) => named(name),
         Some(Candidate::Inter) | None => FontFamily::Proportional,
@@ -123,6 +137,13 @@ pub fn family(ctx: &egui::Context, w: Wanted) -> FontFamily {
             let name = name.clone();
             move || {
                 let f = InstalledFonts::system().named(&name)?;
+                Some((Cow::Owned(f.data.as_ref().as_ref().to_vec()), f.index))
+            }
+        }),
+        Candidate::Found(q) => loaded(ctx, &found_key(q), &[], None, {
+            let q = q.clone();
+            move || {
+                let f = q.find(InstalledFonts::system())?;
                 Some((Cow::Owned(f.data.as_ref().as_ref().to_vec()), f.index))
             }
         }),
@@ -171,6 +192,12 @@ fn has(ctx: &egui::Context, family: &FontFamily) -> bool {
 /// The egui name of an installed font, by the PDF font name it was found for.
 fn installed_key(name: &str) -> String {
     format!("installed {name}")
+}
+
+/// The egui name of the installed font found for a CID font the PDF doesn't hold, by the
+/// question it was found for.
+fn found_key(q: &InstalledQuery) -> String {
+    format!("found {}", q.key())
 }
 
 /// The egui name of a PDF font's preview font, by its key ([`LineFont::preview_key`]).
@@ -747,6 +774,114 @@ mod tests {
         // A letter the PDF's font has no code for (WinAnsi has no Ω): the face of its kind.
         let face = width("Ω", named("Liberation Sans"));
         assert!((width("Ω", want) - face).abs() < 0.01, "{face}");
+    }
+
+    /// A page with a line, "Walrus", in a font the PDF names but doesn't hold: `subtype` and
+    /// `base` its `/Subtype` and `/BaseFont`, `desc` its font descriptor's entries; and the
+    /// line's fonts.
+    fn unembedded_line(subtype: &str, base: &str, desc: lopdf::Dictionary) -> Vec<LineFont> {
+        use lopdf::{dictionary, Dictionary, Object, Stream};
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let widths: Vec<Object> = (32u8..=126)
+            .map(|b| Object::Real(limarepdf_core::text_width(&(b as char).to_string(), 1000.0)))
+            .collect();
+        let mut fd = dictionary! { "Type" => "FontDescriptor", "FontName" => base };
+        fd.extend(&desc);
+        let descriptor = pdf.doc.add_object(fd);
+        let font = pdf.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => subtype, "BaseFont" => base,
+            "FirstChar" => 32, "LastChar" => 126, "Widths" => widths,
+            "Encoding" => "WinAnsiEncoding", "FontDescriptor" => descriptor,
+        });
+        let content = b"BT /F1 20 Tf 72 700 Td (Walrus) Tj ET".to_vec();
+        let s = pdf.doc.add_object(Stream::new(Dictionary::new(), content));
+        let page = pdf.page_ids()[0];
+        let d = pdf.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", Object::Reference(s));
+        d.set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => font } },
+        );
+        let objects = pdf.page_objects(0).unwrap();
+        let line = objects.iter().find(|o| o.text.is_some()).unwrap();
+        pdf.line_fonts(0, line.id).unwrap()
+    }
+
+    /// A line in a font the PDF doesn't hold is typed in the face LimarePDF's pages draw it
+    /// in once kept (ENH-25), not in the installed font of its name: the standard font the
+    /// renderer takes for it, by its name, then by its descriptor, in its Liberation face.
+    #[test]
+    fn an_unembedded_kept_font_is_drawn_as_the_page_draws_it() {
+        use lopdf::dictionary;
+        let cases = [
+            // A word in the name gives the family, the descriptor's weight bold and its
+            // italic angle italic.
+            (
+                "TrueType",
+                "Arial",
+                dictionary! { "Flags" => 32 },
+                "Liberation Sans",
+            ),
+            (
+                "TrueType",
+                "Arial",
+                dictionary! { "Flags" => 32, "FontWeight" => 700 },
+                "Liberation Sans Bold",
+            ),
+            (
+                "TrueType",
+                "ArialMT",
+                dictionary! { "Flags" => 32, "ItalicAngle" => -12 },
+                "Liberation Sans Italic",
+            ),
+            (
+                "Type1",
+                "Times-Roman",
+                dictionary! { "Flags" => 34 },
+                "Liberation Serif",
+            ),
+            (
+                "TrueType",
+                "CourierNewPS-BoldMT",
+                dictionary! { "Flags" => 35 },
+                "Liberation Mono Bold",
+            ),
+            // No such word: the serif flag gives the family, "Bold" and "Italic" in the name
+            // the style; the weight and the fixed-pitch flag aren't read.
+            (
+                "TrueType",
+                "Cambria",
+                dictionary! { "Flags" => 34 },
+                "Liberation Serif",
+            ),
+            (
+                "TrueType",
+                "Calibri",
+                dictionary! { "Flags" => 32, "FontWeight" => 700 },
+                "Liberation Sans",
+            ),
+            (
+                "TrueType",
+                "Georgia,BoldItalic",
+                dictionary! { "Flags" => 34 },
+                "Liberation Serif Bold Italic",
+            ),
+            (
+                "TrueType",
+                "Consolas",
+                dictionary! { "Flags" => 33 },
+                "Liberation Sans",
+            ),
+        ];
+        for (subtype, base, desc, face) in cases {
+            let fonts = unembedded_line(subtype, base, desc);
+            assert_eq!(
+                candidates(Wanted::Kept(base, Some(&fonts[0]))),
+                [Candidate::Bundled(face), Candidate::Inter],
+                "{base}"
+            );
+        }
     }
 
     #[test]

@@ -126,6 +126,14 @@
 
 ### Changed
 
+- A line or paragraph being edited on the page hides its old text with the page as it is without it, so a photo,
+  shading or coloured box behind the text still shows while you type; for a moment as you start, the colour
+  around it stands in. Before, the old text was hidden under that one colour until the change was kept.
+- A line whose font isn't held in the PDF is drawn while you type in the face LimarePDF's pages show it in once
+  kept: the Liberation look-alike of the Helvetica, Times or Courier its name and its font description give (a
+  Calibri the PDF doesn't hold shows as Helvetica, a Cambria marked serif as Times), Chinese, Japanese and Korean
+  in the installed font the page uses. Before, it was drawn in the installed font of its name, or a look-alike
+  chosen by the name alone, and could change look when kept.
 - A group of the command band with one command in it (Edit > Text flow's Paragraph), short of room, folds to
   that command's icon rather than to a button with the group's name that opens it.
 - Typing over words selected in different paragraphs now says "Type over words within one paragraph." (before:

@@ -1,11 +1,12 @@
 //! New documents made from part of a document: its pages cropped to a selection, or a
-//! text laid out afresh. Used to print or save selected text.
+//! text laid out afresh. Used to print or save selected text. And a page alone without
+//! some of its objects, which the app shows under text being edited.
 
 use crate::embed::writable;
 use crate::{FontChoice, Pdf, Result};
 use anyhow::bail;
 use lopdf::content::{Content, Operation};
-use lopdf::{dictionary, Stream};
+use lopdf::{dictionary, Dictionary, Document, Object, Stream};
 use std::collections::HashSet;
 
 /// Font size and line spacing of [`Pdf::from_text`], in points.
@@ -89,6 +90,94 @@ impl Pdf {
         }
         Ok(out)
     }
+
+    /// Page `page_index` alone, as a new document's bytes, with the objects `ids` (as
+    /// [`Pdf::page_objects`] numbers them) taken out as [`Pdf::delete_objects`] takes them:
+    /// what the app shows under text being edited, so its old lines don't show through
+    /// (ENH-21). The page keeps its boxes, turn, resources and transparency group, and the
+    /// document's optional content settings (a hidden layer stays hidden); its annotations
+    /// are left out. Only what the page's content and resources use is copied, so it costs
+    /// as much in a long document as in a short one. The document itself is not changed.
+    pub fn page_without(&self, page_index: usize, ids: &[usize]) -> Result<Vec<u8>> {
+        let page = self.page_id_at(page_index)?;
+        let parsed = self.parse_page_of(page)?;
+        let mut ops = Self::without_objects(&parsed, ids)?;
+        ops.extend((0..parsed.depth_left).map(|_| Operation::new("Q", vec![])));
+        let content = (parsed.inline.encode(ops))
+            .map_err(|e| anyhow::anyhow!("cannot encode the page content: {e}"))?;
+        let src = self.doc.get_dictionary(page)?;
+        let mut d = dictionary! {
+            "Type" => "Page",
+            "MediaBox" => rect(self.media_box(page)),
+            "Rotate" => self.page_rotation(page),
+        };
+        if let Some(crop) = self.inherited(page, b"CropBox").and_then(|o| self.rect(&o)) {
+            d.set("CropBox", rect(crop));
+        }
+        let res = self.inherited(page, b"Resources");
+        let group = src.get(b"Group").ok().cloned();
+        let unit = src.get(b"UserUnit").ok().cloned();
+        let layers = (self.doc.catalog().ok())
+            .and_then(|c| c.get(b"OCProperties").ok())
+            .cloned();
+        // Objects keep their numbers, so what refers to them still does.
+        let mut out = Document::with_version("1.7");
+        let roots = [&res, &group, &layers];
+        self.copy_used(roots.into_iter().flatten(), &mut out);
+        for (key, value) in [("Resources", res), ("Group", group), ("UserUnit", unit)] {
+            if let Some(v) = value {
+                d.set(key, v);
+            }
+        }
+        out.max_id = self.doc.max_id;
+        let contents = out.add_object(Stream::new(dictionary! {}, content));
+        let page = out.new_object_id();
+        let pages = out.add_object(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1,
+        });
+        d.set("Contents", contents);
+        d.set("Parent", pages);
+        out.objects.insert(page, Object::Dictionary(d));
+        let mut catalog = dictionary! { "Type" => "Catalog", "Pages" => pages };
+        if let Some(layers) = layers {
+            catalog.set("OCProperties", layers);
+        }
+        let catalog = out.add_object(catalog);
+        out.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        out.save_to(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Copy into `out` the objects `roots` refer to, and those they refer to in turn, with
+    /// their numbers; never a page or the page tree, which a picture or a font can name.
+    fn copy_used<'a>(&self, roots: impl IntoIterator<Item = &'a Object>, out: &mut Document) {
+        let mut stack: Vec<&Object> = roots.into_iter().collect();
+        while let Some(o) = stack.pop() {
+            match o {
+                Object::Reference(id) if !out.objects.contains_key(id) => {
+                    let Ok(found) = self.doc.get_object(*id) else {
+                        continue;
+                    };
+                    let tree = |d: &Dictionary| d.has_type(b"Page") || d.has_type(b"Pages");
+                    if found.as_dict().is_ok_and(tree) {
+                        continue;
+                    }
+                    out.objects.insert(*id, found.clone());
+                    stack.push(found);
+                }
+                Object::Array(a) => stack.extend(a),
+                Object::Dictionary(d) => stack.extend(d.iter().map(|(_, o)| o)),
+                Object::Stream(s) => stack.extend(s.dict.iter().map(|(_, o)| o)),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A rectangle as a PDF array.
+fn rect(r: [f32; 4]) -> Vec<Object> {
+    r.iter().map(|&v| v.into()).collect()
 }
 
 #[cfg(test)]

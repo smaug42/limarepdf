@@ -25,6 +25,7 @@ use crate::fonts::FontCtx;
 use crate::objects::{Parsed, Span, TextData};
 use crate::own_encoding::{glyph_text, listed, MAX_PROGRAM};
 use crate::preview_font::{opentype, Glyph, Metrics, Outline, Seg};
+use crate::stand_in::StandIn;
 use crate::{Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::Operation;
@@ -102,6 +103,8 @@ pub struct LineFont {
     /// A simple font's widths by code (in 1/1000 em), as the page reads them
     /// (`FontCtx::width`): what text written in it is measured by (`rewrap.rs`).
     widths: Option<Arc<[f32]>>,
+    /// What the pages draw the font in when the PDF doesn't hold it (`stand_in.rs`).
+    stand_in: Option<StandIn>,
 }
 
 impl std::fmt::Debug for LineFont {
@@ -230,6 +233,13 @@ impl LineFont {
         }
     }
 
+    /// What LimarePDF's pages draw the font in when the PDF names it but doesn't hold its
+    /// program (ENH-25): text typed in it shows in that face while typing. `None` for a
+    /// font the PDF holds, a Type 3 font, and Symbol or ZapfDingbats.
+    pub fn stand_in(&self) -> Option<&StandIn> {
+        self.stand_in.as_ref()
+    }
+
     /// How each of the line's characters is drawn, when that is known.
     pub(crate) fn drawn(&self) -> Option<&[Drawn]> {
         self.drawn.as_deref()
@@ -326,6 +336,7 @@ impl<'a> PageFonts<'a> {
                     drawn: None,
                     flipped: ctx.flipped,
                     widths,
+                    stand_in: crate::stand_in::stand_in(doc, dict),
                 };
                 Some((ctx, font))
             });
@@ -338,6 +349,7 @@ impl<'a> PageFonts<'a> {
                     drawn: None,
                     flipped: false,
                     widths: None,
+                    stand_in: None,
                 });
                 continue;
             };

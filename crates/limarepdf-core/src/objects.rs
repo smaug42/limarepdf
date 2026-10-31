@@ -383,7 +383,7 @@ impl Pdf {
     }
 
     /// [`Pdf::parse_page`] for the page with object `page`.
-    fn parse_page_of(&self, page: ObjectId) -> Result<Parsed> {
+    pub(crate) fn parse_page_of(&self, page: ObjectId) -> Result<Parsed> {
         let data = self
             .doc
             .get_page_content_with_limit(page, crate::MAX_CONTENT)?;

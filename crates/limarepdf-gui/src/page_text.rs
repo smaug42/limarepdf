@@ -1093,9 +1093,38 @@ pub struct ParaStyle<'a> {
     pub warn: &'a dyn Fn(&[Rect]) -> Option<&'static str>,
 }
 
+/// What hides text being edited under the typing, so it doesn't show twice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Cover {
+    /// One colour, the most common around it.
+    Flat(Color32),
+    /// The page drawn without it (ENH-21): the picture, and where it goes on the screen.
+    Page(egui::TextureId, Rect),
+}
+
+impl Cover {
+    /// Hide `r`, on the screen.
+    fn paint(&self, painter: &egui::Painter, r: Rect) {
+        match *self {
+            Cover::Flat(fill) => {
+                painter.rect_filled(r, 0.0, fill);
+            }
+            Cover::Page(tex, at) => {
+                // The part of the picture under `r`.
+                let uv = |p: Pos2| {
+                    let v = (p - at.min) / at.size().max(Vec2::splat(1e-3));
+                    Pos2::new(v.x.clamp(0.0, 1.0), v.y.clamp(0.0, 1.0))
+                };
+                let part = Rect::from_min_max(uv(r.min), uv(r.max));
+                painter.image(tex, r, part, Color32::WHITE);
+            }
+        }
+    }
+}
+
 /// Draw a paragraph, `text`, for typing (the editor `id`) on the lines it will be written
 /// on ([`ParaStyle::laid`]), outlined round its frame. `covers`, rectangles on the screen,
-/// are painted in `fill` under it first: the lines being edited, hidden so they don't show
+/// are hidden under it first as `hide` says: the lines being edited, so they don't show
 /// twice.
 pub fn paragraph_field(
     ctx: &egui::Context,
@@ -1103,7 +1132,7 @@ pub fn paragraph_field(
     text: &mut String,
     style: &ParaStyle,
     covers: &[Rect],
-    fill: Option<Color32>,
+    hide: Option<Cover>,
 ) -> Field {
     let (galley, origin) = (style.laid)(text);
     let inner = Rect::from_min_size(origin, galley.size());
@@ -1125,9 +1154,9 @@ pub fn paragraph_field(
                 PageColours::Normal | PageColours::Sepia => egui::Visuals::light(),
             };
             ui.expand_to_include_rect(covered);
-            if let Some(fill) = fill {
+            if let Some(how) = hide {
                 for c in covers {
-                    ui.painter().rect_filled(*c, 0.0, fill);
+                    how.paint(ui.painter(), *c);
                 }
             }
             outline_ui(ui, outline, style.accent, warning);
@@ -1381,8 +1410,9 @@ pub fn past_edge(page: Rect, text: Rect) -> Option<&'static str> {
 
 /// Draw `text` for typing (the editor `id`) with its first baseline's left end at
 /// `origin` on screen: one line, or several 1.2 times the size apart. `cover`, a
-/// rectangle on screen and its colour, is painted under it first: the line being edited,
-/// hidden so it doesn't show twice. A `movable` editor has a grip around its outline.
+/// rectangle on screen and what hides it, is painted under it first: the line being
+/// edited, hidden so it doesn't show twice. A `movable` editor has a grip around its
+/// outline.
 #[allow(clippy::too_many_arguments)]
 pub fn field(
     ctx: &egui::Context,
@@ -1391,7 +1421,7 @@ pub fn field(
     origin: Pos2,
     style: &Style,
     multiline: bool,
-    cover: Option<(Rect, Color32)>,
+    cover: Option<(Rect, Cover)>,
     movable: bool,
 ) -> Field {
     let runs = (style.runs)(text);
@@ -1426,9 +1456,9 @@ pub fn field(
                 PageColours::Normal | PageColours::Sepia => egui::Visuals::light(),
             };
             ui.expand_to_include_rect(grip);
-            if let Some((c, fill)) = cover {
+            if let Some((c, how)) = cover {
                 ui.expand_to_include_rect(c);
-                ui.painter().rect_filled(c, 0.0, fill);
+                how.paint(ui.painter(), c);
             }
             // The outline around the text moves it; the text itself takes the pointer. Not a
             // stop for the keyboard: Esc keeps the text, selected, and the arrow keys move

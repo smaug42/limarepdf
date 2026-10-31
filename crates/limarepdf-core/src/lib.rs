@@ -66,6 +66,7 @@ mod sig_sign;
 mod sig_verify;
 mod sign;
 mod stamps;
+mod stand_in;
 mod std14;
 mod text;
 mod tounicode;
@@ -127,6 +128,7 @@ pub use sign::{
     SignStyle, SIGN_TEXT,
 };
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
+pub use stand_in::{InstalledQuery, StandIn};
 pub use text::{match_count, Matches, Query, SearchHit, Snippet, TextIndex};
 pub use trust::{is_authority, read_certificates, Added, Trust, TrustEntry, TrustList, TrustRole};
 pub use typefaces::{add_font_files, typeface, typefaces, typefaces_ready, FaceFile, Typeface};

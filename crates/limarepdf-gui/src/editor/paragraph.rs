@@ -93,6 +93,12 @@ pub(super) fn para_id(scope: egui::Id, page: usize) -> egui::Id {
     scope.with(("paragraph-edit", page))
 }
 
+/// What hides each of a paragraph's old lines while it is edited (page points), as a line
+/// being edited is hidden.
+pub(super) fn covers(block: &Block) -> Vec<[f32; 4]> {
+    block.lines.iter().map(|l| cover_round(l.bbox)).collect()
+}
+
 /// Why a block can't be edited as a paragraph, if it can't: it is one line, in a table, or
 /// a turned line (the switch stays greyed and says so).
 fn refused(b: &Block) -> Option<&'static str> {
@@ -670,7 +676,7 @@ impl Editor {
         let mode = self.page_colours;
         let lang = self.lang.clone();
         let accent = ui.visuals().selection.stroke.color;
-        let fill = self.cover;
+        let hide = self.hiding(to_screen);
         let Some(pe) = self.para.as_mut() else {
             return false;
         };
@@ -737,15 +743,9 @@ impl Editor {
             warn: &warn,
         };
         // Each old line hidden, as a line being edited is.
-        let covers: Vec<Rect> = (block.lines.iter())
-            .map(|l| {
-                let (b, h) = (l.bbox, l.bbox[3] - l.bbox[1]);
-                let (x, y) = (0.05 * h, (0.12 * h, 0.06 * h));
-                on_screen([b[0] - x, b[1] - y.0, b[2] + x, b[3] + y.1])
-            })
-            .collect();
+        let covers: Vec<Rect> = covers(&block).into_iter().map(on_screen).collect();
         let mut typed = pe.text.text().to_string();
-        let f = page_text::paragraph_field(&ctx, id, &mut typed, &style, &covers, fill);
+        let f = page_text::paragraph_field(&ctx, id, &mut typed, &style, &covers, hide);
         let out = f.out;
         // The styles follow what was typed.
         let sel = out

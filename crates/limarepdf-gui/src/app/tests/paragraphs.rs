@@ -41,7 +41,7 @@ fn type_in(app: &mut App, ctx: &egui::Context, text: &str) {
     window(app, ctx, 1400.0, vec![egui::Event::Text(text.into())]);
 }
 
-fn new_app() -> (egui::Context, App) {
+pub(super) fn new_app() -> (egui::Context, App) {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     theme::install(&ctx);
@@ -50,7 +50,7 @@ fn new_app() -> (egui::Context, App) {
 }
 
 /// Double-click `word` on the active tab's first page with the read tool, then settle.
-fn double_click_word(app: &mut App, ctx: &egui::Context, word: &str) {
+pub(super) fn double_click_word(app: &mut App, ctx: &egui::Context, word: &str) {
     let tree = settled_at(app, ctx, 1400.0);
     let (page, _) = node(&tree, "Page 1").expect("the page");
     let k = page.width() / 612.0;

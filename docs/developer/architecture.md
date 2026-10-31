@@ -1617,8 +1617,9 @@ form XObject, and per inline image.
   soft hyphen shown as "-" where it ends a line and inkless elsewhere (egui's shaping gives it no width), U+2029 as
   a row's break; the galley's text is the text as typed, so the caret, selection, double-click and input methods
   go by it. Enter and Shift+Enter are taken before the box sees them and put U+2029 or `\n` into the text at the
-  selection (egui types no break from a text event). The old lines are covered with the flat colour around the
-  block (`cover_wanted`, one sample round the block's box; the page drawn without them is 3b's). Overflow: the new
+  selection (egui types no break from a text event). The old lines are hidden, each in the box a line being edited
+  is hidden in (`paragraph::covers`), by the page drawn without them (below, "The page under text being edited"),
+  the flat colour around the block standing in until it comes (`cover_wanted`, one sample round the block's box). Overflow: the new
   rows across the middle of their height against every visible object's box the old lines didn't overlap (not a
   background over most of the page), and the page's edge. Kept through `Typed::Paragraph` (`keep`, `put_back`,
   `settle_kept`, `refused_again`, `pending`), as `Action::EditParagraph` through `Tab::edit_inner`, one step; no
@@ -1657,15 +1658,47 @@ form XObject, and per inline image.
   time one of them is selected and kept with the page's objects until the document changes
   (`Editor::read_line_fonts`, `Pdf::page_line_fonts`), so selecting one line after another doesn't read the page
   again (up to a third of a second each time on a heavy page; performance.md). It draws each piece in the
-  font it will have: a kept embedded font in its own glyphs (its preview font), a kept unembedded one in the
-  installed font of its name or else the Liberation face of its kind; the installed family's font, or the
+  font it will have: a kept embedded font in its own glyphs (its preview font), a kept unembedded one in the face
+  LimarePDF's pages draw it in once kept (ENH-25, batch 45's 3b-1; `LineFont::stand_in`, `stand_in.rs`): hayro
+  0.8 draws a simple font it doesn't hold in one of its standard faces, the one its name is, else by a word in the
+  name ("helvetica", then "arial" or "sans", "courier", "mono", "times", "serif", in that order; bold by a
+  descriptor weight of 700 or "bold" or "demi", italic by a non-zero italic angle or "italic" or "oblique"), else
+  by the descriptor's serif flag, bold and italic by "Bold" and "Italic" in the PostScript name and the italic
+  flag (it reads no fixed-pitch flag or weight there), so the typing box draws the Liberation face of that
+  standard font; a CID font without such a word goes to `InstalledFonts::find` with hayro's question
+  (`InstalledQuery`: its names, style by name and character collection, the CMap's unless Identity, else
+  `/CIDSystemInfo`), drawn in what that finds (`typing_fonts`' `Candidate::Found`, a stand-in too), else the
+  standard face by the same rule. `tests/stand_in.rs` checks the rule against hayro's own drawing (each case's
+  page against a font hayro can take one way only, at the same widths, pixel for pixel). Symbol, ZapfDingbats
+  and a line whose fonts aren't read yet keep the installed font of the name, else the Liberation face of its
+  kind by the name. The installed family's font, or the
   Liberation face of the standard font replacing it, otherwise. The inspector names the typed words, as typed and
   each once, with a character the font has no code for, and the family they use (batch 45: before, it listed the
   letters, each once and spaced, which read as a word spaced out), or that the font can't take new text at all (Type 3,
-  not embedded, vertical writing, unreadable codes; `editor::font_note`). The old line is covered with the most
-  common colour in a 3-point ring around its box, from a separate drawing of that part of the page in the current
-  page colours. Below that note the inspector names the words that then fall back from the font they go to
+  not embedded, vertical writing, unreadable codes; `editor::font_note`). The old line is hidden by the page drawn
+  without it (below), the most common colour in a 3-point ring around its box standing in until that comes, from a
+  separate drawing of that part of the page in the current page colours. Below that note the inspector names the words that then fall back from the font they go to
   (`page_text::fallback_note`), and the typing box draws each in the face it will be written in.
+- **The page under text being edited** (ENH-21, batch 45's 3b-1; `tab/backdrop.rs`, `excerpt.rs`). A line drawn
+  in place, or a paragraph, being edited asks for the page drawn without its text objects
+  (`Editor::backdrop_wanted`: the page, the objects, the box the editor hides). Core's
+  `Pdf::page_without(page, ids)` makes that page alone as a new document's bytes: its content with those objects
+  taken out as `delete_objects` takes them (`Pdf::without_objects`, shared: a text object's shows by `move_only`,
+  what follows kept in place by `Following`), its boxes, turn, inherited resources and transparency group put on
+  it, the catalogue's optional content settings kept (a hidden layer stays hidden), the objects its resources and
+  those settings reach copied with their numbers (`copy_used`, never a page or the page tree), annotations left
+  out (a comment over the old text is hidden with it while typing). It never walks the page tree beyond finding
+  the page (`extract` goes through every page), so it costs per page: 3.4 ms on big.pdf's pages, about 1 ms on
+  corpus pages with large pictures, 68 ms on the heaviest corpus page, less than deleting one object there
+  (performance.md); it runs on the window's thread when editing starts, once for the text edited (the tab's
+  `Backdrop`, keyed by page, objects, box and the document's revision). A thread of its own (`backdrop::draw`)
+  draws the box's part of it at the scale the page is shown at (its tiles' at a high zoom; at most 4,096 pixels a
+  side, stretched past that) and in its colours (`render_region_in`, as the page worker draws tiles); the editor
+  draws it under the typing (`Editor::backdrop`, `page_text::Cover::Page`, each hidden box taking its part of the
+  picture). A zoom or colour change draws it again from the same bytes, one drawing at a time, the newest asked
+  for once one ends; after a zoom the last drawing is shown stretched meanwhile, after a colour change the flat
+  colour (`Cover::Flat`, the ring's), which also stands in until the first drawing comes and stays if it fails
+  (the failure in the timing log). Nothing is drawn again as the text is typed.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
   text line each, their baselines 1.2 times the size apart (Acrobat's spacing). In a standard font it is written
   in one of the 12 standard fonts with the WinAnsi encoding, kerned with its Liberation face's pairs; a line with

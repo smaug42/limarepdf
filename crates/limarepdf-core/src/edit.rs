@@ -1351,9 +1351,17 @@ impl Pdf {
     /// are as the page is now. If any can't be deleted, nothing is.
     pub fn delete_objects(&mut self, page_index: usize, ids: &[usize]) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
+        let out = Self::without_objects(&parsed, ids)?;
+        self.commit(page, out, parsed.depth_left, &parsed.inline)
+    }
+
+    /// The page's operators, as `parsed`, with the objects `ids` taken out: a text object's
+    /// shows (their moves kept, so what follows stays where it was), a path's painting (its
+    /// construction and any clip kept), a picture or form's drawing.
+    pub(crate) fn without_objects(parsed: &Parsed, ids: &[usize]) -> Result<Vec<Operation>> {
         let mut ids = ids.to_vec();
         ids.sort_unstable();
-        let (objs, owner) = Self::pick_all(&parsed, ids)?;
+        let (objs, owner) = Self::pick_all(parsed, ids)?;
         let fixes = Following::all(objs.iter().map(|o| Following::of(&parsed.ops, o)));
         let mut out = Vec::with_capacity(parsed.ops.len());
         for (i, o) in parsed.ops.iter().enumerate() {
@@ -1381,7 +1389,7 @@ impl Pdf {
                 ObjectKind::Image | ObjectKind::Form => {}
             }
         }
-        self.commit(page, out, parsed.depth_left, &parsed.inline)
+        Ok(out)
     }
 
     /// Change the text of a text object. Its characters keep the line's own font where it

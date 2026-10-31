@@ -95,8 +95,7 @@ this list once it works. The feature table below has the details.
   text right of the line's end, and new text only of the page's edge (a paragraph's new lines are checked against
   every visible object they run over); the warning's tag sits under the outline's right end, not where it
   happens, and can be under the floating toolbar when the toolbar sits below the line. A paragraph being edited
-  hides its old lines under one colour, so over a picture or shading its background shows flat until kept; its
-  frame's edges can't be dragged yet; it grows only downwards, over what follows (said, not refused). Typing over
+  can't have its frame's edges dragged yet; it grows only downwards, over what follows (said, not refused). Typing over
   words selected in different paragraphs types nothing (a note says to type within one paragraph), and deleting
   or cutting words outside a paragraph doesn't join lines: a line emptied that way is left blank, the lines around
   it where they were.
@@ -109,8 +108,10 @@ this list once it works. The feature table below has the details.
   (a notice says what was left).
 - A line turned on the page, and invisible recognised (OCR) text, are edited in a box over the line rather than
   drawn where they are (a turned line's box shows its fonts, sizes and colours; the caret goes by the character
-  clicked). Over a picture or a shaded background, the line being edited is hidden under one flat colour, the one
-  most common around it, until you finish. Text in a Type 3 font whose pictures of letters are stored upside down
+  clicked). A line or paragraph being edited is hidden by the page drawn without it (ENH-21), so a picture or
+  shading behind it shows; a highlight or other comment over the old text is hidden with it until you finish,
+  and the colour around it stands in until that drawing comes (on a very heavy page, seconds). Text in a Type 3
+  font whose pictures of letters are stored upside down
   (pdf.js `issue2984`, PDFBox `1628`) reads as turned, as only its pixels say otherwise; a Type 3 font's size is
   measured from its letters' widths, so a font of few or unusual letters can read a little larger or smaller
   than it shows (PB-56).
@@ -444,10 +445,10 @@ built from exactly the versions in `Cargo.lock`; security problems are reported 
   original fonts when scanned text is edited.
 - **Editing paragraphs: the rest.** The switch is built (batch 45's 3a: the inspector's Editing row, Edit > Text
   flow's Paragraph, the menus and the command search; the paragraph typed on core's lines, kept as one undo
-  step). Left (batch 45's 3b): the page drawn without the old lines under the typing (ENH-21, for lines too),
-  overflow said where it happens and checked against every object for lines and new text too (PB-35), the frame's
-  left and right edges dragged to rewrap, and the typing box drawing a kept font's face as the page draws it
-  (ENH-25). The default, a double-click in a block LimarePDF is sure of opening it as a paragraph, waits for the
+  step), and the page drawn without the old text under the typing, for lines too (3b-1, ENH-21). Left (batch
+  45's 3b-2): overflow said where it happens and checked against every object for lines and new text too
+  (PB-35), the frame's left and right edges dragged to rewrap, and the inspector saying that links and comments
+  over a paragraph stay in place. The default, a double-click in a block LimarePDF is sure of opening it as a paragraph, waits for the
   finding check to pass (testing.md, "Finding paragraphs"). Known limits of the writer (testing.md, "Editing
   paragraphs"): marked content's alternative text (`ActualText`) isn't read, so a letter marked as another (a
   small capital) reads as its glyph's own and loses its mark when its line is rewritten (PB-71); TeX's accent

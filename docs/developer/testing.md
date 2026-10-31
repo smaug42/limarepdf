@@ -301,11 +301,24 @@ drive it through the window (scripted behaviour, not unaided users' success):
 | D8: form and object focus kept apart | `the_commands_and_inspector_say_what_is_in_use` (a field with the keyboard heads the inspector "Form field" and lets the words go) |
 
 D1's extension the line's own font kept for ENH-31's verified cases is built (batch 31: `own_font.rs` and the
-corpus edit run below); paragraphs are built behind the switch (batch 45's 3a, NEW-01: the background, the
-frame's edges and overflow where it happens are 3b's); underline and strike-through wait for NEW-07; the human
+corpus edit run below); paragraphs are built behind the switch (batch 45's 3a, NEW-01), the page drawn without
+the old text under a line or paragraph being edited (3b-1, ENH-21: `app/tests/backdrop.rs`, below), the frame's
+edges and overflow where it happens are 3b-2's; underline and strike-through wait for NEW-07; the human
 runs of both flows are deferred to the RC cycle. Editing paragraphs by hand in the app (switching, typing, Enter
 and Shift+Enter, hyphens, a saved paragraph in Acrobat and other readers, a screen reader on the box): not run:
-deferred to the RC cycle.
+deferred to the RC cycle. Typing in a line and a paragraph over a photo, a gradient and coloured boxes, zoomed and
+in each page colour mode, on Linux, Windows and macOS (ENH-21's look by eye: the old text gone, nothing shifted
+at the edges of the hidden boxes), and a line in a font the PDF doesn't hold (Calibri, a serif one, a Japanese
+one) typed in and kept, its look unchanged when kept (ENH-25): not run: deferred to the RC cycle.
+
+The page under text being edited and the kept font's face (batch 45's 3b-1, ENH-21 and ENH-25):
+
+| What | Tests |
+| --- | --- |
+| The page alone without some objects (`Pdf::page_without`): drawn as if the line had never been written over a gradient and a box, the line after it in place, the document unchanged; a turned, cropped page with its box and resources from the page tree drawn as the page with the line deleted; a hidden layer still hidden (red without the layer settings), annotations left out; from a 200-page document only that page's objects (`tests/excerpt.rs`) | `a_page_without_a_line_is_drawn_as_if_it_had_never_been_there`, `a_turned_cropped_page_without_a_line_is_drawn_in_place`, `a_hidden_layer_stays_hidden_and_annotations_are_left_out`, `a_page_alone_holds_only_what_it_uses` |
+| In the app, over two boxes (`app/tests/backdrop.rs`, the drawing's pixels read from the frames' texture uploads): a paragraph's and a line's old text hidden by the drawing, under the typing (the frame's mesh), covering the block, both boxes and no dark pixel in it; not drawn again as the paragraph is typed in; again after a zoom with more pixels for the same place, and in dark page colours (the old drawing not shown meanwhile); gone when kept. Checked to fail with the objects not taken out (thousands of dark pixels) | `a_paragraph_edited_over_boxes_hides_its_old_lines_with_the_page_drawn_without_them`, `a_line_edited_over_boxes_hides_its_old_text_with_the_page_drawn_without_it` |
+| A font the PDF doesn't hold drawn as the page draws it (`tests/stand_in.rs`): 13 fonts (by name, a word in the name, weight, italic angle, a subset's tag; by the serif and italic flags and "Bold" and "Italic" in the name; not the weight or fixed-pitch flag) each drawn by hayro pixel for pixel as a font it can take one way only; bold told from regular and serif from sans by the pixels; a font the PDF holds and Symbol have none; a CID font asking for an installed font by its names, style and collection (Identity: `/CIDSystemInfo`; a predefined CMap's own) | `a_font_the_pdf_doesn_t_hold_is_drawn_in_the_standard_font_its_stand_in_names`, `a_cid_font_the_pdf_doesn_t_hold_asks_for_an_installed_font` |
+| The typing box's face for such a font (`typing_fonts.rs`): the Liberation face of that standard font, no installed font of the name first (failed on the code before: the installed "Arial" first) | `an_unembedded_kept_font_is_drawn_as_the_page_draws_it` |
 
 D7's flow (build plan 6.4; batch 41, NEW-14), each step with the app tests in `app/tests/organise.rs` that drive
 it (scripted behaviour, not unaided users' success):

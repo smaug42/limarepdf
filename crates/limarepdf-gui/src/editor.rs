@@ -1419,7 +1419,11 @@ fn caret_along(o: &PageObject, p: Pos2, n: usize) -> usize {
 /// What hides line `o` while it is edited: its box, with room for accents above and
 /// descenders below, in page points.
 fn cover_box(o: &PageObject) -> [f32; 4] {
-    let b = o.bbox;
+    cover_round(o.bbox)
+}
+
+/// [`cover_box`] for a line whose box is `b`.
+fn cover_round(b: [f32; 4]) -> [f32; 4] {
     let h = b[3] - b[1];
     [
         b[0] - 0.05 * h,
@@ -1657,6 +1661,10 @@ pub struct Editor {
     /// The colour around the line being edited (found by the tab), which hides the line
     /// under the editor; `None` until known.
     pub cover: Option<Color32>,
+    /// The page drawn without the text being edited ([`Editor::backdrop_wanted`], drawn by
+    /// the tab), and where it goes on the page (points): it hides that text in place of
+    /// [`Editor::cover`] once it has come (ENH-21).
+    pub backdrop: Option<(egui::TextureId, [f32; 4])>,
     /// What the ids of the tab's text boxes are made from, so that no two documents share
     /// one, nor their typing.
     scope: egui::Id,
@@ -1757,6 +1765,7 @@ impl Default for Editor {
             digital_error: None,
             page_colours: PageColours::Normal,
             cover: None,
+            backdrop: None,
             scope: egui::Id::unique("editor"),
         }
     }
@@ -2528,6 +2537,31 @@ impl Editor {
         drawn_in_place(o).then(|| (le.page, cover_box(o)))
     }
 
+    /// The text being edited in place, for the tab to draw the page without it (ENH-21): its
+    /// page, its objects, and the box the editor hides (page points), which the drawing
+    /// covers.
+    pub fn backdrop_wanted(&self) -> Option<(usize, Vec<usize>, [f32; 4])> {
+        if let Some(pe) = &self.para {
+            let b = paragraph::covers(&pe.block).into_iter().reduce(union)?;
+            return Some((pe.page, pe.block.pieces().collect(), b));
+        }
+        let le = self.line_edit.as_ref()?;
+        let o = self.objs.get(&le.page)?.get(le.id)?;
+        drawn_in_place(o).then(|| (le.page, vec![le.id], cover_box(o)))
+    }
+
+    /// What hides the text being edited on the screen, `to_screen` placing page points
+    /// there: the page drawn without it once that has come, else the colour around it.
+    fn hiding(&self, to_screen: impl Fn(f32, f32) -> Pos2) -> Option<page_text::Cover> {
+        let page = self.backdrop.map(|(tex, b)| {
+            page_text::Cover::Page(
+                tex,
+                Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3])),
+            )
+        });
+        page.or(self.cover.map(page_text::Cover::Flat))
+    }
+
     /// The new text being typed on `page` (drawn at `r`, `k` pixels per point). Esc, Tab
     /// or scrolling it out of view keeps it. Returns true when the page should not take
     /// the pointer this frame: it is over the text, or the editor just opened or closed.
@@ -2593,6 +2627,7 @@ impl Editor {
                 over.then_some("Over other text")
             })
         };
+        let hide = self.hiding(to_screen);
         let (Some(le), Some(insp)) = (self.line_edit.as_mut(), self.insp.as_mut()) else {
             return false;
         };
@@ -2644,10 +2679,8 @@ impl Editor {
             };
             let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
             let c = cover_box(&o);
-            let cover = self.cover.map(|fill| {
-                let c = Rect::from_min_max(to_screen(c[0], c[1]), to_screen(c[2], c[3]));
-                (c, fill)
-            });
+            let c = Rect::from_min_max(to_screen(c[0], c[1]), to_screen(c[2], c[3]));
+            let cover = hide.map(|how| (c, how));
             let f = page_text::field(
                 &ctx,
                 id,
