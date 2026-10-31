@@ -310,12 +310,14 @@ and Shift+Enter, hyphens, a saved paragraph in Acrobat and other readers, a scre
 deferred to the RC cycle. Typing in a line and a paragraph over a photo, a gradient and coloured boxes, zoomed and
 in each page colour mode, on Linux, Windows and macOS (ENH-21's look by eye: the old text gone, nothing shifted
 at the edges of the hidden boxes), and a line in a font the PDF doesn't hold (Calibri, a serif one, a Japanese
-one) typed in and kept, its look unchanged when kept (ENH-25): not run: deferred to the RC cycle. A paragraph's
-frame's edges dragged and moved from the keyboard by hand (the pointer's shape over them, the drag's feel on a
-long paragraph, a narrowed and a widened paragraph saved and opened in Acrobat and other readers), a screen
-reader on the edges ("Paragraph's left edge", a splitter) and on the overflow tag, the tag's place and the
-floating toolbar beside it by eye, and a highlight and a form field over a paragraph being typed in (PB-76):
-not run: deferred to the RC cycle.
+one) typed in and kept, its look unchanged when kept (ENH-25): not run: deferred to the RC cycle. Batch 45's
+3b-2 was tried by the user in the release build on Linux after it was built (31 October 2026: "Tested and it
+works well. The overflow warning is good."), its own steps not recorded. As listed checks: a paragraph's frame's
+edges dragged and moved from the keyboard by hand (the pointer's shape over them, the drag's feel on a long
+paragraph, a narrowed and a widened paragraph saved and opened in Acrobat and other readers), a screen reader on
+the edges ("Paragraph's left edge", a splitter) and on the overflow tag, the tag's place and the floating toolbar
+beside it by eye, and a highlight and a form field over a paragraph being typed in (PB-76), on Windows and macOS
+and as such on Linux: not run: deferred to the RC cycle.
 
 The page under text being edited and the kept font's face (batch 45's 3b-1, ENH-21 and ENH-25):
 
