@@ -96,7 +96,8 @@ pub struct LineFont {
     /// (`edit.rs`), the same for all the line's fonts; `None` when that isn't known.
     drawn: Option<Arc<[Drawn]>>,
     /// A Type 3 font that stands its glyphs up where the text matrix turns text space over
-    /// (`FontCtx::flipped`, PB-56): an edited line, written upright, can't keep it.
+    /// (`FontCtx::flipped`, PB-56): an edited line written anew turns text space over for
+    /// what it keeps in the font (`edit.rs`).
     flipped: bool,
 }
 
@@ -215,7 +216,8 @@ impl LineFont {
     }
 
     /// The font turns its glyphs over to stand them up where the text matrix turns text
-    /// space over (`FontCtx::flipped`), so an edited line, written upright, can't keep it.
+    /// space over (`FontCtx::flipped`), so what an edited line keeps in it is written in text
+    /// space turned over.
     pub(crate) fn flipped(&self) -> bool {
         self.flipped
     }

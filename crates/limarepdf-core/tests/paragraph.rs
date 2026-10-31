@@ -176,6 +176,33 @@ fn a_heading_and_paragraphs_are_apart() {
     assert!((b.frame.left - 72.0).abs() < 0.5, "{:?}", b.frame);
 }
 
+#[test]
+fn three_columns_on_common_baselines_are_three_paragraphs() {
+    // Small type on loose spacing, ragged right, a paragraph a column with their baselines
+    // in line, as LibreOffice sets three columns: the gap under each line is a band across
+    // all three, which mustn't cut the columns into one-line pieces that then don't line up.
+    let third = "Late in the afternoon the boats came back one by one, low with the catch, \
+                 and the women on the quay sorted the fish into crates while the children ran \
+                 errands between the sheds and the market hall.";
+    let mut content = String::from("BT /F2 16 Tf 45 740 Td (A day in the harbour) Tj ET\n");
+    let columns = [(45.0, TEXT), (223.0, MORE), (401.0, third)];
+    let mut counts = Vec::new();
+    for (x, text) in columns {
+        let lines = wrap(text, 145.0, 8.0);
+        counts.push(lines.len());
+        content.push_str(&lines_at(&lines, x, 0.0, 700.0, 13.0, "F1", 8.0));
+    }
+    let p = letter(&content);
+    let blocks = p.page_blocks(0).unwrap();
+    for ((x, text), n) in columns.iter().zip(&counts) {
+        let start: String = text.split(' ').take(2).collect::<Vec<_>>().join(" ");
+        let b = block_from(&p, &blocks, &start);
+        assert_eq!(b.lines.len(), *n, "the column at {x}: {blocks:?}");
+        assert!((b.frame.left - x).abs() < 0.5, "{:?}", b.frame);
+    }
+    assert_eq!(blocks.len(), 4, "{blocks:?}");
+}
+
 /// `lines` in text objects of their own, each in the marked content of its element: line k
 /// in element `elements[k]`, with a structure tree holding the elements as paragraphs.
 fn tagged(lines: &[String], elements: &[usize]) -> Pdf {
@@ -456,6 +483,22 @@ fn text_in_a_flipped_type3_font_reads_upright_as_one_line() {
 }
 
 #[test]
+fn a_kern_in_a_tex_bitmap_font_is_no_space() {
+    // dvips moves the pen inside a word with a `TJ` number in pixels, thousandths of a
+    // unit of text space a size of 1 gives: 3,000 is 3 pixels, under 0.04 em in a font of
+    // 83 pixels to the em, where a word space is about 28 pixels (PB-64).
+    let content = "BT /T3 1 Tf 0.12 0 0 -0.12 72 700 Tm \
+                   [(Ston) -2000 (y) -28000 (Bro) -3000 (ok)] TJ ET";
+    let letters = [STONY_BROOK, &[(' ', 30)]].concat();
+    let p = page_with(|p| tex_bitmap_font(p, &letters), content);
+    assert_eq!(texts(&p), ["Stony Brook"]);
+    let words: Vec<String> = (p.page_words(0).unwrap().into_iter())
+        .map(|w| w.text)
+        .collect();
+    assert_eq!(words, ["Stony", "Brook"]);
+}
+
+#[test]
 fn text_in_a_flipped_type3_font_has_the_size_it_is_drawn_at() {
     let p = stony_brook();
     let line = &lines(&p)[0];
@@ -474,8 +517,19 @@ fn text_in_a_flipped_type3_font_has_the_size_it_is_drawn_at() {
     );
 }
 
+/// Rows `rows` of page 0 drawn at a pixel a point: how many dark pixels each has.
+fn dark_rows(p: &mut Pdf, rows: std::ops::Range<usize>) -> Vec<usize> {
+    let hp = limarepdf_core::render::load(p.snapshot().unwrap(), None).unwrap();
+    let bitmap = limarepdf_core::render::Renderer::new(&hp)
+        .render(0, 1.0)
+        .unwrap();
+    let dark = |x: usize, y: usize| bitmap.rgba[(y * bitmap.width + x) * 4] < 128;
+    rows.map(|y| (0..bitmap.width).filter(|&x| dark(x, y)).count())
+        .collect()
+}
+
 #[test]
-fn an_edited_line_in_a_flipped_type3_font_keeps_its_size() {
+fn an_edited_line_in_a_flipped_type3_font_keeps_its_letters_upright() {
     let mut p = stony_brook();
     let id = lines(&p)[0].id;
     let size = lines(&p)[0].font_size.unwrap();
@@ -492,12 +546,54 @@ fn an_edited_line_in_a_flipped_type3_font_keeps_its_size() {
     let new = edited[0].font_size.unwrap();
     assert!((new - size).abs() < 0.05 * size, "{new} against {size}");
     assert!(edited[0].upright);
-    // Written upright, its letters can't stay in the font that stands them up only in
-    // text space turned over (it has no name): the whole line is in another font.
-    assert!(
-        edited[0].spans.iter().all(|s| !s.font_name.is_empty()),
-        "{edited:?}"
+    // "Stony" keeps its letters in the font (it has no name), turned over with text space
+    // so they stand up; "Point", typed, is in another font.
+    let spans = &edited[0].spans;
+    assert_eq!(spans[0].font_name, "", "{spans:?}");
+    assert_eq!(spans[0].chars.0, 0);
+    assert!(spans[0].chars.1 >= 5, "{spans:?}");
+    assert!(!spans.last().unwrap().font_name.is_empty(), "{spans:?}");
+    // Everything stands on the baseline, 92 points down the page: nothing hangs below it.
+    let rows = dark_rows(&mut p, 70..110);
+    let (above, below): (usize, usize) = (rows[..23].iter().sum(), rows[24..].iter().sum());
+    assert!(above > 200 && below == 0, "{rows:?}");
+}
+
+#[test]
+fn letters_kept_in_a_flipped_type3_font_stand_up_after_a_typed_word_and_in_place() {
+    let edit = |text: &str| {
+        let mut p = stony_brook();
+        let e = TextEdit {
+            text: text.into(),
+            font: None,
+            size: None,
+            color: None,
+            parts: Vec::new(),
+        };
+        p.edit_text(0, lines(&p)[0].id, &e).unwrap();
+        p
+    };
+    // A word typed first, in another font, then the line's own letters turned over.
+    let mut p = edit("Big Stony Brook");
+    assert_eq!(texts(&p), ["Big Stony Brook"]);
+    let line = lines(&p).remove(0);
+    assert!(line.upright);
+    let last = line.spans.last().unwrap();
+    assert_eq!(
+        (last.font_name.as_str(), last.chars.1),
+        ("", 15),
+        "{:?}",
+        line.spans
     );
+    let rows = dark_rows(&mut p, 70..110);
+    assert!(rows[24..].iter().all(|&n| n == 0), "{rows:?}");
+    // A letter taken out leaves the rest where they were, drawn as before.
+    let mut p = edit("Stony Broo");
+    assert_eq!(texts(&p), ["Stony Broo"]);
+    let line = lines(&p).remove(0);
+    assert!(line.upright && line.spans.iter().all(|s| s.font_name.is_empty()));
+    let rows = dark_rows(&mut p, 70..110);
+    assert!(rows[24..].iter().all(|&n| n == 0), "{rows:?}");
 }
 
 /// "Stony Brook" in the same font set the right way up: its matrix `[1 0 0 1 0 0]`, the

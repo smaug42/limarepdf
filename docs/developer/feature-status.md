@@ -107,6 +107,10 @@ this list once it works. The feature table below has the details.
   (pdf.js `issue2984`, PDFBox `1628`) reads as turned, as only its pixels say otherwise; a Type 3 font's size is
   measured from its letters' widths, so a font of few or unusual letters can read a little larger or smaller
   than it shows (PB-56).
+- Text in a colour a PDF names (a spot colour, Lab, an indexed palette, an ICC profile) shows in the inspector
+  and while typing as LimarePDF works the colour out, without the colour profiles a printer or Acrobat applies,
+  so a shade can look a little different there; the page itself keeps the ink. A colour picked for such text is
+  written in RGB.
 - No spell checking.
 
 **Selecting and arranging**

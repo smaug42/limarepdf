@@ -196,7 +196,8 @@ also holds how each of the line's characters is drawn (`edit::drawn`, below), sh
 An edited line is written in its own fonts from that (ENH-31's writer, batch 31, stage 2; `edit.rs`). `drawn`
 walks the line's shows as the parser reads them and gives each character what draws it (`Ink`: a code, or a
 whole string where `codes_known` and `drawn_alike` can't vouch for its parting, as one unit; or a move read as
-a space, a spacing number under -150 or the gap to the next show measured from piece to piece) and what lies
+a space, a spacing number under -150 times the part's em (`Span::em`, as the parser reads it) or the gap to the
+next show measured from piece to piece) and what lies
 between it and the character before (that one's show's trailing numbers and no-character glyphs, the move to
 this one's show, then this show's leading items). The app sends each character's place in the line as read
 (`TextPart::origins`, `None` once typed or pasted; a words-only `TextEdit` gets them from the common start and
@@ -1468,7 +1469,17 @@ form XObject, and per inline image.
   to 0.7 forward along it. Font, size and colour don't split a line: its parts in one style each are its spans
   (`PageObject::spans`: characters, font, size, colour, and rise, how far a part such as a superscript sits above
   the baseline of the line's largest text). A gap wider than 0.18 of the smaller text's size reads as a space,
-  which belongs to the part before it. The line's box (`line_box`) covers its shows' boxes less those showing only
+  which belongs to the part before it, and so does a `TJ` spacing number under -150 times the font's em
+  (`FontCtx::em`): the number is in thousandths of a unit of text space, which is a thousandth of an em only in
+  a font of the usual scale (PB-64: in TeX's bitmap fonts, about 83 units to the em, dvips moves the pen inside a
+  word by thousands, "Op erating"). A part's colour is the colour its fill shows as (`Span::fill`) and what set
+  it (`Span::paint`, `colour.rs`, PB-65): the operators as read (`g`, `rg`, `k`, or `cs` then `sc` or `scn`), the
+  colour worked out from the space a `cs` names in the page's resources, each read once a parse: device,
+  calibrated and ICC-based spaces by their components, Lab to sRGB (its white taken as sRGB's), Indexed through
+  its table, Separation and DeviceN through their tint transforms (`colour::Function`: types 0, 2, 3 and 4, the
+  calculator's stack held to 100 values) into the alternate space; a pattern, or a space that can't be read,
+  leaves the colour shown as it was. Parts in one font, size and rise split where the colour or what set it
+  differs (grey and RGB judged by the colour alone). The line's box (`line_box`) covers its shows' boxes less those showing only
   whitespace and less the whitespace at the line's two ends, cut off at the characters' measured positions; the
   text keeps them (BUG-25: a label's tab in a larger font reached over the next label, which a click, the selection
   and the edit cover then took as the first label's). A Type 3 font draws its glyphs in a space of its own
@@ -1478,8 +1489,12 @@ form XObject, and per inline image.
   that turns its glyphs over stands the line up again where the text matrix turns text space over
   (`FontCtx::flipped`, which way the glyphs stand read from their `d1` boxes, else the font's box; PB-56). A
   bitmap stored upside down stands only in its pixels, so such a font reads as it stands by its boxes. An edited
-  line written upright can't keep a flipped font (`LineFont::flipped`: its letters go to another font), and a
-  kept Type 3 font's letters are written at the size in the font's own terms (`Span::em`).
+  line written anew keeps a flipped font's letters (`LineFont::flipped`, `Written::flipped`): each stretch of its
+  parts in one is drawn in text space turned over, a `Tm` with its second row negated where the stretch starts
+  and one the right way up where the next part starts, placed where the line has got to by reading the line as
+  written (`Pdf::turned`, so the parser and the writer agree), its rise written the other way; a line changed in
+  place keeps the page's own matrix. A kept Type 3 font's letters are written at the size in the font's own terms
+  (`Span::em`).
 - **Where a line's characters are** on the displayed page: `PageObject::dir`, the way the line runs (a unit vector),
   and `PageObject::stops`, where each character starts along it from `baseline` and where the last ends, from the
   same measured positions as search boxes (`caret_stops`). A line edited in a plain box (turned, or invisible OCR
@@ -1493,6 +1508,12 @@ form XObject, and per inline image.
   outside form XObjects only. The steps, each rule a named constant from batch 44's prototype: an XY cut of the
   lines' boxes into regions (a band 0.5 line heights empty cuts across, as against reading order's 0.8), each
   region in the column the nearest cut down the page made, columns cut in different bands one where they line up;
+  bands are cut widest first (those at least 0.75 of a region's widest together), and a cut down a region comes
+  before its bands when every band is the space between lines (under 0.8 line heights), the cut is wider than
+  each, and the lines on both sides are typically a column's width (their median at least 10 line heights): so
+  columns of lines on common baselines with loose spacing, each gap under a line a band across all the columns,
+  are cut whole rather than into one-line pieces of different widths that don't line up (batch 45's 2b-1, made-up
+  `lo06`; a table's narrow cells keep their bands first, so its rows still read as a table);
   in each region, lines on one baseline (and smaller raised pieces) a visual line, across text objects, split
   where a gap is over 1.5 sizes and over 2.5 times the line's word gap (its spaces' median; with none, its gaps',
   three or more); in each column, top to bottom, a line joining the block of the line above when that is the
@@ -1516,7 +1537,9 @@ form XObject, and per inline image.
 - **Editing text** keeps the line's own fonts where it can (ENH-31; the writer is described after "Which code
   writes a character" above). A line in parts (`TextEdit::parts`, each part text and a style; a words-only edit
   is one part in the first part's style) is written as one `BT … ET` with each part's font, colour, rise (`Ts`)
-  and spacing set where they change. A part keeps the font of the span it names when its text is that span's,
+  and spacing set where they change; a part in a colour of the line's that `rg` wouldn't write as it was (a spot
+  colour, CMYK, Lab) is set with the operators that set it there, the span it names first (`kept_paint`), the
+  words that fall back to another font too (PB-65). A part keeps the font of the span it names when its text is that span's,
   unchanged (its shows are copied as they were, with their character spacing, word spacing and scaling, and a
   gap read as a space put back as the same move); otherwise character by character, each the line's own code
   where it is the line's own, unchanged, else the font's code for it (`LineFont::code`; for an unembedded

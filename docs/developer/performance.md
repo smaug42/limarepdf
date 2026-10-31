@@ -471,6 +471,12 @@ What they show:
   line on the page already pays (PB-52); so the app, keeping both for the page as it keeps the fonts today, adds
   little. The pages over 50 ms are over it in reading their objects alone (PB-52's heavy pages).
 
+Batch 45's 2b-1 (30 October 2026) cut regions widest band first and some columns before their bands, and reads
+the colour spaces a page names (PB-65, each space and its tint transform once a parse). Over the check's 541
+pages: median 4.9 ms (4.4 ms on 26f236f in the same run order); a single run's worst is noise (174 ms against
+81 ms for `issue6737` p7, which best of five gives as 75 to 77 ms against 74 ms; `pdfbox-4996` p1 36 against
+35 ms). Every page's words over the corpus's 1,089 files read in 8.2 s against 8.1 s (three at a time).
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted

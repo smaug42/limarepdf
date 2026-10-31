@@ -12,6 +12,7 @@ mod base_encodings;
 mod blank;
 mod cms_check;
 mod cms_write;
+mod colour;
 pub mod disk;
 mod display;
 mod doc;

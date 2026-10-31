@@ -5,11 +5,14 @@ The answers the opt-in paragraph check judges paragraph detection by (`tests/par
 here in batch 45; the scripts that made them are outside the repository (they need LibreOffice, Chromium and
 groff).
 
-- `madeup/`: 57 made-up PDFs, 292 pages, from LibreOffice, Chromium and groff, every block's text known: plain
+- `madeup/`: 64 made-up PDFs, 325 pages, from LibreOffice, Chromium and groff, every block's text known: plain
   text, columns, headings, lists, quotes, footnotes, tables, captions, letters, forms, styled words, centred and
   right-aligned text, Greek, Cyrillic, Chinese and Japanese. Their words are made up. They embed subsets of free
   fonts (Noto Sans CJK, Liberation, Cantarell, DejaVu, Fira Sans, URW's P052) as any PDF made with them does;
-  groff's use the standard fonts, not embedded.
+  groff's use the standard fonts, not embedded. Batch 44 made 57; batch 45's 2b-1 added seven three-column files
+  as fresh tests of a change made looking at `lo06_threecol_sans8`: `lo24`, `lo25`, `ch20` and `gr16` at ordinary
+  spacing, then `lo26`, `ch21` and `gr17` at loose spacing, the gap under each line at least half its height, as
+  `lo06`'s (the first four turned out not to show the problem; testing.md, "Finding paragraphs").
 - `madeup.tsv`: each made-up file's answers.
 - `corpus.tsv`: the answers for the 32 render-corpus files with usable paragraph tags, read from their tags. The
   corpus isn't in the repository (`tools/fetch-render-samples.sh`); without it the check judges the made-up set

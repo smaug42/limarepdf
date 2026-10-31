@@ -1,6 +1,7 @@
 //! A page-content object model: text lines, images, form XObjects and vector paths,
 //! recovered from the page's content stream so they can be selected and edited.
 
+use crate::colour::{Paint, Space};
 use crate::fonts::{Family, FontChoice, FontCtx};
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::{Pdf, Result};
@@ -8,6 +9,7 @@ use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectKind {
@@ -159,7 +161,9 @@ pub(crate) struct Span {
     /// The font's em ([`FontCtx::em`]): `size` over it is the size in the font's own
     /// terms, what its shows are written with.
     pub em: f32,
+    /// The colour it shows as, and what set it, to write it again in the same ink.
     pub fill: Option<[f32; 3]>,
+    pub paint: Paint,
     pub rise: f32,
 }
 
@@ -236,8 +240,12 @@ const MAX_FORM_NESTING: usize = 8;
 #[derive(Clone)]
 struct Gs {
     ctm: M,
+    /// The fill and stroke colours as they show, their colour spaces, and what set the fill.
     fill: Option<[f32; 3]>,
     stroke: Option<[f32; 3]>,
+    fill_space: Arc<Space>,
+    stroke_space: Arc<Space>,
+    paint: Paint,
     lw: f32,
     font: Vec<u8>,
     size: f32,
@@ -255,6 +263,9 @@ impl Default for Gs {
             ctm: mx::ID,
             fill: Some([0.0; 3]),
             stroke: Some([0.0; 3]),
+            fill_space: Arc::new(Space::Gray),
+            stroke_space: Arc::new(Space::Gray),
+            paint: Paint::default(),
             lw: 1.0,
             font: Vec::new(),
             size: 0.0,
@@ -292,6 +303,15 @@ fn color_from(v: &[f32]) -> Option<[f32; 3]> {
     }
 }
 
+/// The device space `g`, `rg` or `k` (or `G`, `RG` or `K`) sets.
+fn device_space(op: &str) -> Space {
+    match op {
+        "g" | "G" => Space::Gray,
+        "rg" | "RG" => Space::Rgb,
+        _ => Space::Cmyk,
+    }
+}
+
 /// One show operation while a text object is being read.
 struct RunInfo {
     run: Run,
@@ -304,6 +324,7 @@ struct RunInfo {
     end: (f32, f32),
     dir: (f32, f32),
     fill: Option<[f32; 3]>,
+    paint: Paint,
     corners: [(f32, f32); 4],
     /// Each character's start and end in text space along the run, from 0 to the
     /// advance.
@@ -374,6 +395,16 @@ impl Pdf {
         let res = self.resolved_dict(resources);
         let fonts = self.resolved_dict(res.get(b"Font").ok());
         let xobjs = self.resolved_dict(res.get(b"XObject").ok());
+        let colour_spaces = self.resolved_dict(res.get(b"ColorSpace").ok());
+        let mut space_cache: HashMap<Vec<u8>, Arc<Space>> = HashMap::new();
+        let mut space_named = |o: Option<&Object>| -> Arc<Space> {
+            let Some(Object::Name(name)) = o else {
+                return Arc::new(Space::Other);
+            };
+            let space = space_cache.entry(name.clone());
+            (space.or_insert_with(|| Arc::new(Space::named(&self.doc, &colour_spaces, name))))
+                .clone()
+        };
         let mut font_cache: HashMap<Vec<u8>, Option<FontCtx>> = HashMap::new();
         let mut form_text: Vec<TextData> = Vec::new();
 
@@ -406,10 +437,33 @@ impl Pdf {
                 }
                 "cm" if v.len() == 6 => gs.ctm = mul([v[0], v[1], v[2], v[3], v[4], v[5]], gs.ctm),
                 "w" if !v.is_empty() => gs.lw = v[0],
-                "g" | "rg" | "k" => gs.fill = color_from(&v),
-                "G" | "RG" | "K" => gs.stroke = color_from(&v),
-                "sc" | "scn" => gs.fill = color_from(&v).or(gs.fill),
-                "SC" | "SCN" => gs.stroke = color_from(&v).or(gs.stroke),
+                "g" | "rg" | "k" => {
+                    gs.fill = color_from(&v);
+                    gs.fill_space = Arc::new(device_space(&op.operator));
+                    gs.paint = Paint::device(&op.operator, &op.operands);
+                }
+                "G" | "RG" | "K" => {
+                    gs.stroke = color_from(&v);
+                    gs.stroke_space = Arc::new(device_space(&op.operator));
+                }
+                // A colour space's colour, as it shows (PB-65); a pattern's, or one that
+                // can't be read, leaves the colour shown as it was.
+                "cs" => {
+                    gs.fill_space = space_named(op.operands.first());
+                    gs.fill = gs.fill_space.rgb(&gs.fill_space.first()).or(gs.fill);
+                    if let Some(name) = op.operands.first() {
+                        gs.paint = Paint::space(name);
+                    }
+                }
+                "CS" => {
+                    gs.stroke_space = space_named(op.operands.first());
+                    gs.stroke = gs.stroke_space.rgb(&gs.stroke_space.first()).or(gs.stroke);
+                }
+                "sc" | "scn" => {
+                    gs.fill = gs.fill_space.rgb(&v).or(gs.fill);
+                    gs.paint = gs.paint.with(&op.operator, &op.operands);
+                }
+                "SC" | "SCN" => gs.stroke = gs.stroke_space.rgb(&v).or(gs.stroke),
                 "BT" => {
                     tm = mx::ID;
                     tlm = mx::ID;
@@ -484,6 +538,9 @@ impl Pdf {
                     let start_tm = tm;
                     let tfs = gs.size;
                     let th = gs.th;
+                    // A Type 3 font's own em and flip ([`FontCtx::em`], PB-56).
+                    let em = fc.map_or(1.0, |f| f.em);
+                    let flipped = fc.is_some_and(|f| f.flipped);
                     let mut adv = 0.0f32;
                     let mut text = String::new();
                     // The text is decoded one character code at a time, with each
@@ -525,7 +582,9 @@ impl Pdf {
                                     // A big negative kern is a visual gap: a space between
                                     // words. Justified lines squeeze these to under 0.2 em;
                                     // kerning between letters stays under about 0.14 em.
-                                    if x < -150.0 && !text.ends_with(' ') && !text.is_empty() {
+                                    // The number is in thousandths of text space, which a
+                                    // Type 3 font's em can be many of (PB-64).
+                                    if x < -150.0 * em && !text.ends_with(' ') && !text.is_empty() {
                                         text.push(' ');
                                         spans.push((from, adv));
                                     }
@@ -536,9 +595,6 @@ impl Pdf {
                     tm = mul(mx::translate(adv, 0.0), tm);
                     let trm = mul(mul(start_tm, gs.ctm), mx::ID);
                     let lin = (trm[0].hypot(trm[1])).max(1e-6);
-                    // A Type 3 font's own em and flip ([`FontCtx::em`], PB-56).
-                    let em = fc.map_or(1.0, |f| f.em);
-                    let flipped = fc.is_some_and(|f| f.flipped);
                     let eff = tfs * lin * em;
                     let dir = (trm[0] / lin, trm[1] / lin);
                     let base_pt = apply(
@@ -582,6 +638,7 @@ impl Pdf {
                         end: end_pt,
                         dir,
                         fill: gs.fill,
+                        paint: gs.paint.clone(),
                         corners,
                         spans,
                         adv,
@@ -1255,6 +1312,7 @@ fn styled_spans(
             size: r.size,
             em: r.em,
             fill: r.fill,
+            paint: r.paint.clone(),
             rise: lift,
         };
         let empty = p.chars.0 == p.chars.1;
@@ -1264,6 +1322,7 @@ fn styled_spans(
                     || (s.font == r.font
                         && (s.size - r.size).abs() < 0.01 * s.size.max(0.01)
                         && s.fill == r.fill
+                        && s.paint.same(&r.paint)
                         && (s.rise - lift).abs() < 0.02 * size) =>
             {
                 s.chars.1 = p.chars.1;

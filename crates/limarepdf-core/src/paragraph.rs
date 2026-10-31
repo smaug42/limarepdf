@@ -23,6 +23,12 @@ use std::collections::{HashMap, HashSet};
 
 /// An empty band across this tall separates blocks of rows (reading order uses 0.8).
 const ROW_GAP: f32 = 0.5;
+/// Bands at least this share of a region's widest are cut together; the narrower ones are
+/// cut within the parts, after any cut down them.
+const ROW_SHARE: f32 = 0.75;
+/// Bands across narrower than this are the space between lines, not between blocks (as
+/// reading order judges it): columns are cut before them.
+const LINE_BAND: f32 = 0.8;
 /// An empty strip down this wide separates columns...
 const COL_GAP: f32 = 1.0;
 /// ...when the text on each side is at least this wide.
@@ -651,9 +657,11 @@ fn blocks(
 
 /// The leaf regions of an XY cut of `boxes`, in reading order: each as the indices of its
 /// boxes, its column and the column's extent. A region's column is the one the nearest cut
-/// down the page above it made (the whole page when none did); columns cut in different
-/// bands are matched into one where they line up, as columns of lines on a common baseline
-/// are cut one band per line.
+/// down the page above it made (the whole page when none did). A cut down a region wider
+/// than every band across it is made first, so columns of lines on common baselines are
+/// cut whole, not a band of lines at a time; bands are cut widest first, so a heading
+/// across the columns is cut off before the lines beside each other are. Columns cut in
+/// different bands are matched into one where they line up.
 fn regions(boxes: &[[f32; 4]]) -> Vec<(Vec<usize>, usize, (f32, f32))> {
     let mut hs: Vec<f32> = boxes
         .iter()
@@ -681,8 +689,36 @@ fn regions(boxes: &[[f32; 4]]) -> Vec<(Vec<usize>, usize, (f32, f32))> {
             out.push((idx, col));
             continue;
         }
-        let at: Vec<f32> = (gaps(boxes, &idx, 1).into_iter())
+        let rows: Vec<(f32, f32)> = (gaps(boxes, &idx, 1).into_iter())
             .filter(|g| g.1 - g.0 >= ROW_GAP * h)
+            .collect();
+        let widest = rows.iter().map(|g| g.1 - g.0).fold(0.0, f32::max);
+        let (left, right) = extent(&idx);
+        let wider = |a: &&(f32, f32), b: &&(f32, f32)| (a.1 - a.0).total_cmp(&(b.1 - b.0));
+        let down = gaps(boxes, &idx, 0);
+        // Lines as wide as a column's on both sides of `x`: columns of text, not a table's
+        // cells beside their labels.
+        let text_both_sides = |x: f32| {
+            let mut sides: [Vec<f32>; 2] = [Vec::new(), Vec::new()];
+            for &i in &idx {
+                sides[usize::from(boxes[i][0] >= x)].push(boxes[i][2] - boxes[i][0]);
+            }
+            (sides.iter()).all(|w| median(w).is_some_and(|m| m >= COL_WIDTH * h))
+        };
+        let cut = (down.iter())
+            .filter(|g| {
+                g.1 - g.0 >= COL_GAP * h
+                    && g.0 - left >= COL_WIDTH * h
+                    && right - g.1 >= COL_WIDTH * h
+            })
+            .max_by(wider)
+            .map(|g| (g.1 - g.0, (g.0 + g.1) / 2.0))
+            .filter(|&(w, x)| {
+                rows.is_empty() || (widest < LINE_BAND * h && w > widest && text_both_sides(x))
+            })
+            .map(|(_, x)| x);
+        let at: Vec<f32> = (rows.iter())
+            .filter(|g| cut.is_none() && g.1 - g.0 >= ROW_SHARE * widest)
             .map(|g| (g.0 + g.1) / 2.0)
             .collect();
         if !at.is_empty() {
@@ -699,17 +735,6 @@ fn regions(boxes: &[[f32; 4]]) -> Vec<(Vec<usize>, usize, (f32, f32))> {
             );
             continue;
         }
-        let (left, right) = extent(&idx);
-        let wider = |a: &&(f32, f32), b: &&(f32, f32)| (a.1 - a.0).total_cmp(&(b.1 - b.0));
-        let down = gaps(boxes, &idx, 0);
-        let cut = (down.iter())
-            .filter(|g| {
-                g.1 - g.0 >= COL_GAP * h
-                    && g.0 - left >= COL_WIDTH * h
-                    && right - g.1 >= COL_WIDTH * h
-            })
-            .max_by(wider)
-            .map(|g| (g.0 + g.1) / 2.0);
         match cut {
             Some(x) => {
                 let (a, b): (Vec<usize>, Vec<usize>) =

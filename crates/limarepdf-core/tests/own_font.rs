@@ -1777,13 +1777,14 @@ fn a_font_that_can_t_take_new_text_keeps_the_words_left_as_they_were() {
             assert_eq!(shows(&p), [("F1".into(), one)]);
         }
     }
-    // A Type 3 font's one glyph draws a; the b typed sends its word elsewhere.
-    let src = "BT /F1 20 Tf 10 100 Td [(aa) -300 (a)] TJ ET\n";
+    // A Type 3 font's one glyph draws a; the b typed sends its word elsewhere. Its a is
+    // twice the usual width, so its em is two units of text space: the gap a word's.
+    let src = "BT /F1 20 Tf 10 100 Td [(aa) -600 (a)] TJ ET\n";
     let mut p = page(&[("F1", &Type3)], src);
     let o = line_of(&p, "aa a");
     let want = [((0, 3), true, vec![]), ((3, 5), false, vec!['b'])];
     falls_back(&mut p, &o, typed(&o, 0, "aa ab"), &want, true);
-    let aa = vec![codes(b"aa"), Item::Move(-300.0)];
+    let aa = vec![codes(b"aa"), Item::Move(-600.0)];
     assert_eq!(shows(&p)[0], ("F1".into(), aa));
 }
 
