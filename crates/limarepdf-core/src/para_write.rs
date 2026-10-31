@@ -33,7 +33,19 @@ impl Pdf {
         setting: &ParagraphSetting,
         parts: &[TextPart],
     ) -> Result<Vec<usize>> {
-        let set = setting.set(parts);
+        let f = &setting.paragraph().frame;
+        self.edit_paragraph_between(setting, parts, (f.left, f.right))
+    }
+
+    /// [`Pdf::edit_paragraph`] with the frame's left and right edges moved to `edges`, as
+    /// [`ParagraphSetting::set_between`] sets the paragraph between them.
+    pub fn edit_paragraph_between(
+        &mut self,
+        setting: &ParagraphSetting,
+        parts: &[TextPart],
+        edges: (f32, f32),
+    ) -> Result<Vec<usize>> {
+        let set = setting.set_between(parts, edges);
         if set.unchanged() {
             return Ok(Vec::new());
         }

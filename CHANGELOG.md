@@ -15,8 +15,12 @@
   is one undo step. A hyphen that ended a line is read by the document's own words: one only put in to break the
   word goes when the word moves inside a line, and one LimarePDF can't tell is kept and dotted under, with **Join
   the hyphenated word** and **Keep the line-end hyphen** on its right-click menu and **Join all** in the inspector.
-  Text running past the page or over other text, a picture or a shape says so on the outline. Words selected
-  across the lines of one paragraph are typed over and deleted there, the paragraph rewrapping. A line on its own,
+  Text running past the page or over other text, a picture or a shape says so on the outline, where it happens.
+  Drag the small square on the frame's left or right edge to make the paragraph narrower or wider, the lines
+  rewrapping as you drag, as a resized text box does; click the square (or press Tab from the text) and Left and
+  Right move that edge a point, ten with Shift. Each move is a step in the paragraph's own Ctrl+Z. While a link or
+  comment is over the paragraph, the inspector says it stays in place. Words selected across the lines of one
+  paragraph are typed over and deleted there, the paragraph rewrapping. A line on its own,
   text in a table and turned text are still edited a line at a time, the switch saying why. LimarePDF doesn't open
   paragraphs as paragraphs by itself yet: its check of how well it finds them isn't passed.
 - Editing a line keeps the PDF's own font wherever it can, embedded fonts and their subsets included (Chinese,
@@ -74,9 +78,11 @@
   nothing to style.
 - While a line is edited on the page, the status bar says "Editing one line", and the inspector shows the line's
   font as the PDF names it (**PDF font**, without a subset's tag) above its **Source font**.
-- Text typed on the page that runs past the page's edge has its outline in the caution colour, with a tag under it
-  saying "Past the page edge". In a line being edited, typing on past its end into the text beside it says "Over
-  other text" the same way.
+- Text typed on the page that runs past the page's edge, or into text, a picture or a shape it wasn't already
+  over, has its outline in the caution colour, with a tag just below the line where it happens saying "Past the
+  page edge", "Over other text", "Over a picture" or "Over a shape"; the floating toolbar keeps clear of it. The
+  same rule holds for a line being edited, a paragraph and new text; new text isn't warned about a picture or
+  coloured box its first line starts on.
 - Organise: **Pages > Organise**, ☰ > View > Organise pages or **Organise pages** in the status bar shows every
   page of the document as a card in a grid, in place of the pages, as a slide sorter does: the page, with a
   checkbox and its name. The heading and the status bar count the pages and those selected ("12 pages · 4
@@ -127,8 +133,9 @@
 ### Changed
 
 - A line or paragraph being edited on the page hides its old text with the page as it is without it, so a photo,
-  shading or coloured box behind the text still shows while you type; for a moment as you start, the colour
-  around it stands in. Before, the old text was hidden under that one colour until the change was kept.
+  shading or coloured box behind the text still shows while you type, with the page's comments and form fields
+  over it; for a moment as you start, the colour around it stands in. Before, the old text was hidden under that
+  one colour until the change was kept, a highlight over it with it.
 - A line whose font isn't held in the PDF is drawn while you type in the face LimarePDF's pages show it in once
   kept: the Liberation look-alike of the Helvetica, Times or Courier its name and its font description give (a
   Calibri the PDF doesn't hold shows as Helvetica, a Cambria marked serif as Times), Chinese, Japanese and Korean

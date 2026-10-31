@@ -13,8 +13,8 @@ use eframe::egui::text::{CCursor, CCursorRange};
 use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    emoji_sequence, unwritten_script, writable, BoxSetting, FontChoice, LineFont, PartFont,
-    SetLine, TextPart,
+    emoji_sequence, unwritten_script, writable, BoxSetting, FontChoice, LineFont, ObjectKind,
+    PartFont, SetLine, TextPart,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -269,18 +269,26 @@ pub struct Taken {
 /// the caller's [`History`], as the editor's own undo would take back the text without
 /// its styles; and with `styles`, Ctrl+B and Ctrl+I are taken to switch Bold and Italic.
 pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) -> Taken {
-    let mut t = Taken::default();
+    let mut t = take_undo(ui);
     ui.input_mut(|i| {
-        let shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
-        t.redo = i.consume_key(shift, egui::Key::Z)
-            | i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y);
-        t.undo = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z);
         if styles {
             t.bold = i.consume_key(egui::Modifiers::COMMAND, egui::Key::B);
             t.italic = i.consume_key(egui::Modifiers::COMMAND, egui::Key::I);
         }
     });
     t.refused = leave_out_untypable(ui, single, font);
+    t
+}
+
+/// Take this frame's Ctrl+Z, and Ctrl+Y or Ctrl+Shift+Z, for the caller's [`History`].
+pub fn take_undo(ui: &egui::Ui) -> Taken {
+    let mut t = Taken::default();
+    ui.input_mut(|i| {
+        let shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        t.redo = i.consume_key(shift, egui::Key::Z)
+            | i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y);
+        t.undo = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z);
+    });
     t
 }
 
@@ -1086,12 +1094,16 @@ pub struct ParaStyle<'a> {
     pub mode: PageColours,
     /// The outline's colour.
     pub accent: Color32,
-    /// The frame's left and right edges on the screen, which the outline takes in.
+    /// The frame's left and right edges on the screen, which the outline takes in, with a
+    /// handle on each to drag ([`Field::edges`]).
     pub frame: (f32, f32),
-    /// Why the text, as its lines are laid out on the screen, runs over: past the page's
-    /// edge or over other text or pictures. `None` when it fits.
-    pub warn: &'a dyn Fn(&[Rect]) -> Option<&'static str>,
+    /// What the text, as its rows are laid out on the screen, runs over, and where
+    /// ([`overflow`]). `None` when it fits.
+    pub warn: &'a dyn Fn(&[Rect]) -> Option<Overflow>,
 }
+
+/// The names of a paragraph's frame's handles, left then right, as screen readers say them.
+pub const EDGE_NAMES: [&str; 2] = ["Paragraph's left edge", "Paragraph's right edge"];
 
 /// What hides text being edited under the typing, so it doesn't show twice.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1122,10 +1134,16 @@ impl Cover {
     }
 }
 
+/// The id of a paragraph editor `id`'s frame's left (`0`) or right (`1`) handle.
+pub fn edge_id(id: egui::Id, side: usize) -> egui::Id {
+    id.with(("frame-edge", side))
+}
+
 /// Draw a paragraph, `text`, for typing (the editor `id`) on the lines it will be written
-/// on ([`ParaStyle::laid`]), outlined round its frame. `covers`, rectangles on the screen,
-/// are hidden under it first as `hide` says: the lines being edited, so they don't show
-/// twice.
+/// on ([`ParaStyle::laid`]), outlined round its frame, with a handle on the outline's left
+/// and right edges ([`edge_id`]) to drag or move from the keyboard. `covers`, rectangles on
+/// the screen, are hidden under it first as `hide` says: the lines being edited, so they
+/// don't show twice.
 pub fn paragraph_field(
     ctx: &egui::Context,
     id: egui::Id,
@@ -1144,6 +1162,8 @@ pub fn paragraph_field(
     let x = left.min(inner.min.x)..=right.max(inner.max.x);
     let outline = Rect::from_x_y_ranges(x, inner.y_range()).expand(3.0);
     let covered = (covers.iter()).fold(outline, |r, c| r.union(*c));
+    let mut tag = None;
+    let mut edges = None;
     let out = egui::Area::new(id.with("area"))
         .fixed_pos(covered.min)
         .constrain(false)
@@ -1159,7 +1179,7 @@ pub fn paragraph_field(
                     how.paint(ui.painter(), *c);
                 }
             }
-            outline_ui(ui, outline, style.accent, warning);
+            tag = outline_ui(ui, outline, style.accent, warning);
             let mut layouter = |_: &egui::Ui, t: &dyn egui::TextBuffer, _: f32| {
                 let (g, at) = (style.laid)(t.as_str());
                 // Laid out with what this frame typed, it starts where the box does.
@@ -1191,6 +1211,9 @@ pub fn paragraph_field(
                 .inner;
             keep_on_right_click(ctx, id, &mut out, held);
             snap_drawn(ctx, id, &mut out, buffer.0, held);
+            // After the text, so they are above it where they meet.
+            let colour = outline_colour(ui, style.accent, warning);
+            edges = Some([0, 1].map(|side| edge_ui(ui, id, outline, side, colour)));
             out
         })
         .inner;
@@ -1198,32 +1221,85 @@ pub fn paragraph_field(
         out,
         grip: None,
         outline,
+        tag,
+        edges,
     }
 }
 
-/// The outline round text being typed on the page (ENH-22): the accent, or the caution
-/// colour when it runs over (`warning`, said on a tag just below the outline's right end),
-/// and inside it a line that stands out against it, so it shows on paper of either colour.
-fn outline_ui(ui: &mut egui::Ui, outline: Rect, accent: Color32, warning: Option<&str>) {
-    let edge = match warning {
+/// A paragraph's frame's handle on the outline's `side` edge (0 left, 1 right) for the
+/// editor `id`: a small square in the middle of the edge, as an object's handles are drawn,
+/// filled while it is dragged or has the keyboard; the whole edge drags it, the pointer a
+/// horizontal resize over it. Named for screen readers as a splitter ([`EDGE_NAMES`]).
+fn edge_ui(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    outline: Rect,
+    side: usize,
+    colour: Color32,
+) -> egui::Response {
+    let x = [outline.min.x, outline.max.x][side];
+    let strip = Rect::from_x_y_ranges(x - 4.0..=x + 4.0, outline.y_range());
+    let handle = Rect::from_center_size(Pos2::new(x, outline.center().y), Vec2::splat(7.0));
+    let edge = edge_id(id, side);
+    let r = ui.interact(strip.union(handle), edge, Sense::click_and_drag());
+    let name = EDGE_NAMES[side];
+    ui.ctx().accesskit_node_builder(edge, |n| {
+        n.set_role(egui::accesskit::Role::Splitter);
+        n.set_label(name);
+    });
+    if r.hovered() || r.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let held = r.dragged() || r.has_focus();
+    let painter = ui.painter();
+    if r.has_focus() {
+        painter.vline(x, outline.y_range(), Stroke::new(2.0, colour));
+    }
+    let fill = if held { colour } else { Color32::WHITE };
+    painter.rect_filled(handle, 1.0, fill);
+    painter.rect_stroke(handle, 1.0, Stroke::new(1.0, colour), StrokeKind::Inside);
+    r
+}
+
+/// The outline's colour: the accent, or the caution colour when the text runs over.
+fn outline_colour(ui: &egui::Ui, accent: Color32, warning: Option<Overflow>) -> Color32 {
+    match warning {
         Some(_) => theme::tone(ui.visuals().dark_mode, theme::Tone::Caution),
         None => None,
     }
-    .unwrap_or(accent);
+    .unwrap_or(accent)
+}
+
+/// The outline round text being typed on the page (ENH-22): the accent, or the caution
+/// colour when it runs over (`warning`, said on a tag just below the row where it happens,
+/// PB-35), and inside it a line that stands out against it, so it shows on paper of either
+/// colour. Returns where the tag is on the screen.
+fn outline_ui(
+    ui: &mut egui::Ui,
+    outline: Rect,
+    accent: Color32,
+    warning: Option<Overflow>,
+) -> Option<Rect> {
+    let edge = outline_colour(ui, accent, warning);
     let halo = Stroke::new(1.0, theme::halo(edge));
     let painter = ui.painter();
     painter.rect_stroke(outline, 2.0, Stroke::new(1.0, edge), StrokeKind::Inside);
     painter.rect_stroke(outline.shrink(1.0), 1.0, halo, StrokeKind::Inside);
-    if let Some(why) = warning {
-        let text = egui::RichText::new(why).size(11.0).color(theme::halo(edge));
-        let g = painter.layout_no_wrap(why.into(), egui::FontId::proportional(11.0), edge);
-        let size = g.size() + Vec2::new(8.0, 4.0);
-        let at = Pos2::new(outline.max.x - size.x, outline.max.y + 2.0);
-        let tag = Rect::from_min_size(at, size);
-        ui.expand_to_include_rect(tag);
-        ui.painter().rect_filled(tag, 3.0, edge);
-        ui.put(tag, egui::Label::new(text).selectable(false));
-    }
+    let w = warning?;
+    let text = egui::RichText::new(w.why)
+        .size(11.0)
+        .color(theme::halo(edge));
+    let g = painter.layout_no_wrap(w.why.into(), egui::FontId::proportional(11.0), edge);
+    let size = g.size() + Vec2::new(8.0, 4.0);
+    let at = match w.leftward {
+        true => w.at - Vec2::new(size.x, 0.0),
+        false => w.at,
+    };
+    let tag = Rect::from_min_size(at, size);
+    ui.expand_to_include_rect(tag);
+    ui.painter().rect_filled(tag, 3.0, edge);
+    ui.put(tag, egui::Label::new(text).selectable(false));
+    Some(tag)
 }
 
 /// How text being typed on the page is drawn this frame.
@@ -1235,9 +1311,9 @@ pub struct Style<'a> {
     pub mode: PageColours,
     /// The outline's colour.
     pub accent: Color32,
-    /// Why the text, as it is laid out (on screen, without the room for the caret), runs
-    /// over: past the page's edge or over other text. `None` when it fits.
-    pub warn: &'a dyn Fn(Rect) -> Option<&'static str>,
+    /// What the text, as its rows are laid out on the screen (without the room for the
+    /// caret), runs over, and where ([`overflow`]). `None` when it fits.
+    pub warn: &'a dyn Fn(&[Rect]) -> Option<Overflow>,
 }
 
 /// One frame of an on-page editor.
@@ -1246,6 +1322,10 @@ pub struct Field {
     /// The band around the outline, which moves the text; `None` when it can't be moved.
     pub grip: Option<egui::Response>,
     pub outline: Rect,
+    /// Where the tag saying what the text runs over is, when it does.
+    pub tag: Option<Rect>,
+    /// A paragraph's frame's handles, left and right ([`paragraph_field`]).
+    pub edges: Option<[egui::Response; 2]>,
 }
 
 /// `text` laid out as [`job`] lays it out in `runs`, its lines [`LEADING`] times their size
@@ -1402,10 +1482,62 @@ fn job(
     (job, rows.first().map_or(0.0, |r| r.1))
 }
 
-/// Text laid out at `text` on screen runs past the edge of the page drawn at `page`: a
-/// point's leeway for rounding.
-pub fn past_edge(page: Rect, text: Rect) -> Option<&'static str> {
-    (!page.expand(1.0).contains_rect(text)).then_some("Past the page edge")
+/// What text being typed on the page runs over, and where ([`overflow`]): said on a tag
+/// just below the row where it happens, in the caution colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Overflow {
+    /// "Past the page edge", "Over other text", "Over a picture" or "Over a shape".
+    pub why: &'static str,
+    /// Where the tag goes on the screen: its top left, or with `leftward` its top right.
+    pub at: Pos2,
+    /// The tag ends at `at`: the page's right edge was crossed, so it stays on the page.
+    pub leftward: bool,
+}
+
+/// What a page object is, as a tag says text runs over it.
+pub fn over(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::Text => "Over other text",
+        ObjectKind::Image => "Over a picture",
+        _ => "Over a shape",
+    }
+}
+
+/// The one overflow rule for text typed on the page (PB-35): the first of `rows` (the text's
+/// rows as laid out on the screen) that runs past the edge of the page drawn at `page` (a
+/// point's leeway for rounding), or, across the middle of its height, where the rows above
+/// and below touch, over one of `others` (on the screen, each with what [`over`] calls it):
+/// what, and where, at the leftmost thing it runs over, or the side of the page it crosses.
+pub fn overflow(page: Rect, rows: &[Rect], others: &[(Rect, &'static str)]) -> Option<Overflow> {
+    let edge = page.expand(1.0);
+    for row in rows.iter().filter(|r| r.is_positive()) {
+        let below = row.max.y + 2.0;
+        if !edge.contains_rect(*row) {
+            let (x, leftward) = match () {
+                _ if row.max.x > edge.max.x => (page.max.x, true),
+                _ if row.min.x < edge.min.x => (page.min.x, false),
+                _ => (row.min.x, false),
+            };
+            return Some(Overflow {
+                why: "Past the page edge",
+                at: Pos2::new(x, below),
+                leftward,
+            });
+        }
+        let (mid, half) = (row.center().y, row.height() * 0.25);
+        let band = Rect::from_x_y_ranges(row.x_range(), mid - half..=mid + half);
+        let first = (others.iter())
+            .filter(|(o, _)| o.intersects(band))
+            .min_by(|a, b| a.0.min.x.total_cmp(&b.0.min.x));
+        if let Some((o, why)) = first {
+            return Some(Overflow {
+                why,
+                at: Pos2::new(o.min.x.max(row.min.x), below),
+                leftward: false,
+            });
+        }
+    }
+    None
 }
 
 /// Draw `text` for typing (the editor `id`) with its first baseline's left end at
@@ -1440,10 +1572,14 @@ pub fn field(
     let size = Vec2::new(size.x.max(px * 0.5) + px * 0.25, size.y.max(line));
     let inner = Rect::from_min_size(origin - Vec2::new(0.0, ascent), size);
     // What the text runs over, where it is laid out.
-    let warning = (style.warn)(Rect::from_min_size(inner.min, galley.size()));
+    let rows: Vec<Rect> = (galley.rows.iter())
+        .map(|r| r.rect().translate(inner.min.to_vec2()))
+        .collect();
+    let warning = (style.warn)(&rows);
     let outline = inner.expand(3.0);
     let grip = outline.expand(3.0);
     let top_left = cover.map_or(grip.min, |(c, _)| grip.min.min(c.min));
+    let mut tag = None;
     let (grab, out) = egui::Area::new(id.with("area"))
         .fixed_pos(top_left)
         .constrain(false)
@@ -1468,7 +1604,7 @@ pub fn field(
                 dialogs::set_name(&r, "Move the text");
                 r
             });
-            outline_ui(ui, outline, style.accent, warning);
+            tag = outline_ui(ui, outline, style.accent, warning);
             let mut layouter =
                 |_: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| laid(text.as_str()).0;
             let mut buffer = Clusters(text);
@@ -1501,6 +1637,8 @@ pub fn field(
         out,
         grip: grab,
         outline,
+        tag,
+        edges: None,
     }
 }
 
@@ -1556,7 +1694,8 @@ impl PageText {
     /// the inspector's buttons do, and Ctrl+Z and Ctrl+Y undo and redo typing and styles.
     /// `accent` outlines it; `settled` says a change in the inspector is finished, so the
     /// keyboard can come back. `lang` is the document's language, which sets the fonts of
-    /// Chinese, Japanese and Korean words.
+    /// Chinese, Japanese and Korean words. `others` are what it may run over on the screen
+    /// ([`overflow`]).
     #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &mut self,
@@ -1567,6 +1706,7 @@ impl PageText {
         accent: Color32,
         settled: bool,
         lang: Option<&str>,
+        others: &[(Rect, &'static str)],
     ) -> Shown {
         let ctx = ui.ctx().clone();
         let id = self.id();
@@ -1596,7 +1736,7 @@ impl PageText {
             runs: &runs,
             mode,
             accent,
-            warn: &|text| past_edge(r, text),
+            warn: &|rows| overflow(r, rows, others),
         };
         let origin = Pos2::new(r.min.x + self.at.0 * k, r.min.y + self.at.1 * k);
         let mut typed = text.text().to_string();
@@ -1779,7 +1919,7 @@ mod tests {
         ctx.all_styles_mut(|s| s.animation_time = 0.0);
         let accent = Color32::from_rgb(13, 148, 136);
         let caution = theme::tone(false, theme::Tone::Caution).unwrap();
-        let drawn = |warn: Option<&'static str>| {
+        let drawn = |warn: Option<Overflow>| {
             let raw = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
                 ..Default::default()
@@ -1834,10 +1974,44 @@ mod tests {
             "{strokes:?}"
         );
         assert!(!says, "a tag for text that fits");
-        let (strokes, says) = drawn(Some("Past the page edge"));
+        let past = Overflow {
+            why: "Past the page edge",
+            at: Pos2::new(300.0, 120.0),
+            leftward: true,
+        };
+        let (strokes, says) = drawn(Some(past));
         assert!(strokes.iter().any(|s| s.1 == caution), "{strokes:?}");
         assert!(!strokes.iter().any(|s| s.1 == accent), "{strokes:?}");
         assert!(says, "no tag");
+    }
+
+    /// PB-35: one rule for text typed on the page, row by row. The first row that runs past
+    /// the page's edge, or across the middle of its height over something, says what and
+    /// where: at the leftmost thing it runs over, or the side of the page it crosses; a row
+    /// that only grazes something above or below it says nothing.
+    #[test]
+    fn text_runs_over_where_its_first_row_meets_something_or_the_pages_edge() {
+        let page = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(600.0, 800.0));
+        let row = |x0: f32, x1: f32, y: f32| Rect::from_x_y_ranges(x0..=x1, y..=y + 14.0);
+        let others = [
+            (row(300.0, 340.0, 100.0), "Over a picture"),
+            (row(200.0, 240.0, 100.0), "Over a shape"),
+            // Only its last two points reach into the row's top.
+            (row(100.0, 500.0, 88.0), "Over other text"),
+        ];
+        let at = |w: Option<Overflow>| w.map(|w| (w.why, w.at, w.leftward));
+        assert_eq!(overflow(page, &[row(50.0, 180.0, 100.0)], &others), None);
+        let (shape, past) = ("Over a shape", "Past the page edge");
+        let into = overflow(page, &[row(50.0, 350.0, 100.0)], &others);
+        assert_eq!(at(into), Some((shape, Pos2::new(200.0, 116.0), false)));
+        // A row before it that runs over comes first; one past the right edge says so there.
+        let rows = [row(50.0, 610.0, 80.0), row(50.0, 350.0, 100.0)];
+        let right = overflow(page, &rows, &others);
+        assert_eq!(at(right), Some((past, Pos2::new(600.0, 96.0), true)));
+        let left = overflow(page, &[row(-20.0, 100.0, 300.0)], &others);
+        assert_eq!(at(left), Some((past, Pos2::new(0.0, 316.0), false)));
+        // Empty rows (nothing typed yet) run over nothing.
+        assert_eq!(overflow(page, &[row(220.0, 220.0, 100.0)], &others), None);
     }
 
     /// A line in parts is drawn as it will be written: its parts on one baseline whatever

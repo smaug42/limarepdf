@@ -32,9 +32,10 @@ While you type:
   [Add text](#add-text)). The inspector names those words and the font they use ("Not in this PDF's font:
   größe Maße. Those words use Helvetica."), or says that the font can't take new text at all (a Type 3 font, one
   not in the PDF, vertical writing), why when you point at it.
-- When what you type runs past the edge of the page, or on past the line's end into the text beside it, the
-  outline turns the caution colour and a tag under it says **Past the page edge** or **Over other text**. It is
-  only a warning: what you type is kept as it is.
+- When what you type runs past the edge of the page, or into text, a picture or a shape the line wasn't already
+  over, the outline turns the caution colour and a tag just below the line, where it happens, says **Past the page
+  edge**, **Over other text**, **Over a picture** or **Over a shape**. It is only a warning: what you type is kept
+  as it is.
 - What you type takes the style of the character before it (at the start of the line, the one after it).
 - The caret, Delete and Backspace go by the character as you see it: a letter with its accent, a Korean syllable
   or an emoji is one step. Backspace after a letter typed with a separate accent takes off only the accent, so you
@@ -91,6 +92,12 @@ While you type:
   centred, right or justified, a justified line's spaces stretched to its edge). Lines before the change, and
   after the point where the line breaks fall where they did, stay exactly as they were: a typo fixed usually
   rewrites only its own line.
+- To make the paragraph narrower or wider, drag the small square on the left or right edge of its outline: the
+  lines rewrap as you drag, as a text box does in a word processor when you resize it. Or click the square (or
+  press Tab from the text to reach the left edge, then the right) and use the Left and Right arrow keys to move
+  that edge a point at a time, ten with Shift; click in the text to type again. The edges stay on the page, and
+  the paragraph can't be narrower than its longest word. Lines whose words and place stay the same are left as
+  they were.
 - **Enter** starts a new paragraph within the frame, with the first line's indent if it has one; **Shift+Enter**
   starts a new line.
 - Each word keeps its own style, and letters keep their font, as in a line (see
@@ -103,11 +110,14 @@ While you type:
   brings it inside a line, marked with a dotted line under it: right-click the word for **Join the hyphenated
   word** or **Keep the line-end hyphen**, or choose **Join all** in the inspector.
 - When the paragraph grows past the page's edge, or over text, a picture or a shape it wasn't already over, the
-  outline turns the caution colour and a tag says **Past the page edge**, **Over other text**, **Over a picture**
-  or **Over a shape**. Nothing else on the page moves: a longer paragraph is written over what follows it, so make
-  room or shorten it.
-- Ctrl+Z and Ctrl+Y undo and redo your typing inside the paragraph. Once kept, the whole change is one undo step.
-  Opening a paragraph and leaving it as it was changes nothing.
+  outline turns the caution colour and a tag just below the line where it happens says **Past the page edge**,
+  **Over other text**, **Over a picture** or **Over a shape**. Nothing else on the page moves: a longer paragraph
+  is written over what follows it, so make room, shorten it or widen it.
+- While a link or a comment is over the paragraph, the inspector says **Links and comments over this paragraph
+  stay in place**: they keep their place on the page, and don't move with the words under them.
+- Ctrl+Z and Ctrl+Y (and **Undo** and **Redo** in the band) undo and redo your typing inside the paragraph, and
+  each move of its edges (a drag, or a run of arrow keys), with a frame edge's square selected too. Once kept, the
+  whole change is one undo step. Opening a paragraph and leaving it as it was changes nothing.
 
 Words you select with the read tool in one paragraph (with **Paragraph** on; with it off, across the lines of one
 LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragraph, which rewraps; see
@@ -198,8 +208,10 @@ copies it.
 3. Press Esc, click elsewhere on the page, or choose another tool, to finish.
 
 The text appears as you type, in the font, size and colour it will have, with an outline around it that turns the
-caution colour, tagged **Past the page edge**, if the text runs off the page. Every line is added as one undo
-step, and nothing typed adds nothing. Each line becomes its own line of page text, so
+caution colour if the text runs off the page or into text, a picture or a shape, with a tag just below the line
+where it happens saying which (**Past the page edge**, **Over other text**, **Over a picture**, **Over a shape**).
+A picture or coloured box the first line starts on doesn't count, so you can put a label on one. Every line is
+added as one undo step, and nothing typed adds nothing. Each line becomes its own line of page text, so
 afterwards it moves and is edited line by line.
 
 While you type, Ctrl+B, Ctrl+I and **Edit > Font** style what is selected, or what you type next, as when
@@ -387,8 +399,10 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   (as maps draw a label over a halo of its own) is changed where you click it; the copy under it keeps the old
   words.
 - A paragraph grows and shrinks downwards in its frame; nothing else on the page moves, and text doesn't flow on
-  to the next column or page. While you type in a line or a paragraph, a highlight or other comment over its old
-  text is hidden with it until the change is kept. A typed word takes the style of the character before it, so typed
+  to the next column or page. Links and comments stay where they are, so a paragraph rewrapped or made narrower
+  can move its words out from under them. While you type in a line or a paragraph, a comment another app saved
+  without a look of its own (which LimarePDF draws for it) is hidden with the old text until the change is kept;
+  other comments and form fields show. A typed word takes the style of the character before it, so typed
   right after a symbol (a bullet, say) it is in the symbol's font. A letter TeX draws as its accent over its letter (an older way of writing
   "ü") reads as the accent, then the letter ("Pr¨ufung"), in the paragraph you type in too; it is written back as
   it was drawn, so other readers still read it as one letter.
@@ -424,10 +438,9 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 - There is no underline or strike-through for page text. Styling words doesn't rewrap: bold or larger words make
   their line longer and the rest of it moves along, and highlights, links and redaction marks over them stay where
   they were.
-- Editing text does not change its width: longer text can overlap its neighbours. The outline warns of it (**Over
-  other text**) only for text beside the line's end, on its right; new text is checked against the page's edge
-  only. The warning's tag sits under the outline's right end, and can be hidden by the floating toolbar when the
-  toolbar sits below the line.
+- Editing a line does not change its width, and a paragraph keeps its frame's width unless you drag its edges:
+  longer text can overlap its neighbours. The outline warns of it, a tag where it happens, but nothing is moved
+  out of the way.
 - Where the text after a changed line starts is worked out from the font's character widths. Where a file doesn't
   give them for a font that isn't one of the standard 14, or a CID font's characters can't be told apart, they are
   estimated, so that text can move a little. In vertical writing the text after a changed line still moves with

@@ -1758,6 +1758,178 @@ fn a_paragraph_set_tighter_than_single_spacing_keeps_its_spacing_when_rewrapped(
     }
 }
 
+// ---- The frame's edges dragged (`ParagraphSetting::set_between`, batch 45's 3b-2).
+
+/// Where each of `lines` starts in their text joined with single spaces, and its text.
+fn starts_of(lines: &[String]) -> Vec<(usize, String)> {
+    let mut at = 0;
+    (lines.iter())
+        .map(|l| {
+            let start = at;
+            at += l.chars().count() + 1;
+            (start, l.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn a_frame_narrowed_or_widened_rewraps_the_paragraph_to_its_new_width() {
+    let (_, lines, setting) = ragged(300.0);
+    let para = setting.paragraph();
+    let parts = para.parts();
+    for room in [200.0, 305.0, 420.0] {
+        let set = setting.set_between(&parts, (72.0, 72.0 + room));
+        let texts = set_texts(&set, &para.text);
+        assert_eq!(texts, wrap(&para.text, room, 11.0), "{room}");
+        for (n, l) in set.lines.iter().enumerate() {
+            assert!((l.x - 72.0).abs() < 0.01, "{room}: {l:?}");
+            assert!(l.width <= room + 0.01, "{room}: {l:?}");
+            // On the paragraph's spacing from its first baseline.
+            let down = 792.0 - (700.0 - 13.2 * n as f32);
+            assert!((l.baseline - down).abs() < 0.05, "{room}: line {n}: {l:?}");
+        }
+        // Only the right edge moved: a line stays as it was where it starts and ends as it
+        // did, and the rest are set again.
+        let was = starts_of(&lines);
+        for ((n, l), now) in set.lines.iter().enumerate().zip(starts_of(&texts)) {
+            let same = was.get(n) == Some(&now);
+            assert_eq!(l.kept, same.then_some(n), "{room}: line {n}");
+        }
+    }
+    let count = |room: f32| setting.set_between(&parts, (72.0, 72.0 + room)).lines.len();
+    assert!(count(200.0) > lines.len() && count(420.0) < lines.len());
+    // Moved a little, some lines keep their breaks.
+    let set = setting.set_between(&parts, (72.0, 72.0 + 305.0));
+    assert!(
+        set.lines.iter().any(|l| l.kept.is_some()) && !set.unchanged(),
+        "{set:?}"
+    );
+}
+
+#[test]
+fn the_left_edge_moved_sets_every_line_again_from_it() {
+    let (_, _, setting) = ragged(300.0);
+    let para = setting.paragraph();
+    let right = para.frame.right;
+    let set = setting.set_between(&para.parts(), (102.0, right));
+    let texts = set_texts(&set, &para.text);
+    assert_eq!(texts, wrap(&para.text, right - 102.0, 11.0));
+    for l in &set.lines {
+        assert_eq!(l.kept, None, "{l:?}");
+        assert!((l.x - 102.0).abs() < 0.01, "{l:?}");
+    }
+}
+
+/// How far a set line reaches across the page, its spaces stretched (`text` the edit's).
+fn line_end(l: &SetLine, text: &str) -> f32 {
+    let chars: Vec<char> = text.chars().collect();
+    let line: String = chars[l.chars.0..l.chars.1].iter().collect();
+    let gaps = line.trim_end().matches(' ').count() as f32;
+    l.x + l.width + l.stretch * gaps
+}
+
+#[test]
+fn a_justified_paragraph_dragged_keeps_its_indent_and_reaches_the_new_edge() {
+    let p = indented_justified();
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    let parts = para.parts();
+    let set = setting.set_between(&parts, (100.0, 450.0));
+    let last = set.lines.len() - 1;
+    assert!((set.lines[0].x - 118.0).abs() < 0.01, "{:?}", set.lines[0]);
+    for l in &set.lines[1..] {
+        assert!((l.x - 100.0).abs() < 0.01, "{l:?}");
+    }
+    for l in &set.lines[..last] {
+        let end = line_end(l, &para.text);
+        assert!((end - 450.0).abs() < 0.5, "{l:?} ends at {end}");
+    }
+    assert_eq!(set.lines[last].stretch, 0.0);
+    // The right edge alone moved: every stretched line is set again, its stretch changed,
+    // though its words stay.
+    let set = setting.set_between(&parts, (72.0, 514.0));
+    for l in &set.lines[..set.lines.len() - 1] {
+        assert_eq!(l.kept, None, "{l:?}");
+        let end = line_end(l, &para.text);
+        assert!((end - 514.0).abs() < 0.5, "{l:?} ends at {end}");
+    }
+}
+
+#[test]
+fn a_centred_paragraph_dragged_is_set_on_its_new_centre_and_a_right_aligned_one_to_its_new_edge() {
+    let cases = [
+        (Align::Centre, centred as fn(f32) -> f32),
+        (Align::Right, right_aligned),
+    ];
+    for (align, x) in cases {
+        let p = aligned_page(x);
+        let para = only_paragraph(&p);
+        let setting = p.paragraph_setting(&para).unwrap();
+        let (left, right) = (para.frame.left - 40.0, para.frame.right + 20.0);
+        let set = setting.set_between(&para.parts(), (left, right));
+        assert_eq!(
+            set_texts(&set, &para.text),
+            wrap(&para.text, right - left, 11.0)
+        );
+        for l in &set.lines {
+            let off = match align {
+                Align::Centre => l.x + l.width / 2.0 - (left + right) / 2.0,
+                _ => l.x + l.width - right,
+            };
+            assert!(off.abs() < 0.01, "{align:?}: {l:?}");
+        }
+    }
+}
+
+#[test]
+fn the_narrowest_frame_holds_the_widest_word_whole() {
+    let (_, _, setting) = ragged(300.0);
+    let para = setting.paragraph();
+    let new = para.text.replacen("quiet", "uncharacteristically quiet", 1);
+    let parts = typed(para, &new);
+    let narrowest = setting.narrowest(&parts);
+    let widest = text_width("uncharacteristically", 11.0);
+    assert!((narrowest - widest).abs() < 0.5, "{narrowest} for {widest}");
+    // At that width every word is whole on its line, the widest on one of its own.
+    let set = setting.set_between(&parts, (72.0, 72.0 + narrowest));
+    let texts = set_texts(&set, &new);
+    assert_eq!(texts.join(" "), new);
+    assert!(
+        texts.iter().any(|t| t == "uncharacteristically"),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn a_paragraph_narrowed_or_widened_is_written_between_its_new_edges() {
+    for room in [200.0, 420.0] {
+        let (mut p, _, setting) = ragged(300.0);
+        let para = setting.paragraph();
+        let parts = para.parts();
+        let edges = (72.0, 72.0 + room);
+        let set = setting.set_between(&parts, edges);
+        let lost = p.edit_paragraph_between(&setting, &parts, edges).unwrap();
+        assert!(lost.is_empty(), "{room}: {lost:?}");
+        assert_eq!(line_texts(&p), set_texts(&set, &para.text), "{room}");
+        for (o, l) in lines_of(&p).iter().zip(&set.lines) {
+            let at = o.baseline.unwrap();
+            assert!(near(at, (l.x, l.baseline)), "{o:?} against {l:?}");
+            assert!(o.bbox[2] <= 72.0 + room + 0.6, "{room}: {o:?}");
+        }
+    }
+}
+
+/// Page 0's only paragraph written with its frame `room` points wide from 72 points in, and
+/// its text.
+fn dragged_to(mut p: Pdf, room: f32) -> (Pdf, String) {
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    let edges = (72.0, 72.0 + room);
+    p.edit_paragraph_between(&setting, &para.parts(), edges)
+        .unwrap();
+    (p, para.text.clone())
+}
+
 /// Page 0's only paragraph edited to the text `new` makes of it ([`typed`]), and that text.
 fn edited_to(mut p: Pdf, new: impl Fn(&Paragraph) -> String) -> (Pdf, String) {
     let para = only_paragraph(&p);
@@ -1791,6 +1963,8 @@ fn written_paragraphs() -> Vec<(&'static str, Pdf, String)> {
         ("centred", into_second(aligned_page(centred))),
         ("right-aligned", into_second(aligned_page(right_aligned))),
         ("TeX's bitmap font", edited_to(tex_paragraph(), tex)),
+        ("narrowed", dragged_to(ragged(300.0).0, 200.0)),
+        ("widened", dragged_to(ragged(300.0).0, 420.0)),
     ]
     .into_iter()
     .map(|(what, (p, new))| (what, p, new))

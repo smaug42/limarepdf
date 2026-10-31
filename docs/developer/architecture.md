@@ -355,11 +355,20 @@ off a line's box select nothing (`Editor::word_on_line`: within the hit toleranc
 The typing says what it does (batch 40's third stage). `page_text::field` draws the outline in two lines (ENH-22):
 the edge in the accent, or `theme::Tone::Caution` when a warning applies, and a 1-point line inside it
 (`outline.shrink(1.0)`) in `theme::halo` of the edge, white or black, whichever contrasts more, so it shows on
-paper of any colour, the accent's own too. `page_text::Style::warn` checks the text's laid-out rect each frame:
-new text (`PageText::ui`) with `page_text::past_edge` (the page's rect, a point's leeway); a line being edited
-(`line_edit_ui`'s `warn`) with that, then the part typed past the line's end (from `line.max.x` plus a point,
-the middle half of the line's height) against the page's other visible lines (`others`). A warning puts a tag
-under the outline's right end, a `Label` so screen readers have it. A line being edited has the inspector rows
+paper of any colour, the accent's own too. `page_text::Style::warn` (and `ParaStyle::warn`) checks the text's
+rows as laid out each frame by one rule for the three editors (PB-35, batch 45's 3b-2): `page_text::overflow`
+takes the first row that leaves the page's rect (a point's leeway) or, across the middle half of its height
+(where rows above and below touch), meets one of the obstacles, and says what (`page_text::over`: "Over other
+text", "Over a picture", "Over a shape") and where: at the leftmost thing it meets, or the side of the page it
+crosses (`Overflow { why, at, leftward }`). The obstacles are `Editor::obstacles`: the page's visible objects but
+invisible text, a background over 80% of the page (`background`) and what each editor leaves out: a line being
+edited (`line_edit_ui`) its own object and whatever its old box meets (`meet`); a paragraph its pieces and
+whatever its old lines' box meets; new text (`adding_ui`, the user's Q3) a picture or shape its first line's start
+meets where it sits now, so a label put on a coloured box isn't warned about the box (other text always counts,
+and moving the box by its outline re-reads what it starts on). `outline_ui` puts the tag just below that row at
+that place (its right end at the page's edge when the right edge is crossed), a `Label` so screen readers have
+it, and returns its rect: `Field::tag`, which the line's and paragraph's `area` (`Editor::line_area`) take in, so
+the floating bar (`bar_place`) keeps clear of it as of the text. A line being edited has the inspector rows
 "PDF font" (`editor::pdf_fonts` of the selection, a subset's six-letter tag cut by `editor::untagged`) and "Source
 font" (`editor::source_font`: `part_font` for each part still in a font of the line's own, a part given a chosen
 font skipped, named Preserved, Installed family or Nearest standard; several, Partly preserved when one is
@@ -1571,7 +1580,16 @@ form XObject, and per inline image.
   tests: the first rewritten line wasn't pushed, and a 10-on-11 paragraph drifted a point a line). Justified lines
   stretch each space to the edge, but the last and one before a typed break (U+2029 for Enter, a new paragraph
   with the first line's indent; `\n` for Shift+Enter); centred and right-aligned lines are placed on the frame's
-  centre or edge. `Pdf::edit_paragraph(&ParagraphSetting, &[TextPart])` writes it in one rewrite (section 7): line
+  centre or edge (`Placing::on`, a frame's room by `room_in`). `ParagraphSetting::set_between(parts, (left,
+  right))` sets it with the frame's edges dragged there (3b-2; `set` is it with the frame's own): moved, every line
+  is broken anew to the new width from the first (no line before the edit kept, no producer's break standing, no
+  rest kept), and a line is kept only where it starts and ends as an old line did in text that hasn't changed and
+  `Placing::on` places it under the new edges as under the old ones (its x and, justified, its stretch), so a ragged
+  paragraph's right edge moved keeps every line whose break stays, and a left edge moved or a justified edge moved
+  writes them anew. `ParagraphSetting::narrowest(parts)` is the widest stretch between break places, plus the first
+  line's indent where it takes one: how narrow the app lets the frame go. `Pdf::edit_paragraph_between` writes
+  that (`edit_paragraph` is it with the frame's own edges). `Pdf::edit_paragraph(&ParagraphSetting,
+  &[TextPart])` writes it in one rewrite (section 7): line
   *i* in place of old line *i*'s first show, lines added after the last old line's last show, the old lines'
   shows taken out (`move_only`, `Following` keeping what follows each in place); inside the text object a `Tm` in
   its CTM, the font, colour (as set, `Paint`), rise, `Tc`, `Tw` and `Tz` set, then put back as the show had them
@@ -1609,7 +1627,8 @@ form XObject, and per inline image.
   `ParagraphSetting` (built on the window's thread: the installed fonts' list is read at start, so reading one is
   a few milliseconds, the cost line editing's fonts already pay on heavy pages), the text as `Styled`
   (`Styled::of_paragraph`, every character's origin kept, so `parts` names what is kept), its own `History`, and
-  the unknown hyphens kept as typed. Each frame the text is set (`ParagraphSetting::set`) and drawn by
+  the unknown hyphens kept as typed, and the frame's edges as dragged (`edges`). Each frame the text is set
+  between them (`ParagraphSetting::set_between`) and drawn by
   `page_text::paragraph_field` on `paragraph_galley`: the text laid out with a line break after each of core's
   lines (put in, taking no character, as `boxed_galley` does), each row then moved to its line's x and baseline
   (rows' positions are public; a glyph's `pos.y` is its baseline), a justified line's spaces widened by a
@@ -1619,11 +1638,32 @@ form XObject, and per inline image.
   go by it. Enter and Shift+Enter are taken before the box sees them and put U+2029 or `\n` into the text at the
   selection (egui types no break from a text event). The old lines are hidden, each in the box a line being edited
   is hidden in (`paragraph::covers`), by the page drawn without them (below, "The page under text being edited"),
-  the flat colour around the block standing in until it comes (`cover_wanted`, one sample round the block's box). Overflow: the new
-  rows across the middle of their height against every visible object's box the old lines didn't overlap (not a
-  background over most of the page), and the page's edge. Kept through `Typed::Paragraph` (`keep`, `put_back`,
-  `settle_kept`, `refused_again`, `pending`), as `Action::EditParagraph` through `Tab::edit_inner`, one step; no
-  action when the text or its setting is unchanged. Words selected across a paragraph's lines (`words_paragraph`:
+  the flat colour around the block standing in until it comes (`cover_wanted`, one sample round the block's box).
+  Overflow by the one rule above (`page_text::overflow`). **The frame's edges** (3b-2): `paragraph_field` gives the
+  outline a handle on its left and right edges (`edge_ui`: an 8-point strip over the edge's height and a 7-point
+  square at its middle, drawn as an object's handles, filled while dragged or holding the keyboard, a 2-point line
+  along the edge then; `Sense::click_and_drag`, a horizontal-resize pointer; named "Paragraph's left edge" and
+  "Paragraph's right edge" as AccessKit splitters; ids `page_text::edge_id`), registered after the text so they
+  win where they meet it, and focusable, so Tab from the text reaches them. A drag moves the edge by the pointer's
+  travel from its press (`ParaEdit::dragging` keeps the side and the edges it started from), the text keeping the
+  keyboard (a drag doesn't surrender it); a click gives the handle the keyboard (`request_focus`: egui gives none
+  on a click). While one has it, a focus lock filter keeps Left, Right and Esc for it: the arrows move it a point,
+  ten with Shift (Shift taken first, as a plain key's match takes it too), Esc ends the editing as from the text,
+  and the paragraph stays open (`on_edge`), as it does for the text; Ctrl+Z and Ctrl+Y go to the paragraph's
+  history there too (`page_text::take_undo`; `App::shortcuts` counts `Editor::edge_held` as typing, so the
+  document's Undo doesn't take them), as do the band's Undo and Redo (`App::state` and `Editor::typing_history`
+  read the paragraph's history for a handle's id, and `undo_held` keeps the handle's keyboard through the click). `edge_to` keeps an edge on the page and no nearer the other than
+  `ParagraphSetting::narrowest`. Each frame's edges go to the history (`History::observe_edges`, the user's Q2): a
+  drag is one step however long, key moves within the pause typing joins over one, and Undo and Redo put the edges
+  back with the text (`History::edges`). Core sets the lines between the new edges (`set_between`: every line
+  broken anew, one kept only where it starts and ends as it did in unchanged text and the move places it as it
+  was, across and in its stretch) and writes them (`Pdf::edit_paragraph_between`). **Links and comments**: when
+  the editor opens, the page's annotations and links are read into the editor's caches (`annots`, `links`), and
+  each frame `ParaEdit::marked_over` says whether one not hidden meets the old lines or the outline; the
+  inspector then says "Links and comments over this paragraph stay in place." Kept through `Typed::Paragraph`
+  (`keep`, `put_back`, `settle_kept`, `refused_again` with the edges too, `pending`), as `Action::EditParagraph`
+  (the edges with it) through `Tab::edit_inner`, one step; no action when the text, the edges or what they set is
+  unchanged. Words selected across a paragraph's lines (`words_paragraph`:
   one block, with paragraph editing on or confident; within one line, with it on only) are typed over, deleted (Word's space rule)
   and cut in it, and Edit text opens it with them selected. Marked hyphens (`SetParagraph::marked`, less those kept)
   are dotted under; `Act::JoinHyphen` and `KeepHyphen` act on the one at the right-click or the caret. The
@@ -1686,8 +1726,14 @@ form XObject, and per inline image.
   taken out as `delete_objects` takes them (`Pdf::without_objects`, shared: a text object's shows by `move_only`,
   what follows kept in place by `Following`), its boxes, turn, inherited resources and transparency group put on
   it, the catalogue's optional content settings kept (a hidden layer stays hidden), the objects its resources and
-  those settings reach copied with their numbers (`copy_used`, never a page or the page tree), annotations left
-  out (a comment over the old text is hidden with it while typing). It never walks the page tree beyond finding
+  those settings reach copied with their numbers (`copy_used`, never a page or the page tree), and the
+  annotations the app's pages draw (`drawn_annots`, PB-76, batch 45's 3b-2: those with an appearance, not Hidden
+  or NoView, not sticky notes, which the app draws over the page itself, as `app_snapshot` leaves them out), each
+  under its own number, cut from what reaches the rest of the document (`/P`, `/Parent`, `/Kids`, `/Popup`,
+  `/IRT`, `/A`, `/AA`, `/Dest`, `/V`), their appearances copied by `copy_used`. A comment without an appearance,
+  which `app_snapshot` draws for the page (`draw_annotations`), isn't drawn here, so it is hidden with the old
+  text while typing; a form field's appearance is copied as it stands, not refreshed as `app_snapshot` refreshes
+  fields in a signed document. It never walks the page tree beyond finding
   the page (`extract` goes through every page), so it costs per page: 3.4 ms on big.pdf's pages, about 1 ms on
   corpus pages with large pictures, 68 ms on the heaviest corpus page, less than deleting one object there
   (performance.md); it runs on the window's thread when editing starts, once for the text edited (the tab's

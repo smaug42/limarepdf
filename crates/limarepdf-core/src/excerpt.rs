@@ -6,7 +6,7 @@ use crate::embed::writable;
 use crate::{FontChoice, Pdf, Result};
 use anyhow::bail;
 use lopdf::content::{Content, Operation};
-use lopdf::{dictionary, Dictionary, Document, Object, Stream};
+use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 use std::collections::HashSet;
 
 /// Font size and line spacing of [`Pdf::from_text`], in points.
@@ -95,8 +95,10 @@ impl Pdf {
     /// [`Pdf::page_objects`] numbers them) taken out as [`Pdf::delete_objects`] takes them:
     /// what the app shows under text being edited, so its old lines don't show through
     /// (ENH-21). The page keeps its boxes, turn, resources and transparency group, and the
-    /// document's optional content settings (a hidden layer stays hidden); its annotations
-    /// are left out. Only what the page's content and resources use is copied, so it costs
+    /// document's optional content settings (a hidden layer stays hidden); its comments and
+    /// fields that have looks of their own are drawn as the app's pages draw them (PB-76;
+    /// sticky notes, which the app draws over the page itself, left out). Only
+    /// what the page's content, resources and annotations' looks use is copied, so it costs
     /// as much in a long document as in a short one. The document itself is not changed.
     pub fn page_without(&self, page_index: usize, ids: &[usize]) -> Result<Vec<u8>> {
         let page = self.page_id_at(page_index)?;
@@ -120,16 +122,26 @@ impl Pdf {
         let layers = (self.doc.catalog().ok())
             .and_then(|c| c.get(b"OCProperties").ok())
             .cloned();
+        let annots = self.drawn_annots(page);
         // Objects keep their numbers, so what refers to them still does.
         let mut out = Document::with_version("1.7");
         let roots = [&res, &group, &layers];
-        self.copy_used(roots.into_iter().flatten(), &mut out);
+        let looks = annots.iter().map(|(_, a)| a);
+        self.copy_used(roots.into_iter().flatten().chain(looks), &mut out);
         for (key, value) in [("Resources", res), ("Group", group), ("UserUnit", unit)] {
             if let Some(v) = value {
                 d.set(key, v);
             }
         }
         out.max_id = self.doc.max_id;
+        if !annots.is_empty() {
+            // Each in its own number again, as an annotation is referred to.
+            for (id, a) in &annots {
+                out.objects.insert(*id, a.clone());
+            }
+            let refs: Vec<Object> = annots.iter().map(|(id, _)| (*id).into()).collect();
+            d.set("Annots", refs);
+        }
         let contents = out.add_object(Stream::new(dictionary! {}, content));
         let page = out.new_object_id();
         let pages = out.add_object(dictionary! {
@@ -151,6 +163,42 @@ impl Pdf {
 
     /// Copy into `out` the objects `roots` refer to, and those they refer to in turn, with
     /// their numbers; never a page or the page tree, which a picture or a font can name.
+    /// The annotations on `page` that the app's pages draw ([`Pdf::app_snapshot`]), each
+    /// with its number, for a page alone: those with a look of their own, not hidden or
+    /// kept from view, and not sticky notes (the app draws those over the page itself).
+    /// Each is cut from what reaches the rest of the document: its page, its field's other
+    /// parts and value, its pop-up, the comment it replies to, its actions.
+    fn drawn_annots(&self, page: ObjectId) -> Vec<(ObjectId, Object)> {
+        const REACHING: [&[u8]; 9] = [
+            b"P", b"Parent", b"Kids", b"Popup", b"IRT", b"A", b"AA", b"Dest", b"V",
+        ];
+        let Some(annots) = (self.doc.get_dictionary(page).ok()).and_then(|d| d.get(b"Annots").ok())
+        else {
+            return Vec::new();
+        };
+        let Ok((_, Object::Array(annots))) = self.doc.dereference(annots) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for r in annots {
+            let Ok(id) = r.as_reference() else { continue };
+            let Ok(d) = self.doc.get_dictionary(id) else {
+                continue;
+            };
+            let flags = d.get(b"F").ok().and_then(|f| self.num(f)).unwrap_or(0.0) as i64;
+            let sub = d.get(b"Subtype").and_then(|o| o.as_name()).unwrap_or(b"");
+            if flags & (2 | 32) != 0 || matches!(sub, b"Text" | b"Popup") || !d.has(b"AP") {
+                continue;
+            }
+            let mut d = d.clone();
+            for key in REACHING {
+                d.remove(key);
+            }
+            out.push((id, Object::Dictionary(d)));
+        }
+        out
+    }
+
     fn copy_used<'a>(&self, roots: impl IntoIterator<Item = &'a Object>, out: &mut Document) {
         let mut stack: Vec<&Object> = roots.into_iter().collect();
         while let Some(o) = stack.pop() {

@@ -523,6 +523,13 @@ What they show:
   over 50 ms" (6.3); reading a paragraph to open it is the row above, a few milliseconds.
 - `page_sizes` reads a page's media box and crop box as before (a page without a crop box read both before too):
   16 ms over 10,000 pages.
+- **A frame edge dragged** (batch 45's 3b-2, measured 31 October 2026 the same way, `b45para time`, nothing else
+  running): each frame of a drag reads how narrow the frame may go (`ParagraphSetting::narrowest`, 200 frames:
+  median 0.16 ms, 95th percentile 0.17 ms) and sets the 2,000 characters between the moved edges
+  (`set_between`, every line broken anew: median 0.18 ms, 95th percentile 0.19 ms, most 0.25 ms), as a keystroke
+  costs; the write narrowed 100 points, every line (`Pdf::edit_paragraph_between`, 10): median 2.13 ms, as a word
+  typed at the start. Keystrokes measured again the same day: 0.17 to 0.21 ms at the median, as above. The corpus
+  edit run again after 3b-2 (edges as they were) gave every block's record as 3a's run did, timings aside.
 
 ## The page under text being edited
 

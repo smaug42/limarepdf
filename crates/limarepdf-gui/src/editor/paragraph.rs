@@ -56,6 +56,13 @@ pub(super) struct ParaEdit {
     pub menu_at: Option<usize>,
     /// What was selected last frame (characters, from the anchor to the caret).
     pub sel: (usize, usize),
+    /// The frame's left and right edges as dragged (page points), its own until then.
+    pub edges: (f32, f32),
+    /// An edge being dragged (0 left, 1 right), and the edges when the drag started.
+    pub dragging: Option<(usize, (f32, f32))>,
+    /// A link or comment is over the paragraph, its old lines or what is typed: the
+    /// inspector says they stay in place.
+    pub marked_over: bool,
 }
 
 /// What a paragraph editor selects when it opens.
@@ -221,6 +228,26 @@ fn para_source(setting: &ParagraphSetting, text: &Styled) -> &'static str {
     }
 }
 
+/// Ctrl+Z or Ctrl+Y as taken (`t`) in paragraph `pe` (the editor `id`): its typing and its
+/// frame's edges a step back or forward in its own history.
+fn para_undo_redo(ctx: &egui::Context, id: egui::Id, t: &page_text::Taken, pe: &mut ParaEdit) {
+    page_text::undo_redo(ctx, id, t, &mut pe.history, &mut pe.text);
+    if t.undo || t.redo {
+        pe.edges = pe.history.edges().unwrap_or(pe.edges);
+    }
+}
+
+/// The frame's `edges` with edge `side` (0 left, 1 right) moved to `x` (page points), kept
+/// on the page (`width` points wide) and no nearer the other edge than `narrowest` (its
+/// widest word, [`ParagraphSetting::narrowest`]).
+fn edge_to(edges: (f32, f32), side: usize, x: f32, narrowest: f32, width: f32) -> (f32, f32) {
+    let (left, right) = edges;
+    match side {
+        0 => (x.min(right - narrowest).max(0.0), right),
+        _ => (left, x.max(left + narrowest).min(width)),
+    }
+}
+
 /// Take what an input method was still composing in paragraph `pe` as committed
 /// ([`page_text::commit_left_styled`]), as when it loses the keyboard. Returns the first
 /// character left out.
@@ -350,10 +377,26 @@ impl Editor {
         self.para.is_some()
     }
 
+    /// Whether a handle of the frame of the paragraph being edited has the keyboard.
+    pub fn edge_held(&self, ctx: &egui::Context) -> bool {
+        let Some(pe) = self.para.as_ref() else {
+            return false;
+        };
+        let id = para_id(self.scope, pe.page);
+        let held = |s: usize| ctx.memory(|m| m.has_focus(page_text::edge_id(id, s)));
+        held(0) || held(1)
+    }
+
     /// How many line-end hyphens the paragraph being edited has marked.
     #[cfg(test)]
     pub fn marked_hyphens(&self) -> usize {
         self.para.as_ref().map_or(0, |pe| pe.marked().len())
+    }
+
+    /// The frame's left and right edges of the paragraph being edited (page points).
+    #[cfg(test)]
+    pub fn para_edges(&self) -> Option<(f32, f32)> {
+        Some(self.para.as_ref()?.edges)
     }
 
     /// The text of the paragraph being edited, as typed, and what is selected in it.
@@ -411,14 +454,20 @@ impl Editor {
         self.sync_insp();
         self.line_edit = None;
         self.cover = None;
+        // The links and comments on the page, which the inspector says stay in place.
+        self.annots(pdf, page);
+        self.links
+            .entry(page)
+            .or_insert_with(|| pdf.page_links(page).unwrap_or_default());
         let text = Styled::of_paragraph(&para, font_of);
+        let edges = (para.frame.left, para.frame.right);
         self.para = Some(ParaEdit {
             page,
             line: id,
             block,
             setting: Arc::new(setting),
             orig: text.clone(),
-            history: History::new(&text),
+            history: History::with_edges(&text, edges),
             text,
             pick,
             fresh: true,
@@ -432,6 +481,9 @@ impl Editor {
             caret_at: None,
             menu_at: None,
             sel: (0, 0),
+            edges,
+            dragging: None,
+            marked_over: false,
         });
         true
     }
@@ -454,14 +506,20 @@ impl Editor {
     /// it: none when it is as it was.
     pub(super) fn para_change(&self) -> Option<Action> {
         let pe = self.para.as_ref()?;
-        if pe.text.same_as(&pe.orig) {
+        let f = &pe.setting.paragraph().frame;
+        if pe.text.same_as(&pe.orig) && pe.edges == (f.left, f.right) {
             return None;
         }
         let parts = pe.text.parts();
-        if pe.setting.set(&parts).unchanged() {
+        if pe.setting.set_between(&parts, pe.edges).unchanged() {
             return None;
         }
-        Some(Action::EditParagraph(pe.page, pe.setting.clone(), parts))
+        Some(Action::EditParagraph(
+            pe.page,
+            pe.setting.clone(),
+            parts,
+            pe.edges,
+        ))
     }
 
     /// Stop editing the paragraph on the page, keeping what was typed. With the arrow, or
@@ -639,38 +697,23 @@ impl Editor {
         let on_screen =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
         let to_pt = |p: Pos2| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k);
-        // What the paragraph's lines may run over: the page's other visible things that its
-        // old lines didn't already overlap (a box or picture behind it counts once the text
-        // runs past it), not a background covering most of the page.
-        let old = (block.lines.iter()).fold(Rect::NOTHING, |b, l| b.union(on_screen(l.bbox)));
+        // What the paragraph's rows may run over (PB-35): the page's other visible things
+        // its old lines didn't already overlap (a box or picture behind it counts once the
+        // text runs past it), not a background covering most of the page.
+        let old = (block.lines.iter().map(|l| l.bbox)).reduce(union);
+        let old = old.unwrap_or_default();
         let own: Vec<usize> = block.pieces().collect();
-        let area = (r.width() / k) * (r.height() / k);
-        let others: Vec<(Rect, &'static str)> = (self.objs.get(&page).into_iter().flatten())
-            .enumerate()
-            .filter(|(i, o)| !own.contains(i) && !(o.kind == ObjectKind::Text && o.hidden))
-            .filter(|(i, _)| !self.background(page, *i, area))
-            .map(|(_, o)| {
-                let why = match o.kind {
-                    ObjectKind::Text => "Over other text",
-                    ObjectKind::Image => "Over a picture",
-                    _ => "Over a shape",
-                };
-                (on_screen(o.bbox), why)
-            })
-            .filter(|(b, _)| !b.intersects(old))
+        let others = self.obstacles(page, r, k, |i, o| own.contains(&i) || meet(o.bbox, old));
+        let warn = |rows: &[Rect]| page_text::overflow(r, rows, &others);
+        // The links and comments on the page, whose places the inspector speaks of.
+        let shown = |a: &&Annot| a.flags & 2 == 0;
+        let annots = self.annots.get(&page).into_iter().flatten().filter(shown);
+        let links = self.links.get(&page).into_iter().flatten();
+        let marks: Vec<[f32; 4]> = annots
+            .map(|a| a.bbox)
+            .chain(links.map(|l| l.bbox))
             .collect();
-        let warn = |rows: &[Rect]| -> Option<&'static str> {
-            let text = rows.iter().fold(Rect::NOTHING, |a, b| a.union(*b));
-            page_text::past_edge(r, text).or_else(|| {
-                rows.iter().find_map(|row| {
-                    // Across the middle of its height: the lines above and below touch.
-                    let (mid, half) = (row.center().y, row.height() * 0.25);
-                    let row = Rect::from_x_y_ranges(row.x_range(), mid - half..=mid + half);
-                    let over = others.iter().find(|(o, _)| o.intersects(row));
-                    over.map(|(_, why)| *why)
-                })
-            })
-        };
+        let page_w = r.width() / k;
         let ctx = ui.ctx().clone();
         let id = para_id(self.scope, page);
         let mode = self.page_colours;
@@ -716,30 +759,56 @@ impl Editor {
                 pe.text.sync(&s, Some(a + 1));
                 page_text::select(&ctx, id, (a + 1, a + 1));
             }
-            page_text::undo_redo(&ctx, id, &t, &mut pe.history, &mut pe.text);
+            para_undo_redo(&ctx, id, &t, pe);
             page_text::switch_styles(&ctx, &t, &mut pe.text, sel, font, &mut pe.refused);
             if let Some(c) = t.refused {
                 pe.refused.mark(&ctx, page_text::note(&c).to_string());
             }
         }
+        // The frame's edges moved from the keyboard while a handle has it: Left and Right
+        // a point, ten with Shift; Ctrl+Z and Ctrl+Y the paragraph's own, as in its text.
+        let held = |s: usize| ctx.memory(|m| m.has_focus(page_text::edge_id(id, s)));
+        if let Some(side) = [0, 1].into_iter().find(|&s| held(s)) {
+            let keys = egui::EventFilter {
+                horizontal_arrows: true,
+                escape: true,
+                ..Default::default()
+            };
+            ctx.memory_mut(|m| m.set_focus_lock_filter(page_text::edge_id(id, side), keys));
+            para_undo_redo(&ctx, id, &page_text::take_undo(ui), pe);
+            let step = ui.input_mut(|i| {
+                let mut step = 0.0;
+                for (key, d) in [(egui::Key::ArrowLeft, -1.0), (egui::Key::ArrowRight, 1.0)] {
+                    // Shift first: a plain key's match takes it too.
+                    let ten = i.count_and_consume_key(egui::Modifiers::SHIFT, key);
+                    let one = i.count_and_consume_key(egui::Modifiers::NONE, key);
+                    step += d * (10 * ten + one) as f32;
+                }
+                step
+            });
+            if step != 0.0 {
+                let narrowest = pe.setting.narrowest(&pe.text.parts());
+                let x = [pe.edges.0, pe.edges.1][side] + step;
+                pe.edges = edge_to(pe.edges, side, x, narrowest, page_w);
+            }
+        }
         // The text as egui has it this frame, set on its lines in the faces it is written
-        // in.
-        let (styled, setting) = (pe.text.clone(), pe.setting.clone());
+        // in, between the frame's edges.
+        let (styled, setting, edges) = (pe.text.clone(), pe.setting.clone(), pe.edges);
         let laid = |t: &str| {
             let text = styled.preview(t);
             let parts = text.parts();
-            let set = setting.set(&parts);
+            let set = setting.set_between(&parts, edges);
             let pieces = para_pieces(&setting, &text, &parts);
             let colour = |c| page_text::shown(mode, c);
             let runs = page_text::runs(&ctx, &pieces, k, colour, lang.as_deref());
             page_text::paragraph_galley(&ctx, t, &runs, &set.lines, k, &to_screen)
         };
-        let frame = &setting.paragraph().frame;
         let style = page_text::ParaStyle {
             laid: &laid,
             mode,
             accent,
-            frame: (to_screen(frame.left, 0.0).x, to_screen(frame.right, 0.0).x),
+            frame: (to_screen(edges.0, 0.0).x, to_screen(edges.1, 0.0).x),
             warn: &warn,
         };
         // Each old line hidden, as a line being edited is.
@@ -758,9 +827,40 @@ impl Editor {
             pe.text.caret_at(sel);
             pe.sel = sel;
         }
-        pe.set = setting.set(&pe.text.parts());
+        // An edge dragged by its handle, from where the press was, rewrapping as it goes; a
+        // click on a handle gives it the keyboard.
+        let handles = f.edges.as_ref();
+        for (side, e) in handles.into_iter().flatten().enumerate() {
+            if e.drag_started() {
+                pe.dragging = Some((side, pe.edges));
+            }
+            if e.clicked() {
+                e.request_focus();
+            }
+        }
+        let pointer = ctx.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()));
+        if let (Some((side, start)), Some((a, b))) = (pe.dragging, pointer) {
+            let e = handles.map(|h| &h[side]);
+            if e.is_some_and(|e| e.dragged()) {
+                let narrowest = pe.setting.narrowest(&pe.text.parts());
+                let x = [start.0, start.1][side] + (b.x - a.x) / k;
+                let now = edge_to(start, side, x, narrowest, page_w);
+                if now != pe.edges {
+                    pe.edges = now;
+                    ctx.request_repaint();
+                }
+            }
+            if e.is_none_or(|e| !e.dragged()) {
+                pe.dragging = None;
+            }
+        }
+        pe.set = setting.set_between(&pe.text.parts(), pe.edges);
         let now = ctx.input(|i| i.time);
         pe.history.observe(&pe.text, sel, now, settled(&ctx));
+        let dragging = pe.dragging.is_some();
+        pe.history.observe_edges(pe.edges, now, dragging);
+        let on_edge = (handles.into_iter().flatten()).any(|e| e.has_focus());
+        let over_edge = (handles.into_iter().flatten()).any(|e| e.hovered() || e.dragged());
         let edit = &out.response.response;
         // Where the caret is, for a switch to One line; what a right-click was on.
         let galley_at = out.galley_pos;
@@ -798,7 +898,17 @@ impl Editor {
             self.left_composing = self.left_composing.take().or(left);
         }
         self.typing_box = Some(edit.clone());
+        // The floating bar keeps clear of the tag too.
         pe.area = f.outline.union(edit.rect);
+        if let Some(tag) = f.tag {
+            pe.area = pe.area.union(tag);
+        }
+        // A link or comment over its old lines or what is typed (its outline).
+        let (a, b) = (to_pt(f.outline.min), to_pt(f.outline.max));
+        let typed = [a.x, a.y, b.x, b.y];
+        let over = |m: &[f32; 4]| meet(*m, typed) || block.lines.iter().any(|l| meet(*m, l.bbox));
+        pe.marked_over = marks.iter().any(over);
+        let area = pe.area;
         let words: Vec<&str> = pe.text.text().split_whitespace().take(8).collect();
         let first = words.join(" ");
         dialogs::set_name(edit, &format!("Editing a paragraph: {first}"));
@@ -822,20 +932,25 @@ impl Editor {
             pe.fresh = false;
             return true;
         }
+        let pointed = edit.hovered() || over_edge;
         // Under a dialog it waits, open, for it to close, and takes the keyboard back then.
         if crate::dialogs::any_open(&ctx) {
             pe.refocus = true;
-            return edit.hovered();
+            return pointed;
         }
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-        if esc && (edit.lost_focus() || edit.has_focus()) {
+        if esc && (edit.lost_focus() || edit.has_focus() || on_edge) {
             // Esc keeps what was typed, as a click away does; Ctrl+Z takes it back.
             self.end_paragraph(false);
             return true;
         }
         // F6 took the keyboard to another region: it waits, open, for it to come back.
         if !edit.has_focus() && self.parked == Some(Parked::Typing(id)) {
-            return edit.hovered();
+            return pointed;
+        }
+        // A frame's handle has the keyboard: the paragraph stays open, as with the text.
+        if on_edge && ui.clip_rect().intersects(area) {
+            return pointed;
         }
         // The band's Font group, the inspector and the floating bar change the paragraph,
         // which takes the keyboard back once the change is finished.
@@ -856,14 +971,14 @@ impl Editor {
             } else {
                 pe.refocus = true;
             }
-            return edit.hovered();
+            return pointed;
         }
         // Scrolled out of view, or the keyboard went elsewhere: keep what was typed.
         if !edit.has_focus() || !ui.clip_rect().intersects(pe.area) {
             self.end_paragraph(false);
             return false;
         }
-        edit.hovered()
+        pointed
     }
 
     /// Join the marked hyphen (`all`: every one) in the paragraph being edited, its word
@@ -966,6 +1081,9 @@ impl Editor {
             chosen.iter().map(|(f, t)| (*f, t.as_str())).collect();
         if let Some((said, why)) = page_text::fallback_note(&chosen) {
             note(ui, &said).on_hover_text(why);
+        }
+        if pe.marked_over {
+            note(ui, "Links and comments over this paragraph stay in place.");
         }
         let marked = pe.marked().len();
         if marked > 0 {

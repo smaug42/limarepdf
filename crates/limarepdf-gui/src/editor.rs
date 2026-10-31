@@ -231,8 +231,8 @@ enum NotKept {
     Text(Styled),
     Writing(String),
     Object((usize, usize), Styled, Look),
-    /// A paragraph's page and the line it was opened from, and its text.
-    Paragraph((usize, usize), Styled),
+    /// A paragraph's page and the line it was opened from, its text and its frame's edges.
+    Paragraph((usize, usize), Styled, (f32, f32)),
 }
 
 impl NotKept {
@@ -241,7 +241,7 @@ impl NotKept {
             Kept::Text(a) => Some(Self::Text(a.text.clone())),
             Kept::Writing(w) => Some(Self::Writing(w.text.clone())),
             Kept::Object(o) => Some(Self::Object(o.0.key, o.0.text.clone(), o.0.look())),
-            Kept::Paragraph(p) => Some(Self::Paragraph((p.page, p.line), p.text.clone())),
+            Kept::Paragraph(p) => Some(Self::Paragraph((p.page, p.line), p.text.clone(), p.edges)),
             _ => None,
         }
     }
@@ -361,9 +361,9 @@ pub enum Action {
     /// A line's change; true when only its words changed, not their styles, so it can join
     /// a recent change of the same line.
     EditText(usize, usize, TextEdit, bool),
-    /// A paragraph of a page edited to these parts, as its setting sets them
-    /// ([`limarepdf_core::Pdf::edit_paragraph`]).
-    EditParagraph(usize, Arc<ParagraphSetting>, Vec<TextPart>),
+    /// A paragraph of a page edited to these parts, as its setting sets them between its
+    /// frame's left and right edges ([`limarepdf_core::Pdf::edit_paragraph_between`]).
+    EditParagraph(usize, Arc<ParagraphSetting>, Vec<TextPart>, (f32, f32)),
     /// Words selected with the read tool restyled: each page's changed lines, by object, and
     /// the lines with selected words left as they were. The words stay selected.
     Restyle(Vec<(usize, Vec<(usize, TextEdit)>)>, Left),
@@ -1825,6 +1825,11 @@ fn norm(r: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// Whether two boxes meet (touching counts).
+fn meet(a: [f32; 4], b: [f32; 4]) -> bool {
+    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+}
+
 /// The smallest box holding both.
 fn union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [
@@ -1957,16 +1962,21 @@ impl Editor {
     }
 
     /// What Ctrl+Z and Ctrl+Y can take back and redo in the typing on the page whose box
-    /// `id` has the keyboard: new text or a line being edited, which keep their own
-    /// history. `None` for any other box.
+    /// `id` has the keyboard: new text, a line or a paragraph being edited, which keep
+    /// their own history (a paragraph's frame's handles share it). `None` for any other box.
     pub fn typing_history(&self, id: egui::Id) -> Option<(bool, bool)> {
+        let ours = |pe: &ParaEdit| {
+            let box_id = para_id(self.scope, pe.page);
+            let edge = |s: usize| page_text::edge_id(box_id, s) == id;
+            box_id == id || edge(0) || edge(1)
+        };
         let history = match (&self.adding, &self.line_edit) {
             (Some(a), _) if a.id() == id => a.history(),
             (_, Some(le)) if line_edit_id(self.scope, le.page) == id => {
                 &self.insp.as_ref()?.history
             }
             _ => match self.para.as_ref() {
-                Some(pe) if para_id(self.scope, pe.page) == id => &pe.history,
+                Some(pe) if ours(pe) => &pe.history,
                 _ => return None,
             },
         };
@@ -2236,8 +2246,10 @@ impl Editor {
                 let same = |i: &Insp| i.key == *key && i.text.same_as(t) && i.look().same_as(look);
                 self.insp.as_ref().is_some_and(same)
             }
-            (Some(NotKept::Paragraph(key, t)), Typed::Paragraph) => {
-                let same = |p: &ParaEdit| (p.page, p.line) == *key && p.text.same_as(t);
+            (Some(NotKept::Paragraph(key, t, edges)), Typed::Paragraph) => {
+                let same = |p: &ParaEdit| {
+                    (p.page, p.line) == *key && p.text.same_as(t) && p.edges == *edges
+                };
                 self.para.as_ref().is_some_and(same)
             }
             _ => false,
@@ -2562,17 +2574,50 @@ impl Editor {
         page.or(self.cover.map(page_text::Cover::Flat))
     }
 
+    /// What text typed on `page` (drawn at `r`, `k` pixels per point) may run over, on the
+    /// screen, with what each is ([`page_text::overflow`], PB-35): the page's visible things
+    /// but those `leave` says (by number and object: the text being edited, and what it was
+    /// already over), invisible text and a background covering most of the page.
+    fn obstacles(
+        &self,
+        page: usize,
+        r: Rect,
+        k: f32,
+        leave: impl Fn(usize, &PageObject) -> bool,
+    ) -> Vec<(Rect, &'static str)> {
+        let at = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
+        let area = (r.width() / k) * (r.height() / k);
+        (self.objs.get(&page).into_iter().flatten().enumerate())
+            .filter(|(i, o)| !leave(*i, o) && !(o.kind == ObjectKind::Text && o.hidden))
+            .filter(|(i, _)| !self.background(page, *i, area))
+            .map(|(_, o)| {
+                let b = o.bbox;
+                let on_screen = Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3]));
+                (on_screen, page_text::over(o.kind))
+            })
+            .collect()
+    }
+
     /// The new text being typed on `page` (drawn at `r`, `k` pixels per point). Esc, Tab
     /// or scrolling it out of view keeps it. Returns true when the page should not take
     /// the pointer this frame: it is over the text, or the editor just opened or closed.
     fn adding_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
         let accent = ui.visuals().selection.stroke.color;
         let settled = settled(ui.ctx());
-        let Some(a) = self.adding.as_mut().filter(|a| a.page == page) else {
+        let adding = self.adding.as_ref().filter(|a| a.page == page);
+        let Some(at) = adding.map(|a| a.at) else {
+            return false;
+        };
+        // What it may run over: not a picture or shape where its first line starts, as it
+        // is now (the user's answer, Q3: text put on a coloured box); other text always.
+        let start = [at.0, at.1 - 1.0, at.0 + 1.0, at.1];
+        let on_start = |o: &PageObject| o.kind != ObjectKind::Text && meet(o.bbox, start);
+        let others = self.obstacles(page, r, k, |_, o| on_start(o));
+        let Some(a) = self.adding.as_mut() else {
             return false;
         };
         let lang = self.lang.as_deref();
-        let shown = a.ui(ui, r, k, self.page_colours, accent, settled, lang);
+        let shown = a.ui(ui, r, k, self.page_colours, accent, settled, lang, &others);
         self.typing_box = Some(shown.edit);
         if self.left_composing.is_none() {
             self.left_composing = shown.left;
@@ -2608,25 +2653,10 @@ impl Editor {
             return false;
         };
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
-        let on_screen =
-            |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
-        // The other lines of the page shown, which typing may run into.
-        let others: Vec<Rect> = (self.objs.get(&page).into_iter().flatten().enumerate())
-            .filter(|(i, l)| *i != key.1 && l.kind == ObjectKind::Text && !l.hidden)
-            .map(|(_, l)| on_screen(l.bbox))
-            .collect();
-        let line = on_screen(o.bbox);
-        // Past the page's edge, or typed on past the line's end into another line: the part
-        // beyond its end, across the middle of its height, meets another line's box.
-        let warn = |text: Rect| {
-            page_text::past_edge(r, text).or_else(|| {
-                let (mid, half) = (line.center().y, line.height() * 0.25);
-                let x = (line.max.x + k).max(text.min.x)..=text.max.x;
-                let beyond = Rect::from_x_y_ranges(x, mid - half..=mid + half);
-                let over = beyond.is_positive() && others.iter().any(|l| l.intersects(beyond));
-                over.then_some("Over other text")
-            })
-        };
+        // What typing may run over (PB-35): the page's other visible things the line as it
+        // was didn't overlap.
+        let others = self.obstacles(page, r, k, |i, l| i == key.1 || meet(l.bbox, o.bbox));
+        let warn = |rows: &[Rect]| page_text::overflow(r, rows, &others);
         let hide = self.hiding(to_screen);
         let (Some(le), Some(insp)) = (self.line_edit.as_mut(), self.insp.as_mut()) else {
             return false;
@@ -2691,7 +2721,8 @@ impl Editor {
                 cover,
                 false,
             );
-            (f.out, f.outline)
+            // The floating bar keeps clear of the tag too.
+            (f.out, f.tag.map_or(f.outline, |t| f.outline.union(t)))
         } else {
             let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3])).expand(2.0);
             // A turned line shows its styles too, at its size on the page, in a box as long

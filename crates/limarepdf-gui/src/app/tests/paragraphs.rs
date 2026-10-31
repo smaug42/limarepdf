@@ -513,3 +513,247 @@ fn a_hyphen_brought_inside_a_line_is_marked_and_joined_on_asking() {
     let joined = "in the water, cooperation, while gulls";
     assert!(now.contains(joined), "{now:?}");
 }
+
+// ---- Batch 45's 3b-2: the frame's edges, overflow where it happens, links and comments.
+
+/// The prose tab's paragraph switched to Paragraph and opened at "fishing"; the window
+/// settled.
+fn open_prose_paragraph(app: &mut App, ctx: &egui::Context) -> egui::accesskit::TreeUpdate {
+    double_click_word(app, ctx, "fishing");
+    app.act(ctx, Act::EditParagraph);
+    let tree = settled_at(app, ctx, 1400.0);
+    assert!(app.tabs[0].ed.editing_paragraph());
+    tree
+}
+
+/// Where page 1 is on the screen: its top left, and pixels a point.
+fn page_at(tree: &egui::accesskit::TreeUpdate) -> (egui::Pos2, f32) {
+    let (page, _) = node(tree, "Page 1").expect("the page");
+    (page.min, page.width() / 612.0)
+}
+
+/// The frame's left and right edges of the paragraph being edited.
+fn edges(app: &App) -> (f32, f32) {
+    app.tabs[0].ed.para_edges().expect("editing a paragraph")
+}
+
+/// Drag from `from` to `to` on the screen in a few steps, the button held, then let go.
+fn drag(app: &mut App, ctx: &egui::Context, from: egui::Pos2, to: egui::Pos2) {
+    window(app, ctx, 1400.0, vec![egui::Event::PointerMoved(from)]);
+    window(app, ctx, 1400.0, vec![press(from, true)]);
+    for i in 1..=5 {
+        let p = from.lerp(to, i as f32 / 5.0);
+        window(app, ctx, 1400.0, vec![egui::Event::PointerMoved(p)]);
+    }
+    window(app, ctx, 1400.0, vec![press(to, false)]);
+}
+
+/// The paragraph's lines below the heading as they are on the page.
+fn paragraph_lines(pdf: &Pdf) -> Vec<limarepdf_core::PageObject> {
+    let mut objs = pdf.page_objects(0).unwrap();
+    objs.retain(|o| o.text.is_some() && o.bbox[1] > 90.0);
+    objs
+}
+
+/// The frame's right edge dragged from its handle makes the paragraph narrower, rewrapping
+/// it as it moves, the keyboard left in the text; Ctrl+Z there takes the drag back and
+/// Ctrl+Y does it again, as Word undoes a resize. A click on the handle gives it the
+/// keyboard: Left moves the edge a point, Ctrl+Z takes that back. Esc keeps it: every word
+/// as it was, each line written between the new edges, one undo step.
+#[test]
+fn the_frames_right_edge_dragged_and_moved_by_a_point_rewraps_the_paragraph() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    let was = content(&app.tabs[0].pdf);
+    let text = paragraph_now(&app.tabs[0].pdf);
+    let before = paragraph_lines(&app.tabs[0].pdf).len();
+    let tree = open_prose_paragraph(&mut app, &ctx);
+    let typing = app.tabs[0].ed.typing_id().expect("typing");
+    let (left, right) = edges(&app);
+    assert!((left - 72.0).abs() < 0.5 && right > 390.0, "{left} {right}");
+    let (handle, _) = node(&tree, "Paragraph's right edge").expect("the right edge");
+    let left_edge = node(&tree, "Paragraph's left edge");
+    assert!(left_edge.is_some(), "the left edge");
+    let (_, k) = page_at(&tree);
+    let from = handle.center();
+    drag(&mut app, &ctx, from, from - egui::vec2(100.0 * k, 0.0));
+    settled_at(&mut app, &ctx, 1400.0);
+    let open = |app: &App| app.tabs[0].ed.editing_paragraph();
+    assert!(open(&app), "the drag ended the editing");
+    // The right edge's place now, to within the drag's rounding.
+    let at = |app: &App, want: f32| (edges(app).1 - want).abs() < 0.6;
+    assert!(at(&app, right - 100.0), "{:?}", edges(&app));
+    let focused = ctx.memory(|m| m.focused());
+    assert_eq!(focused, Some(typing), "the keyboard left the text");
+    // In the paragraph's own undo.
+    window(&mut app, &ctx, 1400.0, vec![key_with(Key::Z, CTRL)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert_eq!(edges(&app), (left, right), "Ctrl+Z");
+    window(&mut app, &ctx, 1400.0, vec![key_with(Key::Y, CTRL)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(at(&app, right - 100.0), "Ctrl+Y: {:?}", edges(&app));
+    // The keyboard on the handle.
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    let (handle, _) = node(&tree, "Paragraph's right edge").expect("the right edge");
+    window(&mut app, &ctx, 1400.0, click_at(handle.center()));
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    let on = focused_name(&ctx, &tree);
+    assert_eq!(on.as_deref(), Some("Paragraph's right edge"));
+    window(&mut app, &ctx, 1400.0, vec![key(Key::ArrowLeft)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(at(&app, right - 101.0), "Left: {:?}", edges(&app));
+    window(&mut app, &ctx, 1400.0, vec![key_with(Key::Z, CTRL)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(open(&app), "Ctrl+Z on the handle ended it");
+    assert!(at(&app, right - 100.0), "Ctrl+Z: {:?}", edges(&app));
+    // The band's Undo there too, the keyboard left on the handle.
+    window(&mut app, &ctx, 1400.0, vec![key(Key::ArrowLeft)]);
+    click_band(&mut app, &ctx, "Undo");
+    assert!(open(&app), "the band's Undo ended it");
+    assert!(at(&app, right - 100.0), "Undo: {:?}", edges(&app));
+    window(&mut app, &ctx, 1400.0, vec![key(Key::ArrowLeft)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let (l, r) = edges(&app);
+    let steps = app.tabs[0].history().1;
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(!status_says(&tree, "Editing a paragraph"), "Esc ends it");
+    assert_eq!(app.tabs[0].history().1, steps + 1, "one step");
+    assert_eq!(paragraph_now(&app.tabs[0].pdf), text, "the words changed");
+    let lines = paragraph_lines(&app.tabs[0].pdf);
+    assert!(lines.len() > before, "no line more: {}", lines.len());
+    for o in &lines {
+        let inside = o.bbox[0] >= l - 0.5 && o.bbox[2] <= r + 0.6;
+        assert!(inside, "{o:?} outside {l}..{r}");
+    }
+    app.act(&ctx, Act::Undo);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert_eq!(content(&app.tabs[0].pdf), was, "one Undo, byte for byte");
+}
+
+/// Tab from the paragraph's text reaches the frame's left edge, then its right, the paragraph
+/// staying open, so the keyboard alone can move them; Tab again leaves, keeping it, as Tab
+/// leaves the text with no edges to reach.
+#[test]
+fn tab_from_a_paragraphs_text_reaches_its_frames_edges_then_leaves() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    open_prose_paragraph(&mut app, &ctx);
+    let tab = || key(Key::Tab);
+    for name in ["Paragraph's left edge", "Paragraph's right edge"] {
+        window(&mut app, &ctx, 1400.0, vec![tab()]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(focused_name(&ctx, &tree).as_deref(), Some(name));
+        assert!(app.tabs[0].ed.editing_paragraph(), "{name}: ended");
+    }
+    window(&mut app, &ctx, 1400.0, vec![tab()]);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(!app.tabs[0].ed.editing_paragraph(), "still editing");
+}
+
+/// The frame's edges stop at the page's edges and, closing in, at the widest word: Shift and
+/// an arrow move an edge ten points.
+#[test]
+fn the_frames_edges_stop_at_the_pages_edge_and_the_widest_word() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    open_prose_paragraph(&mut app, &ctx);
+    let shift = egui::Modifiers::SHIFT;
+    let steps = |app: &mut App, name: &str, arrow: Key, n: usize| {
+        let tree = settled_at(app, &ctx, 1400.0);
+        let (handle, _) = node(&tree, name).unwrap_or_else(|| panic!("no {name}"));
+        window(app, &ctx, 1400.0, click_at(handle.center()));
+        settled_at(app, &ctx, 1400.0);
+        for _ in 0..n {
+            window(app, &ctx, 1400.0, vec![key_with(arrow, shift)]);
+        }
+        settled_at(app, &ctx, 1400.0);
+    };
+    steps(&mut app, "Paragraph's left edge", Key::ArrowLeft, 20);
+    assert_eq!(edges(&app).0, 0.0, "past the page's left edge");
+    steps(&mut app, "Paragraph's right edge", Key::ArrowRight, 40);
+    assert_eq!(edges(&app).1, 612.0, "past the page's right edge");
+    steps(&mut app, "Paragraph's right edge", Key::ArrowLeft, 80);
+    let widest = (PROSE.split(' '))
+        .map(|w| limarepdf_core::text_width(w, 12.0))
+        .fold(0.0, f32::max);
+    let (l, r) = edges(&app);
+    let close = (r - l - widest).abs() < 1.0;
+    assert!(close, "{l}..{r} for the widest word, {widest}");
+    assert!(app.tabs[0].ed.editing_paragraph());
+}
+
+/// A paragraph that grows down over a box below it says "Over a shape" on a tag just below
+/// the row that runs over it, at the box's left: where it happens, not under the outline's
+/// right end.
+#[test]
+fn a_paragraph_grown_over_a_box_says_so_where_it_happens() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    // Where a line after the last would go.
+    let next = 100.0 + 15.0 * lines.len() as f32;
+    let grey = limarepdf_core::PathStyle {
+        fill: Some([0.6, 0.6, 0.6]),
+        stroke: None,
+        line_width: 1.0,
+    };
+    let rect = limarepdf_core::Shape::Rect;
+    let boxed = |p: &mut Pdf| p.add_shape(0, rect, [80.0, next - 10.0, 300.0, next + 4.0], &grey);
+    assert!(app.tabs[0].edit(&ctx, boxed));
+    app.tabs[0].dirty = false;
+    open_prose_paragraph(&mut app, &ctx);
+    let words = " very slowly and rather quietly and calmly and without any fuss at all";
+    type_in(&mut app, &ctx, words);
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    let (_, n) = (tree.nodes.iter())
+        .find(|(_, n)| n.value() == Some("Over a shape"))
+        .expect("the tag");
+    let b = n.bounds().expect("its place");
+    let (min, k) = page_at(&tree);
+    let left = min.x + 80.0 * k;
+    assert!((b.x0 as f32 - left).abs() < 3.0, "{b:?}, the box at {left}");
+    let row = min.y + next * k;
+    let y = b.y0 as f32;
+    assert!(y > row && y < row + 12.0 * k, "{b:?}, the row at {row}");
+}
+
+/// While a link or a comment is over the paragraph being edited, the inspector says they stay
+/// in place; with neither, it says nothing of them.
+#[test]
+fn the_inspector_says_links_and_comments_over_a_paragraph_stay_in_place() {
+    use lopdf::{dictionary, Object};
+    let said = "Links and comments over this paragraph stay in place.";
+    let cases = ["nothing", "a link", "a comment"];
+    for case in cases {
+        let (ctx, mut app) = new_app();
+        prose_tab(&mut app, &ctx);
+        let over = |p: &mut Pdf| -> limarepdf_core::Result<()> {
+            match case {
+                "a link" => {
+                    let rect = [200, 660, 260, 675].map(Object::from).to_vec();
+                    let uri = Object::string_literal("https://example.org");
+                    let link = p.doc.add_object(dictionary! {
+                        "Type" => "Annot", "Subtype" => "Link", "Rect" => rect,
+                        "A" => dictionary! { "S" => "URI", "URI" => uri },
+                    });
+                    let page = p.page_ids()[0];
+                    let annots = vec![link.into()];
+                    p.doc.get_dictionary_mut(page)?.set("Annots", annots);
+                }
+                "a comment" => {
+                    let kind = limarepdf_core::AnnotKind::Highlight;
+                    let line = [200.0, 118.0, 260.0, 131.0];
+                    p.add_markup(0, &kind, &[line], [1.0, 1.0, 0.0], "")?;
+                }
+                _ => {}
+            }
+            Ok(())
+        };
+        assert!(app.tabs[0].edit(&ctx, over));
+        app.tabs[0].dirty = false;
+        let tree = open_prose_paragraph(&mut app, &ctx);
+        let says = inspector_says(&tree);
+        let has = says.iter().any(|s| s == said);
+        assert_eq!(has, case != "nothing", "{case}: {says:?}");
+    }
+}

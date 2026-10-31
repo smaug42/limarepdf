@@ -171,15 +171,48 @@ impl Paragraph {
     pub(crate) fn gap_after(&self, k: usize) -> f32 {
         self.chars[k + 1].x.0 - self.chars[k].x.1
     }
+}
 
-    /// How wide a line may be, the first line of a paragraph (`first`) taking its indent.
-    fn room(&self, first: bool) -> f32 {
-        let f = &self.frame;
-        let indent = match (first, f.align) {
-            (true, Align::Left | Align::Justified) => f.indent,
-            _ => 0.0,
-        };
-        (f.right - f.left - indent).max(0.0)
+/// How wide a line may be in frame `f`, the first line of a paragraph (`first`) taking its
+/// indent.
+fn room_in(f: &Frame, first: bool) -> f32 {
+    let indent = match (first, f.align) {
+        (true, Align::Left | Align::Justified) => f.indent,
+        _ => 0.0,
+    };
+    (f.right - f.left - indent).max(0.0)
+}
+
+/// A line of a paragraph being set, to place in a frame ([`Placing::on`]).
+#[derive(Clone, Copy)]
+struct Placing {
+    /// It starts a paragraph, so it takes the first line's indent.
+    opens: bool,
+    /// How wide it is, the spaces it ends with left out.
+    width: f32,
+    /// The spaces between its words.
+    gaps: usize,
+    /// It ends the paragraph or a line typed to end there, so it isn't justified.
+    last: bool,
+}
+
+impl Placing {
+    /// Where the line starts across the page in frame `f`, and what justifying it there
+    /// adds to each space between its words.
+    fn on(&self, f: &Frame) -> (f32, f32) {
+        let left = f.left + if self.opens { f.indent } else { 0.0 };
+        match f.align {
+            Align::Left => (left, 0.0),
+            Align::Right => (f.right - self.width, 0.0),
+            Align::Centre => ((f.left + f.right - self.width) / 2.0, 0.0),
+            Align::Justified => {
+                let stretch = match (self.last, self.gaps) {
+                    (true, _) | (_, 0) => 0.0,
+                    _ => ((room_in(f, self.opens) - self.width) / self.gaps as f32).max(0.0),
+                };
+                (left, stretch)
+            }
+        }
     }
 }
 
@@ -799,9 +832,26 @@ impl ParagraphSetting {
     /// before, and a line ends where it did when the words after that would have fitted
     /// before too: the producer's breaks stand where the edit doesn't move them.
     pub fn set(&self, parts: &[TextPart]) -> SetParagraph {
+        let f = &self.para.frame;
+        self.set_between(parts, (f.left, f.right))
+    }
+
+    /// [`ParagraphSetting::set`] with the frame's left and right edges at `edges` (across
+    /// the page, in points), as they are dragged. Where they moved, every line is broken
+    /// anew to the frame's new width, as a word processor rewraps a resized text box: a
+    /// line stays as it was only where it starts and ends as it did in text that hasn't
+    /// changed, and the frame moves it nowhere, across the page or in its stretch.
+    pub fn set_between(&self, parts: &[TextPart], edges: (f32, f32)) -> SetParagraph {
         let new = self.measure(parts);
         let old = &self.old;
         let para = &self.para;
+        let frame = Frame {
+            left: edges.0,
+            right: edges.1,
+            ..para.frame
+        };
+        let moved = (frame.left - para.frame.left).abs() > 1e-3
+            || (frame.right - para.frame.right).abs() > 1e-3;
         let (nl, ol) = (new.chars.len(), old.chars.len());
         let starts: Vec<usize> = para.lines.iter().map(|l| l.0).collect();
         let rows = starts.len();
@@ -830,14 +880,18 @@ impl ParagraphSetting {
                 hyphen: end > a && old.chars[end - 1] == '\u{AD}',
             }
         };
-        if prefix == nl && nl == ol {
+        if prefix == nl && nl == ol && !moved {
             return SetParagraph {
                 lines: (0..rows).map(|n| kept(n, 0)).collect(),
                 marked: Vec::new(),
             };
         }
-        // The line the first change is in, a space joining two lines in the one before.
-        let changed = starts.iter().rposition(|&a| a <= prefix).unwrap_or(0);
+        // The line the first change is in, a space joining two lines in the one before;
+        // with the edges moved, the first.
+        let changed = match moved {
+            true => 0,
+            false => starts.iter().rposition(|&a| a <= prefix).unwrap_or(0),
+        };
         let starts_paragraph = |m: &Measured, a: usize| a == 0 || m.chars[a - 1] == '\u{2029}';
         let mut first = changed;
         if changed > 0 {
@@ -847,7 +901,7 @@ impl ParagraphSetting {
                     .map(|&(b, _)| b)
                     .find(|&b| b > starts[changed])
                     .unwrap_or(m.chars.len());
-                let room = para.room(starts_paragraph(m, line_before));
+                let room = room_in(&frame, starts_paragraph(m, line_before));
                 m.width(line_before, first_word) <= room + 1e-3
             };
             if fits(&new) && !fits(old) {
@@ -870,17 +924,19 @@ impl ParagraphSetting {
             None => para.rows[rows - 1].baseline + spacing * (n + 1 - rows) as f32,
         };
         while a < nl {
-            if n > first && push == 0.0 && n < rows && was(a) == Some(starts[n]) {
+            if !moved && n > first && push == 0.0 && n < rows && was(a) == Some(starts[n]) {
                 lines.extend((n..rows).map(|m| kept(m, nl as isize - ol as isize)));
                 break;
             }
             let opens = starts_paragraph(&new, a);
-            let room = para.room(opens);
+            let room = room_in(&frame, opens);
             let mut e = new.line_end(a, room);
             // A line that starts where it did ends where it did when the words the greedy
-            // end adds would have fitted on it before too (the producer measured them so).
-            let where_it_did =
-                n < rows && ((a <= prefix && a == starts[n]) || was(a) == Some(starts[n]));
+            // end adds would have fitted on it before too (the producer measured them so),
+            // while the frame is as it was.
+            let where_it_did = !moved
+                && n < rows
+                && ((a <= prefix && a == starts[n]) || was(a) == Some(starts[n]));
             let end_before = old_end(n.min(rows - 1));
             if where_it_did && end_before >= ol - suffix {
                 let end_now = (end_before as isize + nl as isize - ol as isize) as usize;
@@ -899,22 +955,28 @@ impl ParagraphSetting {
                 let gap = baseline(n) - baseline(n - 1);
                 push += (1.2 * big - gap).min(1.2 * (big - holds)).max(0.0);
             }
-            let f = &para.frame;
             let last = e >= nl || new.chars[e - 1] == '\u{2029}' || new.chars[e - 1] == '\n';
-            let left = f.left + if opens { f.indent } else { 0.0 };
-            let (x, stretch) = match f.align {
-                Align::Left => (left, 0.0),
-                Align::Right => (f.right - width, 0.0),
-                Align::Centre => ((f.left + f.right - width) / 2.0, 0.0),
-                Align::Justified => {
-                    let gaps = new.chars[a..end].iter().filter(|c| **c == ' ').count();
-                    let stretch = match (last, gaps) {
-                        (true, _) | (_, 0) => 0.0,
-                        _ => ((room - width) / gaps as f32).max(0.0),
-                    };
-                    (left, stretch)
-                }
+            let gaps = new.chars[a..end].iter().filter(|c| **c == ' ').count();
+            let line = Placing {
+                opens,
+                width,
+                gaps,
+                last,
             };
+            let (x, stretch) = line.on(&frame);
+            // With the edges moved, a line that starts and ends as it did in text that hasn't
+            // changed, which the frame moves nowhere, stays as it was.
+            if moved && push == 0.0 && n < rows {
+                let same = (e <= prefix && a == starts[n] && e == old_end(n))
+                    || (was(a) == Some(starts[n]) && was(e) == Some(old_end(n)));
+                let (x0, stretch0) = line.on(&para.frame);
+                if same && (x - x0).abs() < 1e-3 && (stretch - stretch0).abs() < 1e-3 {
+                    lines.push(kept(n, a as isize - starts[n] as isize));
+                    a = e;
+                    n += 1;
+                    continue;
+                }
+            }
             lines.push(SetLine {
                 chars: (a, e),
                 kept: None,
@@ -941,6 +1003,21 @@ impl ParagraphSetting {
             }
         }
         SetParagraph { lines, marked }
+    }
+
+    /// The narrowest the frame can be made with `parts` in it, from its left edge to its
+    /// right: its widest word whole on a line, with the first line's indent where it takes
+    /// one.
+    pub fn narrowest(&self, parts: &[TextPart]) -> f32 {
+        let m = self.measure(parts);
+        let mut widest = 0.0f32;
+        let mut a = 0;
+        for &(b, _) in &m.breaks {
+            widest = widest.max(m.width(a, b));
+            a = b;
+        }
+        let f = &self.para.frame;
+        widest + (f.right - f.left - room_in(f, true)).max(0.0)
     }
 
     /// How each character of `parts` is written: in its part's own font where it can be

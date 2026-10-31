@@ -1241,11 +1241,13 @@ impl Tab {
                             words_only.then_some(((p, at), self.revision, self.undo.len(), now));
                     }
                 }
-                Action::EditParagraph(p, setting, parts) => {
+                Action::EditParagraph(p, setting, parts, edges) => {
                     // The whole paragraph in one change, which one Undo takes back.
                     let mut lost = false;
                     let edit = |pdf: &mut Pdf| {
-                        lost = !pdf.edit_paragraph(&setting, &parts)?.is_empty();
+                        lost = !pdf
+                            .edit_paragraph_between(&setting, &parts, edges)?
+                            .is_empty();
                         Ok(())
                     };
                     if self.edit_inner(ctx, Redraw::Pages(&[p]), false, false, edit) {

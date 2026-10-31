@@ -4551,9 +4551,11 @@ impl App {
         };
         if let Some(t) = self.tabs.get(self.active) {
             t.fill_ctx(&mut c);
-            // In a text box with the keyboard, Undo and Redo are its typing's, as the keys.
+            // In a text box with the keyboard, Undo and Redo are its typing's, as the keys;
+            // on a paragraph's frame's handle, the paragraph's.
             let focused = ctx.memory(|m| m.focused());
-            if let Some(id) = focused.filter(|_| ctx.text_edit_focused()) {
+            let in_box = ctx.text_edit_focused() || t.ed.edge_held(ctx);
+            if let Some(id) = focused.filter(|_| in_box) {
                 let history = t.ed.typing_history(id);
                 if let Some((undo, redo)) = history.or_else(|| page_text::box_history(ctx, id)) {
                     c.can_undo = undo;
@@ -4749,10 +4751,13 @@ impl App {
         let c = self.state(ctx);
         // Undo and Redo in a text box take back and redo the typing there, and nothing
         // else, even with nothing left to undo there (form fields, comments and the
-        // inspector's boxes too); Undo takes back the whole edit once it is kept. With a
-        // button holding the keyboard, they are the document's.
+        // inspector's boxes too); Undo takes back the whole edit once it is kept. A
+        // paragraph's frame's handle with the keyboard is part of its typing, so they are
+        // the paragraph's there too. With a button holding the keyboard, they are the
+        // document's.
         let typing = ctx.egui_wants_keyboard_input() && !lists;
-        let in_text = ctx.text_edit_focused();
+        let on_edge = (self.tabs.get(self.active)).is_some_and(|t| t.ed.edge_held(ctx));
+        let in_text = ctx.text_edit_focused() || on_edge;
         let mut acts = Vec::new();
         // Plain keys a command took with Shift (Shift+Home extending the words selected):
         // with Shift, they aren't the command without it too (First page).
@@ -6106,8 +6111,11 @@ impl eframe::App for App {
 
         // Undo and Redo in the commands act on the typing in the text box with the keyboard,
         // as Ctrl+Z and Ctrl+Y do there: a click on them leaves the keyboard in it, and the
-        // key goes to it on the next frame, before anything else sees that frame's input.
-        self.undo_held = ctx.text_edit_focused()
+        // key goes to it on the next frame, before anything else sees that frame's input. A
+        // paragraph's frame's handle with the keyboard is part of its typing.
+        let on_edge = (self.tabs.get(self.active)).is_some_and(|t| t.ed.edge_held(&ctx));
+        let in_box = ctx.text_edit_focused() || on_edge;
+        self.undo_held = in_box
             && ctx.input(|i| {
                 let at = i.pointer.press_origin().or(i.pointer.latest_pos());
                 (i.pointer.any_pressed() || i.pointer.any_released())
@@ -6119,7 +6127,7 @@ impl eframe::App for App {
             egui::SurrenderFocusOn::Clicks
         };
         ctx.options_mut(|o| o.input_options.surrender_focus_on = surrender);
-        if let Some(a) = self.undo_in_box.take().filter(|_| ctx.text_edit_focused()) {
+        if let Some(a) = self.undo_in_box.take().filter(|_| in_box) {
             let modifiers = match a {
                 Act::Redo => egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
                 _ => egui::Modifiers::COMMAND,
@@ -6859,6 +6867,7 @@ mod tests {
     mod history;
     mod input_methods;
     mod organise;
+    mod overflow;
     mod paragraphs;
     mod redact_marks;
     mod review;
