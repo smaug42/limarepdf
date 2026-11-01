@@ -9,16 +9,16 @@ use crate::inspector::{facts, note, section, section_name};
 use crate::page_text::{self, selection, PageText};
 use crate::selection::{ObjKind, Selected, Selection, Toward, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
-use crate::styled::{History, InLine, Restyle, Styled};
+use crate::styled::{History, InLine, Restyle, Styled, Switch};
 use crate::theme;
 use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    words_text, Annot, AnnotKind, BoxSetting, DocWords, FieldValue, FontChoice, FontRefusal,
-    LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord, ParagraphSetting, PartFont,
-    PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace, TextEdit, TextPart,
-    TextStyle, MIN_SIGNATURE_BOX,
+    words_text, Annot, AnnotKind, BoxSetting, DecoKind, Decorated, DocWords, FieldValue,
+    FontChoice, FontRefusal, LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord,
+    ParagraphSetting, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
+    StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
 };
 use paragraph::{para_id, ParaEdit, Then};
 use std::collections::{BTreeMap, HashMap};
@@ -350,6 +350,10 @@ fn writable(a: &Annot) -> bool {
     !a.locked() && matches!(a.kind, AnnotKind::Note | AnnotKind::TextBox)
 }
 
+/// A line's change as core writes it ([`limarepdf_core::Pdf::edit_texts_decorated`]): the
+/// line, by object, its edit, and its underlines and strike-throughs over its new text.
+pub type LineChange = (usize, TextEdit, Vec<Decorated>);
+
 /// A change requested by the interface, applied by the tab after the frame is drawn.
 pub enum Action {
     /// Objects of a page moved or resized: each to the box given.
@@ -359,18 +363,26 @@ pub enum Action {
     AddShape(usize, Shape, [f32; 4]),
     /// New text, its lines separated by `\n`, from the first line's baseline at the point
     /// given, in the styles it was typed in.
-    AddText(usize, (f32, f32), Styled),
+    AddText(usize, (f32, f32), Box<Styled>),
     AddImage(usize, [f32; 4]),
     ReplaceImage(usize, usize, Vec<u8>),
-    /// A line's change; true when only its words changed, not their styles, so it can join
-    /// a recent change of the same line.
-    EditText(usize, usize, TextEdit, bool),
-    /// A paragraph of a page edited to these parts, as its setting sets them between its
-    /// frame's left and right edges ([`limarepdf_core::Pdf::edit_paragraph_between`]).
-    EditParagraph(usize, Arc<ParagraphSetting>, Vec<TextPart>, (f32, f32)),
-    /// Words selected with the read tool restyled: each page's changed lines, by object, and
-    /// the lines with selected words left as they were. The words stay selected.
-    Restyle(Vec<(usize, Vec<(usize, TextEdit)>)>, Left),
+    /// A line's change, with its underlines and strike-throughs over its new text; true when
+    /// only its words changed, not their styles, so it can join a recent change of the same
+    /// line.
+    EditText(usize, usize, TextEdit, Vec<Decorated>, bool),
+    /// A paragraph of a page edited to these parts, with its underlines and strike-throughs
+    /// over them, as its setting sets them between its frame's left and right edges
+    /// ([`limarepdf_core::Pdf::edit_paragraph_decorated`]).
+    EditParagraph(
+        usize,
+        Arc<ParagraphSetting>,
+        Vec<TextPart>,
+        Vec<Decorated>,
+        (f32, f32),
+    ),
+    /// Words selected with the read tool restyled: each page's changed lines, and the lines
+    /// with selected words left as they were. The words stay selected.
+    Restyle(Vec<(usize, Vec<LineChange>)>, Left),
     /// Shapes of a page restyled.
     PathStyle(usize, Vec<(usize, PathStyle)>),
     /// Set the named form field, drawn on these pages.
@@ -1147,16 +1159,15 @@ fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
 }
 
 /// Edit's Font group (ENH-38) for what a style command changes in `text`: the font list
-/// and size (within `sizes`) in a row, then Bold, Italic, `planned` (the planned styles)
-/// and the colour below them, or beside them when `compact`; each shows blank where that
-/// mixes values. `in_pdf` names the PDF fonts of text already in the PDF. Returns whether
-/// one was used.
+/// and size (within `sizes`) in a row, then Bold, Italic, Underline, Strikethrough and the
+/// colour below them, or beside them when `compact`; each shows blank where that mixes
+/// values. `in_pdf` names the PDF fonts of text already in the PDF. Returns whether one was
+/// used.
 fn styles_ui(
     ui: &mut egui::Ui,
     text: &mut dyn Restyle,
     sizes: std::ops::RangeInclusive<f32>,
     in_pdf: &[String],
-    planned: &dyn Fn(&mut egui::Ui),
     compact: bool,
 ) -> bool {
     let shown = text.shown();
@@ -1167,6 +1178,11 @@ fn styles_ui(
         ..shown.font.unwrap_or(first.font)
     };
     let mut font = was;
+    let lines_were = crate::font_list::Lines {
+        underline: shown.underline,
+        strike: shown.strike,
+    };
+    let mut lines = lines_were;
     let mut used = false;
     let mut picked = false;
     ui.with_layout(look_layout(compact), |ui| {
@@ -1181,14 +1197,22 @@ fn styles_ui(
             }
         });
         ui.horizontal(|ui| {
-            crate::font_list::styles(ui, &mut font);
-            planned(ui);
+            crate::font_list::styles(ui, &mut font, &mut lines);
             if let Some(c) = text_color_button(ui, &text.colors()) {
                 text.set_color(c);
                 used = true;
             }
         });
     });
+    for (on, was, kind) in [
+        (lines.underline, lines_were.underline, DecoKind::Underline),
+        (lines.strike, lines_were.strike, DecoKind::Strike),
+    ] {
+        if on != was {
+            text.switch_deco(kind);
+            used = true;
+        }
+    }
     if picked {
         // Each character takes the family's face nearest its own.
         if shown.font.is_none() || font.family != was.family {
@@ -1548,6 +1572,8 @@ pub struct Editor {
     pub tfont: FontChoice,
     pub tsize: f32,
     pub tcolor: [f32; 3],
+    /// Underline and Strikethrough for the next new text.
+    pub tlines: crate::font_list::Lines,
     pub fill_on: bool,
     pub fill: [f32; 3],
     pub stroke_on: bool,
@@ -1636,8 +1662,6 @@ pub struct Editor {
     pub box_style: TextStyle,
     /// The name new annotations are signed with (from the settings).
     pub author: String,
-    /// The features planned but not built are shown (from the settings; ENH-41).
-    pub planned: bool,
     /// How many areas are marked for redaction (counted by the tab).
     pub redact_marks: usize,
     /// The Redact tool's Apply button was pressed; the tab runs the command.
@@ -1728,6 +1752,7 @@ impl Default for Editor {
             tfont: FontChoice::default(),
             tsize: 14.0,
             tcolor: [0.0; 3],
+            tlines: crate::font_list::Lines::default(),
             fill_on: false,
             fill: [0.95, 0.75, 0.2],
             stroke_on: true,
@@ -1773,7 +1798,6 @@ impl Default for Editor {
                 ..TextStyle::default()
             },
             author: String::new(),
-            planned: false,
             redact_marks: 0,
             apply_redactions: false,
             zoom: 1.0,
@@ -2179,7 +2203,7 @@ impl Editor {
         let (action, held) = match piece {
             Typed::Text => {
                 let a = self.adding.take().filter(PageText::has_text)?;
-                let add = Action::AddText(a.page, a.at, a.text.clone());
+                let add = Action::AddText(a.page, a.at, Box::new(a.text.clone()));
                 (add, Kept::Text(Box::new(a)))
             }
             Typed::Writing => {
@@ -2269,6 +2293,10 @@ impl Editor {
         if let Kept::Text(a) = &held.0 {
             let end = page_text::Look::of(a.text.end_style());
             (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
+            self.tlines = crate::font_list::Lines {
+                underline: end.underline,
+                strike: end.strike,
+            };
         }
     }
 
@@ -2343,6 +2371,8 @@ impl Editor {
             font: self.tfont,
             size: self.tsize,
             color: self.tcolor,
+            underline: self.tlines.underline,
+            strike: self.tlines.strike,
         }
     }
 
@@ -2382,8 +2412,9 @@ impl Editor {
             ObjectKind::Text => {
                 let te = text_change(&insp.text, obj);
                 let words_only = !insp.text.restyled();
+                let decos = insp.text.decorations();
                 (!insp.text.same_as(&insp.orig))
-                    .then_some(Action::EditText(page, id, te, words_only))
+                    .then_some(Action::EditText(page, id, te, decos, words_only))
             }
             ObjectKind::Path => {
                 let was = Insp::of(insp.key, obj);
@@ -2759,11 +2790,16 @@ impl Editor {
         };
         let (out, area) = if drawn {
             let runs = |t: &str| runs(t, k, &|c| page_text::shown(mode, c));
+            let decos = |t: &str| insp.text.preview(t).drawn_decos();
+            let bands = |t: &str, runs: &[page_text::Run]| {
+                page_text::char_bands(runs, &decos(t), &|c| page_text::shown(mode, c))
+            };
             let style = page_text::Style {
                 runs: &runs,
                 mode,
                 accent: ui.visuals().selection.stroke.color,
                 warn: &warn,
+                bands: &bands,
             };
             let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
             let c = cover_box(&o);
@@ -2824,10 +2860,15 @@ impl Editor {
                         .clip_text(false)
                         .margin(egui::Margin::same(2));
                     if o.hidden {
-                        te.show(ui)
-                    } else {
-                        te.layouter(&mut layouter).show(ui)
+                        return te.show(ui);
                     }
+                    let out = te.layouter(&mut layouter).show(ui);
+                    let paper = |c| page_text::shown(PageColours::Normal, c);
+                    let now = out.galley.text();
+                    let decos = insp.text.preview(now).drawn_decos();
+                    let bands = page_text::char_bands(&runs(now, scale, &paper), &decos, &paper);
+                    page_text::paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands, &[]);
+                    out
                 })
                 .inner;
             page_text::keep_on_right_click(&ctx, id, &mut out, held);
@@ -3279,11 +3320,12 @@ impl Editor {
     }
 
     /// Select every object on `page` that a click could select with the arrow: invisible
-    /// text only while it is shown (Ctrl+A with the arrow).
+    /// text only while it is shown, a line's underlines with the line, not on their own
+    /// (Ctrl+A with the arrow).
     pub fn select_all_objects(&mut self, pdf: &limarepdf_core::Pdf, page: usize) {
         let shown = self.show_hidden;
         let ids: Vec<usize> = (self.objects(pdf, page).iter().enumerate())
-            .filter(|(_, o)| shown || !o.hidden)
+            .filter(|(_, o)| (shown || !o.hidden) && o.decorates.is_none())
             .map(|(i, _)| i)
             .collect();
         self.select_objects(page, ids);
@@ -3738,7 +3780,8 @@ impl Editor {
     }
 
     /// The smallest object under `p` (within `tol`) that `keep` accepts; invisible text
-    /// only while it is shown.
+    /// only while it is shown. A line's underline or strike-through is its line
+    /// ([`PageObject::decorates`]): a click on it selects the line.
     fn hit_where(
         &self,
         page: usize,
@@ -3747,11 +3790,13 @@ impl Editor {
         keep: impl Fn(&PageObject) -> bool,
     ) -> Option<usize> {
         let objs = self.objs.get(&page)?;
+        let own = |i: usize| objs[i].decorates.filter(|&l| l < objs.len()).unwrap_or(i);
         objs.iter()
             .enumerate()
-            .filter(|(_, o)| {
-                keep(o)
-                    && (self.show_hidden || !o.hidden)
+            .filter(|&(i, o)| {
+                let line = &objs[own(i)];
+                keep(line)
+                    && (self.show_hidden || !line.hidden)
                     && p.x >= o.bbox[0] - tol
                     && p.x <= o.bbox[2] + tol
                     && p.y >= o.bbox[1] - tol
@@ -3766,7 +3811,7 @@ impl Editor {
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then(ib.cmp(ia))
             })
-            .map(|(i, _)| i)
+            .map(|(i, _)| own(i))
     }
 
     fn handle_hit(&self, b: [f32; 4], p: Pos2, tol: f32) -> Option<usize> {
@@ -4923,8 +4968,10 @@ impl Editor {
     /// invisible text only while it is shown.
     fn inside_rect(&self, page: usize, rect: [f32; 4]) -> Vec<usize> {
         let objs = self.objs.get(&page).map_or(&[][..], |v| v);
+        // A line's underlines go with it, not on their own.
         (objs.iter().enumerate())
-            .filter(|(_, o)| (self.show_hidden || !o.hidden) && inside(o.bbox, rect))
+            .filter(|(_, o)| (self.show_hidden || !o.hidden) && o.decorates.is_none())
+            .filter(|(_, o)| inside(o.bbox, rect))
             .map(|(i, _)| i)
             .collect()
     }
@@ -5555,16 +5602,17 @@ impl Editor {
         self.selection.words().is_some() && self.chosen_now().is_some_and(Chosen::restylable)
     }
 
-    /// Bold (with `bold` false, Italic) on or off by Word's rule, as one undo step: for the
-    /// words selected with the read tool, or the lines of page text selected with the arrow.
-    /// In the line being edited on the page, for what is selected there, or the word at the
-    /// caret, as Ctrl+B there does: the line stays open and takes the keyboard back.
-    /// Returns what to say when none of the selected words or lines can change.
+    /// Style `s` (Bold, Italic, Underline, Strikethrough) on or off by Word's rule, as one
+    /// undo step: for the words selected with the read tool, or the lines of page text
+    /// selected with the arrow. In the line or paragraph being edited on the page, for what
+    /// is selected there, or the word at the caret, as Ctrl+B there does: the typing stays
+    /// open and takes the keyboard back. Returns what to say when none of the selected words
+    /// or lines can change.
     pub fn switch_style(
         &mut self,
         ctx: &egui::Context,
         pdf: &limarepdf_core::Pdf,
-        bold: bool,
+        s: Switch,
     ) -> Option<String> {
         if self.chosen_of().is_some() {
             self.sync_chosen(pdf);
@@ -5572,20 +5620,14 @@ impl Editor {
             if !c.restylable() {
                 return c.left.said();
             }
-            match bold {
-                true => c.text.bold(),
-                false => c.text.italic(),
-            }
+            c.text.switch_style(s);
             self.keep(Typed::Words);
             return None;
         }
         let scope = self.scope;
         if let Some(pe) = self.para.as_mut() {
             let sel = page_text::held(ctx, para_id(scope, pe.page)).unwrap_or((0, 0));
-            match bold {
-                true => pe.text.bold(sel),
-                false => pe.text.italic(sel),
-            }
+            pe.text.switch_style(sel, s);
             pe.refocus = true;
             return None;
         }
@@ -5598,18 +5640,12 @@ impl Editor {
         let insp = self.insp.as_mut()?;
         if let Some(le) = (self.line_edit.as_mut()).filter(|le| (le.page, le.id) == (page, id)) {
             let sel = page_text::held(ctx, line_edit_id(scope, page)).unwrap_or((0, 0));
-            match bold {
-                true => insp.text.bold(sel),
-                false => insp.text.italic(sel),
-            }
+            insp.text.switch_style(sel, s);
             le.refocus = true;
             return None;
         }
         let all = (0, insp.text.text().chars().count());
-        match bold {
-            true => insp.text.bold(all),
-            false => insp.text.italic(all),
-        }
+        insp.text.switch_style(all, s);
         self.commit_insp();
         None
     }
@@ -5678,48 +5714,20 @@ impl Editor {
         let [font, size] = look_facts(&c.text);
         let editing = ("Editing", "Selected words".into());
         facts(ui, "words-look", &[editing, font, size]);
-        self.planned_text_tools(ui);
     }
 
-    /// The text tools planned (ENH-41), folded at the end of selected text's inspector as the
-    /// workspace has them: marked Planned, saying what is planned. Not with the planned
-    /// features hidden.
-    fn planned_text_tools(&self, ui: &mut egui::Ui) {
-        if !self.planned {
-            return;
-        }
-        let text = |size, color| egui::TextFormat::simple(egui::FontId::proportional(size), color);
-        let ink = ui.visuals().text_color();
-        let muted = theme::muted(ui.visuals().dark_mode);
-        let mut name = egui::text::LayoutJob::default();
-        name.append("Future text tools", 0.0, text(12.0, ink));
-        name.append("Planned", 6.0, text(11.0, muted));
-        let r = section(ui, name)
-            .id_salt("future-text-tools")
-            .show(ui, |ui| {
-                note(
-                    ui,
-                    "Underline and strike-through are planned. Your existing text tools \
-                     keep working.",
-                );
-            });
-        let said = "Future text tools — Planned";
-        r.header_response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::DisclosureTriangle, true, said));
-    }
-
-    /// Edit's Font group (ENH-38): the font list, size, Bold, Italic, `planned` (the planned
-    /// styles) and the colour, for the text they change: the new text being typed (what
+    /// Edit's Font group (ENH-38): the font list, size, Bold, Italic, Underline,
+    /// Strikethrough and the colour, for the text they change: the new text being typed (what
     /// is selected in it) or, before it, the next new text's look; the words selected with
     /// the read tool; the line of page text selected or being edited (what is selected in
     /// it); the lines among several objects. With none of them, the next new text's look,
     /// greyed. Changes apply as they are made, each finished one an undo step
     /// ([`Self::settle_look`]); the typing stays open and takes the keyboard back. `compact`:
     /// on one row.
-    pub fn font_band(&mut self, ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui), compact: bool) {
+    pub fn font_band(&mut self, ui: &mut egui::Ui, compact: bool) {
         if self.adding_text() {
             let Some(a) = self.adding.as_mut() else {
-                self.next_text_look(ui, planned, compact);
+                self.next_text_look(ui, compact);
                 return;
             };
             let end = a.text.text().chars().count();
@@ -5728,14 +5736,14 @@ impl Editor {
                 text: &mut a.text,
                 sel,
             };
-            if styles_ui(ui, &mut text, 4.0..=200.0, &[], planned, compact) {
+            if styles_ui(ui, &mut text, 4.0..=200.0, &[], compact) {
                 a.refocus = true;
             }
             return;
         }
         if self.chosen_now().is_some_and(Chosen::restylable) {
             if let Some(c) = self.chosen.as_mut() {
-                styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf, planned, compact);
+                styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf, compact);
                 return;
             }
         }
@@ -5762,7 +5770,7 @@ impl Editor {
                 text: &mut pe.text,
                 sel,
             };
-            if styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, planned, compact) {
+            if styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, compact) {
                 pe.refocus = true;
             }
             return;
@@ -5787,19 +5795,14 @@ impl Editor {
                 text: &mut insp.text,
                 sel,
             };
-            styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, planned, compact);
+            styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, compact);
             return;
         }
-        ui.add_enabled_ui(false, |ui| self.next_text_look(ui, planned, compact));
+        ui.add_enabled_ui(false, |ui| self.next_text_look(ui, compact));
     }
 
     /// The look of the next new text, in the band's Font group.
-    fn next_text_look(
-        &mut self,
-        ui: &mut egui::Ui,
-        planned: &dyn Fn(&mut egui::Ui),
-        compact: bool,
-    ) {
+    fn next_text_look(&mut self, ui: &mut egui::Ui, compact: bool) {
         ui.with_layout(look_layout(compact), |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
             ui.horizontal(|ui| {
@@ -5811,8 +5814,7 @@ impl Editor {
                 }
             });
             ui.horizontal(|ui| {
-                crate::font_list::styles(ui, &mut self.tfont);
-                planned(ui);
+                crate::font_list::styles(ui, &mut self.tfont, &mut self.tlines);
                 if let Some(c) = text_color_button(ui, &[self.tcolor]) {
                     self.tcolor = c;
                 }
@@ -6421,7 +6423,6 @@ impl Editor {
             }
             ui.add_space(4.0);
             self.paragraph_inspector(ui);
-            self.planned_text_tools(ui);
             return;
         }
         let para_state = self.para_state();
@@ -6579,9 +6580,6 @@ impl Editor {
             // A line being edited on the page shows the change as it is made, and keeps
             // it with the typing when the editing finishes.
             self.commit_insp();
-        }
-        if obj.kind == ObjectKind::Text && !obj.hidden {
-            self.planned_text_tools(ui);
         }
     }
 }
@@ -6800,6 +6798,8 @@ mod tests {
             font: FontChoice::default(),
             size: 12.0,
             color: [0.0; 3],
+            underline: false,
+            strike: false,
         };
         for piece in [Typed::Text, Typed::Writing] {
             let mut ed = Editor::default();
@@ -7074,7 +7074,7 @@ mod tests {
         keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te, false)] if te.parts[0].size == 10.13
+            [Action::EditText(0, 2, te, _, false)] if te.parts[0].size == 10.13
         ));
     }
 
@@ -7202,7 +7202,7 @@ mod tests {
 
     /// The band's Font group for `ed`'s selection, drawn alone.
     fn band_tree(ed: &mut Editor) -> egui::accesskit::TreeUpdate {
-        drawn_tree(ed, |ed, ui| ed.font_band(ui, &|_| {}, false))
+        drawn_tree(ed, |ed, ui| ed.font_band(ui, false))
     }
 
     /// What `draw` draws of `ed`, alone in a window, settled.
@@ -7333,7 +7333,7 @@ mod tests {
         ed.chosen = None;
         ed.sync_chosen(&pdf);
         assert_eq!(
-            ed.switch_style(&egui::Context::default(), &pdf, true),
+            ed.switch_style(&egui::Context::default(), &pdf, Switch::Bold),
             None,
             "the visible lines can change"
         );
@@ -7341,7 +7341,7 @@ mod tests {
             panic!("{} changes", ed.actions.len());
         };
         assert_eq!(changes.len(), 1);
-        let ids: Vec<usize> = changes[0].1.iter().map(|(id, _)| *id).collect();
+        let ids: Vec<usize> = changes[0].1.iter().map(|(id, ..)| *id).collect();
         assert_eq!(ids, [0, 2]);
         assert_eq!(
             left.said().as_deref(),
@@ -7373,7 +7373,7 @@ mod tests {
         ed.sync_insp();
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te, true)]
+            [Action::EditText(0, 2, te, _, true)]
                 if te.text == "Walruses" && te.parts[0].font == PartFont::Span(0)
         ));
         // A shape's new outline, kept when nothing is selected any more.
@@ -7394,7 +7394,7 @@ mod tests {
         keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te, false)]
+            [Action::EditText(0, 2, te, _, false)]
                 if te.text == "Walrus like cold water"
                     && te.parts.len() == 1
                     && te.parts[0].size == 18.0
@@ -7412,7 +7412,7 @@ mod tests {
         assert!(!ed.typing_on_page() && !ed.pending());
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te, true)] if te.text == "Seal"
+            [Action::EditText(0, 2, te, _, true)] if te.text == "Seal"
         ));
         // With the read tool, the line isn't left selected.
         assert_eq!(ed.sel(), None);

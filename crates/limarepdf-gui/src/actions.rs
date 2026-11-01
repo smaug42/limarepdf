@@ -64,6 +64,10 @@ pub enum Act {
     Bold,
     /// Italic on or off, as [`Act::Bold`].
     Italic,
+    /// Underline on or off, as [`Act::Bold`] (NEW-07).
+    Underline,
+    /// Strikethrough on or off, as [`Act::Bold`].
+    Strikethrough,
     /// Mark the selected words, in the colour last chosen for the kind.
     Mark(Mark),
     /// Choose the colour for highlights, or (`line`) for the other marks: an index into
@@ -260,6 +264,8 @@ impl Act {
             | Act::SaveSelection
             | Act::Bold
             | Act::Italic
+            | Act::Underline
+            | Act::Strikethrough
             | Act::Undo
             | Act::Redo
             | Act::Mark(_)
@@ -658,10 +664,22 @@ const S: Modifiers = Modifiers::SHIFT;
 const AS: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
 /// Ctrl itself, on a Mac too, where Cmd+Tab goes from app to app.
 const CT: Modifiers = Modifiers::CTRL;
+/// Cmd+Shift on a Mac only: a key the command has there and not elsewhere.
+const MAC_CS: Modifiers = Modifiers {
+    alt: false,
+    ctrl: false,
+    shift: true,
+    mac_cmd: true,
+    command: true,
+};
 const CTS: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
 const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(m, key)
 }
+
+/// Strikethrough's key: Cmd+Shift+X on a Mac, as Word for Mac has it; none elsewhere, as in
+/// Word.
+pub const STRIKE_KEY: KeyboardShortcut = k(MAC_CS, Key::X);
 
 /// A command with the usual settings: listed in the menu and the palette, no
 /// shortcut, icon, hint or separator. Fields are overridden with struct update syntax.
@@ -887,6 +905,24 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Underline,
+        group: Group::Edit,
+        label: "Underline",
+        icon: icon::TEXT_UNDERLINE,
+        keys: &[k(C, Key::U)],
+        enabled: styleable,
+        ..BASE
+    },
+    Action {
+        act: Act::Strikethrough,
+        group: Group::Edit,
+        label: "Strikethrough",
+        icon: icon::TEXT_STRIKETHROUGH,
+        keys: &[STRIKE_KEY],
+        enabled: styleable,
+        ..BASE
+    },
+    Action {
         act: Act::PrintSelection,
         group: Group::Edit,
         label: "Print selected text…",
@@ -913,20 +949,25 @@ pub static ACTIONS: &[Action] = &[
         hint: "Highlight the selected text, in the colour last chosen.",
         ..BASE
     },
+    // Comments marking the words, named apart from the Underline and Strikethrough styles.
     Action {
         act: Act::Mark(Mark::Underline),
         group: Group::Edit,
-        label: "Underline",
+        label: "Underline comment",
         icon: icon::TEXT_UNDERLINE,
         enabled: words_idle,
+        hint: "Mark the selected text with an underline comment, in the line colour last \
+               chosen. The text itself isn't changed.",
         ..BASE
     },
     Action {
         act: Act::Mark(Mark::StrikeOut),
         group: Group::Edit,
-        label: "Strike out",
+        label: "Strike-out comment",
         icon: icon::TEXT_STRIKETHROUGH,
         enabled: words_idle,
+        hint: "Mark the selected text with a strike-out comment, in the line colour last \
+               chosen. The text itself isn't changed.",
         ..BASE
     },
     Action {
@@ -2179,7 +2220,13 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[
             &[Act::Cut, Act::Copy, Act::Paste, Act::SelectAllText],
-            &[Act::EditObjectText, Act::Bold, Act::Italic],
+            &[
+                Act::EditObjectText,
+                Act::Bold,
+                Act::Italic,
+                Act::Underline,
+                Act::Strikethrough,
+            ],
             &[Act::Mark(Mark::Highlight)],
             &[Act::MarkRedact],
             &[Act::PrintSelection, Act::SaveSelection],
@@ -2223,12 +2270,15 @@ pub const MOVES: [Act; 4] = [
     Act::MovePages(PageMove::End),
 ];
 
+/// The text styles, as word processors' menus and bars list them.
+const STYLES: &[Act] = &[Act::Bold, Act::Italic, Act::Underline, Act::Strikethrough];
+
 /// The right-click menu of text being typed on the page, as word processors' menu for
-/// text: Cut, Copy and Paste, then Bold and Italic where they apply.
+/// text: Cut, Copy and Paste, then the styles where they apply.
 const TYPING: &[&[Act]] = &[
     &[Act::JoinHyphen, Act::KeepHyphen],
     &[Act::Cut, Act::Copy, Act::Paste],
-    &[Act::Bold, Act::Italic],
+    STYLES,
     &[Act::EditParagraph],
 ];
 
@@ -2270,9 +2320,7 @@ fn menu_of(ui: &mut egui::Ui, groups: &[&[Act]], c: &Ctx, acts: &mut Vec<Act>) {
             menu_item(ui, a, c, acts);
         }
         if items.iter().any(|a| a.act == Act::Mark(Mark::Highlight)) {
-            ui.menu_button("Underline, strike out, colour", |ui| {
-                markup::menu(ui, c, acts)
-            });
+            ui.menu_button("Other marks and colours", |ui| markup::menu(ui, c, acts));
         }
     }
 }
@@ -2378,13 +2426,19 @@ pub fn greyed_tip(ctx: &egui::Context, a: &Action, c: &Ctx) -> String {
 }
 
 /// The shortcut a command's menus and tooltips show: its first, but on a Mac one with Cmd
-/// before a plain function key, as Mac apps show Find next as ⌘G.
+/// before a plain function key, as Mac apps show Find next as ⌘G. A key a command has only on
+/// a Mac (Strikethrough's) isn't shown elsewhere.
 pub fn shown_key(ctx: &egui::Context, a: &Action) -> Option<KeyboardShortcut> {
-    let first = a.keys.first().copied()?;
+    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+    let first = a
+        .keys
+        .first()
+        .copied()
+        .filter(|k| mac || !k.modifiers.mac_cmd)?;
     let plain_f = first.modifiers.is_none() || first.modifiers == Modifiers::SHIFT;
     let f_key = matches!(first.logical_key, Key::F1 | Key::F2 | Key::F3 | Key::F4);
     let cmd = a.keys.iter().find(|k| k.modifiers.command).copied();
-    match ctx.os() == egui::os::OperatingSystem::Mac && plain_f && f_key {
+    match mac && plain_f && f_key {
         true => cmd.or(Some(first)),
         false => Some(first),
     }
@@ -2405,13 +2459,11 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 }
 
 /// The floating toolbar's buttons: the right-click menu's commands that are
-/// available now and have an icon, in groups. While a line is edited on the page, Bold and
-/// Italic, then Cut, Copy and Paste for what is selected in it, as the keys do there (ENH-20).
+/// available now and have an icon, in groups. While a line is edited on the page, the
+/// styles, then Cut, Copy and Paste for what is selected in it, as the keys do there
+/// (ENH-20).
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
-    const LINE_EDIT: &[&[Act]] = &[
-        &[Act::Bold, Act::Italic],
-        &[Act::Cut, Act::Copy, Act::Paste],
-    ];
+    const LINE_EDIT: &[&[Act]] = &[STYLES, &[Act::Cut, Act::Copy, Act::Paste]];
     let items = if c.line_edit {
         LINE_EDIT
     } else {
@@ -2447,7 +2499,9 @@ pub fn context_buttons(
                 Act::Bold => egui::RichText::new("B")
                     .family(crate::theme::semibold())
                     .size(16.0),
-                Act::Italic => crate::theme::icon(a.icon).size(19.0),
+                Act::Italic | Act::Underline | Act::Strikethrough => {
+                    crate::theme::icon(a.icon).size(19.0)
+                }
                 _ => crate::theme::icon(a.icon).size(16.0),
             };
             let b = egui::Button::new(glyph)
@@ -2466,7 +2520,7 @@ pub fn context_buttons(
                 egui::containers::menu::MenuButton::from_button(more)
                     .ui(ui, |ui| markup::menu(ui, c, acts))
                     .0
-                    .on_hover_text("Underline, strike out, colours");
+                    .on_hover_text("Other marks and colours");
             }
         }
     }

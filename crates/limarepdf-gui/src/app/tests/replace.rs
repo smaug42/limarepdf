@@ -341,7 +341,7 @@ fn prepared(app: &mut App, ctx: &egui::Context) {
 }
 
 /// Replace all, once the search is done, and its review once it is shown.
-fn review(app: &mut App, ty: &Typist) -> dlg::ReplaceReview {
+pub(super) fn review(app: &mut App, ty: &Typist) -> dlg::ReplaceReview {
     searched_with(app, |a| {
         ty.frame(a, vec![]);
     });

@@ -522,13 +522,17 @@ impl Editor {
             return None;
         }
         let parts = pe.text.parts();
-        if pe.setting.set_between(&parts, pe.edges).unchanged() {
+        // A change of underlines or strike-throughs alone sets no line anew.
+        let decos = pe.text.decorations();
+        let set = pe.setting.set_between(&parts, pe.edges);
+        if set.unchanged() && decos == pe.orig.decorations() {
             return None;
         }
         Some(Action::EditParagraph(
             pe.page,
             pe.setting.clone(),
             parts,
+            decos,
             pe.edges,
         ))
     }
@@ -866,12 +870,23 @@ impl Editor {
             let runs = page_text::runs(&ctx, &pieces, k, colour, lang.as_deref());
             page_text::paragraph_galley(&ctx, t, &runs, &set.lines, k, &to_screen)
         };
+        let bands = |t: &str| {
+            let text = styled.preview(t);
+            let parts = text.parts();
+            let set = setting.set_between(&parts, edges);
+            let pieces = para_pieces(&setting, &text, &parts);
+            let colour = |c| page_text::shown(mode, c);
+            let runs = page_text::runs(&ctx, &pieces, k, colour, lang.as_deref());
+            let bands = page_text::char_bands(&runs, &text.drawn_decos(), &colour);
+            (bands, set.lines.iter().map(|l| l.stretch * k).collect())
+        };
         let style = page_text::ParaStyle {
             laid: &laid,
             mode,
             accent,
             frame: (to_screen(edges.0, 0.0).x, to_screen(edges.1, 0.0).x),
             warn: &warn,
+            bands: &bands,
         };
         // Each old line hidden, as a line being edited is.
         let covers: Vec<Rect> = covers(&block).into_iter().map(on_screen).collect();

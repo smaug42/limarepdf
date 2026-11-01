@@ -843,16 +843,25 @@ pub(crate) fn read(
     found
 }
 
-/// A font's underline and strike-out: each one's centre above the baseline and its
-/// thickness, in ems.
+/// A font's underline and strike-out, where LimarePDF draws its own ([`decoration_lines`],
+/// [`crate::LineFont::lines`]): each one's centre above the baseline and its thickness, in
+/// ems.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct FontLines {
+pub struct FontLines {
     pub under: (f32, f32),
     pub strike: (f32, f32),
 }
 
 impl FontLines {
-    fn of(&self, kind: DecoKind) -> (f32, f32) {
+    /// The underline of the standard fonts (each AFM file's: its centre 100 below the
+    /// baseline, 50 thick, per 1,000), and a strike-out for a font that gives none.
+    pub const STANDARD: FontLines = FontLines {
+        under: (-0.1, 0.05),
+        strike: (0.26, 0.05),
+    };
+
+    /// The band of `kind`: its centre above the baseline and its thickness, in ems.
+    pub fn of(&self, kind: DecoKind) -> (f32, f32) {
         match kind {
             DecoKind::Underline => self.under,
             DecoKind::Strike => self.strike,
@@ -860,12 +869,7 @@ impl FontLines {
     }
 }
 
-/// The underline of the standard fonts (each AFM file's: its centre 100 below the baseline,
-/// 50 thick, per 1,000), and a strike-out for a font that gives none.
-const STANDARD: FontLines = FontLines {
-    under: (-0.1, 0.05),
-    strike: (0.26, 0.05),
-};
+const STANDARD: FontLines = FontLines::STANDARD;
 
 /// A band's centre above the baseline and its thickness, in ems.
 type Band = (f32, f32);
@@ -873,7 +877,12 @@ type Band = (f32, f32);
 /// What a font program says of its underline (`post`) and strike-out (`OS/2`), each given
 /// by its top, the OpenType way.
 fn program_lines(data: &[u8]) -> (Option<Band>, Option<Band>) {
-    let Ok(f) = FontRef::new(data) else {
+    face_lines(data, 0)
+}
+
+/// [`program_lines`] for the face at `index` in font file `data` (a collection's).
+fn face_lines(data: &[u8], index: u32) -> (Option<Band>, Option<Band>) {
+    let Ok(f) = FontRef::from_index(data, index) else {
         return (None, None);
     };
     let em = f
@@ -896,6 +905,12 @@ fn program_lines(data: &[u8]) -> (Option<Band>, Option<Band>) {
 /// TrueType or OpenType one), else the standard font's nearest it, with the strike-out of
 /// that font's Liberation look-alike.
 pub(crate) fn font_lines(doc: &Document, font: &Dictionary) -> FontLines {
+    lines_of(doc, font, None)
+}
+
+/// [`font_lines`], its embedded TrueType or OpenType program `program` when that has been
+/// read already.
+pub(crate) fn lines_of(doc: &Document, font: &Dictionary, program: Option<&[u8]>) -> FontLines {
     let get = |d: &Dictionary, key: &[u8]| -> Option<Object> {
         Some(doc.dereference(d.get(key).ok()?).ok()?.1.clone())
     };
@@ -906,30 +921,68 @@ pub(crate) fn font_lines(doc: &Document, font: &Dictionary) -> FontLines {
     let base = (get(font, b"BaseFont").and_then(|o| o.as_name().ok().map(|n| n.to_vec())))
         .map(|n| String::from_utf8_lossy(&n).into_owned())
         .unwrap_or_default();
-    // A Type 0 font's program is its descendant's.
-    let descendant = (get(font, b"DescendantFonts").and_then(|o| o.as_array().ok().cloned()))
-        .and_then(|a| dict(doc.dereference(a.first()?).ok().map(|(_, o)| o.clone())));
-    let program =
-        (dict(get(descendant.as_ref().unwrap_or(font), b"FontDescriptor"))).and_then(|fd| {
-            [&b"FontFile2"[..], b"FontFile3"].iter().find_map(|&k| {
-                let (_, o) = doc.dereference(fd.get(k).ok()?).ok()?;
-                let s = o.as_stream().ok()?;
-                let sub = s.dict.get(b"Subtype").ok().and_then(|o| o.as_name().ok());
-                match (k, sub) {
-                    (b"FontFile3", Some(sub)) if sub != b"OpenType" => None,
-                    _ => s.get_plain_content_with_limit(MAX_PROGRAM).ok(),
-                }
-            })
-        });
-    let (under, strike) = program.as_deref().map_or((None, None), program_lines);
-    let alike = || {
-        let face = crate::embed::liberation(FontChoice::of_font(&base));
-        (crate::embed::bundled_face(face).map(program_lines)).and_then(|(_, s)| s)
+    let read = || {
+        // A Type 0 font's program is its descendant's.
+        let descendant = (get(font, b"DescendantFonts").and_then(|o| o.as_array().ok().cloned()))
+            .and_then(|a| dict(doc.dereference(a.first()?).ok().map(|(_, o)| o.clone())));
+        let fd = dict(get(descendant.as_ref().unwrap_or(font), b"FontDescriptor"))?;
+        [&b"FontFile2"[..], b"FontFile3"].iter().find_map(|&k| {
+            let (_, o) = doc.dereference(fd.get(k).ok()?).ok()?;
+            let s = o.as_stream().ok()?;
+            let sub = s.dict.get(b"Subtype").ok().and_then(|o| o.as_name().ok());
+            match (k, sub) {
+                (b"FontFile3", Some(sub)) if sub != b"OpenType" => None,
+                _ => s.get_plain_content_with_limit(MAX_PROGRAM).ok(),
+            }
+        })
+    };
+    let (under, strike) = match program {
+        Some(data) => program_lines(data),
+        None => read().as_deref().map_or((None, None), program_lines),
     };
     FontLines {
         under: under.unwrap_or(STANDARD.under),
-        strike: strike.or_else(alike).unwrap_or(STANDARD.strike),
+        // The nearest standard font by name, which reads no installed fonts (a line's fonts
+        // are read as it is selected).
+        strike: strike
+            .or_else(|| alike_strike(FontChoice::from_name(&base)))
+            .unwrap_or(STANDARD.strike),
     }
+}
+
+/// The strike-out of the Liberation look-alike of standard font `f`.
+fn alike_strike(f: FontChoice) -> Option<Band> {
+    let face = crate::embed::liberation(f);
+    (crate::embed::bundled_face(face).map(program_lines)).and_then(|(_, s)| s)
+}
+
+/// The underline and strike-out LimarePDF draws for text set in `f` (a standard font, or an
+/// installed family's face), as for the font it is written in ([`font_lines`]): a standard
+/// font's AFM underline and its Liberation look-alike's strike-out; an installed face's own
+/// underline (`post`) and the strike-out of the standard font its name is nearest, as the
+/// face's subset keeps no `OS/2` table. Read once for each font.
+pub fn decoration_lines(f: FontChoice) -> FontLines {
+    static READ: std::sync::Mutex<Vec<(FontChoice, FontLines)>> = std::sync::Mutex::new(Vec::new());
+    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, lines)) = read.iter().find(|(g, _)| *g == f) {
+        return *lines;
+    }
+    let face = (!f.is_standard())
+        .then(|| crate::embed::Face::of(f).ok())
+        .flatten();
+    let (under, alike) = match face {
+        Some(face) => {
+            let (data, index) = face.file();
+            (face_lines(data, index).0, FontChoice::from_name(face.ps()))
+        }
+        None => (None, f),
+    };
+    let lines = FontLines {
+        under: under.unwrap_or(STANDARD.under),
+        strike: alike_strike(alike).unwrap_or(STANDARD.strike),
+    };
+    read.push((f, lines));
+    lines
 }
 
 /// The decorations of a line's new text carried from its old ones `old` by where each new

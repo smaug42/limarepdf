@@ -30,6 +30,22 @@
   Ctrl+Shift+G (⌘G and ⌘⇧G on a Mac), go to the next match and the one before wherever the keyboard is, on the
   page and in Replace with too, so a match can be passed over without replacing it; with nothing searched, F3
   opens Find. Search results' ◀ and ▶ name the keys.
+- **Underline** and **Strikethrough** for page text, working as Bold does: on words selected while reading (across
+  lines and pages), in a line or paragraph being edited (what is selected, else the word at the caret, else what
+  is typed next), in new text being typed (the next new text carrying on in the style this one ended in), and on
+  a line or several lines selected with the arrow. Ctrl+U (⌘U on a Mac) underlines; Strikethrough is ⌘⇧X on a Mac,
+  as in Word for Mac, and has no key on Windows and Linux, as in Word. Both are **U** and **S** in Edit's Font
+  group after Bold and Italic (pressed when all of the text has the style), in the right-click menus and the
+  floating toolbar beside Bold and Italic, in ☰ > Edit and in the command search. As in Word, if all of it is
+  underlined Underline takes it off, otherwise it underlines all of it; each change is one undo step. While you
+  type, an underline or strike-through is drawn where it will be written, at the font's own place and thickness,
+  in the words' colour. Underlining adds a thin line and never writes the words again, so it works in any font,
+  even one LimarePDF can't write new text in. Underlines that other apps drew and LimarePDF reads show as
+  Underline pressed, Ctrl+U takes them off, and an underline added beside one on the same line, in the same
+  colour, carries on in its look; clicking one with the arrow selects its line, not the underline alone. Replace
+  and Replace all keep the underline of what they replace. Not offered:
+  double, dotted, dashed or wavy lines, or an underline colour of its own; nor in text boxes, form fields,
+  headers, footers, watermarks and stamps, or on the command line.
 
 ### Changed
 
@@ -41,6 +57,12 @@
   line as an underline when it is sure: one in another colour than its text, under a single character, dotted,
   dashed or wavy, or touching other drawings (a table's rules, a box) is left a drawing, as before, and stays where
   it is when the line is edited.
+- The comment marks are named apart from the new text styles: **Underline comment** and **Strike-out comment**
+  (Squiggly underline keeps its name), in the menus, the command search and Highlight's ▾; the right-click submenu
+  that was "Underline, strike out, colour" is **Other marks and colours**, as is the floating toolbar's arrow
+  beside Highlight. They mark the text with a comment and don't change it. The Font group's greyed Underline,
+  marked Planned, and the inspector's Future text tools (Planned) for selected text are gone, now that Underline
+  and Strikethrough are built.
 
 ### Fixed
 

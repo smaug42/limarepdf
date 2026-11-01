@@ -1422,20 +1422,22 @@ impl Pdf {
     /// strike-throughs go with it.
     pub fn delete_objects(&mut self, page_index: usize, ids: &[usize]) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
+        let out = Self::without_objects(&parsed, &Self::with_decorations(&parsed, ids))?;
+        self.commit(page, out, parsed.depth_left, &parsed.inline)
+    }
+
+    /// Objects `ids` of the page `parsed` reads, with the paths drawing the underlines and
+    /// strike-throughs of the lines among them.
+    pub(crate) fn with_decorations(parsed: &Parsed, ids: &[usize]) -> Vec<usize> {
         let mut all = ids.to_vec();
-        for (_, d) in parsed
-            .decorations
-            .iter()
-            .filter(|(line, _)| ids.contains(line))
-        {
+        for (_, d) in (parsed.decorations.iter()).filter(|(line, _)| ids.contains(line)) {
             for &p in &d.paths {
                 if !all.contains(&p) {
                     all.push(p);
                 }
             }
         }
-        let out = Self::without_objects(&parsed, &all)?;
-        self.commit(page, out, parsed.depth_left, &parsed.inline)
+        all
     }
 
     /// The page's operators, as `parsed`, with the objects `ids` taken out: a text object's

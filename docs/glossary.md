@@ -97,8 +97,7 @@ the pages.
 without stopping them from opening it. Also called an owner password.
 
 **Planned.** The mark on a greyed button for a feature not built yet, shown where it will be. It does nothing.
-In the inspector, Future text tools carries the mark too. Turning off Show planned features, in the status bar or
-View > Show, hides them.
+Turning off Show planned features, in the status bar or View > Show, hides them.
 
 **Read tool.** The tool every document opens with (the text cursor): it selects text, follows links, fills in
 forms, and selects and moves pictures, shapes and comments on the page (Shift+click for several pictures and

@@ -1178,8 +1178,8 @@ impl Tab {
                 Action::AddText(p, pos, text) => {
                     // Every line in one change, so Undo takes them back together.
                     let add = |pdf: &mut Pdf| {
-                        for (dy, parts) in text.lines() {
-                            pdf.add_text_parts(p, (pos.0, pos.1 + dy), &parts)?;
+                        for (dy, parts, decos) in text.lines() {
+                            pdf.add_text_decorated(p, (pos.0, pos.1 + dy), &parts, &decos)?;
                         }
                         Ok(())
                     };
@@ -1202,7 +1202,7 @@ impl Tab {
                 Action::ReplaceImage(p, id, bytes) => {
                     self.edit_pages(ctx, &[p], |pdf| pdf.replace_image(p, id, &bytes));
                 }
-                Action::EditText(p, id, te, words_only) => {
+                Action::EditText(p, id, te, decos, words_only) => {
                     let want = te.text.clone();
                     // Typing into the same line again soon joins the last undo step; each
                     // change of font, size or colour is a step of its own.
@@ -1217,7 +1217,7 @@ impl Tab {
                     let (kept, loose) = (self.ed.sel() == Some((p, id)), self.ed.selection.loose());
                     let mut lost = false;
                     let edit = |pdf: &mut Pdf| {
-                        lost = !pdf.edit_texts(p, &[(id, te)])?.is_empty();
+                        lost = !pdf.edit_texts_decorated(p, &[(id, te, decos)])?.is_empty();
                         Ok(())
                     };
                     if self.edit_inner(ctx, Redraw::Pages(&[p]), false, merge, edit) {
@@ -1249,12 +1249,12 @@ impl Tab {
                             words_only.then_some(((p, at), self.revision, self.undo.len(), now));
                     }
                 }
-                Action::EditParagraph(p, setting, parts, edges) => {
+                Action::EditParagraph(p, setting, parts, decos, edges) => {
                     // The whole paragraph in one change, which one Undo takes back.
                     let mut lost = false;
                     let edit = |pdf: &mut Pdf| {
                         lost = !pdf
-                            .edit_paragraph_between(&setting, &parts, edges)?
+                            .edit_paragraph_decorated(&setting, &parts, edges, &decos)?
                             .is_empty();
                         Ok(())
                     };
@@ -1272,7 +1272,7 @@ impl Tab {
                     // Every page in one change, so Undo takes it all back together.
                     let edit = |pdf: &mut Pdf| {
                         for (p, edits) in &changes {
-                            lost |= !pdf.edit_texts(*p, edits)?.is_empty();
+                            lost |= !pdf.edit_texts_decorated(*p, edits)?.is_empty();
                         }
                         Ok(())
                     };
@@ -4203,7 +4203,7 @@ mod tests {
                 parts: Vec::new(),
             };
             t.ed.actions
-                .push(Action::EditText(0, id, te, size.is_none()));
+                .push(Action::EditText(0, id, te, Vec::new(), size.is_none()));
             t.apply_actions(&ctx);
         };
         // Three edits of the first line's words: one step.

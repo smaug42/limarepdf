@@ -505,7 +505,9 @@ fn paragraph(
             .map(|p| (starts[p.part] + p.chars.0, starts[p.part] + p.chars.1))
             .collect();
         other_font = into_other_font(&put_at, &away);
-        lost = !pdf.edit_paragraph(setting, &parts)?.is_empty();
+        let f = &setting.paragraph().frame;
+        let (edges, decos) = ((f.left, f.right), text.decorations());
+        lost = !(pdf.edit_paragraph_decorated(setting, &parts, edges, &decos)?).is_empty();
     }
     let old = (pp.blocks[k].lines.iter().map(|l| l.bbox)).reduce(union);
     let written = set.lines.into_iter().filter(|l| l.kept.is_none()).collect();
@@ -577,12 +579,13 @@ fn line_changes(
             }
             d.other_font = into_other_font(&put_at, &away);
         }
-        edits.push((i, te.clone()));
-        made.push((Some((id, te)), d));
+        let decos = text.decorations();
+        edits.push((i, te.clone(), decos.clone()));
+        made.push((Some((id, te, decos)), d));
     }
     let written = match edits.is_empty() {
         true => Ok(Vec::new()),
-        false => pdf.edit_texts(pp.page, &edits),
+        false => pdf.edit_texts_decorated(pp.page, &edits),
     };
     if let Ok(lost) = written {
         let done = made.into_iter().map(|(_, d)| d).collect();
@@ -591,12 +594,13 @@ fn line_changes(
     // Some line couldn't be written: each alone, to know which.
     let (mut done, mut lost) = (Vec::new(), false);
     for (edit, d) in made {
-        let Some((id, te)) = edit else {
+        let Some((id, te, decos)) = edit else {
             done.push(d);
             continue;
         };
         let now = follow(&pp.objs, &pdf.page_objects(pp.page)?);
-        let written = (now.get(id).copied().flatten()).map(|i| pdf.edit_texts(pp.page, &[(i, te)]));
+        let written = (now.get(id).copied().flatten())
+            .map(|i| pdf.edit_texts_decorated(pp.page, &[(i, te, decos)]));
         match written {
             Some(Ok(l)) => {
                 lost |= !l.is_empty();

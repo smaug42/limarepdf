@@ -394,7 +394,8 @@ fn typing_joined_into_one_step_undoes_and_redoes_whole() {
             color: None,
             parts: Vec::new(),
         };
-        t.ed.actions.push(EdAction::EditText(0, id, te, true));
+        t.ed.actions
+            .push(EdAction::EditText(0, id, te, Vec::new(), true));
         t.apply_actions(&ctx);
     }
     assert_eq!(t.history().1, 1, "not one step");

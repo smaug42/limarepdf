@@ -114,9 +114,9 @@ two choices above.
 3. Press **Replace**, or Enter in Replace with, or Alt+R while the keyboard is in Search results (as in Word's
    Find and Replace; not on a Mac), or choose **Edit > Replace current match**. The current match is typed over on
    the page, as when you [type over words you select](content-editing.md#type-over-delete-or-cut-words): its line
-   opens for editing with your words in the match's place, in the line's own fonts, sizes and colours. The view
-   stays on that line so you can see the change, and the next match is highlighted as the current one. The
-   keyboard goes back to Replace with.
+   opens for editing with your words in the match's place, in the match's own style (that of its first letter),
+   an underline or strike-through included. The view stays on that line so you can see the change, and the next
+   match is highlighted as the current one. The keyboard goes back to Replace with.
 4. Press **Replace** (or Enter) again to keep the change and replace the next match, and so on. To leave a match
    as it is, go past it with F3 (or ▶) before you press Replace.
 

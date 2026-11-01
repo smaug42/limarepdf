@@ -113,8 +113,8 @@ impl Group {
 
 pub enum Item {
     Button(Button),
-    /// Edit's font list and size, Bold, Italic and the text colour, for the text selected
-    /// or being typed (the editor's), with the planned Underline and Strike-through.
+    /// Edit's font list and size, Bold, Italic, Underline, Strikethrough and the text
+    /// colour, for the text selected or being typed (the editor's).
     Font,
     /// Fill and sign, its menu the saved signatures and initials, the date, name and marks.
     Sign,
@@ -182,12 +182,6 @@ const fn group(name: &'static str, items: &'static [Item]) -> Group {
 }
 
 // The planned features, each with the build plan's item that builds it.
-pub const UNDERLINE: Planned = Planned {
-    label: "Underline",
-    icon: icon::TEXT_UNDERLINE,
-    item: "NEW-07",
-    what: "Underline or strike through the selected text.",
-};
 const ALIGN: Planned = Planned {
     label: "Align",
     icon: icon::ALIGN_LEFT,
@@ -555,9 +549,8 @@ static VIEW: &[Group] = &[
     group("Optional assistance", &[Item::Planned(&YOUR_AI)]),
 ];
 
-/// Draws Edit's Font group for the text it acts on, calling the function it is given
-/// between Italic and the colour (the planned Underline and Strike-through).
-pub type FontGroup<'a> = dyn FnMut(&mut egui::Ui, &dyn Fn(&mut egui::Ui)) + 'a;
+/// Draws Edit's Font group for the text it acts on.
+pub type FontGroup<'a> = dyn FnMut(&mut egui::Ui) + 'a;
 
 /// What the band needs from the app to draw it.
 pub struct Parts<'a> {
@@ -841,14 +834,7 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
             Item::Button(b) => button(ui, b, acts),
             Item::Planned(p) if c.planned => planned(ui, p, compact),
             Item::Planned(_) => {}
-            Item::Font => {
-                let show = c.planned;
-                (parts.font)(ui, &|ui| {
-                    if show {
-                        planned_style(ui, &UNDERLINE, "U", compact);
-                    }
-                });
-            }
+            Item::Font => (parts.font)(ui),
             Item::Sign => {
                 let sign = Button {
                     act: Some(Act::Tool(Tool::Sign)),
@@ -985,18 +971,6 @@ fn planned(ui: &mut egui::Ui, p: &Planned, compact: bool) {
     planned_button(ui, button, p);
 }
 
-/// A planned text style's button in the Font group: its letter underlined, greyed and
-/// marked Planned (`compact`: the letter alone, named on hover).
-fn planned_style(ui: &mut egui::Ui, p: &Planned, letter: &str, compact: bool) {
-    let text = RichText::new(letter).size(15.0).underline();
-    let button = match compact {
-        true => egui::Button::new(text),
-        false => egui::Button::new((text, planned_tag(ui))),
-    }
-    .min_size(egui::vec2(26.0, 26.0));
-    planned_button(ui, button, p);
-}
-
 /// Shows the button of planned feature `p`: greyed, named for screen readers, its Planned
 /// tag outlined.
 fn planned_button(ui: &mut egui::Ui, button: egui::Button, p: &Planned) {
@@ -1050,10 +1024,10 @@ pub fn planned_menu_item(ui: &mut egui::Ui, p: &Planned) {
     r.on_disabled_hover_text(format!("{} Planned.", p.what));
 }
 
-/// Every planned feature shown: in the bands, the Font group and the File menu.
+/// Every planned feature shown: in the bands and the File menu.
 #[cfg(test)]
 pub fn all_planned() -> Vec<&'static Planned> {
-    let mut out: Vec<&Planned> = vec![&UNDERLINE];
+    let mut out: Vec<&Planned> = Vec::new();
     for band in Band::ALL {
         for g in band.groups() {
             for i in g.items {
@@ -1137,7 +1111,9 @@ mod tests {
     #[test]
     fn planned_features_name_their_plan_items() {
         let all = all_planned();
-        assert!(all.len() >= 10);
+        assert!(all.len() >= 9);
+        // Built: Underline (NEW-07, batch 46's 4b).
+        assert!(!all.iter().any(|p| p.item == "NEW-07"));
         for p in &all {
             let id = p.item;
             let known = ["NEW-", "ENH-", "PF-"].iter().any(|k| id.starts_with(k));
@@ -1222,7 +1198,7 @@ mod tests {
             }
         }
         // The rest: File's commands in the File menu, Undo and Redo beside it; the Font
-        // group's Bold and Italic; the marks and Create signature in Highlight's and Fill
+        // group's styles; the marks and Create signature in Highlight's and Fill
         // and sign's own menus; what acts on a selection, or on a paragraph's marked
         // hyphen, in its right-click menu and floating bar; Search results' Replace beside
         // its field and its arrows (Find next and previous); and keys. Each is in the File
@@ -1235,6 +1211,8 @@ mod tests {
                         | Act::Redo
                         | Act::Bold
                         | Act::Italic
+                        | Act::Underline
+                        | Act::Strikethrough
                         | Act::Mark(_)
                         | Act::CreateSign(_)
                         | Act::FinishSigning

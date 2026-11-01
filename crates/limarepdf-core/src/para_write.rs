@@ -2,14 +2,14 @@
 //! line set anew where its old line was in the content, inside its text object, with the
 //! text state put back after it; the lines that keep their breaks left as they were.
 
-use crate::decorate::{carried, Decorated, Decoration, Redraw};
+use crate::decorate::{carried, Decorated, Redraw};
 use crate::edit::{line_body, move_only, op, put_code, r, tj, Check, Following, Ink, Written};
 use crate::edit::{PartFont, TextPart, Way};
 use crate::fonts::FontChoice;
 use crate::layout::{shown, Setter};
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::{Obj, Parsed, Show};
-use crate::rewrap::{away_pieces, Paragraph, ParagraphSetting, Planned, SetLine};
+use crate::rewrap::{away_pieces, decorations_of, ParagraphSetting, Planned, SetLine};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::Operation;
@@ -85,7 +85,7 @@ impl Pdf {
         }
         // Its lines' decorations on its text, carried to the new text; the old ones stop
         // painting, all drawn again where their characters are written.
-        let old = of_paragraph(para, &parsed);
+        let old = decorations_of(para, &parsed.decorations);
         let want: Vec<Decorated> = match asked {
             Some(asked) => asked.to_vec(),
             None => {
@@ -560,7 +560,7 @@ enum Stretch {
 /// How far from the end of the letter before it the stretch of kept letters starting at
 /// character `a` of an edit (`parts`, written as `plan` says, its characters `chars`) starts,
 /// in points as the measure sets it ([`ParagraphSetting::measure`]), when that letter is
-/// TeX's accent drawn over it from another text object ([`Paragraph::accent_over`]), both
+/// TeX's accent drawn over it from another text object ([`crate::Paragraph::accent_over`]), both
 /// kept in their own codes and still next to each other: the move back under the accent.
 fn under_accent(
     setting: &ParagraphSetting,
@@ -699,26 +699,6 @@ fn para_em(setting: &ParagraphSetting, i: usize) -> f32 {
 fn matrix(m: M) -> Vec<Object> {
     let plain = |x: f32| if x == 0.0 { 0.0 } else { x };
     m.iter().map(|&x| r(plain(x))).collect()
-}
-
-/// The decorations of paragraph `para`'s lines, as `parsed` read them, over its text: each
-/// from its first character there to its last.
-fn of_paragraph(para: &Paragraph, parsed: &Parsed) -> Vec<Decoration> {
-    let n = para.text.chars().count();
-    let mut out = Vec::new();
-    for (line, d) in &parsed.decorations {
-        let over = |k: &usize| {
-            (para.source(*k)).is_some_and(|(o, c)| o == *line && d.chars.0 <= c && c < d.chars.1)
-        };
-        let ks: Vec<usize> = (0..n).filter(over).collect();
-        if let (Some(&a), Some(&b)) = (ks.first(), ks.last()) {
-            out.push(Decoration {
-                chars: (a, b + 1),
-                ..d.clone()
-            });
-        }
-    }
-    out
 }
 
 #[cfg(test)]

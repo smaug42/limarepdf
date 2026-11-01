@@ -1482,10 +1482,8 @@ there were; when that changes it starts at 48 points a button, more than they ta
 place and widen the panel, which egui would then keep (`the_inspector_keeps_its_width`). The collapse button has a
 scope id of its own (`COLLAPSE`), the same with or without the close button before it, so a close from the keyboard
 (no pointer click that frame) can give it the keyboard; in the pop-out the keyboard goes to the strip's button that
-opens it (`POPOUT_OPENER`). `inspector_body` lends `Editor::planned` from Show planned features:
-`Editor::planned_text_tools` draws Future text tools at the end of selected words' and a visible text line's
-inspector, a `section` whose name is a `LayoutJob` with the 11-point Planned tag, named "Future text tools —
-Planned" for screen readers (a Tab stop, unlike the planned buttons, as it opens to show its note).
+opens it (`POPOUT_OPENER`). The inspector's Future text tools, marked Planned, went with Underline and
+Strikethrough built (batch 46's 4b), and with them `Editor::planned`, which showed it.
 
 F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`, the one shortcut `App::shortcuts` runs
 while a text box has the keyboard (and never while a list or menu is open), with Shift told apart exactly, as egui
@@ -1850,13 +1848,49 @@ form XObject, and per inline image.
   of one part of the written line, at its size and rise: a read one in its own look and ink, a new one at its
   font's place (`font_lines`: an embedded TrueType or OpenType program's `post` underline and `OS/2` strike-out,
   each given by its top; else the standard fonts' AFM underline, 0.1 em below to its centre and 0.05 em thick,
-  with the strike-out of the Liberation look-alike). Spaces at either end of the line are left bare.
-  `edit_paragraph` (`paragraph_with`) maps its lines' decorations onto the paragraph's text (`of_paragraph`, by
-  `Paragraph::source`), carries them as a line's are, stops all the old ones painting and draws each set line's
-  stretch where that line is written (its `Check::Within`) or kept. `add_text_decorated` draws new text's in the
-  layer the text is written in. `transform_objects` (and so `set_object_boxes`) moves a line's decoration paths with
-  the line's own matrix, and `delete_objects` deletes them with it. Redaction treats them as any drawing: one
-  crossing a mark is cut out of it.
+  with the strike-out of the Liberation look-alike of the standard font the font's name is nearest,
+  `FontChoice::from_name`, which reads no installed fonts). Spaces at either end of the line are left bare.
+  `edit_paragraph` (`paragraph_with`) maps its lines' decorations onto the paragraph's text
+  (`rewrap::decorations_of`, by `Paragraph::source`; `Pdf::paragraph` fills `Paragraph::decorations` the same way
+  for the app), carries them as a line's are, stops all the old ones painting and draws each set line's stretch
+  where that line is written (its `Check::Within`) or kept. `add_text_decorated` draws new text's in the layer the
+  text is written in. `transform_objects` (and so `set_object_boxes`) moves a line's decoration paths with the
+  line's own matrix, and `delete_objects` and `page_without` take them with it (`Pdf::with_decorations`). Redaction
+  treats them as any drawing: one crossing a mark is cut out of it. Where a font puts its bands is public for the
+  typing box (stage 4b): `LineFont::lines` (a line's part's, from the program bytes `OwnFont` holds, so none is read
+  twice) and `decoration_lines` for a `FontChoice` (a standard font's AFM underline and look-alike strike-out; an
+  installed face's own `post` underline and the look-alike strike-out of the standard font its PostScript name is
+  nearest, since `subsetter` keeps no `OS/2` in what it writes), each read once (a cache by font).
+- **Underline and Strikethrough in the app** (NEW-07, batch 46's stage 4b). `styled::CharStyle` has `underline` and
+  `strike`, each a `Deco`: none, `Font` (at its font's place, in its colour) or `Read(k)`, the look of the text's
+  decoration `k` as read (`Styled::looks`, filled by `Styled::of` from `PageObject::decorations` and by
+  `of_paragraph` from `Paragraph::decorations`), so `CharStyle` stays `Copy` and typed characters take a read
+  decoration as they take a font (`Styled::sync`). `Styled::switch_deco` is Word's rule (all on turns it off, else
+  the characters without it take `Font`, those with it keep theirs); `Restyle::switch_deco` for a line's selection
+  (`InLine`) and words across lines (`Across`, one selection), `Shown::underline` and `strike` all-on. Every writer
+  passes decorations: `Styled::decorations` (each stretch with one on: a read one's in its look, a `Font` character
+  beside a read one on the same stretch and in its colour in that look, others `look: None`), so the app carries the
+  read ones itself; `Action::EditText` and `EditParagraph` carry them, `Action::Restyle` holds `LineChange`s (`(id,
+  TextEdit, Vec<Decorated>)`), `Styled::lines` gives each new line its own, and Replace all writes through the
+  decorated calls too. A decoration-only change leaves a line's words as they are (`TextEdit::unchanged`), and a
+  paragraph's (`para_change` compares `decorations()` as well as the set lines). `Act::Underline` (Ctrl+U, ⌘U) and
+  `Act::Strikethrough` (`STRIKE_KEY`, Cmd+Shift+X with `mac_cmd`, which egui matches only on a Mac; `shown_key`
+  leaves such a key out elsewhere) run as Bold does (`styleable`, `uses_document`, `App::act`'s `styles`, the
+  `page_only` keys, `Editor::switch_style` with a `Switch`), and inside the typing boxes `take_typing` takes Ctrl+U
+  before egui's `TextEdit`, whose own Ctrl+U deletes to the start of the line. The Font group's buttons are
+  `font_list::styles`'s (`font_list::Lines`; the next new text's are `Editor::tlines`, carried on as its font is),
+  in place of band.rs's Planned `UNDERLINE` (gone, with `Editor::planned_text_tools` and `FontGroup`'s planned
+  slot); the menus and floating bar list the styles in `actions::STYLES`. A line's decoration paths aren't
+  selected apart from it: `Editor::hit_where` takes a click on one for its line (`PageObject::decorates`), and
+  `select_all_objects` and the selection rectangle (`inside_rect`) leave them out. While typing, `page_text::Run::place` is
+  where the font a run is written in puts its bands (`Place::Own`, the line's own font's, though the run is drawn in
+  another; `Place::Set`, a standard font or installed face, read when a band is drawn), `char_bands` gives each
+  character its bands in pixels (`Styled::drawn_decos`), and `band_rects` places them on the galley: along each
+  row from its first character that isn't a space to its last, from a stretch's first glyph's pen (the advances
+  before it, plus a justified line's stretch after each space, `ParaStyle::bands`) to its last's end, on that
+  glyph's baseline (`pos.y`, a raised run's own), painted after the galley by `field` and `paragraph_field`
+  (egui's `TextFormat::underline` sits at the line box's bottom). `bands_are_drawn_where_they_are_written`
+  checks them against the bands written, within 0.13 px at 2 px a point.
 - **The page under text being edited** (ENH-21, batch 45's 3b-1; `tab/backdrop.rs`, `excerpt.rs`). A line drawn
   in place, or a paragraph, being edited asks for the page drawn without its text objects
   (`Editor::backdrop_wanted`: the page, the objects, the box the editor hides). Core's

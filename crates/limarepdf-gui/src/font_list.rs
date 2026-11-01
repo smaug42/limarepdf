@@ -117,9 +117,18 @@ pub fn ui(ui: &mut egui::Ui, f: &mut FontChoice, blank: bool, in_pdf: &[String])
     r.inner.unwrap_or(false)
 }
 
-/// The Bold and Italic buttons for the font `f`, off for a face its family lacks: a heavy
-/// B and a slanted I with serifs.
-pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
+/// Underline and Strikethrough as the Font group shows them: on, or off (also where the text
+/// mixes them).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Lines {
+    pub underline: bool,
+    pub strike: bool,
+}
+
+/// The Bold, Italic, Underline and Strikethrough buttons for the font `f` and the `lines`:
+/// Bold and Italic off for a face its family lacks; a heavy B, a slanted I with serifs, an
+/// underlined U and a struck S, as word processors show them.
+pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice, lines: &mut Lines) {
     let t = f.typeface();
     let has = |bold: bool, italic: bool| t.as_ref().is_none_or(|t| t.has(bold, italic));
     let mut bold = f.bold;
@@ -167,6 +176,30 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
     }
     dialogs::set_name(&r, "Italic");
     f.bold = bold;
+    for (act, icon, on, name) in [
+        (
+            Act::Underline,
+            crate::icon::TEXT_UNDERLINE,
+            &mut lines.underline,
+            "Underline",
+        ),
+        (
+            Act::Strikethrough,
+            crate::icon::TEXT_STRIKETHROUGH,
+            &mut lines.strike,
+            "Strikethrough",
+        ),
+    ] {
+        let glyph = crate::theme::icon(icon).size(size + 3.0);
+        let tip = actions::tooltip(&ctx, actions::get(act));
+        let greyed = format!("{tip}\n{}", actions::why_not(&open, actions::get(act)));
+        let r = ui.add(square(egui::Button::new(glyph), *on));
+        let r = r.on_hover_text(tip).on_disabled_hover_text(greyed);
+        if r.clicked() {
+            *on = !*on;
+        }
+        dialogs::set_name(&r, name);
+    }
 }
 
 /// The open list: the search field, then the families that fit it, `f`'s marked unless
@@ -306,7 +339,7 @@ mod tests {
         crate::theme::install(&ctx);
         let mut f = FontChoice::default();
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            ui.horizontal(|ui| styles(ui, &mut f));
+            ui.horizontal(|ui| styles(ui, &mut f, &mut Lines::default()));
         });
         out.textures_delta.clear();
         let painted: Vec<(String, egui::FontFamily)> = out

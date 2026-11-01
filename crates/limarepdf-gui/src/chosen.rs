@@ -1,9 +1,10 @@
 //! Words selected with the read tool, or lines of page text selected with the arrow, as
-//! Bold, Italic and the inspector's font, size and colour change them (ENH-05, ENH-06):
+//! Bold, Italic, Underline, Strikethrough and the inspector's font, size and colour change
+//! them (ENH-05, ENH-06, NEW-07):
 //! each line the words are in, its text as styled, and the characters selected there,
 //! written back as the lines' changes in one undo step.
 
-use crate::editor::font_of;
+use crate::editor::{font_of, LineChange};
 use crate::selection::WordAt;
 use crate::styled::{Across, Styled};
 use limarepdf_core::{ObjectKind, PageObject, PageWord, TextEdit};
@@ -195,15 +196,15 @@ impl Chosen {
     }
 
     /// The changes made: for each page, in order, its changed lines' edits, each line by
-    /// its object as the page is now.
-    pub fn changes(&self) -> Vec<(usize, Vec<(usize, TextEdit)>)> {
-        let mut out: Vec<(usize, Vec<(usize, TextEdit)>)> = Vec::new();
+    /// its object as the page is now, with its underlines and strike-throughs.
+    pub fn changes(&self) -> Vec<(usize, Vec<LineChange>)> {
+        let mut out: Vec<(usize, Vec<LineChange>)> = Vec::new();
         let now = self.text.lines.iter().map(|(t, _)| t);
         for ((page, id, was), t) in self.lines.iter().zip(now) {
             if t.same_as(was) {
                 continue;
             }
-            let e = (*id, TextEdit::in_parts(t.parts()));
+            let e = (*id, TextEdit::in_parts(t.parts()), t.decorations());
             match out.last_mut() {
                 Some((p, edits)) if p == page => edits.push(e),
                 _ => out.push((*page, vec![e])),

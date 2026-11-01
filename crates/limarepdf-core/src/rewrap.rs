@@ -5,6 +5,7 @@
 //! Positions are in points on the displayed page (y down), as [`crate::Block`]'s.
 
 use crate::colour::Paint;
+use crate::decorate::Decoration;
 use crate::edit::{pieces, plan, Drawn, PartFont, TextPart, Way};
 use crate::fonts::FontChoice;
 use crate::layout::Setter;
@@ -43,6 +44,9 @@ pub struct Paragraph {
     pub frame: Frame,
     /// Its line-end hyphens, in order.
     pub hyphens: Vec<LineEndHyphen>,
+    /// Its lines' underlines and strike-throughs ([`PageObject::decorations`]) over its
+    /// text: each from its first character there to its last.
+    pub decorations: Vec<Decoration>,
     /// One for each character of `text`.
     pub(crate) chars: Vec<Char>,
     /// One for each part ([`Paragraph::spans`]).
@@ -503,17 +507,43 @@ fn read(
             }
         }
     }
-    Ok(Paragraph {
+    let mut para = Paragraph {
         page,
         text: text.iter().map(|r| r.0).collect(),
         spans,
         lines: ranges,
         frame: block.frame,
         hyphens,
+        decorations: Vec::new(),
         chars: text.iter().map(|r| r.1).collect(),
         parts: span_parts.into_iter().map(|p| parts[p].clone()).collect(),
         rows,
-    })
+    };
+    para.decorations = decorations_of(&para, &parsed.decorations);
+    Ok(para)
+}
+
+/// The decorations of paragraph `para`'s lines, of the page's `decorations` (each with its
+/// line), over its text: each from its first character there to its last.
+pub(crate) fn decorations_of(
+    para: &Paragraph,
+    decorations: &[(usize, Decoration)],
+) -> Vec<Decoration> {
+    let n = para.text.chars().count();
+    let mut out = Vec::new();
+    for (line, d) in decorations {
+        let over = |k: &usize| {
+            (para.source(*k)).is_some_and(|(o, c)| o == *line && d.chars.0 <= c && c < d.chars.1)
+        };
+        let ks: Vec<usize> = (0..n).filter(over).collect();
+        if let (Some(&a), Some(&b)) = (ks.first(), ks.last()) {
+            out.push(Decoration {
+                chars: (a, b + 1),
+                ..d.clone()
+            });
+        }
+    }
+    out
 }
 
 /// The hyphen ending line `line` before line `next` (its characters), if it ends in one

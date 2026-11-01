@@ -52,11 +52,12 @@ While you type:
   caret. The inspector shows the font and size too, the font the PDF names (**PDF font**) and whether it is kept
   (**Source font**, see [Change size, font and colour](#change-size-font-and-colour)). Esc in the size box (or
   another box there) drops what you typed in it and goes back to the line.
-- The floating toolbar has **B**, ***I***, Cut, Copy and Paste for what is selected in the line. It sits above,
-  below or beside the line, clear of other text where there is room, never over the line; clicking it leaves the
-  line open.
-- Right-click what is selected in the line for Cut, Copy and Paste, then Bold and Italic: the selection stays as it
-  was. New text, a note and a text box being typed have it too, with Bold and Italic where the text takes them.
+- The floating toolbar has **B**, ***I***, **U** and **S** (Bold, Italic, Underline and Strikethrough), Cut, Copy
+  and Paste for what is selected in the line. It sits above, below or beside the line, clear of other text where
+  there is room, never over the line; clicking it leaves the line open.
+- Right-click what is selected in the line for Cut, Copy and Paste, then Bold, Italic, Underline and
+  Strikethrough: the selection stays as it was. New text, a note and a text box being typed have it too, with the
+  styles where the text takes them.
 - Going to another tab and back leaves the line open, ready to go on typing.
 
 A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
@@ -101,9 +102,9 @@ While you type:
 - **Enter** starts a new paragraph within the frame, with the first line's indent if it has one; **Shift+Enter**
   starts a new line.
 - Each word keeps its own style, and letters keep their font, as in a line (see
-  [Edit a line of text](#edit-a-line-of-text)). Ctrl+B, Ctrl+I, **Edit > Font**, the floating toolbar and the
-  right-click menu act on what is selected in the paragraph. The inspector shows its font and size, the PDF's font
-  and how what you type is written, and names the words that go to another font.
+  [Edit a line of text](#edit-a-line-of-text)). Ctrl+B, Ctrl+I, Ctrl+U, **Edit > Font**, the floating toolbar and
+  the right-click menu act on what is selected in the paragraph. The inspector shows its font and size, the PDF's
+  font and how what you type is written, and names the words that go to another font.
 - A hyphen that ended a line: LimarePDF reads from the rest of the document whether it belongs to its word
   ("well-known") or was only put in to break it ("exam-ple"). One put in to break a word goes when the word moves
   inside a line, and comes back if it ends a line again. One it can't tell is kept as a hyphen and, once a rewrap
@@ -127,8 +128,9 @@ LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragra
 
 1. Double-click the line, then select the words: drag over them, or hold Shift and use the arrow keys. A
    double-click selects one word.
-2. Press Ctrl+B for Bold or Ctrl+I for Italic, use **B** and ***I*** on the floating toolbar, or use
-   **Edit > Font** in the band: the font list, size, Bold, Italic and text colour.
+2. Press Ctrl+B for Bold, Ctrl+I for Italic or Ctrl+U for Underline, use **B**, ***I***, **U** and **S** on the
+   floating toolbar, or use **Edit > Font** in the band: the font list, size, Bold, Italic, Underline,
+   Strikethrough and text colour.
 3. Press Enter, Esc or Tab, or click elsewhere, to keep it.
 
 As in a word processor:
@@ -136,41 +138,56 @@ As in a word processor:
 - With nothing selected, the caret inside a word changes that word. Between words, or at either end of a word,
   the change applies to what you type next there.
 - Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
-  Italic works the same way. Words in a family without a bold or italic face stay as they are: **B** or ***I***
-  is greyed, and says why when you point at it, and Ctrl+B or Ctrl+I says so at the caret.
+  Italic, Underline and Strikethrough work the same way. Words in a family without a bold or italic face stay as
+  they are: **B** or ***I*** is greyed, and says why when you point at it, and Ctrl+B or Ctrl+I says so at the
+  caret.
+- Strikethrough has no key on Windows and Linux, as in Word: use **S**, the right-click menu or the command search
+  (Ctrl+K). On a Mac it is ⌘⇧X, as in Word for Mac.
+- An underline or strike-through shows as you type where it will be written: at the font's own place and
+  thickness for it, in the words' colour. Spaces inside an underlined stretch are underlined; spaces at either end
+  of the line are not.
 - Where the selection mixes fonts, sizes or colours, **Edit > Font** shows that one blank: the font list with no
   name, the size box empty, the colour button (an **A** over a bar of the text's colour) with the colours side by
   side in its bar. A colour picked then makes the
   selection all that colour, even the one the picker starts from (the first); the picker also offers the colours
   in the text (**In the text**), to make it all one of them in a click. Opening and closing the picker changes
-  nothing. Bold and Italic show on only when all
-  of it is bold or italic. Picking a value there sets all of it.
+  nothing. Bold, Italic, Underline and Strikethrough show on only when all
+  of it has that style. Picking a value there sets all of it.
 - A change in **Edit > Font** shows on the line at once, the line stays in editing, and the keyboard comes back to
   it; the change is kept with the typing.
 
 Finishing (Esc, Enter, Tab or clicking elsewhere) leaves nothing selected, as in a word processor. A line selected
-as a whole with the arrow takes the font, size and colour in **Edit > Font**, and Ctrl+B and Ctrl+I, as a whole,
-with the same blanks for what it mixes; to change its words, double-click it or choose **Edit > Edit text**, and it
-is edited on the page here too. With the arrow, the line stays selected when you finish.
+as a whole with the arrow takes the font, size, colour and styles in **Edit > Font**, and Ctrl+B, Ctrl+I and
+Ctrl+U, as a whole, with the same blanks for what it mixes; to change its words, double-click it or choose
+**Edit > Edit text**, and it is edited on the page here too. With the arrow, the line stays selected when you
+finish.
 
 ## Style words you select while reading
 
 You don't need to open a line to style its words. Select them with the read tool, as you would to copy them (drag
 over them, across lines and pages if you like), then:
 
-- press Ctrl+B for Bold or Ctrl+I for Italic, or use **B** and ***I*** on the floating toolbar or in the right-click
-  menu;
+- press Ctrl+B for Bold, Ctrl+I for Italic or Ctrl+U for Underline, or use Bold, Italic, Underline and
+  Strikethrough on the floating toolbar or in the right-click menu;
 - or pick a font, size or colour in **Edit > Font** in the band. The inspector, headed **Selected text**, shows
   their font and size.
 
-The words stay selected, so you can go on changing them. Bold and Italic work over the whole selection as they do in
-a line, and **Edit > Font** shows a value blank where the selection mixes it. Each change is one undo step, however
-many lines and pages it covers.
+The words stay selected, so you can go on changing them. Bold, Italic, Underline and Strikethrough work over the
+whole selection as they do in a line, and **Edit > Font** shows a value blank where the selection mixes it. Each
+change is one undo step, however many lines and pages it covers.
 
 The words around the ones you change are left exactly as they were, in their own font, even one LimarePDF can't
 write new text in. Words whose size or colour is all you change keep their font too; Bold, Italic or another font
-writes them in that font. Invisible recognised (OCR) text, text inside a block of page content reused as a whole,
-and vertical writing keep their look; a short notice says when part of the selection was left that way.
+writes them in that font. Underline and Strikethrough never write the words again: they add a thin line under or
+through them in their colour, so they work in any font. Invisible recognised (OCR) text, text inside a block of
+page content reused as a whole, and vertical writing keep their look; a short notice says when part of the
+selection was left that way.
+
+Underlines and strike-throughs another app drew under or through a line's words are read as the words' own where
+LimarePDF is sure of them (see [Limits](#limits)): they go with the words when you edit, move or delete the line,
+Underline or Strikethrough in **Edit > Font** shows on for them, and Ctrl+U takes them off. An underline you add
+next to one of these, on the same line and in the same colour, carries on in its look, as one line. A double
+underline stays double. Clicking one with the arrow selects its line, as an underline is part of its words.
 
 ## Type over, delete or cut words
 
@@ -214,7 +231,7 @@ A picture or coloured box the first line starts on doesn't count, so you can put
 added as one undo step, and nothing typed adds nothing. Each line becomes its own line of page text, so
 afterwards it moves and is edited line by line.
 
-While you type, Ctrl+B, Ctrl+I and **Edit > Font** style what is selected, or what you type next, as when
+While you type, Ctrl+B, Ctrl+I, Ctrl+U and **Edit > Font** style what is selected, or what you type next, as when
 [styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards).
 Ctrl+Z and Ctrl+Y undo and redo typing and styles, and dragging the outline moves the text (Esc during the drag
 puts it back where it was). The next text you add
@@ -313,8 +330,9 @@ a time. Comments and markup are selected one at a time, never with page objects.
 
 ## Change size, font and colour
 
-For text, **Edit > Font** in the band has the font list, then size, Bold, Italic and colour (the words themselves
-are changed on the page). Pointing at the font list shows the names of the fonts the selected text uses in the PDF.
+For text, **Edit > Font** in the band has the font list, then size, Bold, Italic, Underline (an underlined **U**),
+Strikethrough (a struck-through **S**) and colour (the words themselves are changed on the page). Pointing at the
+font list shows the names of the fonts the selected text uses in the PDF.
 
 The inspector is headed by what is selected (Selected text, Image, Shape). For text it shows what is being edited
 (One line, Selected words or New text), its font and size (Mixed where they differ) and, for a line being edited,
@@ -333,11 +351,9 @@ will be written, and changes as you type:
 
 (See [How it works](#how-it-works).) For shapes it shows the fill, outline and width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
-stays open or closed as you left it. For selected text, **Future text tools**, marked Planned, comes last: open it
-to see what is planned (underline and strike-through). Changes in the band and the
-inspector are kept as you make them,
-without an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or
-leave its box, a colour when its picker closes. Each is one undo step.
+stays open or closed as you left it. Changes in the band and the inspector are kept as you make them, without an
+Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or leave its
+box, a colour when its picker closes. Each is one undo step.
 
 The font size box shows the exact size, which isn't rounded to a listed one (10.126 shows as 10.126). Type any
 size, or pick one from the list beside it. Going into the box and out again without typing changes nothing, and
@@ -435,9 +451,14 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 - A word written in another font (a letter its font lacks, or another font chosen) loses its own character and
   word spacing and horizontal scaling, and words moved by cut and paste lose the fine spacing between their
   letters; letters left as they were keep theirs.
-- There is no underline or strike-through for page text. Styling words doesn't rewrap: bold or larger words make
-  their line longer and the rest of it moves along, and highlights, links and redaction marks over them stay where
-  they were.
+- Underline and Strikethrough are one plain line in the text's colour: there are no double, dotted, dashed or wavy
+  ones, and no colour of their own. They aren't offered in text boxes (comments), form fields, headers and
+  footers, watermarks and stamps, where they are greyed, nor on the command line (nor are Bold and Italic). An
+  underline or strike-through another app drew that LimarePDF can't be sure of (in another colour than its text,
+  under one character alone, dotted, dashed or wavy, or touching other drawings such as a table's rules or a box)
+  is left a drawing, and stays where it is when its line changes.
+- Styling words doesn't rewrap: bold or larger words make their line longer and the rest of it moves along, and
+  highlights, links and redaction marks over them stay where they were.
 - Editing a line does not change its width, and a paragraph keeps its frame's width unless you drag its edges:
   longer text can overlap its neighbours. The outline warns of it, a tag where it happens, but nothing is moved
   out of the way.

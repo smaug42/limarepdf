@@ -80,7 +80,7 @@ pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle, MAX_ANNOTS};
 pub use atomic::NotConfirmed;
 pub use blank::BLANK_TOLERANCE;
 pub use cms_check::CertInfo;
-pub use decorate::{DecoKind, Decorated, Decoration, Look};
+pub use decorate::{decoration_lines, DecoKind, Decorated, Decoration, FontLines, Look};
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};
 pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{KeptPiece, PartFont, PathStyle, Shape, TextEdit, TextPart};

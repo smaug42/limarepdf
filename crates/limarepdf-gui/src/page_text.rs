@@ -4,8 +4,9 @@
 //! page text being edited share the drawing, the keys and the note about characters
 //! that can't be written.
 
+use crate::actions::STRIKE_KEY;
 use crate::dialogs;
-use crate::styled::{CharStyle, History, Styled};
+use crate::styled::{CharStyle, Deco, DrawnDeco, History, Styled};
 use crate::theme;
 use crate::typing_fonts::{self, Wanted};
 use eframe::egui::epaint::text::{ByteIndex, CharIndex, VariationCoords};
@@ -13,8 +14,8 @@ use eframe::egui::text::{CCursor, CCursorRange};
 use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    emoji_sequence, unwritten_script, writable, BoxSetting, FontChoice, LineFont, ObjectKind,
-    PartFont, SetLine, TextPart,
+    emoji_sequence, unwritten_script, writable, BoxSetting, DecoKind, FontChoice, FontLines,
+    LineFont, ObjectKind, PartFont, SetLine, TextPart,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -53,6 +54,8 @@ pub struct Look {
     pub font: FontChoice,
     pub size: f32,
     pub color: [f32; 3],
+    pub underline: bool,
+    pub strike: bool,
 }
 
 impl Look {
@@ -62,17 +65,22 @@ impl Look {
             font: s.font,
             size: s.size,
             color: s.color,
+            underline: s.underline.on(),
+            strike: s.strike.on(),
         }
     }
 
     /// Text typed in this look.
     pub fn style(self) -> CharStyle {
+        let deco = |on: bool| if on { Deco::Font } else { Deco::None };
         CharStyle {
             font: self.font,
             span: None,
             size: self.size,
             color: self.color,
             rise: 0.0,
+            underline: deco(self.underline),
+            strike: deco(self.strike),
         }
     }
 }
@@ -231,9 +239,9 @@ pub fn switched(mut f: FontChoice, bold: bool, italic: bool) -> FontChoice {
     f
 }
 
-/// Bold or Italic switched for `sel` in `text`, as Ctrl+B or Ctrl+I asked (`t`); when the
-/// family (`font`, the typing's) has no such face, nothing changes, and `refused` says so
-/// at the caret.
+/// Bold, Italic, Underline or Strikethrough switched for `sel` in `text`, as Ctrl+B, Ctrl+I,
+/// Ctrl+U or Cmd+Shift+X asked (`t`); when the family (`font`, the typing's) has no bold or
+/// italic face, Bold or Italic changes nothing, and `refused` says so at the caret.
 pub fn switch_styles(
     ctx: &egui::Context,
     t: &Taken,
@@ -254,6 +262,14 @@ pub fn switch_styles(
             text.italic(sel);
         }
     }
+    for (asked, kind) in [
+        (t.underline, DecoKind::Underline),
+        (t.strike, DecoKind::Strike),
+    ] {
+        if asked {
+            text.switch_deco(sel, kind);
+        }
+    }
 }
 
 /// What this frame's typing asked of an editor, taken before the editor saw it.
@@ -261,6 +277,10 @@ pub fn switch_styles(
 pub struct Taken {
     pub bold: bool,
     pub italic: bool,
+    /// Ctrl+U.
+    pub underline: bool,
+    /// Cmd+Shift+X, on a Mac.
+    pub strike: bool,
     /// Ctrl+Z.
     pub undo: bool,
     /// Ctrl+Y or Ctrl+Shift+Z.
@@ -273,13 +293,16 @@ pub struct Taken {
 /// Take this frame's typing in hand before the editor with the keyboard sees it: what
 /// can't be written in `font` goes (see [`keep_typable`]); Ctrl+Z and Ctrl+Y are taken for
 /// the caller's [`History`], as the editor's own undo would take back the text without
-/// its styles; and with `styles`, Ctrl+B and Ctrl+I are taken to switch Bold and Italic.
+/// its styles; and with `styles`, Ctrl+B, Ctrl+I, Ctrl+U and (on a Mac) Cmd+Shift+X are
+/// taken to switch Bold, Italic, Underline and Strikethrough ([`STRIKE_KEY`]).
 pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) -> Taken {
     let mut t = take_undo(ui);
     ui.input_mut(|i| {
         if styles {
             t.bold = i.consume_key(egui::Modifiers::COMMAND, egui::Key::B);
             t.italic = i.consume_key(egui::Modifiers::COMMAND, egui::Key::I);
+            t.underline = i.consume_key(egui::Modifiers::COMMAND, egui::Key::U);
+            t.strike = i.consume_shortcut(&STRIKE_KEY);
         }
     });
     t.refused = leave_out_untypable(ui, single, font);
@@ -741,6 +764,148 @@ pub struct Run {
     pub color: Color32,
     /// How far it is raised above the baseline, in pixels.
     pub rise: f32,
+    /// Where the font it is written in puts an underline and a strike-out.
+    pub place: Place,
+}
+
+/// Where the font a run is written in puts an underline and a strike-out (NEW-07), as core
+/// writes them: read when a band is drawn, as an installed face's is read from its file.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Place {
+    /// A line's own font's ([`LineFont::lines`]).
+    Own(FontLines),
+    /// A standard font's, or an installed family's face's
+    /// ([`limarepdf_core::decoration_lines`]).
+    Set(FontChoice),
+}
+
+impl Place {
+    fn lines(self) -> FontLines {
+        match self {
+            Place::Own(lines) => lines,
+            Place::Set(f) => limarepdf_core::decoration_lines(f),
+        }
+    }
+}
+
+/// A band drawn under or through text being typed (NEW-07): its centre above the baseline
+/// and its thickness, in pixels, and its colour.
+pub type Band = (f32, f32, Color32);
+
+/// Each character's bands ([`char_bands`]).
+pub type Bands = Vec<Vec<Band>>;
+
+/// Each character's bands, as `runs` draw it (the last run takes any characters left over)
+/// and `decos` decorate it ([`Styled::drawn_decos`]): at its run's font's place in its
+/// colour, or in a look read from the page, in that look's colour as `color` shows it.
+pub fn char_bands(
+    runs: &[Run],
+    decos: &[[Option<DrawnDeco>; 2]],
+    color: &dyn Fn([f32; 3]) -> Color32,
+) -> Vec<Vec<Band>> {
+    let mut out = Vec::with_capacity(decos.len());
+    let (mut run, mut left) = (0, runs.first().map_or(0, |r| r.chars));
+    for d in decos {
+        while left == 0 && run + 1 < runs.len() {
+            run += 1;
+            left = runs[run].chars;
+        }
+        left = left.saturating_sub(1);
+        let mut bands = Vec::new();
+        if let Some(r) = runs.get(run) {
+            let px = r.font.size;
+            for (k, kind) in [DecoKind::Underline, DecoKind::Strike]
+                .into_iter()
+                .enumerate()
+            {
+                match &d[k] {
+                    None => {}
+                    Some(DrawnDeco::Font) => {
+                        let (c, t) = r.place.lines().of(kind);
+                        bands.push((c * px, t * px, r.color));
+                    }
+                    Some(DrawnDeco::Look(look, colour)) => {
+                        let c = color(*colour);
+                        bands.extend(look.iter().map(|&(v, t)| (v * px, t * px, c)));
+                    }
+                }
+            }
+        }
+        out.push(bands);
+    }
+    out
+}
+
+/// Where `bands` (each character's, [`char_bands`]) go under and through text laid out in
+/// `galley` with its top left at `at`, on the screen, as core writes them: along each row from
+/// its first character that isn't a space to its last (spaces at a line's ends are left
+/// bare), each band one stretch over the characters that have it, from where the first
+/// starts to where the last ends. A glyph starts at its pen (the advances before it in its
+/// row, and `stretch[row]` after each space a justified line stretches), where epaint draws
+/// it to the nearest quarter pixel.
+pub fn band_rects(
+    galley: &Galley,
+    at: Pos2,
+    bands: &[Vec<Band>],
+    stretch: &[f32],
+) -> Vec<(Rect, Color32)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    for (n, row) in galley.rows.iter().enumerate() {
+        let glyphs = &row.glyphs;
+        let extra = stretch.get(n).copied().unwrap_or(0.0);
+        let first = glyphs.iter().position(|g| !g.chr.is_whitespace());
+        let last = glyphs.iter().rposition(|g| !g.chr.is_whitespace());
+        let mut pens = Vec::with_capacity(glyphs.len());
+        let mut pen = 0.0;
+        for (j, g) in glyphs.iter().enumerate() {
+            pens.push(pen);
+            pen += g.advance_width;
+            if g.chr == ' ' && last.is_some_and(|l| j < l) {
+                pen += extra;
+            }
+        }
+        if let (Some(a), Some(b)) = (first, last) {
+            let of = |j: usize| bands.get(i + j).map_or(&[][..], Vec::as_slice);
+            let baseline = |j: usize| row.pos.y + glyphs[j].pos.y;
+            let same = |j: usize, band: &Band, y: f32| {
+                (a..=b).contains(&j) && of(j).contains(band) && baseline(j) == y
+            };
+            for j in a..=b {
+                let y = baseline(j);
+                for band in of(j) {
+                    // Drawn once, from the first character of its stretch.
+                    if j > a && same(j - 1, band, y) {
+                        continue;
+                    }
+                    let mut e = j;
+                    while same(e + 1, band, y) {
+                        e += 1;
+                    }
+                    let (x0, x1) = (pens[j], pens[e] + glyphs[e].advance_width);
+                    let (c, t, colour) = *band;
+                    let (mid, left) = (at.y + y - c, at.x + row.pos.x);
+                    let (xs, ys) = (left + x0..=left + x1, mid - t / 2.0..=mid + t / 2.0);
+                    out.push((Rect::from_x_y_ranges(xs, ys), colour));
+                }
+            }
+        }
+        i += glyphs.len() + usize::from(row.ends_with_newline);
+    }
+    out
+}
+
+/// Paint [`band_rects`].
+pub fn paint_bands(
+    painter: &egui::Painter,
+    galley: &Galley,
+    at: Pos2,
+    bands: &[Vec<Band>],
+    stretch: &[f32],
+) {
+    for (r, colour) in band_rects(galley, at, bands, stretch) {
+        painter.rect_filled(r, 0.0, colour);
+    }
 }
 
 /// The runs `parts` are drawn in at `k` pixels per point, in a document whose language is
@@ -755,14 +920,22 @@ pub fn runs(
 ) -> Vec<Run> {
     let mut out = Vec::new();
     for (p, wanted) in parts {
-        let run = |chars: usize, wanted: Wanted| Run {
+        let run = |chars: usize, wanted: Wanted, place: Place| Run {
             chars,
             font: egui::FontId::new((p.size * k).max(1.0), typing_fonts::family(ctx, wanted)),
             coords: typing_fonts::coords(wanted),
             color: color(p.color),
             rise: p.rise * k,
+            place,
         };
         let n = p.text.chars().count();
+        // Where the font it is written in puts its bands: a line's own font's, though it is
+        // drawn in another.
+        let place = match *wanted {
+            Wanted::Kept(_, Some(font)) => Place::Own(font.lines()),
+            Wanted::Kept(name, None) => Place::Set(crate::editor::font_of(name)),
+            Wanted::Standard(f) => Place::Set(f),
+        };
         // A part kept in a font whose own glyphs can't be drawn (one LimarePDF wrote, which
         // grows as text is added, say) is drawn in the installed family it is from, else its
         // standard stand-in, as text set anew in it is.
@@ -773,13 +946,19 @@ pub fn runs(
             wanted => wanted,
         };
         match wanted {
-            // What can't be written goes as it is typed: drawn in the font asked for.
+            // What can't be written goes as it is typed: drawn in the font asked for. Words
+            // set in another font are written, and decorated, in it.
             Wanted::Standard(f) if n > 0 => {
                 for ((a, b), set) in limarepdf_core::set_in(f, &p.text, lang) {
-                    out.push(run(b - a, Wanted::Standard(set.unwrap_or(f))));
+                    let set = set.unwrap_or(f);
+                    let place = match place {
+                        Place::Set(_) => Place::Set(set),
+                        own => own,
+                    };
+                    out.push(run(b - a, Wanted::Standard(set), place));
                 }
             }
-            wanted => out.push(run(n, wanted)),
+            wanted => out.push(run(n, wanted, place)),
         }
     }
     out
@@ -1106,6 +1285,9 @@ pub struct ParaStyle<'a> {
     /// What the text, as its rows are laid out on the screen, runs over, and where
     /// ([`overflow`]). `None` when it fits.
     pub warn: &'a dyn Fn(&[Rect]) -> Option<Overflow>,
+    /// The bands of the text as the editor has it ([`char_bands`]), and how far each line
+    /// stretches its spaces, in pixels ([`band_rects`]).
+    pub bands: &'a dyn Fn(&str) -> (Bands, Vec<f32>),
 }
 
 /// The names of a paragraph's frame's handles, left then right, as screen readers say them.
@@ -1217,6 +1399,9 @@ pub fn paragraph_field(
                 .inner;
             keep_on_right_click(ctx, id, &mut out, held);
             snap_drawn(ctx, id, &mut out, buffer.0, held);
+            // Its underlines and strike-throughs where they are written.
+            let (bands, stretch) = (style.bands)(out.galley.text());
+            paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands, &stretch);
             // After the text, so they are above it where they meet.
             let colour = outline_colour(ui, style.accent, warning);
             edges = Some([0, 1].map(|side| edge_ui(ui, id, outline, side, colour)));
@@ -1320,6 +1505,8 @@ pub struct Style<'a> {
     /// What the text, as its rows are laid out on the screen (without the room for the
     /// caret), runs over, and where ([`overflow`]). `None` when it fits.
     pub warn: &'a dyn Fn(&[Rect]) -> Option<Overflow>,
+    /// The bands of the text as the editor has it, drawn in its runs ([`char_bands`]).
+    pub bands: &'a dyn Fn(&str, &[Run]) -> Bands,
 }
 
 /// One frame of an on-page editor.
@@ -1417,6 +1604,7 @@ fn job(
         coords: VariationCoords::default(),
         color: Color32::BLACK,
         rise: 0.0,
+        place: Place::Own(FontLines::STANDARD),
     };
     let run_of = |i: usize| runs.get(i).unwrap_or(&fallback);
     // Each line's largest size and the run of its first part in that size.
@@ -1636,6 +1824,11 @@ pub fn field(
                 .inner;
             keep_on_right_click(ctx, id, &mut out, held);
             snap_drawn(ctx, id, &mut out, buffer.0, held);
+            // Its underlines and strike-throughs where they are written (egui's own sit at
+            // the bottom and middle of each run's line box).
+            let now = out.galley.text().to_string();
+            let bands = (style.bands)(&now, &(style.runs)(&now));
+            paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands, &[]);
             (grab, out)
         })
         .inner;
@@ -1738,11 +1931,15 @@ impl PageText {
                 .collect();
             runs(&ctx, &parts, k, |c| shown(mode, c), lang)
         };
+        let bands = |t: &str, runs: &[Run]| {
+            char_bands(runs, &text.preview(t).drawn_decos(), &|c| shown(mode, c))
+        };
         let style = Style {
             runs: &runs,
             mode,
             accent,
             warn: &|rows| overflow(r, rows, others),
+            bands: &bands,
         };
         let origin = Pos2::new(r.min.x + self.at.0 * k, r.min.y + self.at.1 * k);
         let mut typed = text.text().to_string();
@@ -1880,6 +2077,7 @@ mod tests {
             coords: VariationCoords::default(),
             color: Color32::BLACK,
             rise: 0.0,
+            place: Place::Own(FontLines::STANDARD),
         };
         let at = |x: f32, y: f32| Pos2::new(10.0 + x * k, 20.0 + y * k);
         let (g, origin) = paragraph_galley(&ctx, text, &[run], &lines, k, &at);
@@ -1939,6 +2137,7 @@ mod tests {
                             coords: VariationCoords::default(),
                             color: Color32::BLACK,
                             rise: 0.0,
+                            place: Place::Own(FontLines::STANDARD),
                         }]
                     };
                     let style = Style {
@@ -1946,6 +2145,7 @@ mod tests {
                         mode: PageColours::Normal,
                         accent,
                         warn: &|_| warn,
+                        bands: &|_, _| Vec::new(),
                     };
                     let (mut text, id) = ("Walrus".to_string(), ui.scope_id().with("typing"));
                     let at = Pos2::new(100.0, 100.0);
@@ -2035,6 +2235,7 @@ mod tests {
             coords: VariationCoords::default(),
             color: Color32::BLACK,
             rise,
+            place: Place::Own(FontLines::STANDARD),
         };
         let runs = [
             run(2, 12.0, 0.0),
@@ -2118,6 +2319,7 @@ mod tests {
                         coords: VariationCoords::default(),
                         color: Color32::BLACK,
                         rise: 0.0,
+                        place: Place::Own(FontLines::STANDARD),
                     }]
                 };
                 let style = Style {
@@ -2125,6 +2327,7 @@ mod tests {
                     mode: PageColours::Normal,
                     accent: Color32::BLUE,
                     warn: &|_| None,
+                    bands: &|_, _| Vec::new(),
                 };
                 let at = Pos2::new(100.0, 100.0);
                 field(ui.ctx(), id, text, at, &style, true, None, false);
@@ -2443,6 +2646,107 @@ mod tests {
                 .clear();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    /// Underlines and strike-throughs are drawn while typing where they are written
+    /// (NEW-07's acceptance, 10): at 2 pixels a point, each band's ends, top and bottom within
+    /// 0.13 px of the band core writes, in Helvetica (its AFM place, drawn in its Liberation
+    /// face) and an installed face (its own underline, its look-alike's strike-out).
+    #[test]
+    fn bands_are_drawn_where_they_are_written() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
+        let k = 2.0;
+        let text = "Signed and sealed";
+        for f in [FontChoice::default(), installed("Source Serif 4")] {
+            let look = CharStyle {
+                font: f,
+                ..CharStyle::default()
+            };
+            let mut s = Styled::plain(text, look);
+            s.switch_deco((0, 6), DecoKind::Underline);
+            s.switch_deco((11, 17), DecoKind::Strike);
+            // Written at (20, 40), read back: each band's box, in pixels from the line's
+            // start and its baseline, left to right.
+            let mut pdf = limarepdf_core::Pdf::new();
+            pdf.insert_blank(0, 600.0, 200.0).unwrap();
+            (pdf.add_text_decorated(0, (20.0, 40.0), &s.parts(), &s.decorations())).unwrap();
+            let back = limarepdf_core::Pdf::from_bytes(&pdf.to_bytes().unwrap(), None).unwrap();
+            let mut want: Vec<[f32; 4]> = (back.page_objects(0).unwrap().into_iter())
+                .filter(|o| o.kind == ObjectKind::Path)
+                .map(|o| o.bbox)
+                .map(|b| [b[0] - 20.0, b[1] - 40.0, b[2] - 20.0, b[3] - 40.0].map(|v| v * k))
+                .collect();
+            want.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            // Drawn, once the face has loaded, as the typing box draws it.
+            let parts: Vec<(TextPart, Wanted)> = (s.parts().into_iter())
+                .map(|p| (p, Wanted::Standard(f)))
+                .collect();
+            let done = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let runs = loop {
+                let runs = runs(&ctx, &parts, k, |_| Color32::BLACK, None);
+                let loaded = (runs.iter()).all(|r| match &r.font.family {
+                    egui::FontFamily::Name(n) if f.is_standard() => &**n == "Liberation Sans",
+                    egui::FontFamily::Name(n) => n.starts_with("file "),
+                    _ => false,
+                });
+                if loaded || std::time::Instant::now() > done {
+                    assert!(loaded, "{runs:?}");
+                    break runs;
+                }
+                ctx.run_ui(Default::default(), |_| {})
+                    .textures_delta
+                    .clear();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
+            let (g, _) = galley(&ctx, text, &runs);
+            let bands = char_bands(&runs, &s.drawn_decos(), &|_| Color32::BLACK);
+            let baseline = g.rows[0].pos.y + g.rows[0].glyphs[0].pos.y;
+            let got: Vec<[f32; 4]> = (band_rects(&g, Pos2::ZERO, &bands, &[]).into_iter())
+                .map(|(r, _)| [r.min.x, r.min.y - baseline, r.max.x, r.max.y - baseline])
+                .collect();
+            assert_eq!(got.len(), 2, "{} {got:?}", f.family_name());
+            assert_eq!(want.len(), 2, "{} {want:?}", f.family_name());
+            for (g, w) in got.iter().zip(&want) {
+                let off = (0..4).map(|i| (g[i] - w[i]).abs()).fold(0.0, f32::max);
+                let name = f.family_name();
+                assert!(off <= 0.13, "{name}: drawn {g:?}, written {w:?}");
+            }
+        }
+    }
+
+    /// A band read from the page is drawn in its own look and colour (as the page shows it),
+    /// at the run's size; one at the font's place in the run's colour.
+    #[test]
+    fn a_read_band_is_drawn_in_its_look() {
+        let run = Run {
+            chars: 3,
+            font: egui::FontId::proportional(20.0),
+            coords: VariationCoords::default(),
+            color: Color32::RED,
+            rise: 0.0,
+            place: Place::Own(FontLines::STANDARD),
+        };
+        let look = DrawnDeco::Look(vec![(-0.1, 0.05), (-0.2, 0.05)], [0.0, 0.0, 1.0]);
+        let decos = [
+            [None, None],
+            [Some(look), Some(DrawnDeco::Font)],
+            [None, None],
+        ];
+        let shown = |c: [f32; 3]| Color32::from_rgb(0, 0, (c[2] * 255.0) as u8);
+        let bands = char_bands(&[run], &decos, &shown);
+        assert!(bands[0].is_empty() && bands[2].is_empty());
+        let blue = Color32::from_rgb(0, 0, 255);
+        let strike = FontLines::STANDARD.strike;
+        let want = [
+            (-2.0, 1.0, blue),
+            (-4.0, 1.0, blue),
+            (strike.0 * 20.0, strike.1 * 20.0, Color32::RED),
+        ];
+        assert_eq!(bands[1], want);
     }
 
     /// The typing box draws text where it will be written (the text design's acceptance,

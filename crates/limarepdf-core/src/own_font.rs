@@ -20,6 +20,7 @@
 //! font aren't all drawn.
 
 use crate::base_encodings::{mac_code, Base};
+use crate::decorate::{lines_of, FontLines};
 use crate::edit::{drawn, show_items, Drawn};
 use crate::fonts::FontCtx;
 use crate::objects::{Parsed, Span, TextData};
@@ -105,6 +106,9 @@ pub struct LineFont {
     widths: Option<Arc<[f32]>>,
     /// What the pages draw the font in when the PDF doesn't hold it (`stand_in.rs`).
     stand_in: Option<StandIn>,
+    /// Where LimarePDF draws an underline and a strike-out for text in the font
+    /// (`decorate.rs`).
+    lines: FontLines,
 }
 
 impl std::fmt::Debug for LineFont {
@@ -121,6 +125,13 @@ impl LineFont {
     /// says [`FontRefusal::NotEmbedded`] even when its plain ASCII can be written.
     pub fn refused(&self) -> Option<FontRefusal> {
         self.font.as_ref().err().copied()
+    }
+
+    /// Where LimarePDF draws an underline and a strike-out for the line's characters in this
+    /// font, as its edits write them (NEW-07): its embedded program's, else its standard
+    /// font's.
+    pub fn lines(&self) -> FontLines {
+        self.lines
     }
 
     /// Whether new text can be written in the font at all: its own program can take it, or
@@ -328,6 +339,11 @@ impl<'a> PageFonts<'a> {
                 let font = OwnFont::read(doc, dict, &ctx).map(Arc::new);
                 let unembedded = matches!(font, Err(FontRefusal::NotEmbedded));
                 let widths = (!ctx.type0).then(|| (0..=255).map(|k| ctx.width(k, 1)).collect());
+                // Its program as read already, so it isn't read twice.
+                let sfnt = font.as_ref().ok().and_then(|f| match &f.program {
+                    Program::Sfnt(data) => Some(data.clone()),
+                    _ => None,
+                });
                 let font = LineFont {
                     font,
                     ascii: unembedded && ctx.reusable(),
@@ -337,6 +353,7 @@ impl<'a> PageFonts<'a> {
                     flipped: ctx.flipped,
                     widths,
                     stand_in: crate::stand_in::stand_in(doc, dict),
+                    lines: lines_of(doc, dict, sfnt.as_deref()),
                 };
                 Some((ctx, font))
             });
@@ -350,6 +367,7 @@ impl<'a> PageFonts<'a> {
                     flipped: false,
                     widths: None,
                     stand_in: None,
+                    lines: FontLines::STANDARD,
                 });
                 continue;
             };

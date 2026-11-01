@@ -6,7 +6,10 @@
 mod common;
 
 use common::saved::tools;
-use limarepdf_core::{DecoKind, Decorated, ObjectKind, PageObject, Pdf, TextEdit};
+use limarepdf_core::{
+    decoration_lines, DecoKind, Decorated, FontChoice, FontLines, ObjectKind, PageObject, Pdf,
+    TextEdit,
+};
 use lopdf::content::Content;
 use lopdf::{dictionary, Dictionary, Object, Stream};
 
@@ -805,4 +808,128 @@ fn a_paragraphs_rewrap_carries_an_underline_with_its_words() {
     // Its old line no longer paints: each path painted is one of the underline's.
     let decorations: usize = lines(&p).iter().map(|l| l.decorations.len()).sum();
     assert_eq!(painted(&p).len(), decorations);
+}
+
+/// A paragraph read for editing says its lines' underlines over its own text (batch 46's 4b:
+/// the app's paragraph editor shows and carries them).
+#[test]
+fn a_paragraph_says_its_lines_underlines_over_its_text() {
+    let word = "gulls argued over the nets";
+    let p = underlined_paragraph(word);
+    let blocks = p.page_blocks(0).unwrap();
+    let para = p.paragraph(0, &blocks[0], &p.document_words()).unwrap();
+    assert_eq!(para.decorations.len(), 1, "{:?}", para.decorations);
+    let d = &para.decorations[0];
+    let covered: String = (para.text.chars())
+        .skip(d.chars.0)
+        .take(d.chars.1 - d.chars.0)
+        .collect();
+    assert_eq!((covered.as_str(), d.kind), (word, DecoKind::Underline));
+    let (v, _) = d.look.bands()[0];
+    assert!(near(v, -1.3 / 11.0, 0.002), "{:?}", d.look);
+}
+
+/// A paragraph whose words stay as they are, given its underline and one more (Ctrl+U in the
+/// app's paragraph editor): no line is set anew, every text operator stays as it was, and
+/// both underlines are read over their words.
+#[test]
+fn underlining_a_paragraphs_words_leaves_its_lines_as_they_were() {
+    let word = "gulls argued over the nets";
+    let mut p = underlined_paragraph(word);
+    let before = text_ops(&operators(&p));
+    let blocks = p.page_blocks(0).unwrap();
+    let para = p.paragraph(0, &blocks[0], &p.document_words()).unwrap();
+    let setting = p.paragraph_setting(&para).unwrap();
+    let mut decos: Vec<Decorated> = (para.decorations.iter())
+        .map(|d| Decorated {
+            kind: d.kind,
+            chars: d.chars,
+            look: Some(d.look.clone()),
+        })
+        .collect();
+    decos.push(Decorated {
+        kind: DecoKind::Underline,
+        chars: chars_of(&para.text, "fishing boats"),
+        look: None,
+    });
+    let f = &para.frame;
+    (p.edit_paragraph_decorated(&setting, &para.parts(), (f.left, f.right), &decos)).unwrap();
+    assert_eq!(text_ops(&operators(&p)), before);
+    let mut covered: Vec<String> = read(&p).into_iter().map(|(c, ..)| c).collect();
+    covered.sort();
+    assert_eq!(covered, ["fishing boats", word], "{covered:?}");
+}
+
+/// Source Serif 4 (the test fonts') as an installed family.
+fn serif() -> FontChoice {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/fonts/");
+    let path = format!("{dir}SourceSerif4-Regular.otf");
+    let n = limarepdf_core::add_font_files(&[std::path::Path::new(&path)])[0];
+    FontChoice {
+        family: limarepdf_core::Family::Installed(n),
+        bold: false,
+        italic: false,
+    }
+}
+
+/// Where the app draws a band while typing is where it is written (batch 46's 4b): the place
+/// a chosen font says ([`decoration_lines`]) is where new text in it is decorated, and the
+/// place a line's own font says ([`limarepdf_core::LineFont::lines`]) is that too.
+#[test]
+fn the_places_fonts_say_are_where_bands_are_written() {
+    let p = page(&shown(LINE));
+    let fonts = p.line_fonts(0, lines(&p)[0].id).unwrap();
+    assert_eq!(fonts[0].lines(), decoration_lines(FontChoice::default()));
+    assert_eq!(fonts[0].lines().under, (-0.1, 0.05), "Helvetica's AFM");
+    let text = "Signed and sealed";
+    for f in [FontChoice::default(), serif()] {
+        let mut p = page("");
+        let part = limarepdf_core::TextPart {
+            text: text.into(),
+            font: limarepdf_core::PartFont::Choice(f),
+            size: 12.0,
+            color: [0.0; 3],
+            rise: 0.0,
+            from: None,
+            origins: Vec::new(),
+        };
+        let deco = |kind, word| Decorated {
+            kind,
+            chars: chars_of(text, word),
+            look: None,
+        };
+        let decos = [
+            deco(DecoKind::Underline, "Signed"),
+            deco(DecoKind::Strike, "sealed"),
+        ];
+        p.add_text_decorated(0, (72.0, 100.0), &[part], &decos)
+            .unwrap();
+        let said = decoration_lines(f);
+        let got = read(&p);
+        assert_eq!(got.len(), 2, "{got:?}");
+        let close = |a: (f32, f32), b: (f32, f32)| near(a.0, b.0, 0.002) && near(a.1, b.1, 0.002);
+        let name = f.family_name();
+        assert!(close(got[0].2[0], said.under), "{name}: {got:?} {said:?}");
+        assert!(close(got[1].2[0], said.strike), "{name}: {got:?} {said:?}");
+        let l = lines(&p).remove(0);
+        for font in p.line_fonts(0, l.id).unwrap() {
+            let own = font.lines();
+            let same = close(own.under, said.under) && close(own.strike, said.strike);
+            assert!(same, "{name}");
+        }
+    }
+    // An installed face says its own place, not the standard fonts'.
+    assert_ne!(decoration_lines(serif()), FontLines::STANDARD);
+}
+
+/// The page drawn under a line being typed leaves out the line's underline with its words
+/// (stage 4a's known gap), so the old band doesn't show where the line was.
+#[test]
+fn the_page_drawn_under_typing_leaves_out_a_lines_underline() {
+    let p = page(&libreoffice(LINE, "underlined phrase", Some("in it")));
+    let id = lines(&p)[0].id;
+    let alone = Pdf::from_bytes(&p.page_without(0, &[id]).unwrap(), None).unwrap();
+    let blank = |l: &PageObject| l.text.as_deref().unwrap_or("").trim().is_empty();
+    assert!(lines(&alone).iter().all(blank));
+    assert!(painted(&alone).is_empty(), "{:?}", painted(&alone));
 }

@@ -17,6 +17,7 @@ use crate::regions::{self, Region, Regions};
 use crate::selection::Selection;
 use crate::settings::{Accent, Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
+use crate::styled::Switch;
 use crate::tab::{Side, State, Tab};
 use crate::theme;
 use crate::timing;
@@ -2425,10 +2426,13 @@ impl App {
         let has = !self.tabs.is_empty();
         // What is being typed goes into the document before a command uses it, or the
         // command doesn't run (BUG-01). A question the command asks is then about the
-        // document with the typing in it (BUG-10). Bold and Italic change the line being
-        // edited on the page instead, which stays open, as Ctrl+B and Ctrl+I there do; Cut
-        // cuts from the text being typed.
-        let styles = matches!(a, Act::Bold | Act::Italic);
+        // document with the typing in it (BUG-10). The styles (Bold, Italic, Underline,
+        // Strikethrough) change the line being edited on the page instead, which stays open,
+        // as Ctrl+B and Ctrl+I there do; Cut cuts from the text being typed.
+        let styles = matches!(
+            a,
+            Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough
+        );
         let in_line = styles && has && self.tabs[self.active].ed.editing_line();
         let in_typing = a == Act::Cut && has && self.tabs[self.active].ed.typing_id().is_some();
         let on_typing = in_line || in_typing;
@@ -2741,9 +2745,15 @@ impl App {
                 let t = &mut self.tabs[self.active];
                 t.ed.select_all_objects(&t.pdf, t.current);
             }
-            Act::Bold | Act::Italic => {
+            Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough => {
+                let s = match a {
+                    Act::Bold => Switch::Bold,
+                    Act::Italic => Switch::Italic,
+                    Act::Underline => Switch::Underline,
+                    _ => Switch::Strikethrough,
+                };
                 let t = &mut self.tabs[self.active];
-                if let Some(said) = t.ed.switch_style(ctx, &t.pdf, a == Act::Bold) {
+                if let Some(said) = t.ed.switch_style(ctx, &t.pdf, s) {
                     t.info = Some(said);
                 }
                 t.apply_actions(ctx);
@@ -4910,6 +4920,8 @@ impl App {
                         | Act::SelectAllObjects
                         | Act::Bold
                         | Act::Italic
+                        | Act::Underline
+                        | Act::Strikethrough
                 );
                 let global = (k.modifiers.command || k.modifiers.ctrl) && !page_only;
                 let in_box = in_text && matches!(a.act, Act::Undo | Act::Redo);
@@ -5788,7 +5800,6 @@ fn inspector_body(
             apply = inspector::show(ui, t, c);
             return;
         }
-        t.ed.planned = c.planned;
         // Stamp choices and the author's name are app-wide: lent to the tab's inspector
         // and saved when it changes them.
         let author = s.author();
@@ -6465,8 +6476,8 @@ impl eframe::App for App {
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(8, 4))
                     .show(ui, |ui| {
-                        let mut font = |ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)| {
-                            t.guarded(|t| t.ed.font_band(ui, planned, compact));
+                        let mut font = |ui: &mut egui::Ui| {
+                            t.guarded(|t| t.ed.font_band(ui, compact));
                         };
                         let mut parts = band::Parts {
                             c: &c,
@@ -7014,6 +7025,7 @@ mod tests {
     mod tabs;
     mod typing_box;
     mod typing_menus;
+    mod underline;
 
     /// The height of the window the tests draw: room for the commands above the pages.
     const TEST_HEIGHT: f32 = 1000.0;
@@ -7413,12 +7425,16 @@ mod tests {
             n.and_then(|(_, n)| n.toggled())
         };
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        assert_eq!(toggled(&tree, "Bold"), Some(Toggled::False));
-        assert_eq!(toggled(&tree, "Italic"), Some(Toggled::False));
+        for name in ["Bold", "Italic", "Underline", "Strikethrough"] {
+            assert_eq!(toggled(&tree, name), Some(Toggled::False), "{name}");
+        }
         app.tabs[0].ed.tfont.bold = true;
+        app.tabs[0].ed.tlines.strike = true;
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert_eq!(toggled(&tree, "Bold"), Some(Toggled::True));
         assert_eq!(toggled(&tree, "Italic"), Some(Toggled::False));
+        assert_eq!(toggled(&tree, "Underline"), Some(Toggled::False));
+        assert_eq!(toggled(&tree, "Strikethrough"), Some(Toggled::True));
         let font = tree.nodes.iter().find(|(_, n)| n.label() == Some("Font"));
         let value = font.and_then(|(_, n)| n.value());
         assert_eq!(value, Some("Helvetica"));
@@ -7431,6 +7447,8 @@ mod tests {
             "Font sizes",
             "Bold",
             "Italic",
+            "Underline",
+            "Strikethrough",
             "Text colour",
         ];
         let at = reached.iter().position(|n| n == "Font").expect("no Font");
@@ -10035,6 +10053,8 @@ mod tests {
             "Font sizes",
             "Bold",
             "Italic",
+            "Underline",
+            "Strikethrough",
             "Text colour",
         ];
         let at = reached.iter().position(|n| n == "Font").expect("no Font");
@@ -10410,16 +10430,18 @@ mod tests {
         }
     }
 
-    /// Batch 39 (the mockup): a selected line is headed Selected text, as selected words are,
-    /// with the planned text tools folded at the end, marked Planned, saying what is planned;
-    /// hidden with the planned features.
+    /// Batch 39 (the mockup): a selected line is headed Selected text, as selected words are.
+    /// Underline and Strikethrough are built (NEW-07, batch 46's 4b): the Font group has them
+    /// where the Planned Underline was, and the inspector's Future text tools, marked Planned,
+    /// are gone, with the planned features shown.
     #[test]
-    fn selected_text_shows_the_planned_text_tools() {
+    fn selected_text_has_underline_and_strikethrough_not_planned_tools() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_in_colours(&ctx, [0.0; 3], [0.0; 3]);
-        let planned = "Future text tools — Planned";
+        assert!(app.settings.show_planned);
+        let gone = ["Future text tools — Planned", "Underline — Planned"];
         app.act(&ctx, Act::Tool(Tool::Select));
         let t = &mut app.tabs[0];
         let objs = t.ed.objects(&t.pdf, 0).to_vec();
@@ -10431,26 +10453,22 @@ mod tests {
         app.open_inspector();
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
-        assert!(node(&tree, planned).is_some(), "no planned text tools");
-        click_named(&mut app, &ctx, planned);
-        let note = "Underline and strike-through are planned. Your existing text tools keep \
-                    working.";
-        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
-        assert!(says.iter().any(|s| s == note), "no note: {says:?}");
         // Words selected with the read tool.
         app.act(&ctx, Act::Tool(Tool::Read));
         app.tabs[0].ed.selection = Selection::Words {
             anchor: (0, 0),
             end: (0, 1),
         };
-        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let words = settled_at(&mut app, &ctx, 1400.0);
         assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
-        assert!(node(&tree, planned).is_some(), "none for words");
-        // Hidden with the planned features.
-        app.settings.show_planned = false;
-        let tree = settled_at(&mut app, &ctx, 1400.0);
-        let shown = node(&tree, planned).is_some();
-        assert!(!shown, "shown with planned features hidden");
+        for tree in [&tree, &words] {
+            for name in gone {
+                assert!(node(tree, name).is_none(), "{name} is shown");
+            }
+            for name in ["Underline", "Strikethrough"] {
+                assert!(node(tree, name).is_some(), "no {name}");
+            }
+        }
     }
 
     /// PF-40: the inspector's pop-out, for a narrow window, shows a tool as the panel does,
