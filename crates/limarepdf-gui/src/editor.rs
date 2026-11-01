@@ -1109,10 +1109,13 @@ fn commit_line_composition(le: &mut LineEdit, insp: &mut Insp, hidden: bool) -> 
 /// What a line editor selects when it opens.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Pick {
-    /// These characters (from, to): the word double-clicked, found among the page's words.
+    /// These characters (from, to): the word double-clicked, found among the page's words,
+    /// or the place clicked among the line's characters ([`on_line`]).
     Chars(usize, usize),
     /// The character nearest this point (page points) as the line is drawn; with `word`,
-    /// the word around it.
+    /// the word around it. A click on the page is placed by the line itself when the edit
+    /// starts ([`on_line`]); this is left for a switch between the editors, and for a line
+    /// whose characters' places aren't known.
     At(Pos2, bool),
 }
 
@@ -1415,6 +1418,24 @@ fn caret_along(o: &PageObject, p: Pos2, n: usize) -> usize {
     let to = ends.iter().copied().fold(f32::MIN, f32::max);
     let f = ((at - from) / (to - from).max(0.01)).clamp(0.0, 1.0);
     (f * n as f32).round() as usize
+}
+
+/// What `pick` asks for on line `o`: a point clicked on the page, placed among the line's
+/// characters where the page draws them ([`PageObject::stops`]), and with `word` the word
+/// around it, as the editor may draw the line in another face until its font is read
+/// (BUG-45). A point stays one where those places don't match the line's characters.
+fn on_line(o: &PageObject, pick: Pick) -> Pick {
+    let Pick::At(p, word) = pick else {
+        return pick;
+    };
+    let text = o.text.as_deref().unwrap_or("");
+    let n = text.chars().count();
+    if o.stops.len() != n + 1 {
+        return pick;
+    }
+    let i = caret_along(o, p, n);
+    let (a, b) = if word { word_around(text, i) } else { (i, i) };
+    Pick::Chars(a, b)
 }
 
 /// What hides line `o` while it is edited: its box, with room for accents above and
@@ -7109,8 +7130,14 @@ mod tests {
         let cold = words.iter().find(|w| w.text == "cold").unwrap().bbox;
         let at = Pos2::new(cold[2] - 1.0, (cold[1] + cold[3]) / 2.0);
         assert_eq!(ed.word_pick(0, 2, at, &words), Pick::Chars(12, 16));
-        // Without the words: around where the click falls on the line as it is drawn.
+        // Without the words: around where the click falls on the line, placed where the
+        // page draws its characters when the edit starts (BUG-45), a click between them.
         assert_eq!(ed.word_pick(0, 2, at, &[]), Pick::At(at, true));
+        let line = &ed.objs[&0][2];
+        assert_eq!(on_line(line, Pick::At(at, true)), Pick::Chars(12, 16));
+        let (x, y) = line.baseline.unwrap();
+        let between = Pos2::new(x + line.stops[14], y - 3.0);
+        assert_eq!(on_line(line, Pick::At(between, false)), Pick::Chars(14, 14));
     }
 
     #[test]

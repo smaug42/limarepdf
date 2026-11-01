@@ -7,6 +7,9 @@
 - Turning paragraph editing on or off while a line or paragraph was being edited could put the caret a few
   characters away from where it was, if the text's font finished loading at that moment (just after starting, say),
   so what was typed next went into the middle of a word. The caret now stays after the same characters.
+- A double-click on a word while its line's font was still loading (just after opening a document, say) could
+  select the word before it, and a click with the Text tool could put the caret a few characters back. The word
+  or place clicked on the page is now the one used.
 
 ## [0.12.0] - 2026-10-31
 

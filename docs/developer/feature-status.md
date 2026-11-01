@@ -449,8 +449,8 @@ built from exactly the versions in `Cargo.lock`; security problems are reported 
   step), the page drawn without the old text under the typing, for lines too (3b-1, ENH-21), and the frame
   (3b-2: its edges dragged or moved from the keyboard to rewrap, overflow said where it happens for lines, new
   text and paragraphs alike, PB-35, and the inspector's note on links and comments). Later: the text below moved
-  down when a paragraph grows over it (ENH-44). The default, a double-click in a block LimarePDF is sure of opening it as a paragraph, waits for the
-  finding check to pass (testing.md, "Finding paragraphs"). Known limits of the writer (testing.md, "Editing
+  down when a paragraph grows over it (ENH-44). The default, a double-click in a block LimarePDF is sure of opening it as a paragraph, waits for
+  better detection to pass the finding check (ENH-46; testing.md, "Finding paragraphs"). Known limits of the writer (testing.md, "Editing
   paragraphs"): marked content's alternative text (`ActualText`) isn't read, so a letter marked as another (a
   small capital) reads as its glyph's own and loses its mark when its line is rewritten (PB-71); TeX's accent
   drawn over its letter reads to LimarePDF as the accent, then the letter (PB-74), though it is written back as it

@@ -1628,8 +1628,13 @@ form XObject, and per inline image.
   before the caret, as the line will read (a line's typed text to its caret, `LineEdit::caret_at`'s character; a
   paragraph's from the start of the caret's row as drawn, `ParaEdit::caret_at`'s row start from
   `Galley::layout_from_cursor`, soft hyphens left out), and where the line found starts with it (spaces that ended
-  it dropped, as they aren't written) the editor opens with `Pick::Chars`, else at the point. `ParaEdit` holds the
-  block, the
+  it dropped, as they aren't written) the editor opens with `Pick::Chars`, else at the point. A double-click or a
+  Text-tool click that opens a line or paragraph is placed by the line itself in `start_text_edit` (`on_line`: the
+  point among the line's characters by `PageObject::stops`, where the page draws them, the word around it for a
+  double-click), never on the editor's drawing (BUG-45: drawn in Inter while the line's font loads, wider, the
+  double-click selected an earlier word where the page's words didn't match the line's one for one, `word_pick`'s
+  fallback, and the click put the caret characters back); `Pick::At` reaches the editors only from a switch and for
+  a line whose `stops` don't match its characters. `ParaEdit` holds the block, the
   `ParagraphSetting` (built on the window's thread: the installed fonts' list is read at start, so reading one is
   a few milliseconds, the cost line editing's fonts already pay on heavy pages), the text as `Styled`
   (`Styled::of_paragraph`, every character's origin kept, so `parts` names what is kept), its own `History`, and

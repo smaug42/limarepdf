@@ -493,7 +493,8 @@ impl Editor {
     }
 
     /// Edit line `id` of `page` on the page with `pick` selected: as a paragraph when its
-    /// block opens as one ([`Self::opens_as_paragraph`]), else the line alone.
+    /// block opens as one ([`Self::opens_as_paragraph`]), else the line alone. A point
+    /// clicked is placed where the page draws the line's characters ([`on_line`]).
     pub(super) fn start_text_edit(
         &mut self,
         pdf: &limarepdf_core::Pdf,
@@ -501,6 +502,8 @@ impl Editor {
         id: usize,
         pick: Pick,
     ) {
+        let line = self.objs.get(&page).and_then(|v| v.get(id));
+        let pick = line.map_or(pick, |o| on_line(o, pick));
         if !(self.opens_as_paragraph(pdf, page, id) && self.start_paragraph(pdf, page, id, pick)) {
             self.start_line_edit(page, id, pick);
         }

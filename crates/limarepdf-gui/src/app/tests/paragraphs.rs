@@ -462,6 +462,56 @@ fn a_paragraph_switched_to_one_line_as_its_font_comes_in_keeps_its_caret() {
     assert!(now.contains("tide very would"), "{now:?}");
 }
 
+/// BUG-45: a word double-clicked while its line's font loads is the word selected, though
+/// the line is drawn meanwhile in Inter, wider, and its punctuation ("wall.", "hurry;") keeps
+/// the page's words from matching the line's one for one: the word under the pointer on the
+/// page, not under it in that drawing ("the", five characters back).
+#[test]
+fn a_word_double_clicked_while_its_lines_font_loads_is_the_one_selected() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    assert!(lines[2].ends_with("hurry; the tide would"), "{lines:?}");
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    double_click_word(&mut app, &ctx, "tide");
+    assert!(app.tabs[0].ed.editing_line());
+    type_in(&mut app, &ctx, "moon");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let now = paragraph_now(&app.tabs[0].pdf);
+    assert!(now.contains("hurry; the moon would"), "{now:?}");
+}
+
+/// BUG-45's click: the Text tool clicked between two letters of a word while its line's font
+/// loads puts the caret between them, where the page draws them, not where the line drawn in
+/// Inter has the point.
+#[test]
+fn a_text_tool_click_while_the_lines_font_loads_puts_the_caret_where_clicked() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+    let line = (objs.iter())
+        .find(|o| {
+            o.text
+                .as_deref()
+                .is_some_and(|t| t.ends_with("the tide would"))
+        })
+        .expect("the third line");
+    let text = line.text.as_deref().unwrap();
+    // Between "ti" and "de".
+    let k = text[..text.find("tide").unwrap() + 2].chars().count();
+    let (x, y) = line.baseline.unwrap();
+    app.act(&ctx, Act::Tool(Tool::Text));
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    click_page(&mut app, &ctx, (x + line.stops[k], y - 3.0), false);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(app.tabs[0].ed.editing_line());
+    type_in(&mut app, &ctx, "X");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let now = paragraph_now(&app.tabs[0].pdf);
+    assert!(now.contains("the tiXde would"), "{now:?}");
+}
+
 /// Words selected with the read tool across lines of a paragraph LimarePDF is sure of are
 /// typed over there, and deleted there, the paragraph rewrapping (stage 3's Q3), as a word
 /// processor takes a selection out of its text.
