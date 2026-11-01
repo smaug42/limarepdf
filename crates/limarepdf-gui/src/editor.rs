@@ -5215,6 +5215,21 @@ impl Editor {
         Some((page, bbox))
     }
 
+    /// Whether the box with the keyboard takes text styles from its keys (Ctrl+B, Ctrl+I,
+    /// Ctrl+U): new text, or a visible line or a paragraph being edited on the page.
+    pub fn styles_focused(&self, ctx: &egui::Context) -> bool {
+        let has = |id: egui::Id| ctx.memory(|m| m.has_focus(id));
+        let hidden = |page: usize, id: usize| {
+            (self.objs.get(&page))
+                .and_then(|v| v.get(id))
+                .is_some_and(|o| o.hidden)
+        };
+        self.adding.as_ref().is_some_and(|a| has(a.id()))
+            || (self.line_edit.as_ref())
+                .is_some_and(|le| has(line_edit_id(self.scope, le.page)) && !hidden(le.page, le.id))
+            || (self.para.as_ref()).is_some_and(|pe| has(para_id(self.scope, pe.page)))
+    }
+
     /// A line or paragraph of page text is being edited on the page: Bold, Italic and the
     /// floating bar act in it.
     pub fn editing_line(&self) -> bool {

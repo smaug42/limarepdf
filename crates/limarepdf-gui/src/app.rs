@@ -4864,6 +4864,14 @@ impl App {
     /// consumed, as before (Esc also closes menus). Nothing runs while the palette is
     /// open; it handles its own keys.
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        // Ctrl+U is Underline, as in word processors; in a box without text styles (a
+        // comment's text, a form field, Search, a dialog's field) it does nothing, as in
+        // their plain fields, rather than egui's own "delete to the start of the line"
+        // (PB-77). The boxes with styles take it themselves (`page_text::take_typing`).
+        let styles = (self.tabs.get(self.active)).is_some_and(|t| t.ed.styles_focused(ctx));
+        if ctx.text_edit_focused() && !styles {
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::U));
+        }
         // A dialog handles its own keys.
         if self.palette.is_some() || dlg::any_open(ctx) {
             return;

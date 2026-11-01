@@ -66,6 +66,9 @@
 
 ### Fixed
 
+- Ctrl+U in a box without text styles (Search, a comment's or text box's text, a form field, a window's field)
+  deleted everything before the caret on its line. Now it does nothing there, as in a word processor's plain
+  fields; where text can be underlined, it underlines.
 - Turning paragraph editing on or off while a line or paragraph was being edited could put the caret a few
   characters away from where it was, if the text's font finished loading at that moment (just after starting, say),
   so what was typed next went into the middle of a word. The caret now stays after the same characters.

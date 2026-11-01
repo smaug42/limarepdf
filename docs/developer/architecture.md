@@ -1877,7 +1877,10 @@ form XObject, and per inline image.
   `Act::Strikethrough` (`STRIKE_KEY`, Cmd+Shift+X with `mac_cmd`, which egui matches only on a Mac; `shown_key`
   leaves such a key out elsewhere) run as Bold does (`styleable`, `uses_document`, `App::act`'s `styles`, the
   `page_only` keys, `Editor::switch_style` with a `Switch`), and inside the typing boxes `take_typing` takes Ctrl+U
-  before egui's `TextEdit`, whose own Ctrl+U deletes to the start of the line. The Font group's buttons are
+  before egui's `TextEdit`, whose own Ctrl+U deletes to the start of the line; in any other box (a comment's text,
+  a field, Search, a dialog's field) `App::shortcuts` takes it first and does nothing (PB-77), unless
+  `Editor::styles_focused` says the box with the keyboard takes styles (new text, a visible line or a paragraph
+  being edited). The Font group's buttons are
   `font_list::styles`'s (`font_list::Lines`; the next new text's are `Editor::tlines`, carried on as its font is),
   in place of band.rs's Planned `UNDERLINE` (gone, with `Editor::planned_text_tools` and `FontGroup`'s planned
   slot); the menus and floating bar list the styles in `actions::STYLES`. A line's decoration paths aren't

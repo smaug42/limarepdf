@@ -232,6 +232,28 @@ fn a_click_on_an_underline_selects_its_line() {
     assert_eq!(held(&app), Some((0, vec![line])));
 }
 
+/// Ctrl+U in a box without text styles (Search's field here, as a comment's text or a form
+/// field) does nothing, as in a word processor's plain fields, rather than egui's own
+/// "delete to the start of the line" (PB-77).
+#[test]
+fn ctrl_u_in_a_box_without_styles_does_nothing() {
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    two_lines(&mut app, &ctx);
+    ty.pause(&mut app);
+    app.act(&ctx, Act::Find);
+    ty.frame(&mut app, vec![]);
+    ty.frame(&mut app, vec![egui::Event::Text("walrus ate".into())]);
+    ty.pause(&mut app);
+    assert_eq!(app.tabs[0].query, "walrus ate");
+    let ctrl = egui::Modifiers::CTRL | egui::Modifiers::COMMAND;
+    ty.key(&mut app, Key::U, ctrl);
+    ty.pause(&mut app);
+    assert_eq!(app.tabs[0].query, "walrus ate");
+    let got = decorated(&app.tabs[0].pdf);
+    assert!(got.iter().all(|(_, d)| d.is_empty()), "{got:?}");
+}
+
 /// Search for `query`, with `with` in Replace's field.
 fn search(app: &mut App, ty: &Typist, query: &str, with: &str) {
     ty.pause(app);
