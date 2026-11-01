@@ -380,6 +380,88 @@ fn a_line_switched_while_its_font_loads_is_still_switched() {
     assert!(status_says(&tree, "Editing one line"), "not switched back");
 }
 
+/// Helvetica, held back with [`crate::typing_fonts::hold`], let in and read, with frames
+/// that draw nothing of the window between: the text being edited keeps its caret where it
+/// was drawn last, in Inter, as when the font arrives just before a switch.
+fn font_in_unseen(ctx: &egui::Context) {
+    crate::typing_fonts::let_in(ctx, "Helvetica");
+    let want = egui::FontFamily::Name("Liberation Sans".into());
+    let helvetica = crate::typing_fonts::Wanted::Standard(FontChoice::default());
+    for _ in 0..6000 {
+        if crate::typing_fonts::family(ctx, helvetica) == want {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        out.textures_delta.clear();
+    }
+    panic!("Liberation Sans never came in");
+}
+
+/// The caret of the line being edited put `n` characters before its end, by the keys: a
+/// double-click while the line's font loads picks its word by the line as drawn in Inter
+/// where the page's words don't match the line's one for one (BUG-45).
+fn caret_from_end(app: &mut App, ctx: &egui::Context, n: usize) {
+    window(app, ctx, 1400.0, vec![key(Key::End)]);
+    window(app, ctx, 1400.0, vec![key(Key::ArrowLeft); n]);
+}
+
+/// Where `word` first ends in the paragraph being edited, and what is selected there.
+fn after(app: &App, word: &str) -> (usize, (usize, usize)) {
+    let (text, sel) = app.tabs[0].ed.para_text().expect("the paragraph");
+    let at = text.find(word).expect(word) + word.len();
+    (text[..at].chars().count(), sel)
+}
+
+/// BUG-44 (`main`'s CI on 0.12.0's merge, macOS Intel): a line drawn last in Inter, its
+/// font still loading, switched to its paragraph once the font is in opens it with the caret
+/// after the same character, not at the same place on the page, a few characters on.
+#[test]
+fn a_line_switched_to_its_paragraph_as_its_font_comes_in_keeps_its_caret() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    double_click_word(&mut app, &ctx, "fishing");
+    assert!(app.tabs[0].ed.editing_line());
+    caret_from_end(&mut app, &ctx, " boats sat".len());
+    font_in_unseen(&ctx);
+    app.act(&ctx, Act::EditParagraph);
+    settled_at(&mut app, &ctx, 1400.0);
+    let (at, sel) = after(&app, "fishing");
+    assert_eq!(sel, (at, at), "the caret moved");
+    type_in(&mut app, &ctx, " very");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let now = paragraph_now(&app.tabs[0].pdf);
+    assert!(now.contains("fishing very boats"), "{now:?}");
+}
+
+/// BUG-44's way back: a paragraph drawn last in Inter, its font still loading, switched to
+/// One line once the font is in edits the line with the caret after the same character,
+/// on a line below the first ("tide" ends the third).
+#[test]
+fn a_paragraph_switched_to_one_line_as_its_font_comes_in_keeps_its_caret() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    assert!(lines[2].ends_with(" tide would"), "{lines:?}");
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    double_click_word(&mut app, &ctx, "tide");
+    caret_from_end(&mut app, &ctx, " would".len());
+    app.act(&ctx, Act::EditParagraph);
+    settled_at(&mut app, &ctx, 1400.0);
+    let (at, sel) = after(&app, "tide");
+    assert_eq!(sel, (at, at), "drawn in Inter both");
+    font_in_unseen(&ctx);
+    app.act(&ctx, Act::EditParagraph);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(app.tabs[0].ed.editing_line(), "not switched back");
+    type_in(&mut app, &ctx, " very");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let now = paragraph_now(&app.tabs[0].pdf);
+    assert!(now.contains("tide very would"), "{now:?}");
+}
+
 /// Words selected with the read tool across lines of a paragraph LimarePDF is sure of are
 /// typed over there, and deleted there, the paragraph rewrapping (stage 3's Q3), as a word
 /// processor takes a selection out of its text.

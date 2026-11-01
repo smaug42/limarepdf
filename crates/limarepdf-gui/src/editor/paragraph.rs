@@ -49,9 +49,10 @@ pub(super) struct ParaEdit {
     pub kept_hyphens: Vec<usize>,
     /// The text as set last frame, on its lines.
     pub set: SetParagraph,
-    /// Where the caret was last frame (page points, the middle of its line): switching to
-    /// One line edits the line there.
-    pub caret_at: Option<Pos2>,
+    /// Where the caret was last frame (page points, the middle of its line), and the
+    /// character its line as drawn starts at: switching to One line edits the line there,
+    /// the caret after the same characters.
+    pub caret_at: Option<(Pos2, usize)>,
     /// The character a right-click was on, for the menu's Join and Keep hyphen.
     pub menu_at: Option<usize>,
     /// What was selected last frame (characters, from the anchor to the caret).
@@ -76,11 +77,14 @@ pub(super) enum ParaPick {
 }
 
 /// What comes once the typing kept for a switch between Paragraph and One line is in the
-/// document: the other editor, at the place the caret was (page, page points).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// document: the other editor, at the place the caret was (page, page points), the caret
+/// after the text of its line before it, as the line will read, where that is known. The
+/// characters, not the place, say where the caret goes: a font that comes in meanwhile
+/// draws the line at another width (BUG-44).
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Then {
-    Line(usize, Pos2),
-    Paragraph(usize, Pos2),
+    Line(usize, Pos2, Option<String>),
+    Paragraph(usize, Pos2, Option<String>),
 }
 
 /// Whether the selected text is, or would be, edited as a paragraph, whether it can be,
@@ -546,11 +550,21 @@ impl Editor {
         self.paragraphs = on;
         if let Some(pe) = self.para.as_ref().filter(|_| !on) {
             let (page, block) = (pe.page, &pe.block);
-            let at = pe.caret_at.unwrap_or_else(|| {
-                let l = &block.lines[0];
-                Pos2::new(l.bbox[0], (l.bbox[1] + l.bbox[3]) / 2.0)
+            let at = pe.caret_at.map_or_else(
+                || {
+                    let l = &block.lines[0];
+                    Pos2::new(l.bbox[0], (l.bbox[1] + l.bbox[3]) / 2.0)
+                },
+                |(at, _)| at,
+            );
+            // Its line's text before the caret, as written: a soft hyphen shows only at a
+            // line's end.
+            let before = pe.caret_at.map(|(_, from)| {
+                let chars = pe.text.text().chars().skip(from);
+                let chars = chars.take(pe.sel.1.saturating_sub(from));
+                chars.filter(|&c| c != page_text::SOFT_HYPHEN).collect()
             });
-            self.then = Some(Then::Line(page, at));
+            self.then = Some(Then::Line(page, at, before));
             self.end_paragraph(true);
             return;
         }
@@ -567,11 +581,20 @@ impl Editor {
             return;
         }
         if let Some(le) = self.line_edit.as_ref() {
-            let at = le.caret_at.unwrap_or_else(|| {
-                let b = block.lines[0].bbox;
-                Pos2::new(b[0], (b[1] + b[3]) / 2.0)
+            let at = le.caret_at.map_or_else(
+                || {
+                    let b = block.lines[0].bbox;
+                    Pos2::new(b[0], (b[1] + b[3]) / 2.0)
+                },
+                |(at, _)| at,
+            );
+            // The line's text before the caret, as typed and written (on one line).
+            let typed = self.insp.as_ref().map(|i| i.text.text());
+            let before = le.caret_at.zip(typed).map(|((_, c), t)| {
+                let flat = |c: char| if matches!(c, '\n' | '\r') { ' ' } else { c };
+                t.chars().take(c).map(flat).collect()
             });
-            self.then = Some(Then::Paragraph(le.page, at));
+            self.then = Some(Then::Paragraph(le.page, at, before));
             self.end_line_edit();
             return;
         }
@@ -584,10 +607,11 @@ impl Editor {
     /// Open the editor a switch asked for ([`Then`]) once what was typed before it is in
     /// the document, at the line under the caret's place on `page`.
     pub(super) fn follow_then(&mut self, pdf: &limarepdf_core::Pdf, page: usize, k: f32) {
-        let Some(then) = self.then else {
+        let Some(then) = self.then.clone() else {
             return;
         };
-        let (Then::Line(p, at) | Then::Paragraph(p, at)) = then;
+        let (Then::Line(p, at, before) | Then::Paragraph(p, at, before)) = &then;
+        let (p, at) = (*p, *at);
         if p != page || !self.later.is_empty() || !self.actions.is_empty() {
             return;
         }
@@ -597,11 +621,19 @@ impl Editor {
         let Some(id) = hit.or_else(|| self.row_hit(page, at)) else {
             return;
         };
+        // The caret after the same characters where the line reads as they say (spaces
+        // that ended it dropped), else at the place.
+        let text = (self.objs.get(&page).and_then(|v| v.get(id))).and_then(|o| o.text.as_deref());
+        let after = before.as_deref().zip(text).and_then(|(b, t)| {
+            let b = [b, b.trim_end()].into_iter().find(|b| t.starts_with(b))?;
+            Some(b.chars().count())
+        });
+        let pick = after.map_or(Pick::At(at, false), |n| Pick::Chars(n, n));
         match then {
-            Then::Line(..) => self.start_line_edit(page, id, Pick::At(at, false)),
+            Then::Line(..) => self.start_line_edit(page, id, pick),
             Then::Paragraph(..) => {
-                if !self.start_paragraph(pdf, page, id, Pick::At(at, false)) {
-                    self.start_line_edit(page, id, Pick::At(at, false));
+                if !self.start_paragraph(pdf, page, id, pick) {
+                    self.start_line_edit(page, id, pick);
                 }
             }
         }
@@ -862,11 +894,15 @@ impl Editor {
         let on_edge = (handles.into_iter().flatten()).any(|e| e.has_focus());
         let over_edge = (handles.into_iter().flatten()).any(|e| e.hovered() || e.dragged());
         let edit = &out.response.response;
-        // Where the caret is, for a switch to One line; what a right-click was on.
+        // Where the caret is, and where its row starts, for a switch to One line; what a
+        // right-click was on.
         let galley_at = out.galley_pos;
         if let Some(c) = out.cursor_range {
             let at = out.galley.pos_from_cursor(c.primary).center() + galley_at.to_vec2();
-            pe.caret_at = Some(to_pt(at));
+            let row = out.galley.layout_from_cursor(c.primary).row;
+            let rows = out.galley.rows.iter().take(row);
+            let from = rows.map(|r| r.char_count_including_newline().0).sum();
+            pe.caret_at = Some((to_pt(at), from));
         }
         if edit.secondary_clicked() {
             pe.menu_at = (edit.interact_pointer_pos())

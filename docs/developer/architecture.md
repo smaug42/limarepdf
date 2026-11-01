@@ -1623,7 +1623,13 @@ form XObject, and per inline image.
   typed first (`keep_later`) and opens the other editor at the caret's place once that is in the document
   (`Then`, `follow_then`: the line under that point, as ids change with a rewrite, or else the line in its row
   nearest it, `row_hit`, as a caret placed while the line's font is still loading, drawn in Inter, can sit past the
-  line's end). `ParaEdit` holds the block, the
+  line's end). The caret goes after the same characters, not to the same point (BUG-44: a font that came in
+  between drew the other editor at another width, the caret three characters on): `Then` carries the line's text
+  before the caret, as the line will read (a line's typed text to its caret, `LineEdit::caret_at`'s character; a
+  paragraph's from the start of the caret's row as drawn, `ParaEdit::caret_at`'s row start from
+  `Galley::layout_from_cursor`, soft hyphens left out), and where the line found starts with it (spaces that ended
+  it dropped, as they aren't written) the editor opens with `Pick::Chars`, else at the point. `ParaEdit` holds the
+  block, the
   `ParagraphSetting` (built on the window's thread: the installed fonts' list is read at start, so reading one is
   a few milliseconds, the cost line editing's fonts already pay on heavy pages), the text as `Styled`
   (`Styled::of_paragraph`, every character's origin kept, so `parts` names what is kept), its own `History`, and

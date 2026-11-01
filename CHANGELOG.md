@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Turning paragraph editing on or off while a line or paragraph was being edited could put the caret a few
+  characters away from where it was, if the text's font finished loading at that moment (just after starting, say),
+  so what was typed next went into the middle of a word. The caret now stays after the same characters.
+
 ## [0.12.0] - 2026-10-31
 
 ### Added

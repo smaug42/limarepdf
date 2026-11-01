@@ -1087,9 +1087,10 @@ struct LineEdit {
     typed: Vec<egui::Event>,
     /// What an input method is composing in it, from and to ([`page_text::composition`]).
     composing: Option<(usize, usize)>,
-    /// Where the caret was last frame (page points, the middle of the line): switching to
-    /// Paragraph edits the paragraph there.
-    caret_at: Option<Pos2>,
+    /// Where the caret was last frame (page points, the middle of the line), and its
+    /// character: switching to Paragraph edits the paragraph there, the caret after the
+    /// same characters.
+    caret_at: Option<(Pos2, usize)>,
 }
 
 /// Take what an input method was still composing in the line being edited, `le`, whose
@@ -2791,7 +2792,8 @@ impl Editor {
         // Where the caret is, for a switch to Paragraph.
         if let Some(c) = out.cursor_range.filter(|_| drawn) {
             let at = out.galley.pos_from_cursor(c.primary).center() + out.galley_pos.to_vec2();
-            le.caret_at = Some(Pos2::new((at.x - r.min.x) / k, (at.y - r.min.y) / k));
+            let at = Pos2::new((at.x - r.min.x) / k, (at.y - r.min.y) / k);
+            le.caret_at = Some((at, c.primary.index.0));
         }
         let edit = &out.response.response;
         // What an input method composes shows unchecked; left without the keyboard, it is

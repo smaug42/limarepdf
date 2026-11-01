@@ -459,6 +459,20 @@ pub fn hold(ctx: &egui::Context, name: &str) {
     }
 }
 
+/// For tests: the fonts [`hold`] held back for the PDF font `name` let in, read on another
+/// thread the next time text in them is drawn.
+#[cfg(test)]
+pub fn let_in(ctx: &egui::Context, name: &str) {
+    let loads = loads(ctx);
+    let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
+    let bundled = face(FontChoice::from_name(name)).to_string();
+    for key in [installed_key(name), bundled] {
+        if matches!(l.get(&key), Some(Load::Looking)) {
+            l.remove(&key);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
