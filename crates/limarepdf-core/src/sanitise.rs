@@ -434,7 +434,9 @@ impl Pdf {
     }
 
     fn drop_private_data(&mut self) -> usize {
-        let mut n = self.drop_keys_everywhere(&[b"PieceInfo", b"Thumb"]);
+        // A page-piece's date of change goes with it (LimarePDF's paragraph frames date
+        // their page's).
+        let mut n = self.drop_keys_everywhere(&[b"PieceInfo", b"LastModified", b"Thumb"]);
         if let Ok(c) = self.doc.catalog_mut() {
             n += usize::from(c.remove(b"SpiderInfo").is_some());
         }

@@ -12,6 +12,7 @@ use crate::layout::Setter;
 use crate::matrix::{self as mx, apply, M};
 use crate::objects::{PageObject, Parsed, TextData, TextSpan};
 use crate::own_font::{LineFont, PageFonts};
+use crate::para_frames::kept_for;
 use crate::paragraph::{Align, Block, Frame};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -53,6 +54,9 @@ pub struct Paragraph {
     pub(crate) parts: Vec<Part>,
     /// One for each line.
     pub(crate) rows: Vec<Row>,
+    /// Its frame is the one LimarePDF wrote it in, read from its page's record
+    /// ([`crate::para_frames`]): its indent is its own whatever it is aligned to.
+    pub(crate) kept: bool,
 }
 
 /// A hyphen ending a line of a paragraph before a lower-case letter ([`Paragraph::hyphens`]).
@@ -346,7 +350,9 @@ impl Pdf {
     /// Block `block` of page `page_index` ([`Pdf::page_blocks`]) read for editing as a
     /// paragraph, its line-end hyphens read by `words` ([`Pdf::document_words`]). Refused
     /// when the page has changed since the block was found, or a line of it is turned,
-    /// hidden, in vertical writing or in a text mode that clips.
+    /// hidden, in vertical writing or in a text mode that clips. Its frame is the one
+    /// LimarePDF wrote it in while its lines are where they were written (the page's record,
+    /// [`crate::para_frames`]), else the block's.
     pub fn paragraph(
         &self,
         page_index: usize,
@@ -358,7 +364,12 @@ impl Pdf {
         let objs = self.objects_of(page, &parsed)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
-        read(page_index, &parsed, &objs, to_vis, block, words)
+        let mut para = read(page_index, &parsed, &objs, to_vis, block, words)?;
+        if let Some(k) = kept_for(block, &self.kept_frames(page)) {
+            (para.frame.left, para.frame.right, para.frame.indent) = (k.left, k.right, k.indent);
+            para.kept = true;
+        }
+        Ok(para)
     }
 }
 
@@ -518,6 +529,7 @@ fn read(
         chars: text.iter().map(|r| r.1).collect(),
         parts: span_parts.into_iter().map(|p| parts[p].clone()).collect(),
         rows,
+        kept: false,
     };
     para.decorations = decorations_of(&para, &parsed.decorations);
     Ok(para)
@@ -1085,10 +1097,12 @@ impl ParagraphSetting {
 
     /// The paragraph's frame with its left and right edges at `edges` and its text aligned
     /// as `align` says, with the first line's indent the paragraph has: one read as centred
-    /// or right-aligned has none, its first line's place being its width's.
-    fn frame_in(&self, edges: (f32, f32), align: Align) -> Frame {
+    /// or right-aligned has none, its first line's place being its width's, unless its frame
+    /// is the one LimarePDF wrote it in, which keeps its own.
+    pub(crate) fn frame_in(&self, edges: (f32, f32), align: Align) -> Frame {
         let f = &self.para.frame;
         let indent = match f.align {
+            _ if self.para.kept => f.indent,
             Align::Left | Align::Justified => f.indent,
             Align::Right | Align::Centre => 0.0,
         };

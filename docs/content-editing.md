@@ -107,6 +107,10 @@ While you type:
   again, the paragraph has its own back. The paragraph is aligned between its own edges, not the page's margins:
   drag an edge first to give it more room. Centre is on the floating toolbar too, and all four are in ☰ > Edit >
   Align text and the command search (Ctrl+K: type "align" or "centre").
+- Once you move a paragraph's edges or change its alignment, LimarePDF keeps a small note of its edges and indent
+  in the file (in the page's private data, which other apps don't show), so the paragraph opens again with the
+  same edges, after saving too. Without it, a centred paragraph would open narrower, as its lines no longer
+  reach its edges. If another app moves the paragraph's lines, its edges are worked out from the lines again.
 - **Enter** starts a new paragraph within the frame, with the first line's indent if it has one; **Shift+Enter**
   starts a new line.
 - Each word keeps its own style, and letters keep their font, as in a line (see

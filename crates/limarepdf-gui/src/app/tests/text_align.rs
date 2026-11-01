@@ -5,7 +5,8 @@
 //! as one step.
 
 use super::paragraphs::{
-    click_band, content, new_app, open_prose_paragraph, paragraph_lines, paragraph_now, prose_tab,
+    click_band, content, double_click_word, new_app, open_prose_paragraph, paragraph_lines,
+    paragraph_now, prose_tab,
 };
 use super::*;
 use crate::actions;
@@ -128,6 +129,51 @@ fn word_processor_keys_align_the_paragraph_and_its_own_undo_takes_each_back() {
     }
     let short = lines[last].bbox[2] < right - 20.0;
     assert!(short, "the last line stretched");
+}
+
+/// The user's finding: realigned, kept and opened again, a paragraph's box moved each time,
+/// read anew from its lines. Now it keeps its frame: widened by its right edge and kept,
+/// opened again it has its width; centred and kept, opened again the same; aligned left and
+/// kept, its lines are back at the left edge, the frame where it was.
+#[test]
+fn a_paragraph_realigned_kept_and_opened_again_keeps_its_box() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    let tree = open_prose_paragraph(&mut app, &ctx);
+    let (left, right) = app.tabs[0].ed.para_edges().expect("editing a paragraph");
+    let (handle, _) = node(&tree, "Paragraph's right edge").expect("the right edge");
+    window(&mut app, &ctx, 1400.0, click_at(handle.center()));
+    settled_at(&mut app, &ctx, 1400.0);
+    let ten = key_with(Key::ArrowRight, egui::Modifiers::SHIFT);
+    for _ in 0..6 {
+        window(&mut app, &ctx, 1400.0, vec![ten.clone()]);
+    }
+    settled_at(&mut app, &ctx, 1400.0);
+    let wide = (left, right + 60.0);
+    let edges = |app: &App| app.tabs[0].ed.para_edges().expect("editing a paragraph");
+    let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 0.05 && (a.1 - b.1).abs() < 0.05;
+    assert!(near(edges(&app), wide), "{:?}", edges(&app));
+    for (key, want) in [
+        (None, TextAlign::Left),
+        (Some(Key::E), TextAlign::Centre),
+        (Some(Key::L), TextAlign::Left),
+        (Some(Key::R), TextAlign::Right),
+        (Some(Key::L), TextAlign::Left),
+    ] {
+        if let Some(key) = key {
+            ctrl(&mut app, &ctx, key);
+        }
+        esc(&mut app, &ctx);
+        assert!(!open(&app), "Esc keeps it");
+        double_click_word(&mut app, &ctx, "fishing");
+        assert!(open(&app), "{want:?}: not opened again");
+        assert_eq!(aligned(&app), Some(want));
+        assert!(near(edges(&app), wide), "{want:?}: {:?}", edges(&app));
+    }
+    esc(&mut app, &ctx);
+    for o in paragraph_lines(&app.tabs[0].pdf) {
+        assert!((o.bbox[0] - left).abs() < 0.6, "{o:?} not at {left}");
+    }
 }
 
 /// With no paragraph being edited, the alignments are greyed, saying where to click, and

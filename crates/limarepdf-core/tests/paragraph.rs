@@ -12,7 +12,7 @@ mod common;
 
 use common::saved::tools;
 use limarepdf_core::{
-    text_width, Align, Block, Detect, Doubt, Hyphen, ObjectKind, PageObject, Paragraph,
+    text_width, Align, Block, Detect, Doubt, Hidden, Hyphen, ObjectKind, PageObject, Paragraph,
     ParagraphSetting, PartFont, Pdf, SetLine, SetParagraph, TextEdit, TextPart,
 };
 use lopdf::{dictionary, Dictionary, Object, Stream};
@@ -2049,6 +2049,96 @@ fn realigned(mut p: Pdf, align: Align) -> (Pdf, String) {
     p.edit_paragraph_in(&setting, &para.parts(), edges, align)
         .unwrap();
     (p, para.text.clone())
+}
+
+/// Whether page 0 holds LimarePDF's record of its paragraphs' frames, and the page's date
+/// of change that goes with it.
+fn frames_kept(p: &Pdf) -> (bool, bool) {
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    (page.has(b"PieceInfo"), page.has(b"LastModified"))
+}
+
+/// The user's finding (batch 49's stage 1): a justified paragraph centred, kept and read
+/// again had its frame narrowed to its widest line, so each alignment after moved it on.
+/// The frame LimarePDF set is kept on the page (its private data, `/PieceInfo`) and read
+/// again while the lines are where it wrote them: realigned again and again, each written
+/// and read anew, the paragraph keeps its edges and its first line's indent, which comes
+/// back when it is justified again; words typed into it later keep them too.
+#[test]
+fn a_paragraph_realigned_and_read_again_keeps_its_frame() {
+    let mut p = indented_justified();
+    let f0 = only_paragraph(&p).frame;
+    let again = [
+        Align::Centre,
+        Align::Left,
+        Align::Right,
+        Align::Centre,
+        Align::Right,
+        Align::Left,
+        Align::Justified,
+    ];
+    for align in again {
+        p = realigned(p, align).0;
+        let f = only_paragraph(&p).frame;
+        assert_eq!(f.align, align);
+        let same = (f.left - f0.left).abs() < 0.05 && (f.right - f0.right).abs() < 0.05;
+        assert!(same, "{align:?}: {f:?}, was {f0:?}");
+        assert!((f.indent - 18.0).abs() < 0.05, "{align:?}: {f:?}");
+    }
+    let first = lines_of(&p)[0].baseline.unwrap();
+    assert!((first.0 - 90.0).abs() < 0.05, "{first:?}");
+    let (_, _, set) = type_into_second_line(&mut p, "very slowly and rather quietly");
+    let f = only_paragraph(&p).frame;
+    let same = (f.left - 72.0).abs() < 0.05 && (f.right - 512.0).abs() < 0.05;
+    assert!(same, "{f:?}");
+    assert!(set.lines.len() > 1);
+}
+
+/// A paragraph widened by its edge keeps its width read again, though no line reaches it:
+/// right-aligned then, its lines end at that edge.
+#[test]
+fn a_paragraph_widened_keeps_its_width_read_again() {
+    let (p, _) = dragged_to(ragged(300.0).0, 420.0);
+    let f = only_paragraph(&p).frame;
+    assert!((f.right - 492.0).abs() < 0.05, "{f:?}");
+    let (p, _) = realigned(p, Align::Right);
+    for o in lines_of(&p) {
+        assert!((o.bbox[2] - 492.0).abs() < 0.6, "{o:?}");
+    }
+}
+
+/// The frame is kept only for what LimarePDF set: words typed into a paragraph in its own
+/// frame add nothing to the page. Kept, it is used only while the lines are where they were
+/// written: lines moved by other means are read as they are. Remove hidden data's private
+/// data takes it away with the page's date of change; one Undo too.
+#[test]
+fn a_kept_frame_is_written_only_when_set_and_left_unused_once_the_lines_move() {
+    let (p, _) = edited_to(ragged(300.0).0, |para| {
+        para.text.replacen("harbour", "small harbour", 1)
+    });
+    assert_eq!(frames_kept(&p), (false, false), "typing kept a frame");
+    let was = saved(&indented_justified());
+    let mut p = indented_justified();
+    let before = p.before();
+    p = realigned(p, Align::Centre).0;
+    assert_eq!(frames_kept(&p), (true, true));
+    let undo = before.undo(&p);
+    p.restore(undo);
+    assert!(saved(&p) == was, "Undo didn't put the page back");
+    // Every line moved 30 points down, as another app might move them.
+    let mut p = realigned(indented_justified(), Align::Centre).0;
+    let objs = p.page_objects(0).unwrap();
+    let down = |b: [f32; 4]| [b[0], b[1] + 30.0, b[2], b[3] + 30.0];
+    let moved: Vec<(usize, [f32; 4])> = (objs.iter().enumerate())
+        .filter(|(_, o)| o.kind == ObjectKind::Text)
+        .map(|(i, o)| (i, down(o.bbox)))
+        .collect();
+    p.set_object_boxes(0, &moved).unwrap();
+    let f = only_paragraph(&p).frame;
+    assert!(f.left > 80.0 && f.right < 505.0, "kept: {f:?}");
+    let mut p = realigned(indented_justified(), Align::Centre).0;
+    p.remove_hidden(&[Hidden::PrivateData]).unwrap();
+    assert_eq!(frames_kept(&p), (false, false));
 }
 
 /// Page 0's only paragraph written with its frame `room` points wide from 72 points in, and

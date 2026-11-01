@@ -44,6 +44,7 @@ mod own_font;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
+mod para_frames;
 mod para_write;
 mod paragraph;
 mod pkcs12;

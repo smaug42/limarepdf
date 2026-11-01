@@ -837,7 +837,7 @@ fn inset_quad(q: &mut [f32], r: [f32; 4]) {
 }
 
 /// The time now as a PDF date in UTC.
-fn pdf_now() -> String {
+pub(crate) fn pdf_now() -> String {
     let [y, mo, d, h, mi, s] = utc_now();
     format!("D:{y:04}{mo:02}{d:02}{h:02}{mi:02}{s:02}Z")
 }

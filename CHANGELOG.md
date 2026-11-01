@@ -96,6 +96,12 @@
 
 ### Fixed
 
+- A paragraph made wider by dragging its edge opened narrower the next time, its edges worked out again from its
+  lines, which didn't reach them. LimarePDF now keeps a small note of the edges and first-line indent of a
+  paragraph whose edges or alignment you set, in the page's private data (which other apps don't show, and Remove
+  hidden data's private data takes away), and opens the paragraph with them while its lines are where it wrote
+  them, after saving too. This also keeps a centred or right-aligned paragraph from moving each time it was
+  realigned, kept and opened again.
 - Ctrl+U in a box without text styles (Search, a comment's or text box's text, a form field, a window's field)
   deleted everything before the caret on its line. Now it does nothing there, as in a word processor's plain
   fields; where text can be underlined, it underlines.

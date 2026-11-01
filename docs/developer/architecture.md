@@ -1704,7 +1704,21 @@ form XObject, and per inline image.
   `ParagraphSetting::narrowest(parts)` (`narrowest_in` for an alignment) is the widest stretch between break
   places, plus the first line's indent where it takes one: how narrow the app lets the frame go.
   `Pdf::edit_paragraph_between` writes that (`edit_paragraph` is it with the frame's own edges;
-  `edit_paragraph_in` and `edit_paragraph_decorated` take the alignment). `Pdf::edit_paragraph(&ParagraphSetting,
+  `edit_paragraph_in` and `edit_paragraph_decorated` take the alignment). **Kept frames** (`para_frames.rs`, the
+  user's finding in batch 49's stage 1): a PDF keeps no paragraph's edges, so a centred paragraph read again took
+  its widest line's extent as its frame, and each realignment, kept and read again, moved it on (a justified
+  72–512 frame went 87–500 centred, then 87–504, 95–504...); a widened one narrowed back. After a write whose
+  edges or alignment differ from the frame read, or whose frame was itself kept (`Paragraph::kept`, so the record
+  follows its lines), `keep_set_frame` records `[top bottom left right indent]` (first and last baselines, the
+  frame's edges, `frame_in`'s indent) in the page's `/PieceInfo /LimarePDF /Private /Frames` (ISO 32000's
+  page-piece dictionary; other apps' entries kept; its `/LastModified` and the page's, as the standard asks),
+  replacing records of lines overlapping it before or now, at most 500 a page; nothing is written for an edit in
+  the frame read, so plain typing adds nothing. `Pdf::paragraph` takes a record's edges and indent
+  (`kept_for`: first and last baselines within 0.5 points, every line within its edges and 1 point) and marks it
+  kept, and `frame_in` then keeps the indent whatever the alignment read. Lines moved by other means stop
+  matching and the frame is read from them again. Undo restores the page's dictionary with the content; Remove
+  hidden data's private data drops `PieceInfo` and `LastModified` everywhere; redaction drops a redacted page's
+  `PieceInfo`. `Pdf::edit_paragraph(&ParagraphSetting,
   &[TextPart])` writes it in one rewrite (section 7): line
   *i* in place of old line *i*'s first show, lines added after the last old line's last show, the old lines'
   shows taken out (`move_only`, `Following` keeping what follows each in place); inside the text object a `Tm` in
