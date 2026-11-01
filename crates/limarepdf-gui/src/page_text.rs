@@ -1116,7 +1116,7 @@ pub fn paragraph_galley(
                     hidden.push(n);
                     c
                 }
-                ' ' if j < end && l.stretch > 0.0 => {
+                ' ' if j < end && l.stretch != 0.0 => {
                     extra.push((n, l.stretch * k));
                     c
                 }

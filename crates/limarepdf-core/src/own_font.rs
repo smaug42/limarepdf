@@ -231,7 +231,13 @@ impl LineFont {
     /// the page reads it; `None` when it can't be written.
     pub(crate) fn advance(&self, c: char) -> Option<f32> {
         let bytes = self.code(c).ok()?;
-        match &bytes[..] {
+        self.code_advance(&bytes, c)
+    }
+
+    /// How wide code `bytes`, drawing `c`, is in this font, in 1/1000 em as the page reads
+    /// it; `None` when that isn't known.
+    pub(crate) fn code_advance(&self, bytes: &[u8], c: char) -> Option<f32> {
+        match bytes {
             [b] => self.widths.as_ref()?.get(*b as usize).copied(),
             [hi, lo] => {
                 let code = u32::from(*hi) << 8 | u32::from(*lo);

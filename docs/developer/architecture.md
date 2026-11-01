@@ -1714,11 +1714,28 @@ form XObject, and per inline image.
   page-piece dictionary; other apps' entries kept; its `/LastModified` and the page's, as the standard asks),
   replacing records of lines overlapping it before or now, at most 500 a page; nothing is written for an edit in
   the frame read, so plain typing adds nothing. `Pdf::paragraph` takes a record's edges and indent
-  (`kept_for`: first and last baselines within 0.5 points, every line within its edges and 1 point) and marks it
-  kept, and `frame_in` then keeps the indent whatever the alignment read. Lines moved by other means stop
-  matching and the frame is read from them again. Undo restores the page's dictionary with the content; Remove
-  hidden data's private data drops `PieceInfo` and `LastModified` everywhere; redaction drops a redacted page's
-  `PieceInfo`. `Pdf::edit_paragraph(&ParagraphSetting,
+  (`kept_for`: first and last baselines within 0.5 points, every line within its edges to its size, a hanging
+  first line its indent further) and marks it kept, and `frame_in` then keeps the indent whatever the alignment
+  read. `Pdf::page_blocks_by` reads the paragraphs recorded on its page as one block each (`regroup`): where
+  detection splits their lines (a centred paragraph's shorter lines read as paragraph ends) or joins a
+  neighbour's line to them, the lines between a record's first and last baselines within its edges become a
+  confident block in its frame, aligned as they sit there (`frame_of`: justified, left, right or centred within
+  0.15 of a size or a point, else the alignment read), the blocks they came from keeping the rest, in doubt.
+  Lines moved by other means stop matching and the frame is read from them again. Undo restores the page's
+  dictionary with the content; Remove hidden data's private data drops `PieceInfo` and `LastModified`
+  everywhere; redaction drops a redacted page's `PieceInfo`. The finding's other causes, found by realigning 406
+  corpus paragraphs ten times each, writing and reading each anew (a throwaway probe; drifting on stage 1's
+  code: 32 of 72 in the first sample and 269 of 334 in the second; now 3, two in fonts LimarePDF can't read
+  and one block whose widest first line reads as hanging): **measuring**, a kept character whose neighbour no
+  longer follows it is written at its code's own width (`LineFont::code_advance`) and is measured so (`own` in
+  `measure`), not at its drawn width, which a page drawing a line's last letter with its width taken back
+  (`[(e) 444] TJ`) reads as none: lines written anew had come out a letter (4–9 points) wider than set, right
+  of where they were placed (Type 3 fonts, whose widths are in their own units, keep the drawn width); and
+  **squeezed lines**, a line kept as its words were that is wider than its room at its spaces' own width (a
+  justified line its producer squeezed, or one read a letter short) fills the room with its spaces squeezed
+  (`Placing::on`, a negative stretch, at most 0.35 of its narrowest space, so a space written as a move still
+  reads as one), whatever the alignment, rather than reaching over a neighbouring column (rebreaking it instead
+  added a line over the text below). `Pdf::edit_paragraph(&ParagraphSetting,
   &[TextPart])` writes it in one rewrite (section 7): line
   *i* in place of old line *i*'s first show, lines added after the last old line's last show, the old lines'
   shows taken out (`move_only`, `Following` keeping what follows each in place); inside the text object a `Tm` in

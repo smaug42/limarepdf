@@ -10,7 +10,7 @@
 //!
 //! Positions are in points on the displayed page (y down), as [`crate::Block`]'s.
 
-use crate::paragraph::Block;
+use crate::paragraph::{Align, Block, Doubt, Frame, VisualLine};
 use crate::{Pdf, Result};
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, StringFormat};
 
@@ -20,10 +20,14 @@ const KEY: &[u8] = b"LimarePDF";
 /// The most frames a page keeps, the oldest dropped first.
 const MOST: usize = 500;
 
-/// How far a line's baseline may be from where its frame was recorded, and its ends past
-/// the frame's edges, for the frame to be its paragraph's still (points).
+/// How far a line's baseline may be from where its frame was recorded for the frame to be
+/// its paragraph's still (points).
 const NEAR: f32 = 0.5;
-const PAST: f32 = 1.0;
+
+/// How far an aligned line's ends may be from where its alignment puts them, in its
+/// sizes: a line is written within a fraction of a point of its place, its box read from
+/// its glyphs.
+const PLACED: f32 = 0.15;
 
 /// A paragraph's frame as LimarePDF wrote it: its first and last lines' baselines, its left
 /// and right edges, and its first line's indent (the paragraph's own, kept while it is
@@ -74,21 +78,144 @@ fn array<'a>(doc: &'a Document, o: &'a Object) -> Option<&'a Vec<Object>> {
     doc.dereference(o).ok()?.1.as_array().ok()
 }
 
+/// Whether line `l` is within frame `k`'s edges, to within its size: a line written there
+/// strays from them by a fraction of a point at most, another column is further off. A
+/// hanging first line starts its indent left of them.
+fn inside(l: &VisualLine, k: &KeptFrame) -> bool {
+    let hang = k.indent.min(0.0);
+    l.bbox[0] >= k.left + hang - l.size && l.bbox[2] <= k.right + l.size
+}
+
+/// Whether line `l` is one of the lines frame `k` was written for: from its first baseline
+/// to its last, and within its edges.
+fn of(l: &VisualLine, k: &KeptFrame) -> bool {
+    l.baseline >= k.top - NEAR && l.baseline <= k.bottom + NEAR && inside(l, k)
+}
+
 /// The frame of `kept` that block `block` was written in, if its lines are still where it
 /// was written: its first and last baselines where they were, and every line within its
 /// edges.
 pub(crate) fn kept_for(block: &Block, kept: &[KeptFrame]) -> Option<KeptFrame> {
     let (first, last) = (block.lines.first()?, block.lines.last()?);
-    let within = |k: &KeptFrame| {
-        (block.lines.iter()).all(|l| l.bbox[0] >= k.left - PAST && l.bbox[2] <= k.right + PAST)
-    };
     (kept.iter().rev())
         .find(|k| {
             (first.baseline - k.top).abs() <= NEAR
                 && (last.baseline - k.bottom).abs() <= NEAR
-                && within(k)
+                && block.lines.iter().all(|l| inside(l, k))
         })
         .copied()
+}
+
+/// Page blocks `blocks` with the lines of each paragraph LimarePDF wrote, by its frame in
+/// `kept`, one block again where the page's lines are read otherwise: centred or
+/// right-aligned, a paragraph's lines can read as several paragraphs (a short line looks
+/// like a paragraph's last), or with a line of its neighbours'. Lines are taken only where
+/// the paragraph is still there, its first and last lines where they were written; the
+/// blocks they are taken from keep the rest, now in doubt. A block of them is confident,
+/// LimarePDF having written it as one, aligned as its lines are in its frame.
+pub(crate) fn regroup(blocks: Vec<Block>, kept: &[KeptFrame]) -> Vec<Block> {
+    let mut blocks = blocks;
+    for k in kept {
+        let taken: Vec<&VisualLine> = (blocks.iter().flat_map(|b| &b.lines))
+            .filter(|l| of(l, k))
+            .collect();
+        let mut lines: Vec<VisualLine> = taken.into_iter().cloned().collect();
+        lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline));
+        let (Some(first), Some(last)) = (lines.first(), lines.last()) else {
+            continue;
+        };
+        if (first.baseline - k.top).abs() > NEAR || (last.baseline - k.bottom).abs() > NEAR {
+            continue;
+        }
+        let whole = |b: &Block| b.lines.len() == lines.len() && b.lines.iter().all(|l| of(l, k));
+        if blocks.iter().any(whole) {
+            continue;
+        }
+        let Some(at) = blocks.iter().position(|b| b.lines.iter().any(|l| of(l, k))) else {
+            continue;
+        };
+        let read = blocks[at].frame.align;
+        let block = Block {
+            frame: frame_of(k, &lines, read),
+            lines,
+            doubt: None,
+        };
+        let mut out = Vec::with_capacity(blocks.len());
+        for (i, mut b) in blocks.into_iter().enumerate() {
+            if i == at {
+                out.push(block.clone());
+            }
+            let before = b.lines.len();
+            b.lines.retain(|l| !of(l, k));
+            if b.lines.len() == before {
+                out.push(b);
+            } else if let Some(rest) = rest_of(b) {
+                out.push(rest);
+            }
+        }
+        blocks = out;
+    }
+    blocks
+}
+
+/// What is left of block `b` once lines are taken from it, if any: its frame's edges and
+/// first baseline its lines', in doubt.
+fn rest_of(mut b: Block) -> Option<Block> {
+    let first = b.lines.first()?;
+    let left = b.lines.iter().map(|l| l.bbox[0]).fold(f32::MAX, f32::min);
+    let right = b.lines.iter().map(|l| l.bbox[2]).fold(f32::MIN, f32::max);
+    b.frame = Frame {
+        left,
+        right,
+        baseline: first.baseline,
+        indent: first.bbox[0] - left,
+        ..b.frame
+    };
+    if b.lines.len() < 2 {
+        b.frame.spacing = 0.0;
+    }
+    b.doubt = b.doubt.or(Some(Doubt::WeakBreak));
+    Some(b)
+}
+
+/// The frame of a paragraph LimarePDF wrote in `k`, its lines `lines` (top to bottom):
+/// `k`'s edges and indent, and the alignment its lines have there (justified when every
+/// line but the last reaches both edges; else left, right or centred where every line
+/// is), `read` where none fits.
+fn frame_of(k: &KeptFrame, lines: &[VisualLine], read: Align) -> Frame {
+    let near = |a: f32, b: f32, l: &VisualLine| (a - b).abs() <= (PLACED * l.size).max(1.0);
+    let starts = |j: usize, l: &VisualLine| {
+        let indent = if j == 0 { k.indent } else { 0.0 };
+        near(l.bbox[0], k.left + indent, l)
+    };
+    let ends = |l: &VisualLine| near(l.bbox[2], k.right, l);
+    let middle = (k.left + k.right) / 2.0;
+    let centred = |l: &VisualLine| near((l.bbox[0] + l.bbox[2]) / 2.0, middle, l);
+    let n = lines.len();
+    let all = |f: &dyn Fn(usize, &VisualLine) -> bool| (0..n).all(|j| f(j, &lines[j]));
+    let align = if n >= 2 && all(&|j, l| starts(j, l) && (j + 1 == n || ends(l))) {
+        Align::Justified
+    } else if all(&starts) {
+        Align::Left
+    } else if all(&|_, l| ends(l)) {
+        Align::Right
+    } else if all(&|_, l| centred(l)) {
+        Align::Centre
+    } else {
+        read
+    };
+    let gap = |w: &[VisualLine]| w[1].baseline - w[0].baseline;
+    let mut gaps: Vec<f32> = lines.windows(2).map(gap).collect();
+    gaps.sort_by(f32::total_cmp);
+    let spacing = gaps.get(gaps.len() / 2).copied().unwrap_or(0.0);
+    Frame {
+        left: k.left,
+        right: k.right,
+        baseline: lines.first().map_or(k.top, |l| l.baseline),
+        spacing,
+        align,
+        indent: k.indent,
+    }
 }
 
 impl Pdf {
@@ -161,6 +288,69 @@ impl Pdf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A visual line on baseline `y` from `x0` to `x1`, 10 points high.
+    fn line(y: f32, x0: f32, x1: f32) -> VisualLine {
+        VisualLine {
+            pieces: Vec::new(),
+            bbox: [x0, y - 8.0, x1, y + 2.0],
+            baseline: y,
+            size: 10.0,
+        }
+    }
+
+    /// A block of `lines`, framed by them, read as `align`.
+    fn block(lines: Vec<VisualLine>, align: Align, doubt: Option<Doubt>) -> Block {
+        let left = lines.iter().map(|l| l.bbox[0]).fold(f32::MAX, f32::min);
+        let right = lines.iter().map(|l| l.bbox[2]).fold(f32::MIN, f32::max);
+        let frame = Frame {
+            left,
+            right,
+            baseline: lines[0].baseline,
+            spacing: 12.0,
+            align,
+            indent: 0.0,
+        };
+        Block {
+            lines,
+            frame,
+            doubt,
+        }
+    }
+
+    /// The user's finding, its second part: a paragraph LimarePDF centred, read back as
+    /// two blocks and with a neighbour's line joined to the second, is one block again,
+    /// confident, in its kept frame, read as centred; the neighbour's line a block of its own,
+    /// in doubt. Its lines moved elsewhere (its first not where it was written), the blocks
+    /// are left as read.
+    #[test]
+    fn a_paragraph_written_as_one_reads_as_one_again() {
+        let k = KeptFrame {
+            top: 100.0,
+            bottom: 148.0,
+            left: 72.0,
+            right: 512.0,
+            indent: 0.0,
+        };
+        let c = |y: f32, w: f32| line(y, 292.0 - w / 2.0, 292.0 + w / 2.0);
+        let top = block(vec![c(100.0, 400.0), c(112.0, 380.0)], Align::Centre, None);
+        let rest = vec![
+            c(124.0, 300.0),
+            c(136.0, 410.0),
+            c(148.0, 200.0),
+            line(160.0, 72.0, 300.0),
+        ];
+        let below = block(rest, Align::Centre, Some(Doubt::WeakBreak));
+        let out = regroup(vec![top.clone(), below.clone()], &[k]);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0].lines.len(), 5);
+        assert_eq!((out[0].frame.left, out[0].frame.right), (72.0, 512.0));
+        assert_eq!((out[0].frame.align, out[0].doubt), (Align::Centre, None));
+        assert_eq!(out[1].lines.len(), 1);
+        assert!(out[1].doubt.is_some());
+        let moved = KeptFrame { top: 90.0, ..k };
+        assert_eq!(regroup(vec![top, below], &[moved]).len(), 2);
+    }
 
     #[test]
     fn a_frame_is_read_only_as_written() {

@@ -2107,6 +2107,141 @@ fn a_paragraph_widened_keeps_its_width_read_again() {
     }
 }
 
+/// Six lines justified to 440 points from 72, the third ending a sentence and the fourth
+/// starting a new one, in 11-point Helvetica 13.2 points apart.
+fn sentence_page() -> Pdf {
+    let lines = [
+        "The harbour was quiet that morning, and the fishing boats sat low",
+        "in the water while gulls argued over the nets drying along the wall",
+        "of the old quay, where nobody was in a hurry that grey morning.",
+        "Nobody on the quay cared; the tide would turn when it turned, and",
+        "the old men who mended the nets had seen enough tides to know it",
+        "never came in sooner than the moon allowed, whatever anyone said.",
+    ];
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let gaps = l.matches(' ').count() as f32;
+        let tw = match k + 1 < lines.len() {
+            true => (440.0 - text_width(l, 11.0)) / gaps,
+            false => 0.0,
+        };
+        content.push_str(&format!("BT /F1 11 Tf {tw} Tw 72 {y} Td ({l}) Tj ET\n"));
+    }
+    letter(&content)
+}
+
+/// The user's finding, its second part: a paragraph LimarePDF centred or right-aligned was
+/// read back as several (a centred line ending a sentence reads as a paragraph's end) or
+/// with its neighbours, so its kept frame matched none of them and the frame moved on.
+/// Lines LimarePDF wrote as one paragraph are read as one again, whatever their alignment,
+/// and keep its frame, realigned again and again.
+#[test]
+fn a_paragraph_realigned_is_read_as_one_again_with_its_frame() {
+    let mut p = sentence_page();
+    let f0 = only_paragraph(&p).frame;
+    assert_eq!(f0.align, Align::Justified);
+    for align in [
+        Align::Centre,
+        Align::Right,
+        Align::Left,
+        Align::Centre,
+        Align::Justified,
+        Align::Right,
+    ] {
+        p = realigned(p, align).0;
+        let blocks = p.page_blocks(0).unwrap();
+        assert_eq!(blocks.len(), 1, "{align:?}: {blocks:?}");
+        assert_eq!(blocks[0].lines.len(), 6, "{align:?}");
+        let f = only_paragraph(&p).frame;
+        assert_eq!(f.align, align);
+        let same = (f.left - f0.left).abs() < 0.05 && (f.right - f0.right).abs() < 0.05;
+        assert!(same, "{align:?}: {f:?}, was {f0:?}");
+    }
+}
+
+/// `TEXT` broken at 300 points, each line's last letter shown on its own with a spacing
+/// number that takes its width back (556, a Helvetica "e"'s or near it), as some producers
+/// end lines: the page reads it with no width. Ragged.
+fn taken_back_page() -> Pdf {
+    let lines = wrap(TEXT, 300.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let (head, last) = l.split_at(l.len() - 1);
+        let w = text_width(last, 1000.0);
+        content.push_str(&format!(
+            "BT /F1 11 Tf 72 {y} Td ({head}) Tj [({last}) {w}] TJ ET\n"
+        ));
+    }
+    letter(&content)
+}
+
+/// The user's finding, its third part: a letter whose width its line takes back after it
+/// read as no width, so a line written anew (the letter's own width then) came out a letter
+/// wider than it was set: right-aligned or centred, its lines ran past the frame and the
+/// frame read again moved right. Each written line now ends where it was set.
+#[test]
+fn a_line_whose_last_letter_reads_as_no_width_is_written_where_it_was_set() {
+    for align in [Align::Right, Align::Centre] {
+        let mut p = taken_back_page();
+        let para = only_paragraph(&p);
+        let setting = p.paragraph_setting(&para).unwrap();
+        let f = para.frame;
+        let set = setting.set_in(&para.parts(), (f.left, f.right), align);
+        p.edit_paragraph_in(&setting, &para.parts(), (f.left, f.right), align)
+            .unwrap();
+        // The lines written anew (one kept as it was still reads without its last
+        // letter's width).
+        let lines = lines_of(&p);
+        let written = (lines.iter().zip(&set.lines)).filter(|(_, l)| l.kept.is_none());
+        assert!(written.clone().count() > 2, "{align:?}: {set:?}");
+        for (o, l) in written {
+            let end = line_end(l, &para.text);
+            let at = o.bbox[0]..o.bbox[2];
+            assert!((o.bbox[2] - end).abs() < 0.6, "{align:?}: {at:?} for {l:?}");
+        }
+    }
+}
+
+/// `TEXT` and `MORE` broken at 452 points and justified to 440 from 72: lines longer than
+/// 440 have their spaces squeezed (word spacing below 0), as TeX squeezes them.
+fn squeezed_page() -> Pdf {
+    let lines = wrap(&format!("{TEXT} {MORE}"), 452.0, 11.0);
+    let over = lines.iter().any(|l| text_width(l, 11.0) > 440.5);
+    assert!(over, "{lines:?}");
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let gaps = l.matches(' ').count() as f32;
+        let tw = match k + 1 < lines.len() {
+            true => (440.0 - text_width(l, 11.0)) / gaps,
+            false => 0.0,
+        };
+        content.push_str(&format!("BT /F1 11 Tf {tw} Tw 72 {y} Td ({l}) Tj ET\n"));
+    }
+    letter(&content)
+}
+
+/// A justified line squeezed by its producer is wider than its frame at its spaces' own
+/// width: realigned, it keeps its words and the paragraph its lines, the line's spaces
+/// squeezed to fill the frame again, so no line reaches past the frame's edges (over what
+/// is beside it, another column).
+#[test]
+fn a_squeezed_line_realigned_keeps_within_the_frame() {
+    for align in [Align::Centre, Align::Right, Align::Left] {
+        let p = squeezed_page();
+        let before = line_texts(&p);
+        let f = only_paragraph(&p).frame;
+        let p = realigned(p, align).0;
+        assert_eq!(line_texts(&p), before, "{align:?}");
+        for o in lines_of(&p) {
+            let within = o.bbox[0] >= f.left - 0.6 && o.bbox[2] <= f.right + 0.6;
+            assert!(within, "{align:?}: {o:?} outside {f:?}");
+        }
+    }
+}
+
 /// The frame is kept only for what LimarePDF set: words typed into a paragraph in its own
 /// frame add nothing to the page. Kept, it is used only while the lines are where they were
 /// written: lines moved by other means are read as they are. Remove hidden data's private

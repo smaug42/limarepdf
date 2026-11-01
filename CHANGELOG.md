@@ -69,7 +69,8 @@
   at once, keeping their words, the editing staying open; justified, every line but the last reaches both edges.
   Centre, Align right or Justify pressed again puts the paragraph back to the left, as in Word. Centred and
   right-aligned lines take no first-line indent, and a paragraph aligned left or justified again has its own
-  back. Ctrl+Z in the paragraph takes each change back, and once kept the whole edit is one undo step. Other text
+  back. A justified line whose spaces were squeezed to fit, too wide at their own width, keeps its words and has
+  them squeezed to fit again, so no line reaches past the paragraph's edges. Ctrl+Z in the paragraph takes each change back, and once kept the whole edit is one undo step. Other text
   can't be aligned yet: the buttons are greyed for it and say where to click. In a narrower window the Alignment
   group folds first, to one icon with a ▾, so Edit text and Find stay shown.
 
@@ -101,7 +102,12 @@
   paragraph whose edges or alignment you set, in the page's private data (which other apps don't show, and Remove
   hidden data's private data takes away), and opens the paragraph with them while its lines are where it wrote
   them, after saving too. This also keeps a centred or right-aligned paragraph from moving each time it was
-  realigned, kept and opened again.
+  realigned, kept and opened again. Such a paragraph is also read as one paragraph again, where its lines would
+  otherwise read as several, or with a line of the text beside it.
+- In some documents a paragraph's lines written anew came out a letter wider than LimarePDF set them, as the page
+  shows the last letter of each line with its width taken back and LimarePDF read it as having none: centred or
+  right-aligned, the lines ran past the paragraph's edge, and typed into, a line could run over what was beside it.
+  Each line now ends where it is set.
 - Ctrl+U in a box without text styles (Search, a comment's or text box's text, a form field, a window's field)
   deleted everything before the caret on its line. Now it does nothing there, as in a word processor's plain
   fields; where text can be underlined, it underlines.

@@ -707,7 +707,7 @@ fn kept_items(
                     items.push(r(-d * 1000.0 / units));
                 }
             }
-            if stretch > 0.0 && c == ' ' {
+            if stretch != 0.0 && c == ' ' {
                 items.push(r(-stretch * 1000.0 / units));
             }
             last = None;

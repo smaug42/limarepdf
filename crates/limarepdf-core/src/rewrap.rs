@@ -6,7 +6,7 @@
 
 use crate::colour::Paint;
 use crate::decorate::Decoration;
-use crate::edit::{pieces, plan, Drawn, PartFont, TextPart, Way};
+use crate::edit::{pieces, plan, Drawn, Ink, PartFont, TextPart, Way};
 use crate::fonts::FontChoice;
 use crate::layout::Setter;
 use crate::matrix::{self as mx, apply, M};
@@ -202,12 +202,26 @@ struct Placing {
     gaps: usize,
     /// It ends the paragraph or a line typed to end there, so it isn't justified.
     last: bool,
+    /// How wide its spaces are, as it is written.
+    space: f32,
 }
+
+/// The most a line too wide for its room has each space squeezed, a share of the space:
+/// a space written as a move (a font without one) still reads as a space.
+const SQUEEZE: f32 = 0.35;
 
 impl Placing {
     /// Where the line starts across the page in frame `f`, and what justifying it there
-    /// adds to each space between its words.
+    /// adds to each space between its words. A line wider than its room, kept as its words
+    /// were (a justified line whose spaces its producer squeezed, realigned), fills the room
+    /// with its spaces squeezed as far as [`SQUEEZE`], whatever the alignment: wider, it
+    /// would reach over what is beside the paragraph (another column).
     fn on(&self, f: &Frame) -> (f32, f32) {
+        let room = room_in(f, self.opens);
+        let over = (self.width - room) / self.gaps.max(1) as f32;
+        if self.gaps > 0 && over > 1e-3 && over <= SQUEEZE * self.space {
+            return (f.right - room, -over);
+        }
         let left = f.left + if self.opens { f.indent } else { 0.0 };
         match f.align {
             Align::Left => (left, 0.0),
@@ -714,6 +728,17 @@ impl Measured {
         w
     }
 
+    /// How wide the narrowest space among characters `a..b` is; none, 0.
+    fn space_in(&self, a: usize, b: usize) -> f32 {
+        let spaces = (a..b).filter(|&k| self.chars[k] == ' ');
+        let narrowest = spaces.map(|k| self.widths[k]).fold(f32::MAX, f32::min);
+        if narrowest == f32::MAX {
+            0.0
+        } else {
+            narrowest
+        }
+    }
+
     /// Where characters `a..b` end without the spaces (and line breaks) they end with.
     fn trimmed(&self, a: usize, b: usize) -> usize {
         let mut end = b;
@@ -1011,6 +1036,7 @@ impl ParagraphSetting {
                 width,
                 gaps,
                 last,
+                space: new.space_in(a, end),
             };
             let (x, stretch) = line.on(&frame);
             // With the edges moved or the text realigned, a line that starts and ends as it
@@ -1049,6 +1075,7 @@ impl ParagraphSetting {
                     width: l.width,
                     gaps: new.chars[a..end].iter().filter(|c| **c == ' ').count(),
                     last: e >= nl || matches!(new.chars[e - 1], '\u{2029}' | '\n'),
+                    space: new.space_in(a, end),
                 };
                 let (x, stretch) = line.on(&frame);
                 let (x0, stretch0) = line.on(&para.frame);
@@ -1249,6 +1276,24 @@ impl ParagraphSetting {
                 let x = para.chars[k].x;
                 (x.1 - x.0) * scale
             };
+            // What a kept character's own code advances as the page reads it, the font's
+            // width for it, where one code draws it alone: what the writer gives it when its
+            // neighbour no longer follows. Its place as drawn says less where the next
+            // character is placed by a move (a page drawing each letter apart reads a line's
+            // last letter as no width; the user's finding in batch 49's stage 1). A Type 3
+            // font's widths are in its own units: its drawn width stands.
+            let ordinary = para.parts.get(i).is_some_and(|q| (q.em - 1.0).abs() < 1e-3);
+            let own = |k: usize| {
+                let Some(Some(Drawn {
+                    ink: Ink::Code { n: 1, bytes, .. },
+                    ..
+                })) = self.drawn.get(k).filter(|_| ordinary)
+                else {
+                    return glyph(k);
+                };
+                let w = font.code_advance(bytes, self.chars[k]);
+                w.map_or(glyph(k), |w| w / 1000.0 * p.size * th)
+            };
             let space = |c: char| {
                 let w = match font.advance(c) {
                     Some(w) => w / 1000.0 * p.size * th,
@@ -1262,7 +1307,7 @@ impl ParagraphSetting {
                     let k = pl.from.filter(|_| matches!(way, Way::Own(_)));
                     let hyphen = font.advance('-').map(|w| w / 1000.0 * p.size * th);
                     m.shown[j] = match k {
-                        Some(k) => glyph(k) + tc * th,
+                        Some(k) => own(k) + tc * th,
                         None => hyphen.unwrap_or(0.33 * p.size),
                     };
                     0.0
@@ -1276,11 +1321,11 @@ impl ParagraphSetting {
                             && q.from == Some(k + 1)
                             && !m.chars[j + 1].is_whitespace()
                     }) && (para.neighbours(k) || para.accent_over(k));
-                    let after = match neighbour {
-                        true => para.gap_after(k) * scale,
-                        false => tc * th,
-                    };
-                    glyph(k) + after
+                    match (neighbour, way) {
+                        (true, _) => glyph(k) + para.gap_after(k) * scale,
+                        (false, Way::Own(_)) => own(k) + tc * th,
+                        (false, _) => glyph(k) + tc * th,
+                    }
                 }
                 Way::Code => {
                     let w = font.advance(c).unwrap_or(500.0);
