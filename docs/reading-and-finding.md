@@ -65,7 +65,9 @@ exported images and everything else keep the page's own colours.
    around each match and the match in bold. The matches are highlighted on the pages, and the
    view goes to the first one on or after the page you were reading.
 3. Press Enter to go to the next match, and Shift+Enter for the one before; or click a match, or use ◀ and ▶
-   (Previous match and Next match). After the last match, Enter goes back to the first.
+   (Previous match and Next match). After the last match, Enter goes back to the first. **F3** and **Shift+F3**
+   (or Ctrl+G and Ctrl+Shift+G; ⌘G and ⌘⇧G on a Mac), also **Edit > Find next** and **Find previous**, do the
+   same wherever the keyboard is, on the page too. With nothing searched yet, F3 opens Search results.
 
 On a long document the matches come in page by page, with "Searching…" and the count so far; when it is done, the
 count reads "1 match", "12 matches" or "No matches". Changing what you typed starts again, and the old matches go at
@@ -109,12 +111,14 @@ two choices above.
    **Edit > Find** open Search results without them.
 2. Type what to look for in the search box, and what to put in its place in Replace with. The matches are found
    as in [Find words](#find-words), and Match case and Whole words only work here too.
-3. Press **Replace**, or Enter in Replace with (or choose **Edit > Replace current match**). The current match is
-   typed over on the page, as when you [type over words you select](content-editing.md#type-over-delete-or-cut-words):
-   its line opens for editing with your words in the match's place, in the line's own fonts, sizes and colours. The
-   view stays on that line so you can see the change, and the next match is highlighted as the current one.
+3. Press **Replace**, or Enter in Replace with, or Alt+R while the keyboard is in Search results (as in Word's
+   Find and Replace; not on a Mac), or choose **Edit > Replace current match**. The current match is typed over on
+   the page, as when you [type over words you select](content-editing.md#type-over-delete-or-cut-words): its line
+   opens for editing with your words in the match's place, in the line's own fonts, sizes and colours. The view
+   stays on that line so you can see the change, and the next match is highlighted as the current one. The
+   keyboard goes back to Replace with.
 4. Press **Replace** (or Enter) again to keep the change and replace the next match, and so on. To leave a match
-   as it is, go past it with ▶ before you press Replace.
+   as it is, go past it with F3 (or ▶) before you press Replace.
 
 The change waiting on the page is also kept when you click elsewhere or use another command. Each replacement is
 one undo step, so Undo takes them back one at a time.
@@ -129,7 +133,8 @@ one undo step, so Undo takes them back one at a time.
 - As when you type, the outline warns you if the line now runs past the page's edge or over other text.
 - Some matches are left as they are, and a short note under the match says why for a few seconds: invisible
   recognised (OCR) text, text inside a group (a block of page content reused as a whole), vertical writing, and a
-  match that runs across paragraphs or on to the next page. The match stays the current one: go past it with ▶.
+  match that runs across paragraphs or on to the next page. The match stays the current one: go past it with F3
+  (or ▶).
 - A replacement with characters LimarePDF can't write (Hebrew or Arabic, say, emoji made of several characters, or
   a character no installed font has) is refused before anything changes, with a note under Replace with.
 - **Replace** is greyed until there is a match to replace, and says why when you point at it.

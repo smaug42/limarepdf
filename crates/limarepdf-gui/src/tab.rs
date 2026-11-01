@@ -2388,15 +2388,22 @@ impl Tab {
         if !enter {
             return false;
         }
+        self.find_step(if back { -1 } else { 1 });
+        true
+    }
+
+    /// The next match (`delta` 1) or the one before (-1), as Enter and Shift+Enter in the
+    /// search field and F3 and Shift+F3 go; a query not searched yet is searched now
+    /// instead, going to its first match from the page it was begun on.
+    pub fn find_step(&mut self, delta: isize) {
         let searched = self.search.typed.is_none()
             && (self.search.asked.as_ref())
                 .is_some_and(|(_, q, o)| *q == self.query && *o == self.search_options);
         if searched {
-            self.step_hit(if back { -1 } else { 1 });
+            self.step_hit(delta);
         } else {
             self.run_search();
         }
-        true
     }
 
     /// What Search results says of the search: how many matches, or that it is still
@@ -2434,19 +2441,26 @@ impl Tab {
             r.request_focus();
         }
         self.search_keys(ui, &r);
-        ui.horizontal_wrapped(|ui| {
-            ui.checkbox(&mut self.search_options.match_case, "Match case");
-            ui.checkbox(&mut self.search_options.whole_words, "Whole words only");
+        let options = ui.horizontal_wrapped(|ui| {
+            let case = ui.checkbox(&mut self.search_options.match_case, "Match case");
+            let whole = ui.checkbox(&mut self.search_options.whole_words, "Whole words only");
+            case.has_focus() || whole.has_focus()
         });
-        let mut act = self.replace_ui(ui, c);
+        let held = r.has_focus() || options.inner;
+        let mut act = self.replace_ui(ui, c, held);
         // A query just typed, here or in the top bar, or an option changed, takes the old
         // matches away before they are drawn.
         self.poll_search(ui.ctx());
         ui.horizontal(|ui| {
-            for (glyph, name, step) in [("◀", "Previous match", -1), ("▶", "Next match", 1)] {
+            let steps = [
+                ("◀", "Previous match", -1, Act::FindPrevious),
+                ("▶", "Next match", 1, Act::FindNext),
+            ];
+            for (glyph, name, step, act) in steps {
                 let r = ui.button(glyph);
                 crate::dialogs::set_name(&r, name);
-                if r.on_hover_text(name).clicked() {
+                let tip = actions::tooltip(ui.ctx(), actions::get(act));
+                if r.on_hover_text(tip).clicked() {
                     self.step_hit(step);
                 }
             }

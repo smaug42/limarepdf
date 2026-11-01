@@ -9,6 +9,10 @@ use super::*;
 use crate::editor::NotReplaced;
 use crate::page_text;
 
+/// The Replace button's key while the keyboard is in Search results, but on a Mac.
+const ALT_R: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::R);
+
 /// Search results' Replace.
 #[derive(Default)]
 pub struct Replace {
@@ -127,8 +131,11 @@ impl Tab {
     }
 
     /// Replace's field and its button, under the search field, while Replace is shown; the
-    /// Replace pressed, or Enter in the field, is returned for the app to run.
-    pub(super) fn replace_ui(&mut self, ui: &mut egui::Ui, c: &Ctx) -> Option<Act> {
+    /// Replace pressed, Enter in the field, or Alt+R with the keyboard in Search results
+    /// (`held`: the search field or an option has it; the field and button are added here),
+    /// is returned for the app to run. Alt+R is the key Word's Find and Replace window gives
+    /// its Replace button; on a Mac, where Option+R types "®" and Word has none, it isn't.
+    pub(super) fn replace_ui(&mut self, ui: &mut egui::Ui, c: &Ctx, held: bool) -> Option<Act> {
         // Replace's text typed over a match, its line waiting: the keyboard comes back.
         let typed_over = std::mem::take(&mut self.ed.typed_over);
         if !self.replace.shown {
@@ -155,10 +162,18 @@ impl Tab {
         let enabled = (a.enabled)(c);
         let b = ui.add_enabled(enabled, egui::Button::new("Replace"));
         b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, "Replace"));
+        let ctx = ui.ctx().clone();
+        let alt_r = (ctx.os() != egui::os::OperatingSystem::Mac).then_some(ALT_R);
+        let held = held || r.has_focus() || b.has_focus();
+        let keyed = alt_r.is_some_and(|k| held && ui.input_mut(|i| i.consume_shortcut(&k)));
+        let tip = match alt_r {
+            Some(k) => format!("Replace ({})\n{}", ctx.format_shortcut(&k), a.hint),
+            None => format!("Replace\n{}", a.hint),
+        };
         let clicked = b
-            .on_hover_text(actions::tooltip(ui.ctx(), a))
-            .on_disabled_hover_text(actions::greyed_tip(ui.ctx(), a, c))
+            .on_hover_text(tip)
+            .on_disabled_hover_text(actions::greyed_tip(&ctx, a, c))
             .clicked();
-        (clicked || enter && enabled).then_some(Act::ReplaceMatch)
+        (clicked || (enter || keyed) && enabled).then_some(Act::ReplaceMatch)
     }
 }

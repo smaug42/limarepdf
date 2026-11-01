@@ -2842,6 +2842,18 @@ impl App {
                 }
             }
             Act::ReplaceMatch if has => self.tabs[self.active].replace_match(ctx),
+            // F3 and Shift+F3: the next match or the one before, the keyboard left where it
+            // is, Search results shown, where the search follows the document; with nothing
+            // to search for, Find, as a browser's F3 opens its find bar.
+            Act::FindNext | Act::FindPrevious if has => {
+                if Query::new(&self.tabs[self.active].query).is_empty() {
+                    self.act(ctx, Act::Find);
+                } else {
+                    self.show_view(Side::Search);
+                    let delta = if a == Act::FindNext { 1 } else { -1 };
+                    self.tabs[self.active].find_step(delta);
+                }
+            }
             // Organise's cards have a zoom of their own (NEW-14).
             Act::ZoomIn | Act::ZoomOut | Act::Actual | Act::ZoomTo(_)
                 if has && self.tabs[self.active].organising() =>
@@ -4793,9 +4805,15 @@ impl App {
                 let in_box = in_text && matches!(a.act, Act::Undo | Act::Redo);
                 let closes = (picking || back) && a.act == Act::Escape;
                 // F6 leaves a text box too (in a form, Tab stays among the fields), but
-                // not an open list or menu, which Esc closes first.
+                // not an open list or menu, which Esc closes first; F3 goes to the next match
+                // from one, as from Search results' fields.
                 let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
-                let skip = if region { picking } else { typing && !global };
+                let find = matches!(a.act, Act::FindNext | Act::FindPrevious);
+                let skip = if region || find {
+                    picking
+                } else {
+                    typing && !global
+                };
                 // Ctrl+V arrives as a paste, which App::type_over takes.
                 if skip || in_box || closes || a.act == Act::Paste || !(a.enabled)(&c) {
                     continue;
@@ -5769,8 +5787,8 @@ fn palette_columns(ui: &egui::Ui, items: &[&Action]) -> (f32, f32) {
     let mut columns = (0.0_f32, 0.0_f32);
     for a in items {
         columns.0 = columns.0.max(width(a.group.name().to_string()));
-        if let Some(k) = a.keys.first() {
-            columns.1 = columns.1.max(width(ui.ctx().format_shortcut(k)));
+        if let Some(k) = actions::shown_key(ui.ctx(), a) {
+            columns.1 = columns.1.max(width(ui.ctx().format_shortcut(&k)));
         }
     }
     columns
@@ -5826,9 +5844,9 @@ fn palette_row(
     }
     // The shortcut flush right, the category in its column before it.
     let key_left = rect.right() - pad - columns.1;
-    if let Some(k) = a.keys.first() {
+    if let Some(k) = actions::shown_key(ui.ctx(), a) {
         let at = egui::pos2(rect.right() - pad, y);
-        let key = ui.ctx().format_shortcut(k);
+        let key = ui.ctx().format_shortcut(&k);
         painter.text(at, egui::Align2::RIGHT_CENTER, key, font.clone(), weak);
     }
     let cat_left = key_left - if columns.1 > 0.0 { gap } else { 0.0 } - columns.0;

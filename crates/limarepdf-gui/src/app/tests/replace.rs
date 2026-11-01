@@ -254,3 +254,77 @@ fn ctrl_h_opens_replace_and_find_leaves_it_out() {
     let tree = ty.pause(&mut app);
     assert!(node(&tree, "Replace with").is_some(), "the band's Replace");
 }
+
+/// F3 and Shift+F3, and Ctrl+G and Ctrl+Shift+G, go to the next match and the one before,
+/// round the ends, from Replace's field (replacing nothing) and from the page; with nothing
+/// searched, F3 opens Find.
+#[test]
+fn f3_and_ctrl_g_go_through_the_matches_from_anywhere() {
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    let lines = ["the walrus ate fish", "the walrus swam", "a walrus slept"];
+    replacing(&mut app, &ty, &lines, "walrus", "otter");
+    app.tabs[0].replace.focus = true;
+    let tree = ty.pause(&mut app);
+    assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Replace with"));
+    let none = egui::Modifiers::NONE;
+    let shift = egui::Modifiers::SHIFT;
+    let ctrl = egui::Modifiers::COMMAND;
+    let mut steps = Vec::new();
+    for (key, m) in [
+        (Key::F3, none),
+        (Key::F3, none),
+        (Key::F3, none),
+        (Key::F3, shift),
+        (Key::G, ctrl),
+        (Key::G, ctrl.plus(shift)),
+    ] {
+        ty.key(&mut app, key, m);
+        steps.push(app.tabs[0].hit_idx);
+    }
+    assert_eq!(steps, [1, 2, 0, 2, 0, 2]);
+    let tree = ty.pause(&mut app);
+    let t = &app.tabs[0];
+    assert!(!t.ed.typing_on_page() && !t.can_undo(), "replaced");
+    assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Replace with"));
+    // With nothing having the keyboard, as after a click on the page.
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    ty.key(&mut app, Key::F3, none);
+    assert_eq!(app.tabs[0].hit_idx, 0);
+
+    // Nothing searched: F3 opens Find, the keyboard in its field.
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    text_tab(&mut app, &ctx, &["the walrus"]);
+    ty.pause(&mut app);
+    ty.key(&mut app, Key::F3, none);
+    let tree = ty.pause(&mut app);
+    assert!(app.side.shown() && app.tabs[0].side == Side::Search);
+    assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Search for"));
+}
+
+/// Alt+R with the keyboard in Search results replaces the current match, as Word's Find and
+/// Replace window's Replace; on a Mac, as there, it doesn't. Menus show F3 for Find next,
+/// on a Mac ⌘G.
+#[test]
+fn alt_r_replaces_from_search_results_but_on_a_mac() {
+    use egui::os::OperatingSystem::{Mac, Nix};
+    for os in [Nix, Mac] {
+        let (ctx, mut app) = new_app();
+        ctx.set_os(os);
+        let ty = Typist::new(&ctx);
+        replacing(&mut app, &ty, &["the walrus ate fish"], "walrus", "otter");
+        let mac = os == Mac;
+        ty.key(&mut app, Key::R, egui::Modifiers::ALT);
+        ty.pause(&mut app);
+        assert_eq!(app.tabs[0].ed.typing_on_page(), !mac, "{os:?}");
+        let next = actions::get(Act::FindNext);
+        let shown = actions::shown_key(&ctx, next).map(|k| ctx.format_shortcut(&k));
+        let want = if mac { "⌘G" } else { "F3" };
+        assert_eq!(shown.as_deref(), Some(want), "{os:?}");
+    }
+}

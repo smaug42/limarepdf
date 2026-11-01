@@ -115,6 +115,10 @@ pub enum Act {
     /// Cancel what is in progress: new text, a drawing tool, or the selection.
     Escape,
     Find,
+    /// Go to the next match of the search, or the one before (F3, Shift+F3), from
+    /// wherever the keyboard is; with nothing searched, Find.
+    FindNext,
+    FindPrevious,
     /// Search results with Replace's field (NEW-04a).
     Replace,
     /// Type Replace's text over the current match: Search results' Replace.
@@ -311,6 +315,8 @@ impl Act {
             | Act::CreateSign(_)
             | Act::Escape
             | Act::Find
+            | Act::FindNext
+            | Act::FindPrevious
             | Act::Replace
             | Act::ZoomIn
             | Act::ZoomOut
@@ -1041,6 +1047,25 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::MAGNIFYING_GLASS,
         keys: &[k(C, Key::F)],
         sep: true,
+        ..BASE
+    },
+    // F3 as Windows and Linux apps have it, Ctrl+G (Cmd+G) as browsers and Mac apps do.
+    Action {
+        act: Act::FindNext,
+        group: Group::Edit,
+        label: "Find next",
+        icon: icon::CARET_DOWN,
+        keys: &[k(N, Key::F3), k(C, Key::G)],
+        hint: "Go to the next match of the search.",
+        ..BASE
+    },
+    Action {
+        act: Act::FindPrevious,
+        group: Group::Edit,
+        label: "Find previous",
+        icon: icon::CARET_UP,
+        keys: &[k(S, Key::F3), k(CS, Key::G)],
+        hint: "Go to the match before the current one.",
         ..BASE
     },
     Action {
@@ -2329,10 +2354,24 @@ pub fn greyed_tip(ctx: &egui::Context, a: &Action, c: &Ctx) -> String {
     format!("{}\n{}", tooltip(ctx, a), why_not(c, a))
 }
 
-/// Tooltip for a command: its label and first shortcut, then its hint on a line of its own.
+/// The shortcut a command's menus and tooltips show: its first, but on a Mac one with Cmd
+/// before a plain function key, as Mac apps show Find next as ⌘G.
+pub fn shown_key(ctx: &egui::Context, a: &Action) -> Option<KeyboardShortcut> {
+    let first = a.keys.first().copied()?;
+    let plain_f = first.modifiers.is_none() || first.modifiers == Modifiers::SHIFT;
+    let f_key = matches!(first.logical_key, Key::F1 | Key::F2 | Key::F3 | Key::F4);
+    let cmd = a.keys.iter().find(|k| k.modifiers.command).copied();
+    match ctx.os() == egui::os::OperatingSystem::Mac && plain_f && f_key {
+        true => cmd.or(Some(first)),
+        false => Some(first),
+    }
+}
+
+/// Tooltip for a command: its label and the shortcut it shows ([`shown_key`]), then its
+/// hint on a line of its own.
 pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
-    let name = match a.keys.first() {
-        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(k)),
+    let name = match shown_key(ctx, a) {
+        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(&k)),
         None => a.label.to_string(),
     };
     if a.hint.is_empty() {
@@ -2425,7 +2464,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
             ui.add_enabled(enabled, egui::RadioButton::new(on, a.label))
         }
         (None, _) => {
-            let key = a.keys.first().map(|k| ui.ctx().format_shortcut(k));
+            let key = shown_key(ui.ctx(), a).map(|k| ui.ctx().format_shortcut(&k));
             let b = egui::Button::new(a.label).shortcut_text(key.unwrap_or_default());
             ui.add_enabled(enabled, b)
         }

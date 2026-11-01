@@ -1225,7 +1225,8 @@ mod tests {
         // group's Bold and Italic; the marks and Create signature in Highlight's and Fill
         // and sign's own menus; what acts on a selection, or on a paragraph's marked
         // hyphen, in its right-click menu and floating bar; Search results' Replace beside
-        // its field; and keys. Each is in the File menu's groups too.
+        // its field and its arrows (Find next and previous); and keys. Each is in the File
+        // menu's groups too.
         let elsewhere = |a: Act| {
             actions::get(a).group == actions::Group::File
                 || matches!(
@@ -1247,6 +1248,8 @@ mod tests {
                         | Act::KeepHyphen
                         | Act::ReplaceImage
                         | Act::ReplaceMatch
+                        | Act::FindNext
+                        | Act::FindPrevious
                         | Act::Escape
                         | Act::Nudge(..)
                         | Act::Extend(_)

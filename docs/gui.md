@@ -492,6 +492,8 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+F | Find: Search results opens with the keyboard in its box; type, and the matches come once you pause |
 | Ctrl+H | Replace: Search results opens with Replace with and Replace under its search box (Ctrl on a Mac too) |
 | Enter, Shift+Enter in the search box | Next, previous match (Enter before the pause searches at once) |
+| F3, Shift+F3 (or Ctrl+G, Ctrl+Shift+G) | Next, previous match, wherever the keyboard is; with nothing searched, F3 opens Find |
+| Enter in Replace with, or Alt+R in Search results | Replace the current match and go on to the next (Alt+R as in Word; not on a Mac) |
 | Ctrl+K | Command palette |
 | F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the tabs, the commands, notices, navigation, the page, the inspector, the status bar |
 | Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |

@@ -300,6 +300,13 @@ matches the replacement holds, `Query::count_in`); `Tab::search_changed` counts 
 again the current match is still the next. A Replace pressed while that search runs waits (`Replace::waiting`) and
 goes on from `take_search` once the current match is placed (`replace_when_placed`), unless typing began
 meanwhile or nothing is left. A waiting replacement that ends unchanged is forgotten (`forget_replaced`).
+`Act::FindNext` and `Act::FindPrevious` (F3 and Shift+F3, Ctrl+G and Ctrl+Shift+G) go through `Tab::find_step`,
+as Enter in the search field does; `App::shortcuts` lets them through with a text box focused, as F6, so F3
+passes a match over from Replace's field, and they show Search results, where the search keeps up, without moving
+the keyboard (Find, with nothing to search for). Menus and tooltips show a command's key through
+`actions::shown_key`: the first, but on a Mac the Cmd one before a plain function key (⌘G, not F3). Alt+R is
+the Replace button's key while Search results' fields, options or button have the keyboard, as Word's Find and
+Replace window has it, read in `replace_ui`, not in `ACTIONS`, and not on a Mac (Option+R types there).
 
 Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
 signature look, selected text as a plain page) is set through one pipeline, core's `layout.rs` (below, "New text is
