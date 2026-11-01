@@ -577,6 +577,29 @@ and their shapes through a `Group` (each shape's `Look` as it is and as changed,
 by the box round them (`Group::at`). `Tab::after_insert` selects everything a change put down (`Editor::select_new`
 from the object count before), so new text of several lines is held as one.
 
+Align, distribute and snap (NEW-08, batch 46's stage 5) are pure functions over boxes (displayed-page points, y
+down) in `editor/arrange.rs`. `Act::Align(Align)` and `Act::Distribute(Axis)` call `Editor::align` and
+`Editor::distribute`, which act on what `object_moves` allows (anything with the arrow; the read tool's pictures,
+shapes and `loose` text) and queue one `Action::SetBox` holding only the boxes that move: one `set_object_boxes`
+rewrite and one undo step, none when nothing moves, the selection following through `Selection::expect`. Two or
+more align by the box round them (`union`), as Word aligns selected objects; one alone by its page, its size from
+`Tab::sizes` (as the view draws it). Distribute orders the boxes by their middles (ties by index), keeps the first
+and last where they are and gives the rest equal gaps, negative when the boxes are wider than the room. Snapping
+lives in `drag_to`: the first time a move (`Mode::Move`) or resize (`Mode::Handle`) of objects follows the pointer
+it reads an `arrange::Snaps` into `Drag::snapping`, the edges and middles of the page (its size as drawn, `r / k`)
+and of the page's other objects a click could select (not those moving, nor a line's decorations, invisible text
+only while shown), kept for the drag. A move snaps the nearest of the box's edges and middles to the nearest line
+within `SNAP_PX` (6) screen pixels, across and down apart; a resize snaps only the edges its handle moves
+(`moving_edges`), and with Shift on a corner the nearer of the two, giving the scale `resize` keeps the proportions
+with. `Snaps::guides` makes a dashed line (`GUIDE`, a pink seen on any paper) through each place meeting a line,
+along the box and every box meeting it there, drawn in `page_ui` after the marquee. Alt (`page_ui`'s `keys`) and
+the app's `Settings::snap` (`Act::ToggleSnap`, lent to each tab's `Editor::snap` every frame as `paragraphs` is)
+turn it off; comments (`Drag::annot`), a line's ends and turns never snap, nor do nudges. The band's Align is a menu
+button (`band::ALIGN_MENU`), the objects' right-click menu shows `actions::ALIGNS` as an Align submenu (`menu_of`),
+which `toolbar_items` leaves off the floating bar and the docked buttons (as word processors' bars do), and the
+band's menus draw the registry's separators (`actions::menu_list`). `Ctx::objects` counts the objects held,
+for Distribute's three (`why_not`: "Select three or more objects first.").
+
 Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a selection
 rectangle (`marquee`), a pen stroke or a word selection being dragged (`text_drag`), changing nothing and keeping the
 tool; only then does Esc do what it did. egui forgets a drag whose widget isn't drawn, so the page a gesture is on (`Editor::gesture_page`) keeps

@@ -2,7 +2,7 @@
 //! (Ctrl+K) and the keyboard shortcuts are all built from [`ACTIONS`]; what a command
 //! does is in `App::act`.
 
-use crate::editor::Tool;
+use crate::editor::{Align, Axis, Tool};
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection, Toward};
@@ -114,6 +114,14 @@ pub enum Act {
     DeleteObject,
     /// Move the selected object by this many points (×10 with Shift).
     Nudge(i8, i8),
+    /// Line up the selected objects: two or more by each other, one alone by the page
+    /// (Edit > Arrange's Align; NEW-08).
+    Align(Align),
+    /// Space out three or more selected objects evenly, the outer two staying.
+    Distribute(Axis),
+    /// Snap objects moved or resized to the page's and the other objects' edges and
+    /// middles, or not.
+    ToggleSnap,
     /// Move the moving end of the words selected (Shift with an arrow, Home or End).
     Extend(Toward),
     /// Cancel what is in progress: new text, a drawing tool, or the selection.
@@ -282,6 +290,8 @@ impl Act {
             | Act::ReplaceImage
             | Act::DeleteObject
             | Act::Nudge(..)
+            | Act::Align(_)
+            | Act::Distribute(_)
             | Act::SignDigital
             | Act::Certify
             | Act::DigitalPlaced
@@ -360,6 +370,7 @@ impl Act {
             | Act::TogglePageLabels
             | Act::TogglePlanned
             | Act::ToggleCompact
+            | Act::ToggleSnap
             | Act::Accent(_)
             | Act::NextField
             | Act::PrevField
@@ -440,6 +451,8 @@ pub struct Ctx {
     pub words: bool,
     /// Objects are selected, one or several.
     pub object: bool,
+    /// How many objects are selected.
+    pub objects: usize,
     /// The selected objects can be moved with the current tool: page text only with the
     /// arrow, or just after it was added.
     pub object_moves: bool,
@@ -486,6 +499,8 @@ pub struct Ctx {
     pub planned: bool,
     /// See [`Act::ToggleCompact`]: the setting, whatever a short window does.
     pub compact: bool,
+    /// See [`Act::ToggleSnap`].
+    pub snap: bool,
     pub accent: Accent,
     /// Text is being typed on the page: new text, a line of page text, a note or a text
     /// box, open whether or not it has the keyboard just now.
@@ -615,6 +630,14 @@ fn object(c: &Ctx) -> bool {
 /// An object or annotation that can be moved with the current tool.
 fn nudgeable(c: &Ctx) -> bool {
     c.object_moves || c.annot_moves
+}
+/// Objects selected that the current tool can move: what Align lines up.
+fn alignable(c: &Ctx) -> bool {
+    c.object_moves
+}
+/// Three or more of them, which Distribute spaces out.
+fn distributable(c: &Ctx) -> bool {
+    c.object_moves && c.objects >= 3
 }
 fn words_selected(c: &Ctx) -> bool {
     c.words
@@ -1198,6 +1221,111 @@ pub static ACTIONS: &[Action] = &[
         palette: false,
         hint: "One point; with Shift, ten.",
         submenu: "Move selected object",
+        ..BASE
+    },
+    // Word's Align menu, in its order: two or more objects line up by each other, one
+    // alone by the page.
+    Action {
+        act: Act::Align(Align::Left),
+        group: Group::Edit,
+        label: "Align left",
+        icon: icon::ALIGN_LEFT,
+        enabled: alignable,
+        hint: "Line up the left edges of the selected objects, or put one alone at the \
+               page's left edge.",
+        submenu: "Align",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Centre),
+        group: Group::Edit,
+        label: "Align centre",
+        icon: icon::ALIGN_CENTER_HORIZONTAL,
+        enabled: alignable,
+        hint: "Line up the middles of the selected objects across, or centre one alone on \
+               the page.",
+        submenu: "Align",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Right),
+        group: Group::Edit,
+        label: "Align right",
+        icon: icon::ALIGN_RIGHT,
+        enabled: alignable,
+        hint: "Line up the right edges of the selected objects, or put one alone at the \
+               page's right edge.",
+        submenu: "Align",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Top),
+        group: Group::Edit,
+        label: "Align top",
+        icon: icon::ALIGN_TOP,
+        enabled: alignable,
+        hint: "Line up the tops of the selected objects, or put one alone at the top of \
+               the page.",
+        submenu: "Align",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Middle),
+        group: Group::Edit,
+        label: "Align middle",
+        icon: icon::ALIGN_CENTER_VERTICAL,
+        enabled: alignable,
+        hint: "Line up the middles of the selected objects down the page, or put one alone \
+               halfway down it.",
+        submenu: "Align",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Bottom),
+        group: Group::Edit,
+        label: "Align bottom",
+        icon: icon::ALIGN_BOTTOM,
+        enabled: alignable,
+        hint: "Line up the bottoms of the selected objects, or put one alone at the foot \
+               of the page.",
+        submenu: "Align",
+        ..BASE
+    },
+    Action {
+        act: Act::Distribute(Axis::Across),
+        group: Group::Edit,
+        label: "Distribute horizontally",
+        icon: icon::COLUMNS,
+        enabled: distributable,
+        sep: true,
+        hint: "Space three or more selected objects evenly across, the outer two staying \
+               where they are.",
+        submenu: "Align",
+        ..BASE
+    },
+    Action {
+        act: Act::Distribute(Axis::Down),
+        group: Group::Edit,
+        label: "Distribute vertically",
+        icon: icon::ROWS,
+        enabled: distributable,
+        hint: "Space three or more selected objects evenly down the page, the top and \
+               bottom ones staying where they are.",
+        submenu: "Align",
+        ..BASE
+    },
+    Action {
+        act: Act::ToggleSnap,
+        group: Group::Edit,
+        label: "Snap to objects",
+        icon: icon::MAGNET,
+        enabled: always,
+        checked: Some(|c| c.snap),
+        sep: true,
+        hint: "Pictures, shapes and text you move or resize line up with the edges and \
+               middles of the page and of other objects, a guide showing. Hold Alt to place \
+               them freely.",
+        submenu: "Align",
         ..BASE
     },
     Action {
@@ -2242,10 +2370,11 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
                     Act::MoveText,
                     Act::CopyObjectText,
                 ],
+                &ALIGNS,
                 &[Act::Cut, Act::DeleteObject],
             ]
         }
-        Selection::Objects { .. } => &[&[Act::ReplaceImage], &[Act::DeleteObject]],
+        Selection::Objects { .. } => &[&[Act::ReplaceImage], &ALIGNS, &[Act::DeleteObject]],
         Selection::None | Selection::Pages(_) => &[
             &[Act::Cut, Act::Paste],
             &[Act::RotR, Act::RotL, Act::Crop],
@@ -2268,6 +2397,19 @@ pub const MOVES: [Act; 4] = [
     Act::MovePages(PageMove::Later),
     Act::MovePages(PageMove::Start),
     Act::MovePages(PageMove::End),
+];
+
+/// Align and Distribute, in the objects' right-click menu as a submenu; with Snap to
+/// objects, the band's Align menu.
+pub const ALIGNS: [Act; 8] = [
+    Act::Align(Align::Left),
+    Act::Align(Align::Centre),
+    Act::Align(Align::Right),
+    Act::Align(Align::Top),
+    Act::Align(Align::Middle),
+    Act::Align(Align::Bottom),
+    Act::Distribute(Axis::Across),
+    Act::Distribute(Axis::Down),
 ];
 
 /// The text styles, as word processors' menus and bars list them.
@@ -2307,13 +2449,13 @@ fn menu_of(ui: &mut egui::Ui, groups: &[&[Act]], c: &Ctx, acts: &mut Vec<Act>) {
             ui.separator();
         }
         first = false;
-        // The moves as one submenu, as in the Pages menu.
+        // The moves as one submenu, as in the Pages menu; Align and Distribute as in Edit's.
         if group == &MOVES {
-            ui.menu_button("Move pages", |ui| {
-                for a in &items {
-                    menu_item(ui, a, c, acts);
-                }
-            });
+            ui.menu_button("Move pages", |ui| menu_list(ui, items, c, acts));
+            continue;
+        }
+        if group == &ALIGNS {
+            ui.menu_button("Align", |ui| menu_list(ui, items, c, acts));
             continue;
         }
         for a in &items {
@@ -2344,7 +2486,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 27] = [
+    let fixes: [Fix; 28] = [
         (|d| d.busy = false, BUSY),
         // A match to type over first: while the search runs, that it waits for it.
         (|d| d.found_match = true, "Find a match to replace first."),
@@ -2385,6 +2527,10 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         (
             |d| (d.object_moves, d.annot_moves) = (true, true),
             "Select something the tool in use can move first.",
+        ),
+        (
+            |d| d.objects = d.objects.max(3),
+            "Select three or more objects first.",
         ),
         (|d| d.signing = true, crate::signing::NOTHING_PLACED),
         (|d| d.marked = true, "Mark something for redaction first."),
@@ -2458,10 +2604,10 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
     }
 }
 
-/// The floating toolbar's buttons: the right-click menu's commands that are
-/// available now and have an icon, in groups. While a line is edited on the page, the
-/// styles, then Cut, Copy and Paste for what is selected in it, as the keys do there
-/// (ENH-20).
+/// The floating toolbar's buttons: the right-click menu's commands that are available now
+/// and have an icon, in groups, but for Align's submenu. While a line is edited on the
+/// page, the styles, then Cut, Copy and Paste for what is selected in it, as the keys do
+/// there (ENH-20).
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
     const LINE_EDIT: &[&[Act]] = &[STYLES, &[Act::Cut, Act::Copy, Act::Paste]];
     let items = if c.line_edit {
@@ -2469,8 +2615,9 @@ pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
     } else {
         context_items(sel)
     };
-    items
-        .iter()
+    // Align and Distribute are the menus' only, as word processors' floating bars have it.
+    (items.iter())
+        .filter(|g| g[..] != ALIGNS[..])
         .map(|g| {
             let usable = |a: &&Action| (a.enabled)(c) && !a.icon.is_empty();
             g.iter().map(|&a| get(a)).filter(usable).collect::<Vec<_>>()
@@ -2528,6 +2675,22 @@ pub fn context_buttons(
 
 /// One menu entry: a checkbox for on/off commands, else a button with its shortcut.
 /// A click queues the command in `acts`.
+/// Commands `list` in a menu, with a line above each that starts a run of its own in the
+/// registry (`Action::sep`), as the File menu's groups have.
+pub fn menu_list<'a>(
+    ui: &mut egui::Ui,
+    list: impl IntoIterator<Item = &'a Action>,
+    c: &Ctx,
+    acts: &mut Vec<Act>,
+) {
+    for (j, a) in list.into_iter().enumerate() {
+        if a.sep && j > 0 {
+            ui.separator();
+        }
+        menu_item(ui, a, c, acts);
+    }
+}
+
 pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     let enabled = (a.enabled)(c);
     let r = match (a.checked, a.act) {

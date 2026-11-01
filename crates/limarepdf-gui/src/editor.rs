@@ -26,9 +26,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod arrange;
 mod paragraph;
 mod replace;
 mod replace_all;
+pub use arrange::{Align, Axis};
 pub use replace::NotReplaced;
 pub use replace_all::{replace_all, AllJob, Pass, Prepared};
 
@@ -545,7 +547,21 @@ struct Drag {
     /// Objects moved together (`Mode::Move`), with their boxes as they were: `orig` and
     /// `cur` are the box round them all.
     group: Vec<(usize, [f32; 4])>,
+    /// What a move or resize of objects snaps to, and the lines it meets now (NEW-08).
+    snapping: Snapping,
 }
+
+/// The lines a move or resize of objects snaps to, read when it first follows the pointer,
+/// and the guides of those it meets now.
+#[derive(Default)]
+struct Snapping {
+    lines: Option<arrange::Snaps>,
+    guides: Vec<arrange::Guide>,
+}
+
+/// The colour of the guides a move or resize snapped to: seen on paper of any colour, and
+/// apart from the selection's outlines.
+const GUIDE: Color32 = Color32::from_rgb(224, 40, 130);
 
 struct Draw {
     page: usize,
@@ -1597,6 +1613,9 @@ pub struct Editor {
     /// Paragraph editing is on: page text opens as paragraphs where it can be one (the app's
     /// setting, lent to each tab; [`Editor::set_paragraph`]).
     pub paragraphs: bool,
+    /// Objects moved or resized snap to the page's and other objects' edges and middles
+    /// (Edit > Arrange's Snap to objects, the app's setting, lent to each tab).
+    pub snap: bool,
     /// The editor a switch between Paragraph and One line opens once what was typed is in
     /// the document.
     then: Option<Then>,
@@ -1766,6 +1785,7 @@ impl Default for Editor {
             para: None,
             blocks: HashMap::new(),
             paragraphs: false,
+            snap: true,
             then: None,
             switch: None,
             hyphens_wanted: None,
@@ -4003,7 +4023,10 @@ impl Editor {
         let tol = 3.0 / k;
         let htol = 6.0 / k;
         let shift = ui.input(|i| i.modifiers.shift);
-        let area = (r.width() / k) * (r.height() / k);
+        // Alt moves and resizes freely, without snapping.
+        let keys = (shift, ui.input(|i| i.modifiers.alt));
+        let size = (r.width() / k, r.height() / k);
+        let area = size.0 * size.1;
         // Where a drag with the arrow or the read tool begins, the frame it does: once the
         // pointer has gone further from the press than a click can. One let go before that,
         // however long it was held, is a click there.
@@ -4101,6 +4124,7 @@ impl Editor {
             orig: a.bbox,
             cur: a.bbox,
             group: Vec::new(),
+            snapping: Snapping::default(),
         };
         // A press at `p` starts moving, resizing or turning: by the selected item's
         // handles; else with the arrow whatever is under it, which is selected, and with
@@ -4121,6 +4145,7 @@ impl Editor {
                     orig: *b,
                     cur: [0.0; 4],
                     group: Vec::new(),
+                    snapping: Snapping::default(),
                 });
             } else if let (Some(i), Some((id, ends))) = (end_hit(p), sel_line) {
                 ed.drag = Some(Drag {
@@ -4132,6 +4157,7 @@ impl Editor {
                     orig: ends,
                     cur: ends,
                     group: Vec::new(),
+                    snapping: Snapping::default(),
                 });
             } else if let (Some(h), Some(a)) = (h, &selected) {
                 ed.drag = Some(annot_drag(a, Mode::Handle(h), p));
@@ -4232,7 +4258,7 @@ impl Editor {
                     if let Some(pos) = resp.interact_pointer_pos() {
                         match self.marquee.as_mut().filter(|m| m.page == page) {
                             Some(m) => m.cur = to_pt(pos),
-                            None => self.drag_to(ui.ctx(), page, to_pt(pos), shift),
+                            None => self.drag_to(ui.ctx(), page, to_pt(pos), keys, size),
                         }
                     }
                 }
@@ -4336,7 +4362,7 @@ impl Editor {
                 if self.drag.is_some() {
                     if resp.dragged() {
                         if let Some(pos) = resp.interact_pointer_pos() {
-                            self.drag_to(ui.ctx(), page, to_pt(pos), shift);
+                            self.drag_to(ui.ctx(), page, to_pt(pos), keys, size);
                         }
                     }
                     if resp.drag_stopped() {
@@ -4776,6 +4802,17 @@ impl Editor {
             let fill = accent.gamma_multiply(0.25);
             painter.rect(screen_rect(rect), 0.0, fill, st, StrokeKind::Inside);
         }
+        // The lines a move or resize snapped to, dashed along what lines up there.
+        if let Some(d) = self.drag.as_ref().filter(|d| d.page == page) {
+            for g in &d.snapping.guides {
+                let ends = match g.upright {
+                    true => [to_screen(g.at, g.from), to_screen(g.at, g.to)],
+                    false => [to_screen(g.from, g.at), to_screen(g.to, g.at)],
+                };
+                let st = Stroke::new(1.0, GUIDE);
+                painter.extend(egui::Shape::dashed_line(&ends, st, 4.0, 3.0));
+            }
+        }
         // Notes at a fixed size on screen, over the page's small drawing of them.
         for a in self.annots.get(&page).into_iter().flatten() {
             if a.kind != AnnotKind::Note || !a.on_page() {
@@ -4931,6 +4968,7 @@ impl Editor {
                 orig: o.bbox,
                 cur: o.bbox,
                 group: Vec::new(),
+                snapping: Snapping::default(),
             });
         }
     }
@@ -4950,6 +4988,7 @@ impl Editor {
             orig: b,
             cur: b,
             group,
+            snapping: Snapping::default(),
         });
     }
 
@@ -5014,20 +5053,68 @@ impl Editor {
     }
 
     /// Follow the pointer, at `p` (page points) on `page`, with the move, resize or turn
-    /// being dragged. Shift keeps proportions, lines at 45° and turns to steps of 15°.
-    fn drag_to(&mut self, ctx: &egui::Context, page: usize, p: Pos2, shift: bool) {
+    /// being dragged. Shift keeps proportions, lines at 45° and turns to steps of 15°. With
+    /// Snap to objects on, a move or resize of objects snaps to the edges and middles of the
+    /// page (`size`, its width and height) and of its other objects, unless `free` (Alt
+    /// held, as word processors place freely).
+    fn drag_to(
+        &mut self,
+        ctx: &egui::Context,
+        page: usize,
+        p: Pos2,
+        (shift, free): (bool, bool),
+        size: (f32, f32),
+    ) {
+        let objs = self.objs.get(&page).map_or(&[][..], |v| v);
+        let (snap, shown) = (self.snap && !free, self.show_hidden);
+        let reach = arrange::SNAP_PX / self.zoom.max(0.01);
         let Some(d) = self.drag.as_mut().filter(|d| d.page == page) else {
             return;
         };
         let (dx, dy) = (p.x - d.start.x, p.y - d.start.y);
+        // The lines, read the first time: the page's, and those of the other objects a click
+        // could select. Comments, a line's ends and turns don't snap.
+        let objects = d.annot.is_none() && matches!(d.mode, Mode::Move | Mode::Handle(_));
+        let (id, group) = (d.id, &d.group);
+        let snaps = match snap && objects {
+            true => Some(&*d.snapping.lines.get_or_insert_with(|| {
+                let moving = |i: usize| i == id || group.iter().any(|g| g.0 == i);
+                let others = (objs.iter().enumerate())
+                    .filter(|&(i, o)| !moving(i) && (shown || !o.hidden))
+                    .filter(|(_, o)| o.decorates.is_none())
+                    .map(|(_, o)| o.bbox);
+                arrange::Snaps::new(size, others)
+            })),
+            false => None,
+        };
+        let mut guides = Vec::new();
         d.cur = match d.mode {
-            Mode::Move => [
-                d.orig[0] + dx,
-                d.orig[1] + dy,
-                d.orig[2] + dx,
-                d.orig[3] + dy,
-            ],
-            Mode::Handle(h) => resize(d.orig, h, dx, dy, shift),
+            Mode::Move => {
+                let b = shifted(d.orig, dx, dy);
+                match snaps {
+                    Some(s) => {
+                        let (sx, sy) = s.snap_move(b, reach);
+                        let b = shifted(b, sx, sy);
+                        let (xs, ys) = arrange::features(b);
+                        guides = s.guides(b, &xs, &ys);
+                        b
+                    }
+                    None => b,
+                }
+            }
+            Mode::Handle(h) => {
+                let pointer = (dx, dy);
+                let (dx, dy) =
+                    snaps.map_or(pointer, |s| s.snap_resize(d.orig, h, pointer, shift, reach));
+                let b = resize(d.orig, h, dx, dy, shift);
+                if let Some(s) = snaps {
+                    // Along the edges the handle moves.
+                    let (x, y) = arrange::moving_edges(h);
+                    let (x, y) = (x.map(|i| b[i]), y.map(|i| b[i]));
+                    guides = s.guides(b, x.as_slice(), y.as_slice());
+                }
+                b
+            }
             // Shift keeps the line at a multiple of 45° from its other end.
             Mode::End(i) => {
                 let o = 1 - i;
@@ -5054,6 +5141,7 @@ impl Editor {
                 [deg, 0.0, 0.0, 0.0]
             }
         };
+        d.snapping.guides = guides;
         match d.mode {
             Mode::Move => ctx.set_cursor_icon(CursorIcon::Grabbing),
             Mode::Handle(h) => ctx.set_cursor_icon(handle_cursor(h)),
@@ -5348,6 +5436,43 @@ impl Editor {
         if !boxes.is_empty() {
             self.actions.push(Action::SetBox(p, boxes));
         }
+    }
+
+    /// Line up the objects selected, if the tool in use can move them (NEW-08): two or more
+    /// by the box round them all, one alone by its page (its size in `sizes`, the pages'
+    /// as shown), in one change. Already lined up, nothing changes.
+    pub fn align(&mut self, how: Align, sizes: &[(f32, f32)]) {
+        let Some((page, _)) = self.selection.objects().filter(|_| self.object_moves()) else {
+            return;
+        };
+        let Some(&size) = sizes.get(page) else {
+            return;
+        };
+        let boxes = arrange::align(&self.held_boxes(page), how, size);
+        if !boxes.is_empty() {
+            self.actions.push(Action::SetBox(page, boxes));
+        }
+    }
+
+    /// Space out three or more objects selected evenly along `axis`, the outer two staying,
+    /// if the tool in use can move them, in one change.
+    pub fn distribute(&mut self, axis: Axis) {
+        let Some((page, _)) = self.selection.objects().filter(|_| self.object_moves()) else {
+            return;
+        };
+        let boxes = arrange::distribute(&self.held_boxes(page), axis);
+        if !boxes.is_empty() {
+            self.actions.push(Action::SetBox(page, boxes));
+        }
+    }
+
+    /// The guides the move or resize being dragged snapped to: upright or level, and where.
+    #[cfg(test)]
+    pub fn guides(&self) -> Vec<(bool, f32)> {
+        let d = self.drag.as_ref();
+        (d.into_iter().flat_map(|d| &d.snapping.guides))
+            .map(|g| (g.upright, g.at))
+            .collect()
     }
 
     /// Esc: let go of a move, resize, turn, shape, pen stroke, selection rectangle or word

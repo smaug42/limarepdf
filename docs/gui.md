@@ -88,7 +88,7 @@ undo.", "Select some text first." or "Click in a form field first."
 
 | Name | Groups and buttons |
 | --- | --- |
-| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs |
+| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
 | Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
 | Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
@@ -97,10 +97,9 @@ undo.", "Select some text first." or "Click in a form field first."
 | View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
-Align in Edit; Link and Blank document in Insert; Spelling and Export comments in Review; Create fields in Forms
-and sign; Your AI in View; Print preview and Reduce file size in the File menu. They do nothing, and Tab passes
-them by. Turn off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is
-remembered.
+Link and Blank document in Insert; Spelling and Export comments in Review; Create fields in Forms and sign; Your
+AI in View; Print preview and Reduce file size in the File menu. They do nothing, and Tab passes them by. Turn
+off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is remembered.
 
 **Compact commands.** The small arrow at the right of the commands row (or View > Show > Compact commands) puts the
 band on one row of icons, which name themselves on hover; the arrow again brings their names back. The choice is
@@ -408,17 +407,18 @@ box. Saving, printing and other commands keep a field you are still typing in. P
 sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words, a thumbnail or a card in Organise for a short menu of what applies
-there. Right-clicking selects what is under the pointer first. In text you are typing on the page (a line being
-edited, new text, a note or a text box), a right-click on what is selected keeps it selected, and the menu has Cut,
-Copy and Paste, then Bold, Italic, Underline and Strikethrough where they apply, as in a word processor. A
-selected object or run of words also gets a small floating toolbar with the same commands. It sits by the
-selection: above it, below it or beside it where that covers no other text, or else just above or below it, over
-as little text as it can; it never covers the selection. While a line is edited on the page, it has Bold, Italic,
-Underline, Strikethrough, Cut, Copy and Paste for what is selected in the line, and clicking it leaves the line
-open with the keyboard back in it. Its last button, Dock controls on the right, moves these buttons to the top of
-the inspector (or its strip, when collapsed) instead; Float controls near selection there brings the floating
-toolbar back. View > Properties ▾ > Selection controls on the right does either. The choice is remembered between
-runs; resizing the window doesn't change it.
+there. Right-clicking selects what is under the pointer first. Selected objects get an **Align** submenu of the
+Align and Distribute commands that apply ([Line up objects](content-editing.md#line-up-objects)). In text you are
+typing on the page (a line being edited, new text, a note or a text box), a right-click on what is selected keeps
+it selected, and the menu has Cut, Copy and Paste, then Bold, Italic, Underline and Strikethrough where they
+apply, as in a word processor. A selected object or run of words also gets a small floating toolbar with the same
+commands but Align. It sits by the selection: above it, below it or beside it where that covers no other text, or else just
+above or below it, over as little text as it can; it never covers the selection. While a line is edited on the
+page, it has Bold, Italic, Underline, Strikethrough, Cut, Copy and Paste for what is selected in the line, and
+clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves
+these buttons to the top of the inspector (or its strip, when collapsed) instead; Float controls near selection
+there brings the floating toolbar back. View > Properties ▾ > Selection controls on the right does either. The
+choice is remembered between runs; resizing the window doesn't change it.
 
 Delete removes the selected words, object, comment or mark, or the selected pages. Words selected with the read
 tool can also be typed over or cut (see
@@ -518,6 +518,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+A (arrow) | Select every object on the page |
 | Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
 | Shift+drag (arrow) | Add what a rectangle holds to the selection |
+| Alt while dragging an object or one of its handles | Move or resize it freely, without snapping to the page or other objects |
 | Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle, word selection or pages being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, take back pages cut, take away Organise's insertion bar, clear the selection, or leave a tool for the read tool. In a box of Edit > Font or the inspector (the font size, say) while typing is open on the page, it drops what was typed in the box and goes back to the typing |
 | Ctrl+B, Ctrl+I, Ctrl+U | Bold, Italic, Underline for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | ⌘⇧X (on a Mac only) | Strikethrough, for the same text as Ctrl+U, as in Word for Mac. On Windows and Linux it has no key, as in Word: use the Font group's **S**, the right-click menu or the command palette |

@@ -2780,6 +2780,15 @@ impl App {
                 let (dx, dy) = (dx as f32 * step, dy as f32 * step);
                 self.tabs[self.active].ed.nudge(dx, dy);
             }
+            Act::Align(how) => {
+                let t = &mut self.tabs[self.active];
+                t.ed.align(how, &t.sizes);
+            }
+            Act::Distribute(axis) => self.tabs[self.active].ed.distribute(axis),
+            Act::ToggleSnap => {
+                self.settings.snap = !self.settings.snap;
+                self.settings.save();
+            }
             Act::Extend(toward) => {
                 let t = &mut self.tabs[self.active];
                 t.ed.extend_by(&t.pdf, toward);
@@ -4688,6 +4697,7 @@ impl App {
             page_labels: self.settings.page_labels,
             planned: self.settings.show_planned,
             compact: self.settings.compact_commands,
+            snap: self.settings.snap,
             accent: self.settings.accent,
             layout: self.settings.layout,
             cover: self.settings.cover,
@@ -6339,9 +6349,11 @@ impl eframe::App for App {
         if let Some(t) = t.filter(|t| enter && t.crop_view()) {
             t.end_crop();
         }
-        // Paragraph editing as the app has it, in every tab (a tab opened since too).
+        // Paragraph editing and snapping as the app has them, in every tab (a tab opened
+        // since too).
         for t in &mut self.tabs {
             t.ed.paragraphs = self.settings.paragraphs;
+            t.ed.snap = self.settings.snap;
         }
         self.type_over(&ctx);
         self.clipboard(&ctx);
@@ -7019,6 +7031,7 @@ mod tests {
     use crate::page_text;
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
 
+    mod align;
     mod backdrop;
     mod forms;
     mod history;
@@ -7570,6 +7583,7 @@ mod tests {
             "Replace",
             "Select",
             "Paragraph",
+            "Align",
             "Show planned features",
             "Page view",
             "Organise pages",
@@ -8351,12 +8365,14 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
+        app.band = Band::Insert;
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        let name = "Align — Planned";
-        let (at, _) = node(&tree, name).expect("Align");
-        let align = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
-        assert!(align.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
-        let (paste, _) = node(&tree, "Paste").expect("Paste");
+        let name = "Link — Planned";
+        let (at, _) = node(&tree, name).expect("Link");
+        let link = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
+        assert!(link.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
+        let before = "Header and footer";
+        let (marks, _) = node(&tree, before).expect(before);
         let undo = app.tabs[0].can_undo();
         window(&mut app, &ctx, 1400.0, click_at(at.center()));
         settled_at(&mut app, &ctx, 1400.0);
@@ -8377,11 +8393,11 @@ mod tests {
             let shown = (tree.nodes.iter()).find(|(_, n)| planned(&n.label().map(str::to_string)));
             assert!(shown.is_none(), "{}: {shown:?}", band.name());
         }
-        app.band = Band::Edit;
+        app.band = Band::Insert;
         let tree = settled_at(&mut app, &ctx, 1400.0);
         // Those before the planned ones stay where they were.
-        let now = node(&tree, "Paste").map(|(r, _)| r);
-        assert_eq!(now, Some(paste), "Paste moved");
+        let now = node(&tree, before).map(|(r, _)| r);
+        assert_eq!(now, Some(marks), "{before} moved");
         app.act(&ctx, Act::TogglePlanned);
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert!(node(&tree, name).is_some(), "not back");
@@ -8508,14 +8524,27 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert!(node(&tree, "Find").is_some());
-        assert!(node(&tree, "Align — Planned").is_some());
+        assert!(node(&tree, "Align").is_some());
         let tree = settled_at(&mut app, &ctx, 1000.0);
         assert!(node(&tree, "Find").is_some(), "Editing folded at 1000");
-        let align = node(&tree, "Align — Planned");
-        assert!(align.is_none(), "Align shown at 1000");
-        // Text flow's Paragraph, its one command, folded to its icon.
-        assert!(node(&tree, "Text flow").is_none(), "folded to its name");
-        assert!(node(&tree, "Paragraph").is_some(), "no Paragraph at 1000");
+        // Folded, Text flow's Paragraph and Arrange's Align, the one command of each, show
+        // as their icons.
+        let tree = settled_at(&mut app, &ctx, 900.0);
+        assert!(node(&tree, "Editing").is_some(), "not folded at 900");
+        for (group, one) in [("Text flow", "Paragraph"), ("Arrange", "Align")] {
+            assert!(node(&tree, group).is_none(), "{group} folded to its name");
+            assert!(node(&tree, one).is_some(), "no {one} at 900");
+        }
+        // Planned features alone go first: Review's Proofing (Spelling) before the Review
+        // group to its right.
+        app.band = Band::Review;
+        let spelling = "Spelling — Planned";
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(node(&tree, spelling).is_some());
+        let tree = settled_at(&mut app, &ctx, 1200.0);
+        assert!(node(&tree, spelling).is_none(), "shown at 1200");
+        assert!(node(&tree, "Flatten…").is_some(), "Review folded at 1200");
+        app.band = Band::Edit;
         let tree = settled_at(&mut app, &ctx, 700.0);
         let (at, _) = node(&tree, "Editing").expect("Editing folded");
         assert!(node(&tree, "Find").is_none(), "Find shown");
@@ -11408,6 +11437,8 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = objects_tab(&ctx);
+        // Moved by just what is dragged: no snapping (NEW-08's, `tests/align.rs`).
+        app.settings.snap = false;
         app.act(&ctx, Act::Tool(Tool::Select));
         select(&mut app, &ctx, &[0, 2, 4, 5]);
         let (before, steps) = (boxes(&app, 0), app.tabs[0].history().1);
@@ -11702,6 +11733,8 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = objects_tab(&ctx);
+        // Moved by just what is dragged: no snapping (NEW-08's, `tests/align.rs`).
+        app.settings.snap = false;
         assert_eq!(app.tabs[0].ed.tool, Tool::Read);
         click_page(&mut app, &ctx, (340.0, 90.0), false);
         assert_eq!(held(&app), Some((0, vec![0])), "the shape");

@@ -46,6 +46,22 @@
   and Replace all keep the underline of what they replace. Not offered:
   double, dotted, dashed or wavy lines, or an underline colour of its own; nor in text boxes, form fields,
   headers, footers, watermarks and stamps, or on the command line.
+- **Align**, **Distribute** and snapping, as in Word. **Align ▾** in Edit's Arrange group (no longer marked
+  Planned) has Align left, Align centre, Align right, Align top, Align middle and Align bottom, then Distribute
+  horizontally and Distribute vertically, then **Snap to objects**; they are also in ☰ > Edit > Align and the
+  command search ("align", "distribute", "snap"), and right-clicking selected objects gives an **Align** submenu
+  of the ones that apply. Two or more objects line up with each other by the box round them all (Align left at
+  the leftmost left edge, Align centre at the box's middle, and so on); one alone lines up with the page (Align
+  centre centres it across the page, Align bottom puts it at the foot). Objects keep their size. Distribute, for
+  three or more, leaves the first and last (judged by their middles) where they are and moves those between so
+  the gaps between neighbours are equal. They act on what the tool in use can move: any object with the arrow;
+  pictures and shapes with the read tool, and page text after Move or resize text (or just added). Each is one
+  undo step, and objects already lined up are left as they are. Dragging a picture, shape or line of text, or
+  one of its handles, snaps its edges and middle to the page's and to the other objects' on that page within a
+  few pixels on screen, a dashed pink guide showing the line and what lines up on it; a resize snaps only the
+  edges dragged, and with Shift on a corner the nearer edge snaps and the other follows. Hold Alt (⌥ on a Mac)
+  to drag freely, as in Word; Snap to objects (on at first, remembered between runs) turns snapping off or back
+  on. The arrow keys still nudge by 1 point (10 with Shift), without snapping.
 
 ### Changed
 
@@ -63,6 +79,8 @@
   beside Highlight. They mark the text with a comment and don't change it. The Font group's greyed Underline,
   marked Planned, and the inspector's Future text tools (Planned) for selected text are gone, now that Underline
   and Strikethrough are built.
+- The command band's menus show the same dividing lines between groups of commands as the ☰ menu does, for
+  example in Insert pages ▾, Fill fields ▾, Digital signature ▾, Facing pages ▾ and Page colours ▾.
 
 ### Fixed
 

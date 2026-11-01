@@ -25,7 +25,8 @@ source.
 - **Write in many languages:** Latin, Greek and Cyrillic letters, Chinese, Japanese and Korean, in any font: as in
   a word processor, a word your font lacks is written in an installed font that has it.
 - **Add and arrange content:** add text, pictures and shapes, and move, resize, restyle or delete what is already
-  on the page, one thing or several at once.
+  on the page, one thing or several at once; line things up or space them out evenly, and they snap into line
+  with the page and each other as you drag.
 - **Comment and mark up:** highlights, notes, text boxes, shapes, arrows, freehand drawing and replies.
 - **Organise pages:** see every page at once, as in a slide sorter, and drag or cut and paste pages into a new
   order; rotate, insert, delete and extract them; merge files into one or split one into several.

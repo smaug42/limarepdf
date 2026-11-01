@@ -2,10 +2,10 @@
 
 # Editing text and pictures
 
-Change the text already on a page, add new text and pictures, and move, resize, restyle or delete what is there.
-A double-click edits a line; turn on **Paragraph** to edit whole paragraphs instead, their lines rewrapping as you
-type (see [Edit a paragraph](#edit-a-paragraph)). Shortcuts are written with Ctrl; on a Mac, use ⌘ (Command)
-instead.
+Change the text already on a page, add new text and pictures, and move, resize, line up, restyle or delete what is
+there. A double-click edits a line; turn on **Paragraph** to edit whole paragraphs instead, their lines rewrapping
+as you type (see [Edit a paragraph](#edit-a-paragraph)). Shortcuts are written with Ctrl; on a Mac, use ⌘
+(Command) instead.
 
 ## Edit a line of text
 
@@ -305,6 +305,9 @@ so that clicking a scan doesn't pick it up. A drag that starts anywhere else sti
 selects any object, page text and full-page pictures included: click to select, drag to move, drag a handle to
 resize (Shift keeps the proportions), and arrow keys to nudge.
 
+Pictures, shapes and lines of text snap into line with the page and other objects as you drag them, a guide
+showing where; hold **Alt** (Option on a Mac) to place them freely (see [Line up objects](#line-up-objects)).
+
 ## Select several objects
 
 Hold **Shift** and click pictures and shapes to add them to the selection. Shift+click one again to take it out. A
@@ -322,11 +325,61 @@ Each selected object is outlined, with a dashed box round them all. Drag any one
 move them together; Delete or Backspace deletes them all. The inspector says how many there are and what they are.
 **Edit > Font** changes the lines of text among them, each line as a whole, and the inspector's Fill, Outline and
 width change the shapes; a value they don't share shows blank or mixed. X and Y under **Position** move
-them all. Right-click one of them for Copy the selected text lines (in reading order), Cut (when they are all
-lines of text) and Delete. Each change is one undo step.
+them all. Right-click one of them for Copy the selected text lines (in reading order), **Align** (to line them up
+or space them out), Cut (when they are all lines of text) and Delete. Each change is one undo step.
 
-Several objects are selected on one page at a time. They move, restyle and delete together, but are resized one at
-a time. Comments and markup are selected one at a time, never with page objects.
+Several objects are selected on one page at a time. They move, restyle and delete together, and line up or space
+out evenly with **Align** (see [Line up objects](#line-up-objects)), but are resized one at a time. Comments and
+markup are selected one at a time, never with page objects.
+
+## Line up objects
+
+**Align ▾**, in the **Arrange** group of **Edit** in the band, lines up the selected objects or spaces them out
+evenly, as in Word. Its menu has **Align left**, **Align centre**, **Align right**, **Align top**, **Align middle**
+and **Align bottom**, then **Distribute horizontally** and **Distribute vertically**, then **Snap to objects**. The
+same commands are in ☰ > Edit > Align and in the command search (Ctrl+K: type "align", "distribute" or "snap").
+Right-click selected objects for an **Align** submenu of the Align and Distribute commands that apply just then.
+
+1. Select the objects: Shift+click them, or drag a rectangle round them with the arrow (see
+   [Select several objects](#select-several-objects)).
+2. Choose **Edit > Align**, then how to line them up.
+
+Two or more objects line up with each other, by the box round them all:
+
+- **Align left** puts every left edge at the leftmost one, and **Align right** every right edge at the rightmost
+  one.
+- **Align top** puts every top at the highest one, and **Align bottom** every bottom at the lowest one.
+- **Align centre** puts each object's middle at the middle of the box round them all, across the page; **Align
+  middle** does the same down the page.
+
+One object on its own lines up with the page instead: **Align left** and **Align right** put it at the page's left
+or right edge, **Align top** and **Align bottom** at its top or foot, **Align centre** centres it across the page,
+and **Align middle** puts it halfway down. Objects keep their size.
+
+**Distribute horizontally** and **Distribute vertically** space out three or more objects: the first and last (the
+leftmost and rightmost, or the top and bottom ones, judged by their middles) stay where they are, and those
+between move so that the gaps between neighbours are equal. With fewer than three selected they are greyed, and
+say "Select three or more objects first."
+
+Align and Distribute act on what the tool in use can move. With the arrow (**Edit > Select > Select, move and
+resize objects**), that is any object, page text included. With the read tool, it is pictures and shapes, and page
+text only after **Move or resize text** (see [Move, resize or delete](#move-resize-or-delete)) or text you have
+just added. Otherwise they are greyed, and say "Select something the tool in use can move first." Each Align or
+Distribute is one undo step; objects already lined up are left as they are, with nothing added to undo.
+
+Objects also snap into line as you drag them. While you drag a picture, a shape or a line of text to move it, or
+one of its handles to resize it, its edges and middle snap to the page's edges and middle, and to the edges and
+middles of the other objects on that page, when they come within a few pixels of them on screen. A dashed pink
+guide line shows along the line it snapped to and the objects that line up there. A resize snaps only the edges
+you are dragging; with Shift on a corner, keeping the proportions, the nearer edge snaps and the other follows.
+
+Hold **Alt** (Option on a Mac) while you drag to move or resize freely, without snapping, as in Word. **Edit >
+Align > Snap to objects** turns snapping off, or back on: it is on at first, ticked while it is on, and remembered
+the next time you start LimarePDF. The arrow keys still move selected objects by 1 point (10 with Shift), and
+never snap.
+
+Comments and markup don't snap and can't be aligned, as they are selected one at a time. Objects are lined up on
+one page at a time, and there is no grid or ruler.
 
 ## Change size, font and colour
 
@@ -474,6 +527,8 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   safely are refused rather than risk losing them.
 - Replacing an image fits the new picture inside the old box, centred, upright as a photo's own orientation asks.
 - Rotating objects, grouping, changing the stacking order, and copying and pasting between pages are not implemented.
+- Comments and markup don't snap and can't be aligned (they are selected one at a time). Objects are lined up on one
+  page at a time, and there is no grid or ruler.
 - Moving an object does not move links or annotations over it.
 - Text inside a form XObject (a reusable block of page content) is searched and selected like other text, but it is
   not a separate object: the form moves, resizes and deletes as a whole, and its text cannot be edited.

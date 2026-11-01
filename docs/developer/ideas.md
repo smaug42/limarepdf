@@ -60,7 +60,8 @@ Small or medium additions that build on what LimarePDF already has:
 - Background images (S: a picture watermark at 100%, opaque and behind the content comes close; filling the page
   edge to edge is what's missing)
 - QR codes and barcodes stamped onto pages (S–M, needs a crate)
-- Guides, rulers, a grid and snapping (M)
+- Guides of your own, rulers and a grid to snap to (M; snapping to the page's and other objects' edges and middles
+  is built, NEW-08)
 
 ## Annotations and review
 

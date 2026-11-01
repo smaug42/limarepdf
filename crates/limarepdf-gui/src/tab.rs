@@ -2847,6 +2847,7 @@ impl Tab {
             .selection
             .objects()
             .map_or(&[][..], |(_, held)| held);
+        c.objects = held.len();
         c.obj_kind = match held {
             [one] => Some(one.kind),
             _ => None,

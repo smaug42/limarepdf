@@ -10,7 +10,7 @@
 //! planned features alone are left out first.
 
 use crate::actions::{self, Act, Ctx};
-use crate::editor::Tool;
+use crate::editor::{Align, Axis, Tool};
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::settings::{Accent, Layout, PageLook};
@@ -181,13 +181,21 @@ const fn group(name: &'static str, items: &'static [Item]) -> Group {
     Group { name, items }
 }
 
+/// Align's menu (NEW-08), as Word's: the six alignments, the two ways to distribute (the
+/// right-click menu's [`actions::ALIGNS`]), then Snap to objects.
+const ALIGN_MENU: [Act; 9] = [
+    Act::Align(Align::Left),
+    Act::Align(Align::Centre),
+    Act::Align(Align::Right),
+    Act::Align(Align::Top),
+    Act::Align(Align::Middle),
+    Act::Align(Align::Bottom),
+    Act::Distribute(Axis::Across),
+    Act::Distribute(Axis::Down),
+    Act::ToggleSnap,
+];
+
 // The planned features, each with the build plan's item that builds it.
-const ALIGN: Planned = Planned {
-    label: "Align",
-    icon: icon::ALIGN_LEFT,
-    item: "NEW-08",
-    what: "Line up and space out the selected objects.",
-};
 const LINK: Planned = Planned {
     label: "Link",
     icon: icon::LINK,
@@ -273,7 +281,7 @@ static EDIT: &[Group] = &[
         "Text flow",
         &[b(Act::EditParagraph, "Paragraph", icon::TEXT_ALIGN_LEFT)],
     ),
-    group("Arrange", &[Item::Planned(&ALIGN)]),
+    group("Arrange", &[menu("Align", icon::ALIGN_LEFT, &ALIGN_MENU)]),
 ];
 
 static INSERT: &[Group] = &[
@@ -906,9 +914,7 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
         .min_size(egui::vec2(0.0, BUTTON));
         ui.add_enabled_ui(enabled, |ui| {
             let (r, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                for &a in b.menu {
-                    actions::menu_item(ui, actions::get(a), c, acts);
-                }
+                actions::menu_list(ui, b.menu.iter().map(|&a| actions::get(a)), c, acts);
             });
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, b.label));
             let r = if compact { r.on_hover_text(b.label) } else { r };
@@ -939,9 +945,7 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
     }
     if !b.menu.is_empty() {
         caret(ui, &format!("{} options", b.label), |ui| {
-            for &m in b.menu {
-                actions::menu_item(ui, actions::get(m), c, acts);
-            }
+            actions::menu_list(ui, b.menu.iter().map(|&m| actions::get(m)), c, acts);
         });
     }
 }
@@ -1111,9 +1115,9 @@ mod tests {
     #[test]
     fn planned_features_name_their_plan_items() {
         let all = all_planned();
-        assert!(all.len() >= 9);
-        // Built: Underline (NEW-07, batch 46's 4b).
-        assert!(!all.iter().any(|p| p.item == "NEW-07"));
+        assert!(all.len() >= 8);
+        // Built: Underline (NEW-07, batch 46's 4b) and Align (NEW-08, its stage 5).
+        assert!(!all.iter().any(|p| p.item == "NEW-07" || p.item == "NEW-08"));
         for p in &all {
             let id = p.item;
             let known = ["NEW-", "ENH-", "PF-"].iter().any(|k| id.starts_with(k));
@@ -1169,9 +1173,14 @@ mod tests {
             (Act::Tool(Tool::Sign), 1),
             (Act::SignDigital, 2),
             (Act::Find, 0),
+            (Act::Align(Align::Left), 1),
+            (Act::Distribute(Axis::Across), 1),
+            (Act::ToggleSnap, 1),
         ] {
             assert_eq!(openings(act), Some(want), "{act:?}");
         }
+        // Align's menu has the right-click menu's Align and Distribute, then Snap.
+        assert_eq!(ALIGN_MENU[..8], actions::ALIGNS);
         // The font, size, Bold, Italic and colour: Edit's Font group, showing.
         let font = EDIT
             .iter()
