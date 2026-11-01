@@ -325,24 +325,26 @@ Each selected object is outlined, with a dashed box round them all. Drag any one
 move them together; Delete or Backspace deletes them all. The inspector says how many there are and what they are.
 **Edit > Font** changes the lines of text among them, each line as a whole, and the inspector's Fill, Outline and
 width change the shapes; a value they don't share shows blank or mixed. X and Y under **Position** move
-them all. Right-click one of them for Copy the selected text lines (in reading order), **Align** (to line them up
-or space them out), Cut (when they are all lines of text) and Delete. Each change is one undo step.
+them all. Right-click one of them for Copy the selected text lines (in reading order), **Align objects** (to line
+them up or space them out), Cut (when they are all lines of text) and Delete. Each change is one undo step.
 
 Several objects are selected on one page at a time. They move, restyle and delete together, and line up or space
-out evenly with **Align** (see [Line up objects](#line-up-objects)), but are resized one at a time. Comments and
-markup are selected one at a time, never with page objects.
+out evenly with **Align objects** (see [Line up objects](#line-up-objects)), but are resized one at a time.
+Comments and markup are selected one at a time, never with page objects.
 
 ## Line up objects
 
-**Align ▾**, in the **Arrange** group of **Edit** in the band, lines up the selected objects or spaces them out
-evenly, as in Word. Its menu has **Align left**, **Align centre**, **Align right**, **Align top**, **Align middle**
-and **Align bottom**, then **Distribute horizontally** and **Distribute vertically**, then **Snap to objects**. The
-same commands are in ☰ > Edit > Align and in the command search (Ctrl+K: type "align", "distribute" or "snap").
-Right-click selected objects for an **Align** submenu of the Align and Distribute commands that apply just then.
+**Align objects ▾**, in the **Arrange** group of **Edit** in the band, lines up the selected objects or spaces
+them out evenly, as Word's Align does. Its menu has **Align left**, **Align centre**, **Align right**, **Align
+top**, **Align middle** and **Align bottom**, then **Distribute horizontally** and **Distribute vertically**, then
+**Snap to objects**. The same commands are in ☰ > Edit > Align objects and in the command search (Ctrl+K: type
+"align", "distribute" or "snap"). Right-click selected objects for an **Align objects** submenu of the Align and
+Distribute commands that apply just then. It moves pictures, shapes and lines of text on the page; it doesn't
+line text up inside a paragraph.
 
 1. Select the objects: Shift+click them, or drag a rectangle round them with the arrow (see
    [Select several objects](#select-several-objects)).
-2. Choose **Edit > Align**, then how to line them up.
+2. Choose **Edit > Align objects**, then how to line them up.
 
 Two or more objects line up with each other, by the box round them all:
 
@@ -374,7 +376,7 @@ guide line shows along the line it snapped to and the objects that line up there
 you are dragging; with Shift on a corner, keeping the proportions, the nearer edge snaps and the other follows.
 
 Hold **Alt** (Option on a Mac) while you drag to move or resize freely, without snapping, as in Word. **Edit >
-Align > Snap to objects** turns snapping off, or back on: it is on at first, ticked while it is on, and remembered
+Align objects > Snap to objects** turns snapping off, or back on: it is on at first, ticked while it is on, and remembered
 the next time you start LimarePDF. The arrow keys still move selected objects by 1 point (10 with Shift), and
 never snap.
 

@@ -46,11 +46,11 @@
   and Replace all keep the underline of what they replace. Not offered:
   double, dotted, dashed or wavy lines, or an underline colour of its own; nor in text boxes, form fields,
   headers, footers, watermarks and stamps, or on the command line.
-- **Align**, **Distribute** and snapping, as in Word. **Align ▾** in Edit's Arrange group (no longer marked
-  Planned) has Align left, Align centre, Align right, Align top, Align middle and Align bottom, then Distribute
-  horizontally and Distribute vertically, then **Snap to objects**; they are also in ☰ > Edit > Align and the
-  command search ("align", "distribute", "snap"), and right-clicking selected objects gives an **Align** submenu
-  of the ones that apply. Two or more objects line up with each other by the box round them all (Align left at
+- **Align**, **Distribute** and snapping for objects, as in Word. **Align objects ▾** in Edit's Arrange group
+  (no longer marked Planned as Align) has Align left, Align centre, Align right, Align top, Align middle and Align
+  bottom, then Distribute horizontally and Distribute vertically, then **Snap to objects**; they are also in ☰ >
+  Edit > Align objects and the command search ("align", "distribute", "snap"), and right-clicking selected
+  objects gives an **Align objects** submenu of the ones that apply. Two or more objects line up with each other by the box round them all (Align left at
   the leftmost left edge, Align centre at the box's middle, and so on); one alone lines up with the page (Align
   centre centres it across the page, Align bottom puts it at the foot). Objects keep their size. Distribute, for
   three or more, leaves the first and last (judged by their middles) where they are and moves those between so

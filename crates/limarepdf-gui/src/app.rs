@@ -7583,7 +7583,7 @@ mod tests {
             "Replace",
             "Select",
             "Paragraph",
-            "Align",
+            "Align objects",
             "Show planned features",
             "Page view",
             "Organise pages",
@@ -8524,14 +8524,15 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert!(node(&tree, "Find").is_some());
-        assert!(node(&tree, "Align").is_some());
+        assert!(node(&tree, "Align objects").is_some());
         let tree = settled_at(&mut app, &ctx, 1000.0);
         assert!(node(&tree, "Find").is_some(), "Editing folded at 1000");
-        // Folded, Text flow's Paragraph and Arrange's Align, the one command of each, show
-        // as their icons.
+        // Folded, Text flow's Paragraph and Arrange's Align objects, the one command of
+        // each, show as their icons.
         let tree = settled_at(&mut app, &ctx, 900.0);
         assert!(node(&tree, "Editing").is_some(), "not folded at 900");
-        for (group, one) in [("Text flow", "Paragraph"), ("Arrange", "Align")] {
+        let arrange = ("Arrange", "Align objects");
+        for (group, one) in [("Text flow", "Paragraph"), arrange] {
             assert!(node(&tree, group).is_none(), "{group} folded to its name");
             assert!(node(&tree, one).is_some(), "no {one} at 900");
         }

@@ -115,7 +115,7 @@ pub enum Act {
     /// Move the selected object by this many points (×10 with Shift).
     Nudge(i8, i8),
     /// Line up the selected objects: two or more by each other, one alone by the page
-    /// (Edit > Arrange's Align; NEW-08).
+    /// (Edit > Arrange's Align objects; NEW-08).
     Align(Align),
     /// Space out three or more selected objects evenly, the outer two staying.
     Distribute(Axis),
@@ -1233,7 +1233,7 @@ pub static ACTIONS: &[Action] = &[
         enabled: alignable,
         hint: "Line up the left edges of the selected objects, or put one alone at the \
                page's left edge.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -1244,7 +1244,7 @@ pub static ACTIONS: &[Action] = &[
         enabled: alignable,
         hint: "Line up the middles of the selected objects across, or centre one alone on \
                the page.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -1255,7 +1255,7 @@ pub static ACTIONS: &[Action] = &[
         enabled: alignable,
         hint: "Line up the right edges of the selected objects, or put one alone at the \
                page's right edge.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -1266,7 +1266,7 @@ pub static ACTIONS: &[Action] = &[
         enabled: alignable,
         hint: "Line up the tops of the selected objects, or put one alone at the top of \
                the page.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -1277,7 +1277,7 @@ pub static ACTIONS: &[Action] = &[
         enabled: alignable,
         hint: "Line up the middles of the selected objects down the page, or put one alone \
                halfway down it.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -1288,7 +1288,7 @@ pub static ACTIONS: &[Action] = &[
         enabled: alignable,
         hint: "Line up the bottoms of the selected objects, or put one alone at the foot \
                of the page.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -1300,7 +1300,7 @@ pub static ACTIONS: &[Action] = &[
         sep: true,
         hint: "Space three or more selected objects evenly across, the outer two staying \
                where they are.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -1311,7 +1311,7 @@ pub static ACTIONS: &[Action] = &[
         enabled: distributable,
         hint: "Space three or more selected objects evenly down the page, the top and \
                bottom ones staying where they are.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -1325,7 +1325,7 @@ pub static ACTIONS: &[Action] = &[
         hint: "Pictures, shapes and text you move or resize line up with the edges and \
                middles of the page and of other objects, a guide showing. Hold Alt to place \
                them freely.",
-        submenu: "Align",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -2399,8 +2399,8 @@ pub const MOVES: [Act; 4] = [
     Act::MovePages(PageMove::End),
 ];
 
-/// Align and Distribute, in the objects' right-click menu as a submenu; with Snap to
-/// objects, the band's Align menu.
+/// Align and Distribute, in the objects' right-click menu as the submenu Align objects;
+/// with Snap to objects, the band's Align objects menu.
 pub const ALIGNS: [Act; 8] = [
     Act::Align(Align::Left),
     Act::Align(Align::Centre),
@@ -2455,7 +2455,7 @@ fn menu_of(ui: &mut egui::Ui, groups: &[&[Act]], c: &Ctx, acts: &mut Vec<Act>) {
             continue;
         }
         if group == &ALIGNS {
-            ui.menu_button("Align", |ui| menu_list(ui, items, c, acts));
+            ui.menu_button("Align objects", |ui| menu_list(ui, items, c, acts));
             continue;
         }
         for a in &items {
@@ -2605,7 +2605,7 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 }
 
 /// The floating toolbar's buttons: the right-click menu's commands that are available now
-/// and have an icon, in groups, but for Align's submenu. While a line is edited on the
+/// and have an icon, in groups, but for Align objects. While a line is edited on the
 /// page, the styles, then Cut, Copy and Paste for what is selected in it, as the keys do
 /// there (ENH-20).
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {

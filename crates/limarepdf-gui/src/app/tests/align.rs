@@ -1,4 +1,4 @@
-//! Align, distribute and snap (NEW-08, batch 46's stage 5): Edit > Arrange's Align menu
+//! Align, distribute and snap (NEW-08, batch 46's stage 5): Edit > Arrange's Align objects
 //! lines the selected objects up by each other, one alone by the page, and spaces three or
 //! more out, each one Undo; objects moved or resized snap to the page's and the other
 //! objects' edges and middles with a guide drawn, Alt for a free drag, Snap to objects off
@@ -281,16 +281,16 @@ fn a_resized_object_snaps_the_edge_it_moves() {
     assert_eq!(guides, [(true, 400.0)]);
 }
 
-/// Edit > Arrange's Align opens Word's Align menu, Snap to objects in it ticked; the
-/// selected objects' right-click menu has Align with the commands that apply; the command
-/// search finds them.
+/// Edit > Arrange's Align objects (Word's tooltip for its Align) opens Word's Align menu,
+/// Snap to objects in it ticked; the selected objects' right-click menu has Align objects
+/// with the commands that apply; the command search finds them.
 #[test]
 fn align_is_in_the_band_the_right_click_menu_and_the_search() {
     let (ctx, mut app, ids) = photo_tab();
     select(&mut app, &ctx, &[ids.photo, ids.caption]);
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert!(node(&tree, "Align — Planned").is_none(), "still planned");
-    click_named(&mut app, &ctx, "Align");
+    click_named(&mut app, &ctx, "Align objects");
     let tree = settled_at(&mut app, &ctx, 1400.0);
     for name in [
         "Align left",
@@ -333,9 +333,9 @@ fn align_is_in_the_band_the_right_click_menu_and_the_search() {
     window(&mut app, &ctx, 1400.0, right);
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert_eq!(held(&app), Some((0, vec![ids.photo, ids.caption])));
-    // The menu's Align, below the band's.
+    // The menu's Align objects, below the band's.
     let at = (tree.nodes.iter())
-        .filter(|(_, n)| n.label() == Some("Align"))
+        .filter(|(_, n)| n.label() == Some("Align objects"))
         .filter_map(|(_, n)| n.bounds())
         .max_by(|a, b| a.y0.total_cmp(&b.y0))
         .filter(|b| b.y0 as f32 > min.y)

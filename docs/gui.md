@@ -88,7 +88,7 @@ undo.", "Select some text first." or "Click in a form field first."
 
 | Name | Groups and buttons |
 | --- | --- |
-| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
+| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
 | Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
 | Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
@@ -407,12 +407,12 @@ box. Saving, printing and other commands keep a field you are still typing in. P
 sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words, a thumbnail or a card in Organise for a short menu of what applies
-there. Right-clicking selects what is under the pointer first. Selected objects get an **Align** submenu of the
-Align and Distribute commands that apply ([Line up objects](content-editing.md#line-up-objects)). In text you are
+there. Right-clicking selects what is under the pointer first. Selected objects get an **Align objects** submenu
+of the Align and Distribute commands that apply ([Line up objects](content-editing.md#line-up-objects)). In text you are
 typing on the page (a line being edited, new text, a note or a text box), a right-click on what is selected keeps
 it selected, and the menu has Cut, Copy and Paste, then Bold, Italic, Underline and Strikethrough where they
 apply, as in a word processor. A selected object or run of words also gets a small floating toolbar with the same
-commands but Align. It sits by the selection: above it, below it or beside it where that covers no other text, or else just
+commands but Align objects. It sits by the selection: above it, below it or beside it where that covers no other text, or else just
 above or below it, over as little text as it can; it never covers the selection. While a line is edited on the
 page, it has Bold, Italic, Underline, Strikethrough, Cut, Copy and Paste for what is selected in the line, and
 clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves

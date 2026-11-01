@@ -594,10 +594,11 @@ within `SNAP_PX` (6) screen pixels, across and down apart; a resize snaps only t
 with. `Snaps::guides` makes a dashed line (`GUIDE`, a pink seen on any paper) through each place meeting a line,
 along the box and every box meeting it there, drawn in `page_ui` after the marquee. Alt (`page_ui`'s `keys`) and
 the app's `Settings::snap` (`Act::ToggleSnap`, lent to each tab's `Editor::snap` every frame as `paragraphs` is)
-turn it off; comments (`Drag::annot`), a line's ends and turns never snap, nor do nudges. The band's Align is a menu
-button (`band::ALIGN_MENU`), the objects' right-click menu shows `actions::ALIGNS` as an Align submenu (`menu_of`),
-which `toolbar_items` leaves off the floating bar and the docked buttons (as word processors' bars do), and the
-band's menus draw the registry's separators (`actions::menu_list`). `Ctx::objects` counts the objects held,
+turn it off; comments (`Drag::annot`), a line's ends and turns never snap, nor do nudges. The band's Align objects
+(Word's Align, named by its tooltip so it isn't read as aligning text) is a menu button (`band::ALIGN_MENU`), the
+objects' right-click menu shows `actions::ALIGNS` as an Align objects submenu (`menu_of`), which `toolbar_items`
+leaves off the floating bar and the docked buttons (as word processors' bars do), and the band's menus draw the
+registry's separators (`actions::menu_list`). `Ctx::objects` counts the objects held,
 for Distribute's three (`why_not`: "Select three or more objects first.").
 
 Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a selection

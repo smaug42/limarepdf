@@ -181,8 +181,8 @@ const fn group(name: &'static str, items: &'static [Item]) -> Group {
     Group { name, items }
 }
 
-/// Align's menu (NEW-08), as Word's: the six alignments, the two ways to distribute (the
-/// right-click menu's [`actions::ALIGNS`]), then Snap to objects.
+/// Align objects' menu (NEW-08), as Word's Align: the six alignments, the two ways to
+/// distribute (the right-click menu's [`actions::ALIGNS`]), then Snap to objects.
 const ALIGN_MENU: [Act; 9] = [
     Act::Align(Align::Left),
     Act::Align(Align::Centre),
@@ -281,7 +281,11 @@ static EDIT: &[Group] = &[
         "Text flow",
         &[b(Act::EditParagraph, "Paragraph", icon::TEXT_ALIGN_LEFT)],
     ),
-    group("Arrange", &[menu("Align", icon::ALIGN_LEFT, &ALIGN_MENU)]),
+    // Word's tooltip for its Align, and LibreOffice's name: not read as aligning text.
+    group(
+        "Arrange",
+        &[menu("Align objects", icon::ALIGN_LEFT, &ALIGN_MENU)],
+    ),
 ];
 
 static INSERT: &[Group] = &[
@@ -1179,7 +1183,7 @@ mod tests {
         ] {
             assert_eq!(openings(act), Some(want), "{act:?}");
         }
-        // Align's menu has the right-click menu's Align and Distribute, then Snap.
+        // Align objects' menu has the right-click menu's commands, then Snap.
         assert_eq!(ALIGN_MENU[..8], actions::ALIGNS);
         // The font, size, Bold, Italic and colour: Edit's Font group, showing.
         let font = EDIT
