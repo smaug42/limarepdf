@@ -8,7 +8,7 @@
 //! change. A replacement holding what it replaces is replaced once only, as the matches are
 //! those of one search.
 
-use super::paragraph::{refused, PARAGRAPH_DEFAULT};
+use super::paragraph::{refound, refused, PARAGRAPH_DEFAULT};
 use super::replace::{lines_of, page_of, typed_font, with_a_space, MatchLines};
 use super::replace::{GROUPED, HIDDEN, ON_TWO_PAGES, VERTICAL};
 use super::*;
@@ -447,13 +447,7 @@ fn paragraph(
         }
         None => {
             now = follow(&pp.objs, &pdf.page_objects(pp.page)?);
-            let mut block = pp.blocks[k].clone();
-            for l in &mut block.lines {
-                for id in &mut l.pieces {
-                    *id = now.get(*id).copied().flatten().ok_or_else(changed)?;
-                }
-                l.pieces.sort_unstable();
-            }
+            let block = refound(&pp.blocks[k], &now).ok_or_else(changed)?;
             let para = pdf.paragraph(pp.page, &block, words)?;
             let setting = pdf.paragraph_setting(&para)?;
             found = (para, setting);
@@ -663,7 +657,7 @@ fn into_other_font(at: &[(usize, usize)], away: &[(usize, usize)]) -> usize {
 /// Where each of a page's objects as they were, `before`, is among them as they are now,
 /// `after`, once some were changed: the first left of the same kind, text and box; `None`
 /// for one changed or gone.
-fn follow(before: &[PageObject], after: &[PageObject]) -> Vec<Option<usize>> {
+pub(super) fn follow(before: &[PageObject], after: &[PageObject]) -> Vec<Option<usize>> {
     type Same = (u8, Option<String>, [i64; 4]);
     let same = |o: &PageObject| -> Same {
         let kind = match o.kind {

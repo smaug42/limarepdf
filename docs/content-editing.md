@@ -99,14 +99,9 @@ While you type:
   that edge a point at a time, ten with Shift; click in the text to type again. The edges stay on the page, and
   the paragraph can't be narrower than its longest word. Lines whose words and place stay the same are left as
   they were.
-- To align the paragraph, use **Edit > Alignment** in the band: **Align left**, **Centre**, **Align right** and
-  **Justify**, the paragraph's own shown pressed. Or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J (⌘L, ⌘E, ⌘R or ⌘J on a
-  Mac), as in Word. The lines move across between the paragraph's edges at once, keeping their words; justified,
-  every line but the last reaches both edges. Pressing Centre, Align right or Justify again puts the paragraph back
-  to the left, as in Word. Centred and right-aligned lines take no first-line indent; aligned left or justified
-  again, the paragraph has its own back. The paragraph is aligned between its own edges, not the page's margins:
-  drag an edge first to give it more room. Centre is on the floating toolbar too, and all four are in ☰ > Edit >
-  Align text and the command search (Ctrl+K: type "align" or "centre").
+- To align the paragraph, use **Edit > Alignment** in the band or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J, as in
+  Word ([Align text](#align-text)): the lines move across between the paragraph's edges at once, keeping their
+  words, and the editing stays open. Ctrl+Z inside takes the change back.
 - Once you move a paragraph's edges or change its alignment, LimarePDF keeps a small note of its edges and indent
   in the file (in the page's private data, which other apps don't show), so the paragraph opens again with the
   same edges, after saving too. Without it, a centred paragraph would open narrower, as its lines no longer
@@ -135,6 +130,33 @@ While you type:
 Words you select with the read tool in one paragraph (with **Paragraph** on; with it off, across the lines of one
 LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragraph, which rewraps; see
 [Type over, delete or cut words](#type-over-delete-or-cut-words).
+
+## Align text
+
+Paragraphs of the page's text are aligned as in a word processor: use **Align left**, **Centre**, **Align right**
+or **Justify** in **Edit > Alignment** in the band, or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J (⌘L, ⌘E, ⌘R or ⌘J on
+a Mac). They act on:
+
+- **A paragraph you are editing** (with **Paragraph** on): its lines move across between its edges at once, and
+  the editing stays open. Ctrl+Z inside takes the change back.
+- **A line you are editing on its own** (with **Paragraph** off): its paragraph opens for editing, aligned, the
+  caret where it was. What you typed in the line is kept first. **Paragraph** stays off, so the next double-click
+  edits a line again.
+- **Words you select with the read tool**: every paragraph they touch is aligned, as one change that one Undo
+  takes back, and the words stay selected.
+- **Lines you select with the arrow**: their paragraphs are aligned the same way, and the lines stay selected.
+
+The alignment the text has shows pressed (none, when the paragraphs selected are aligned differently). As in Word,
+Centre, Align right or Justify pressed on text already aligned that way puts it back to the left. Each line keeps
+its words; justified, every line but the last reaches both edges. Centred and right-aligned lines take no
+first-line indent; aligned left or justified again, the paragraph has its own back.
+
+A paragraph is aligned between its own edges, not the page's margins: open it with **Paragraph** on and drag an
+edge first to give it more room. **Centre** is on the floating toolbar too, and all four are in ☰ > Edit > Align
+text and the command search (Ctrl+K: type "align" or "centre").
+
+A line on its own (a heading, say) has no paragraph to align it in, and text in a table or form, turned text,
+invisible recognised text and vertical writing aren't aligned either: a notice says what was left as it was.
 
 ## Style words in a line
 
@@ -526,10 +548,10 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   is left a drawing, and stays where it is when its line changes.
 - Styling words doesn't rewrap: bold or larger words make their line longer and the rest of it moves along, and
   highlights, links and redaction marks over them stay where they were.
-- Alignment (Align left, Centre, Align right, Justify) works on a paragraph being edited only, for now: a line
-  edited alone, words selected while reading, new text and text boxes can't be aligned yet, and the buttons are
-  greyed for them. A paragraph is aligned between its own edges; there are no indents, line spacing or spacing
-  before and after a paragraph to set.
+- Alignment (Align left, Centre, Align right, Justify) works on the page's paragraphs only, for now: new text,
+  text boxes and form fields can't be aligned yet, and the buttons are greyed for them. A paragraph is aligned
+  between its own edges; there are no indents, line spacing or spacing before and after a paragraph to set.
+  Aligning the paragraphs of a long selection takes a moment: about two seconds for 300 pages.
 - Editing a line does not change its width, and a paragraph keeps its frame's width unless you drag its edges:
   longer text can overlap its neighbours. The outline warns of it, a tag where it happens, but nothing is moved
   out of the way.

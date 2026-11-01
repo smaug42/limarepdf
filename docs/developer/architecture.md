@@ -1827,23 +1827,42 @@ form XObject, and per inline image.
   are dotted under; `Act::JoinHyphen` and `KeepHyphen` act on the one at the right-click or the caret. The
   inspector's Editing row is a horizontal row as wide as the panel, not a grid of its own, which widened the panel.
   A band group of one command folds to that command's icon (`band::folded_group`), as a menu of one item would be
-  wider and no nearer. **Alignment** (NEW-15, batch 49's stage 1): `Act::AlignText(TextAlign)` (`TextAlign` is
+  wider and no nearer. **Alignment** (NEW-15, batch 49's stages 1 and 2): `Act::AlignText(TextAlign)` (`TextAlign` is
   core's `Align`; `editor::Align` lines objects up), four registry entries in ☰ > Edit's "Align text" submenu
   (named apart from Align objects' in the command search, `spoken_title`), Word's keys `k(C, L|E|R|J)`, global so
-  they reach a paragraph with the keyboard (Bold's keys are taken by the box instead); `checked` by
-  `Ctx::text_align` (`Editor::text_align`: the paragraph being edited's), which also enables them, else "Click in a
-  paragraph's text first." In the band, Edit's Alignment group is `Item::Icons` (each command's registry icon
+  they reach a paragraph with the keyboard (Bold's keys are taken by the box instead); enabled by
+  `Ctx::aligns_text` (`Editor::aligns_text`: page text being edited, words selected, or a text line among the
+  objects selected), else "Click in a paragraph's text first."; `checked` by `Ctx::text_align`
+  (`Editor::text_align`: the paragraph being edited's, else the alignment every block of the other text's lines
+  has, from blocks already read, `read_blocks` reading them for a visible page with selected lines too). In the band, Edit's Alignment group is `Item::Icons` (each command's registry icon
   alone, as Word's, named on hover with its key; a group that keeps typing open; without room it folds first after
   planned-only groups, `fold_order`, to the icon of the alignment in use and a caret, `folded_group`, 50 points
   against 160 open, so at a 1000-point window Editing's Edit text and Find stay shown); in menus they are buttons with
   their keys, the one in use selected, closing the menu (`menu_item`'s one-of-a-set case); the floating bar has
-  Centre after the styles while a line or paragraph is edited (`toolbar_items`, enabled only in a paragraph), pressed
-  when centred. `App::act` treats them as the styles: they change the typing, which stays open (`in_line`).
+  Centre after the styles while a line or paragraph is edited, and for words or lines selected after the group with
+  Bold or Edit text (`toolbar_items`; the right-click menu, `context_items`, hasn't it), pressed when centred. `App::act` treats them as the styles: they change the typing, which stays open (`in_line`).
   `Editor::align_text` sets `ParaEdit::align` (the one it has pressed again: Left, as Word) and gives the text the
   keyboard back (`refocus`); each frame `History::observe_align` makes a change a step of its own, and the
   paragraph's Ctrl+Z and Ctrl+Y put it back with the text and edges (`History::align`, `para_undo_redo`).
   `para_change` counts a changed alignment as a change, and `Action::EditParagraph` carries `(edges, align)` to
-  `Pdf::edit_paragraph_decorated`. The Paragraph switch's icon is ¶, so it isn't read as Align left.
+  `Pdf::edit_paragraph_decorated`. The Paragraph switch's icon is ¶, so it isn't read as Align left. **Page text not
+  edited as a paragraph** (batch 49's stage 2): `App::act` hands `align_text` the document and shows what it returns
+  as a notice. In a line edited alone it finds the line's block (`alignable`: hidden, vertical, turned, no block or
+  `paragraph::refused` counted in `NotAligned` by why, the line given the keyboard back), then `line_to_paragraph`
+  (shared with the Paragraph switch) keeps the line's typing and sets `Then::Paragraph`, which carries the
+  alignment: `follow_then` opens the paragraph once the typing is in and applies it there by Word's rule, so
+  `Editor::paragraphs` stays as it was; if the paragraph can't open then, the line opens again and `align_note`
+  says why (the tab shows it after `apply_actions`). For words or lines selected (`lines_to_align`: `Chosen`'s lines,
+  whose `Left` counts too, or the one text line selected), each alignable block once, in reading order; Word's rule
+  over them all (every one already so gives Left), blocks already so left out, none left no action; else
+  `Action::AlignParagraphs(pages' blocks, align, NotAligned)`, one `edit_pages` for every page, through
+  `editor::align_paragraphs`: per block `Pdf::paragraph` (its kept frame), `paragraph_setting`,
+  `Styled::of_paragraph`'s parts, `Pdf::edit_paragraph_in` between its frame's edges; a block after a page's first
+  found again by `replace_all::follow` (its objects by kind, text and box, which the earlier writes left) and
+  `paragraph::refound` (shared with Replace all). A block that fails is left and counted, the error only when none
+  is written. Afterwards words are selected again (`reselect`) and selected lines found where they moved
+  (`Editor::lines_moved` sets each one's expected box to the line of its text in its row before the page is read
+  again, as `Selection::refind` needs boxes that meet).
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.

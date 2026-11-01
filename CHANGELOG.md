@@ -70,9 +70,16 @@
   Centre, Align right or Justify pressed again puts the paragraph back to the left, as in Word. Centred and
   right-aligned lines take no first-line indent, and a paragraph aligned left or justified again has its own
   back. A justified line whose spaces were squeezed to fit, too wide at their own width, keeps its words and has
-  them squeezed to fit again, so no line reaches past the paragraph's edges. Ctrl+Z in the paragraph takes each change back, and once kept the whole edit is one undo step. Other text
-  can't be aligned yet: the buttons are greyed for it and say where to click. In a narrower window the Alignment
+  them squeezed to fit again, so no line reaches past the paragraph's edges. Ctrl+Z in the paragraph takes each change back, and once kept the whole edit is one undo step. In a narrower window the Alignment
   group folds first, to one icon with a ▾, so Edit text and Find stay shown.
+- Alignment for page text not edited as a paragraph: in a line edited on its own (Paragraph off), an alignment
+  opens the line's paragraph aligned, what was typed in the line kept first and Paragraph staying off. With words
+  selected while reading, or lines selected with the arrow, it aligns every paragraph they touch as one undo
+  step, the words or lines staying selected; the alignment they share shows pressed, and Word's rule (pressed
+  again, back to the left) goes over them all. Centre is on the floating toolbar for them too, not in their
+  right-click menus. A line on its own, text in a table or form, turned text, invisible recognised text and
+  vertical writing are left as they were, a notice saying so ("Not aligned: 1 line on its own"). New text, text
+  boxes and form fields can't be aligned yet: the buttons are greyed for them and say where to click.
 
 ### Changed
 

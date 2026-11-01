@@ -5,7 +5,8 @@
 
 use super::*;
 
-const PROSE: &str = "The harbour was quiet that morning, and the fishing boats sat low in the \
+pub(super) const PROSE: &str =
+    "The harbour was quiet that morning, and the fishing boats sat low in the \
     water while gulls argued over the nets drying along the wall. Nobody on the quay was in a \
     hurry; the tide would turn when it turned, and the old men who mended the nets had seen \
     enough tides to know that worrying never brought one in sooner than the moon allowed.";
@@ -24,7 +25,7 @@ fn prose_tab_of(app: &mut App, ctx: &egui::Context, text: &str) -> Vec<String> {
 
 /// [`prose_tab_of`] with `below`, lines that many line spaces (15 points) under the
 /// paragraph's last line.
-fn prose_tab_with(
+pub(super) fn prose_tab_with(
     app: &mut App,
     ctx: &egui::Context,
     text: &str,

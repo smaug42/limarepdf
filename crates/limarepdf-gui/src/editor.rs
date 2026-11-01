@@ -15,7 +15,7 @@ use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    words_text, Annot, AnnotKind, BoxSetting, DecoKind, Decorated, DocWords, FieldValue,
+    words_text, Annot, AnnotKind, Block, BoxSetting, DecoKind, Decorated, DocWords, FieldValue,
     FontChoice, FontRefusal, LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord,
     ParagraphSetting, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
     StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
@@ -34,6 +34,7 @@ pub use arrange::{Align, Axis};
 /// How a paragraph's text is aligned (NEW-15), as core reads and sets it; [`Align`] lines
 /// objects up.
 pub use limarepdf_core::Align as TextAlign;
+pub use paragraph::{align_paragraphs, Aligned, NotAligned};
 pub use replace::NotReplaced;
 pub use replace_all::{replace_all, AllJob, Pass, Prepared};
 
@@ -385,6 +386,10 @@ pub enum Action {
         Vec<Decorated>,
         ((f32, f32), TextAlign),
     ),
+    /// Each page's paragraphs, as its blocks were read, aligned as given
+    /// ([`align_paragraphs`]), and what was left as it was before. The words or lines
+    /// selected stay selected.
+    AlignParagraphs(Vec<(usize, Vec<Block>)>, TextAlign, NotAligned),
     /// Words selected with the read tool restyled: each page's changed lines, and the lines
     /// with selected words left as they were. The words stay selected.
     Restyle(Vec<(usize, Vec<LineChange>)>, Left),
@@ -1647,6 +1652,9 @@ pub struct Editor {
     /// committed, and this, the first character that can't be written, left out of it
     /// (PB-54). The tab says so ([`page_text::left_note`]).
     pub left_composing: Option<String>,
+    /// A line's paragraph, which an alignment pressed in the line was to open aligned, can't
+    /// be: what to say. The tab says it.
+    pub align_note: Option<String>,
     /// The document's language (`/Lang`), as the pages were drawn last: text typed on the
     /// page is drawn in the fonts core sets it in for it ([`page_text::runs`]).
     lang: Option<String>,
@@ -1799,6 +1807,7 @@ impl Default for Editor {
             not_kept: None,
             left_out: false,
             left_composing: None,
+            align_note: None,
             lang: None,
             show_hidden: false,
             words: HashMap::new(),
@@ -5845,6 +5854,23 @@ impl Editor {
         if self.selected_text() != was {
             self.selection.clear_words();
         }
+    }
+
+    /// After lines of `page` moved along their rows (aligned), before its objects are read
+    /// again: each line selected there is to be found where it is now, among `objs`, the
+    /// line of its text in its row nearest where it started.
+    pub fn lines_moved(&mut self, page: usize, objs: &[PageObject]) {
+        self.selection.expect(page, |h| {
+            let (a, text) = (h.bbox, &h.text);
+            let row = |o: &&PageObject| {
+                ObjKind::of(o) == h.kind && o.text == *text && o.bbox[1] < a[3] && a[1] < o.bbox[3]
+            };
+            let off = |o: &PageObject| (o.bbox[0] - a[0]).abs();
+            let there = objs.iter().filter(row);
+            if let Some(o) = there.min_by(|x, y| off(x).total_cmp(&off(y))) {
+                h.bbox = o.bbox;
+            }
+        });
     }
 
     /// The look of the words selected with the read tool, across lines and pages, which

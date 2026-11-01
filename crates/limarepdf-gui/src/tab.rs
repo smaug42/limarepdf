@@ -1,6 +1,8 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{Action, Editor, Match, StampPick, Tool, Typed};
+use crate::editor::{
+    align_paragraphs, Action, Aligned, Editor, Match, NotAligned, StampPick, Tool, Typed,
+};
 use crate::icon;
 use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
@@ -1265,6 +1267,38 @@ impl Tab {
                         }
                     }
                 }
+                Action::AlignParagraphs(blocks, align, left) => {
+                    // Every paragraph in one change, which one Undo takes back; the words or
+                    // lines selected stay so, found again where they moved.
+                    let pages: Vec<usize> = blocks.iter().map(|(p, _)| *p).collect();
+                    let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
+                    let held = self.ed.selection.objects().map(|(p, _)| p);
+                    let words = self.ed.doc_words.clone().unwrap_or_default();
+                    let (mut done, mut after) = (Aligned::default(), Vec::new());
+                    let edit = |pdf: &mut Pdf| {
+                        done = align_paragraphs(pdf, &words, &blocks, align)?;
+                        if let Some(p) = held {
+                            after = pdf.page_objects(p)?;
+                        }
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &pages, edit) {
+                        if let Some(p) = held {
+                            self.ed.lines_moved(p, &after);
+                        }
+                        self.ed.reselect(&self.pdf, sel, was);
+                        let left = NotAligned {
+                            failed: done.failed,
+                            ..left
+                        };
+                        let said: Vec<String> = (left.said().into_iter())
+                            .chain(done.similar.then(|| SIMILAR_FONT.to_string()))
+                            .collect();
+                        if !said.is_empty() {
+                            self.info = Some(said.join(". "));
+                        }
+                    }
+                }
                 Action::Restyle(changes, left) => {
                     let pages: Vec<usize> = changes.iter().map(|(p, _)| *p).collect();
                     let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
@@ -1540,6 +1574,9 @@ impl Tab {
         }
         if let Some(c) = self.ed.left_composing.take() {
             self.info = Some(crate::page_text::left_note(&c));
+        }
+        if let Some(said) = self.ed.align_note.take() {
+            self.info = Some(said);
         }
     }
 
@@ -2881,6 +2918,7 @@ impl Tab {
         c.line_edit = self.ed.editing_line();
         c.paragraph = self.ed.paragraphs;
         c.hyphen = self.ed.hyphen_here();
+        c.aligns_text = self.ed.aligns_text();
         c.text_align = self.ed.text_align();
     }
 

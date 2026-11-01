@@ -581,6 +581,27 @@ What they show:
   typed at the start. Keystrokes measured again the same day: 0.17 to 0.21 ms at the median, as above. The corpus
   edit run again after 3b-2 (edges as they were) gave every block's record as 3a's run did, timings aside.
 
+## Aligning paragraphs
+
+Batch 49's stage 2 (NEW-15) aligns the paragraphs of words or lines selected as one step on the window's thread
+(architecture.md, "Alignment"): each page's blocks found (`Pdf::page_blocks`, kept until the document changes),
+then each paragraph read and written alone (`Pdf::paragraph`, `Pdf::edit_paragraph_in`). Measured on 1 November
+2026 on the machine above with the opt-in `speed_of_aligning_300_pages` (`app/tests/text_align.rs`; `cargo test -p
+limarepdf-gui --bin limarepdf --profile ci-test -- --ignored speed_of_aligning_300_pages --nocapture`), two runs
+alike: a made-up document of 300 Letter pages, each one paragraph of ten 12-point Helvetica lines, every word
+selected and justified.
+
+| Part | Time |
+| --- | --- |
+| The command: the paragraphs found | 0.25 s |
+| The command in all: found, each written, the undo step | 2.0 s |
+| The frame after (the selection's words and lines read again, the pages shown redrawn) | 0.5 s |
+
+About 6 ms a paragraph written, as a paragraph's read and write above add up to. Bold on the same selection took
+1.3 s with its frame. From these figures (not measured alone), a page of a few paragraphs takes some tens of
+milliseconds; a whole long document's take seconds, which is recorded, not a threshold (6.3 has none for edits),
+as for styling selected words.
+
 ## The page under text being edited
 
 Batch 45's 3b-1 (ENH-21) makes the page alone without the text being edited once when a line or paragraph starts

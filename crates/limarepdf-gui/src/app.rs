@@ -2759,7 +2759,13 @@ impl App {
                 }
                 t.apply_actions(ctx);
             }
-            Act::AlignText(how) => self.tabs[self.active].ed.align_text(how),
+            Act::AlignText(how) => {
+                let t = &mut self.tabs[self.active];
+                if let Some(said) = t.ed.align_text(&t.pdf, how) {
+                    t.info = Some(said);
+                }
+                t.apply_actions(ctx);
+            }
             Act::DeleteObject => self.tabs[self.active].ed.delete_selected(),
             Act::DeleteSelection => {
                 if self.tabs[self.active].ed.has_object() {
@@ -18169,7 +18175,8 @@ mod tests {
     }
 
     /// The floating bar's buttons, by name and place: those in the row of its Dock button,
-    /// which only the bar has, up to it.
+    /// which only the bar has, up to it, as far as its widest (a line being edited's, about
+    /// 410 points with its frame since NEW-15's Centre) reaches.
     fn bar_buttons(tree: &egui::accesskit::TreeUpdate) -> Vec<(String, egui::Rect)> {
         let Some((dock, _)) = node(tree, "Dock controls on the right") else {
             return Vec::new();
@@ -18186,7 +18193,7 @@ mod tests {
                 );
                 let row = (r.center().y - dock.center().y).abs() < 2.0
                     && r.max.x <= dock.max.x
-                    && dock.min.x - r.min.x < 320.0;
+                    && dock.min.x - r.min.x < 440.0;
                 row.then(|| (n.label().unwrap_or_default().to_string(), r))
             })
             .collect()

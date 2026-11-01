@@ -516,7 +516,10 @@ pub struct Ctx {
     /// The paragraph being edited has a marked line-end hyphen at the right-click or the
     /// caret.
     pub hyphen: bool,
-    /// How the text the alignment commands act on is aligned, when there is some
+    /// There is text the alignment commands act on
+    /// ([`crate::editor::Editor::aligns_text`]).
+    pub aligns_text: bool,
+    /// How the text the alignment commands act on is aligned, when it is all aligned alike
     /// ([`crate::editor::Editor::text_align`]).
     pub text_align: Option<TextAlign>,
     /// An annotation is selected, and whether it may be changed.
@@ -666,9 +669,10 @@ fn lines_among(c: &Ctx) -> bool {
 fn styleable(c: &Ctx) -> bool {
     (c.words || (c.object && c.obj_lines)) && !c.busy
 }
-/// Text the text alignments act on: a paragraph being edited (NEW-15).
+/// Text the text alignments act on (NEW-15): a paragraph or line being edited, selected
+/// words, or lines selected with the arrow.
 fn text_alignable(c: &Ctx) -> bool {
-    c.text_align.is_some() && !c.busy
+    c.aligns_text && !c.busy
 }
 fn arrow_tool(c: &Ctx) -> bool {
     c.doc && c.tool == Some(Tool::Select) && !c.organise
@@ -2573,7 +2577,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
             "Click in text being typed, or where new text goes, first.",
         ),
         (
-            |d| d.text_align = Some(TextAlign::Left),
+            |d| d.aligns_text = true,
             "Click in a paragraph's text first.",
         ),
         (|d| d.pages = true, "Select pages first."),
@@ -2670,23 +2674,29 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 }
 
 /// The floating toolbar's buttons: the right-click menu's commands that are available now
-/// and have an icon, in groups, but for Align objects. While a line is edited on the
-/// page, the styles, then Cut, Copy and Paste for what is selected in it, as the keys do
-/// there (ENH-20); in a paragraph, Centre after the styles, as Word's mini toolbar has it.
+/// and have an icon, in groups, but for Align objects. While a line or paragraph is edited
+/// on the page, the styles, then Cut, Copy and Paste for what is selected in it, as the keys
+/// do there (ENH-20). Centre, as Word's mini toolbar has it, after the styles, or for lines
+/// selected with the arrow after their text's commands; not in the right-click menu.
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
-    const LINE_EDIT: &[&[Act]] = &[
-        STYLES,
-        &[Act::AlignText(TextAlign::Centre)],
-        &[Act::Cut, Act::Copy, Act::Paste],
-    ];
+    const CENTRE: &[Act] = &[Act::AlignText(TextAlign::Centre)];
+    const LINE_EDIT: &[&[Act]] = &[STYLES, CENTRE, &[Act::Cut, Act::Copy, Act::Paste]];
     let items = if c.line_edit {
         LINE_EDIT
     } else {
         context_items(sel)
     };
     // Align and Distribute are the menus' only, as word processors' floating bars have it.
-    (items.iter())
+    let mut groups: Vec<&[Act]> = (items.iter().copied())
         .filter(|g| g[..] != ALIGNS[..])
+        .collect();
+    if !c.line_edit {
+        let after = |g: &&[Act]| g.contains(&Act::Bold) || g.contains(&Act::EditObjectText);
+        if let Some(at) = groups.iter().position(after) {
+            groups.insert(at + 1, CENTRE);
+        }
+    }
+    (groups.into_iter())
         .map(|g| {
             let usable = |a: &&Action| (a.enabled)(c) && !a.icon.is_empty();
             g.iter().map(|&a| get(a)).filter(usable).collect::<Vec<_>>()
@@ -3133,7 +3143,9 @@ mod tests {
 
     /// NEW-15: the text's alignments take Word's keys (⌘ on a Mac, as Word for Mac), are
     /// named apart from Align objects' in the menus and the command search, and Centre is on
-    /// the floating bar while a paragraph is edited, as on Word's mini toolbar.
+    /// the floating bar while text is edited, after the styles, as on Word's mini toolbar;
+    /// for words selected after the styles too, and for lines selected with the arrow after
+    /// their text's commands, but not in their right-click menus.
     #[test]
     fn text_alignments_take_words_keys_and_names_and_centre_is_on_the_bar() {
         let keys = [
@@ -3164,12 +3176,40 @@ mod tests {
             ..Default::default()
         };
         let centre = Act::AlignText(TextAlign::Centre);
-        assert!(!bar(&c).contains(&centre), "a line alone");
-        c.text_align = Some(TextAlign::Left);
+        assert!(!bar(&c).contains(&centre), "nothing to align");
+        c.aligns_text = true;
         let shown = bar(&c);
         assert!(shown.contains(&centre), "{shown:?}");
         let right = Act::AlignText(TextAlign::Right);
         assert!(!shown.contains(&right), "{shown:?}");
+        // Words selected, and a line selected with the arrow.
+        c.line_edit = false;
+        let words = Selection::Words {
+            anchor: (0, 0),
+            end: (0, 3),
+        };
+        let line = crate::selection::Selected {
+            id: 0,
+            kind: ObjKind::Text,
+            bbox: [72.0, 90.0, 300.0, 102.0],
+            text: Some("a line".into()),
+        };
+        let lines = Selection::Objects {
+            page: 0,
+            held: vec![line],
+            loose: false,
+        };
+        (c.words, c.object, c.obj_text, c.obj_lines) = (true, true, true, true);
+        for (sel, after) in [(&words, Act::Strikethrough), (&lines, Act::CopyObjectText)] {
+            let groups: Vec<Vec<Act>> = (toolbar_items(sel, &c).into_iter())
+                .map(|g| g.into_iter().map(|a| a.act).collect())
+                .collect();
+            let at = groups.iter().position(|g| g.last() == Some(&after));
+            let next = at.and_then(|i| groups.get(i + 1));
+            assert_eq!(next, Some(&vec![centre]), "{groups:?}");
+            let menu = context_items(sel).iter().flat_map(|g| g.iter());
+            assert!(!menu.copied().any(|a| a == centre), "in the menu");
+        }
     }
 
     /// BUG-34: no two commands in the palette look or sound alike: each one's submenu and
