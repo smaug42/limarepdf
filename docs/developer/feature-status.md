@@ -102,7 +102,11 @@ this list once it works. The feature table below has the details.
 - Words selected with the read tool have no caret: the arrow keys, Home and End without Shift keep their reading
   meanings (scrolling, pages) rather than moving to the selection's start or end as a word processor does; with
   Shift they extend the selection.
-- Page text has no underline or strike-through (underline and strike-out comments can be added over it).
+- Page text has no underline or strike-through command yet (NEW-07's stage 4b; underline and strike-out comments
+  can be added over it). Other apps' underlines and strike-throughs that NEW-07's rule reads (stage 4a) go with
+  their words when a line or paragraph is edited, moved or deleted; those it leaves unread (in another colour
+  than their text, under one character, dotted, dashed or wavy, touching other drawings) stay where they are
+  drawn when their line changes, and one drawn in pieces around descenders is drawn again whole.
   Styling selected words doesn't rewrap their lines, and highlights, links and redaction marks over them stay
   where they were. Invisible recognised text, text inside a form XObject and vertical writing can't be styled
   (a notice says what was left).

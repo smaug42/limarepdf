@@ -382,6 +382,8 @@ mod tests {
             upright: true,
             vertical: false,
             spans: Vec::new(),
+            decorations: Vec::new(),
+            decorates: None,
         }
     }
 

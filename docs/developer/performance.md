@@ -255,6 +255,31 @@ What they show:
 - When some replacements don't fit and others do, a second copy without them is made for Replace where it fits,
   doubling the time. Taking the copy is one undo step, as any edit: the document's objects compared once.
 
+## Reading underlines and strike-throughs
+
+Batch 46's stage 4a (NEW-07) reads other apps' underlines and strike-throughs whenever a page's objects are read
+(`Pdf::page_objects`, which selecting, hit-testing and editing use). Measured on 1 November 2026 on the machine
+above: `page_objects` on every page of the render corpus (1,080 files that open, up to 300 pages each, 6,508
+pages), the best of three for each page, the same code built against the tree before the stage (f2510d3) and after
+it (`target/b46s4/timing` and `timing-old`, release builds, two files at a time, before and after run in turn).
+
+| Two runs | All pages | Median page | The 20 slowest pages |
+| --- | --- | --- | --- |
+| First | 14.93 → 15.19 s (+1.7%) | +1.0% | 2.79 → 2.81 s (+0.8%) |
+| Second | 15.10 → 15.04 s (−0.4%) | ±0 | 2.83 → 2.80 s (−1.2%) |
+
+Opening `big.pdf` (10,000 pages) and reading three of its pages' objects are unchanged (42 ms and 33 ms, within a
+run's spread). The pages that come out slower differ from run to run, but for one kind: a page drawn as thousands of
+filled rectangles (`pdfbox/539.pdf`, about 4,000 a page, the fill colour set before each) reads about 12% slower,
+the cost of telling each rectangle's shape and matching the thin ones to lines.
+
+What made it so: the first build read 21% slower over all, and one page went from 25 ms to 422 ms. A line's
+characters are now laid out only once a band is level with it and near its baseline (`Lite::may_take`), and their
+word edges only when a band's ends are tested; a band running no way the page's lines run (a table's column rule)
+is passed over at once; the other drawings and the form text the guards look at are gathered only when a band fits a
+line; and a band's ink isn't copied while the page is read, only the operators that set it remembered
+(`InkAt`), the ink made again for a band read as a decoration.
+
 ## Styling selected words
 
 Batch 24 (ENH-05) writes every changed line of a page in one parse and one commit (`Pdf::edit_texts`), each line

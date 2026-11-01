@@ -31,6 +31,17 @@
   page and in Replace with too, so a match can be passed over without replacing it; with nothing searched, F3
   opens Find. Search results' ◀ and ▶ name the keys.
 
+### Changed
+
+- Underlines and strike-throughs that other apps drew under or through a line's words (Word, LibreOffice, web
+  browsers, macOS and others draw them as thin lines on the page) now go with their words: editing the line
+  moves and stretches them to where the words are, in their own colour, place and thickness; deleting the words
+  takes them away; moving or deleting the line takes them along; a paragraph that rewraps carries them to the
+  lines its words go to; Replace and Replace all keep them over what they replace. LimarePDF only treats a thin
+  line as an underline when it is sure: one in another colour than its text, under a single character, dotted,
+  dashed or wavy, or touching other drawings (a table's rules, a box) is left a drawing, as before, and stays where
+  it is when the line is edited.
+
 ### Fixed
 
 - Turning paragraph editing on or off while a line or paragraph was being edited could put the caret a few

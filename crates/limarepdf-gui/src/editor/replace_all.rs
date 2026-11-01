@@ -324,7 +324,7 @@ struct Done {
 /// Where a change's text is written: from where a line started, or on a paragraph's lines
 /// written anew.
 enum Written {
-    Line(PageObject),
+    Line(Box<PageObject>),
     Paragraph(Vec<SetLine>),
 }
 
@@ -559,7 +559,7 @@ fn line_changes(
             matches: c.matches.len(),
             other_font: 0,
             old: o.bbox,
-            at: Written::Line(o.clone()),
+            at: Written::Line(Box::new(o.clone())),
         };
         if text.same_as(&orig) {
             made.push((None, d));

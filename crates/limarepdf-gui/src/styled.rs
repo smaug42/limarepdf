@@ -1288,6 +1288,8 @@ mod tests {
                 span((4, 8), "ABCDEF+Helvetica-Bold", 12.0),
                 span((8, 12), "Helvetica", 12.0),
             ],
+            decorations: Vec::new(),
+            decorates: None,
         };
         let mut s = Styled::of(&o, FontChoice::from_name);
         let fonts: Vec<PartFont> = s.parts().iter().map(|p| p.font).collect();
@@ -1346,6 +1348,8 @@ mod tests {
                 font_reusable: false,
                 rise: 0.0,
             }],
+            decorations: Vec::new(),
+            decorates: None,
         };
         Styled::of(&o, FontChoice::from_name)
     }

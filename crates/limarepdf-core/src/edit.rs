@@ -1,6 +1,7 @@
 //! Editing page content: move/resize, delete, change text, restyle paths, replace images, insert objects.
 
 use crate::colour::Paint;
+use crate::decorate::{Decorated, Decoration, Laid, Redraw};
 use crate::embed::unwritten_script;
 use crate::fonts::{FontChoice, FontCtx};
 use crate::imgs::orient_matrix;
@@ -14,7 +15,7 @@ use anyhow::{anyhow, bail};
 use image::metadata::Orientation;
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -120,21 +121,6 @@ impl TextEdit {
             return None;
         }
         let (size, fill, rise) = first?;
-        let (old, new): (Vec<char>, Vec<char>) =
-            (line.chars().collect(), self.text.chars().collect());
-        let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-        let room = old.len().min(new.len()) - head;
-        let tail = (old.iter().rev().zip(new.iter().rev()))
-            .take_while(|(a, b)| a == b)
-            .count()
-            .min(room);
-        let origins = (0..new.len())
-            .map(|j| match j {
-                _ if j < head => Some(j),
-                _ if j >= new.len() - tail => Some(old.len() + j - new.len()),
-                _ => None,
-            })
-            .collect();
         Some(
             vec![TextPart {
                 text: self.text.clone(),
@@ -143,10 +129,53 @@ impl TextEdit {
                 color: fill.unwrap_or([0.0; 3]),
                 rise,
                 from: None,
-                origins,
+                origins: kept_ends(line, &self.text),
             }]
             .into(),
         )
+    }
+
+    /// Whether this edit leaves line `t` as it is: the same text, each part its line's part's
+    /// own, in its style. Only its decorations can then change, and its words aren't written.
+    pub(crate) fn unchanged(&self, t: &TextData) -> bool {
+        if self.text != t.text {
+            return false;
+        }
+        if self.parts.is_empty() {
+            return self.font.is_none() && self.size.is_none() && self.color.is_none();
+        }
+        let mut at = 0;
+        self.parts.iter().all(|p| {
+            let n = p.text.chars().count();
+            let own = match p.font {
+                PartFont::Span(i) => t.spans.get(i).is_some_and(|s| {
+                    let colour = s.fill.unwrap_or([0.0; 3]);
+                    s.chars == (at, at + n)
+                        && (s.size - p.size).abs() <= 0.01 * s.size.max(0.01)
+                        && (0..3).all(|k| (colour[k] - p.color[k]).abs() < 1e-3)
+                        && (s.rise - p.rise).abs() < 0.01
+                }),
+                PartFont::Choice(_) => false,
+            };
+            at += n;
+            own
+        })
+    }
+
+    /// Where each of this edit's characters is in line `line` as it was read (its first part
+    /// in `first`), `None` for one typed: as its parts say ([`TextPart::origin`]), or for a
+    /// change in one style, the characters it keeps at its start and end.
+    pub(crate) fn origins(
+        &self,
+        line: &str,
+        first: Option<(f32, Option<[f32; 3]>, f32)>,
+    ) -> Vec<Option<usize>> {
+        match self.parts_for(line, first) {
+            Some(parts) => (parts.iter())
+                .flat_map(|p| (0..p.text.chars().count()).map(move |j| p.origin(j)))
+                .collect(),
+            None => kept_ends(line, &self.text),
+        }
     }
 
     /// The line as `parts`, in their styles.
@@ -159,6 +188,25 @@ impl TextEdit {
             parts,
         }
     }
+}
+
+/// Where each character of `new` is in `old`, for those it keeps at its start and end
+/// (`None` for the others).
+fn kept_ends(old: &str, new: &str) -> Vec<Option<usize>> {
+    let (old, new): (Vec<char>, Vec<char>) = (old.chars().collect(), new.chars().collect());
+    let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let room = old.len().min(new.len()) - head;
+    let tail = (old.iter().rev().zip(new.iter().rev()))
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(room);
+    (0..new.len())
+        .map(|j| match j {
+            _ if j < head => Some(j),
+            _ if j >= new.len() - tail => Some(old.len() + j - new.len()),
+            _ => None,
+        })
+        .collect()
 }
 
 impl PageObject {
@@ -323,6 +371,17 @@ pub(crate) fn pieces(text: &[char], ways: &[Way]) -> Vec<KeptPiece> {
 /// in the line's own fonts (only those whose text is a part's own, unchanged, otherwise).
 type Asked<'a> = (Option<(&'a Parsed, &'a TextData)>, &'a [TextPart], bool);
 
+/// The lines a [`Pdf::edit_texts`] changes, for their decorations: the edits, their lines as
+/// read, which leave their words as they are, the decorations asked for (else carried) and
+/// those each has as read.
+struct Lines<'a> {
+    edits: &'a [(usize, TextEdit)],
+    objs: &'a [&'a Obj],
+    unchanged: &'a [bool],
+    asked: Option<&'a [Vec<Decorated>]>,
+    old: &'a [Vec<&'a Decoration>],
+}
+
 /// A page's operators with text edits made ([`Pdf::edit_texts`]).
 struct Edited {
     ops: Vec<Operation>,
@@ -332,6 +391,10 @@ struct Edited {
     /// index, where they are in `ops` (from and to; or, changed in place, the operator
     /// that shows them), and the text they should read.
     checks: Vec<(usize, Check, String)>,
+    /// Where each edit's line is written in `ops`; `None` for invisible text.
+    places: Vec<Option<Check>>,
+    /// Where in `ops` each operator watched (by its index in the page as read) went.
+    watched: HashMap<usize, usize>,
 }
 
 /// Where an edited line is in a page's operators, to read it back ([`Pdf::misread`]).
@@ -974,7 +1037,7 @@ fn leaks_state(ops: &[Operation]) -> bool {
 /// `ops` made ready for content to be appended in the page's default state: the q/Q they
 /// leave open closed, and the whole wrapped in q/Q when they change the state outside one.
 /// Content that needs no wrapping is left as it is, so repeated edits don't nest deeper.
-fn closed(mut ops: Vec<Operation>, depth_left: usize) -> Vec<Operation> {
+pub(crate) fn closed(mut ops: Vec<Operation>, depth_left: usize) -> Vec<Operation> {
     let wrap = leaks_state(&ops);
     for _ in 0..depth_left {
         ops.push(op("Q", vec![]));
@@ -1252,6 +1315,13 @@ impl Pdf {
         let (page, parsed) = self.load_edit(page_index)?;
         let (vd, _, _) = self.vis_down(page);
         let mut moves = moves.to_vec();
+        // A line's underlines and strike-throughs move as it does.
+        let with: Vec<(usize, M)> = (parsed.decorations.iter())
+            .filter_map(|(line, d)| Some((d, moves.iter().find(|(id, _)| id == line)?.1)))
+            .flat_map(|(d, m)| d.paths.iter().map(move |&p| (p, m)))
+            .filter(|(p, _)| !moves.iter().any(|(id, _)| id == p))
+            .collect();
+        moves.extend(with);
         moves.sort_by_key(|&(id, _)| id);
         let (objs, owner) = Self::pick_all(&parsed, moves.iter().map(|&(id, _)| id))?;
         let ms = (objs.iter().zip(&moves))
@@ -1348,10 +1418,23 @@ impl Pdf {
     }
 
     /// Delete several objects of one page at once, in one rewrite of its content: the ids
-    /// are as the page is now. If any can't be deleted, nothing is.
+    /// are as the page is now. If any can't be deleted, nothing is. A line's underlines and
+    /// strike-throughs go with it.
     pub fn delete_objects(&mut self, page_index: usize, ids: &[usize]) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
-        let out = Self::without_objects(&parsed, ids)?;
+        let mut all = ids.to_vec();
+        for (_, d) in parsed
+            .decorations
+            .iter()
+            .filter(|(line, _)| ids.contains(line))
+        {
+            for &p in &d.paths {
+                if !all.contains(&p) {
+                    all.push(p);
+                }
+            }
+        }
+        let out = Self::without_objects(&parsed, &all)?;
         self.commit(page, out, parsed.depth_left, &parsed.inline)
     }
 
@@ -1407,27 +1490,168 @@ impl Pdf {
     /// written anew go on top in the order given. A line with characters written in its own
     /// fonts ([`PageObject::kept_pieces`]) is read back: one that doesn't read as it should
     /// then is written with only its parts left as they were in them. Returns the ids of
-    /// those lines, whose characters were written in another font after all.
+    /// those lines, whose characters were written in another font after all. A line's
+    /// underlines and strike-throughs ([`PageObject::decorations`]) go with its characters
+    /// ([`crate::decorate`]'s `carried`): drawn where they are now, in their own look, and
+    /// left as they were drawn where their characters didn't move.
     pub fn edit_texts(
         &mut self,
         page_index: usize,
         edits: &[(usize, TextEdit)],
     ) -> Result<Vec<usize>> {
+        self.edit_texts_with(page_index, edits, None)
+    }
+
+    /// [`Pdf::edit_texts`] with each line's underlines and strike-throughs as given (over its
+    /// edit's text), in place of its old ones: an old one given again in its look over the
+    /// same characters, where they were, stays as it was drawn.
+    pub fn edit_texts_decorated(
+        &mut self,
+        page_index: usize,
+        edits: &[(usize, TextEdit, Vec<Decorated>)],
+    ) -> Result<Vec<usize>> {
+        let (plain, asked): (Vec<_>, Vec<_>) = (edits.iter())
+            .map(|(id, e, d)| ((*id, e.clone()), d.clone()))
+            .unzip();
+        self.edit_texts_with(page_index, &plain, Some(&asked))
+    }
+
+    fn edit_texts_with(
+        &mut self,
+        page_index: usize,
+        edits: &[(usize, TextEdit)],
+        asked: Option<&[Vec<Decorated>]>,
+    ) -> Result<Vec<usize>> {
         let (page, parsed) = self.load_edit(page_index)?;
-        let mut own = vec![true; edits.len()];
+        // The lines' decorations as read, and the operators that paint them.
+        let old: Vec<Vec<&Decoration>> = (edits.iter())
+            .map(|(id, _)| {
+                (parsed.decorations.iter())
+                    .filter(|(line, _)| line == id)
+                    .map(|(_, d)| d)
+                    .collect()
+            })
+            .collect();
+        let lines: Vec<&Obj> = (edits.iter())
+            .map(|(id, _)| Self::pick(&parsed, *id))
+            .collect::<Result<_>>()?;
+        // A line whose words stay as they are isn't written: only its decorations change.
+        let unchanged: Vec<bool> = (edits.iter().zip(&lines))
+            .map(|((_, e), o)| o.text.as_ref().is_some_and(|t| e.unchanged(t)))
+            .collect();
+        let writing: Vec<(usize, TextEdit)> = (edits.iter().zip(&unchanged))
+            .filter(|(_, u)| !**u)
+            .map(|(e, _)| e.clone())
+            .collect();
+        let mut watch: HashSet<usize> = (old.iter().flatten())
+            .flat_map(|d| {
+                d.paths
+                    .iter()
+                    .filter_map(|&p| Some(parsed.objs.get(p)?.last))
+            })
+            .collect();
+        for (o, _) in lines.iter().zip(&unchanged).filter(|(_, u)| **u) {
+            watch.extend(o.first..=o.last);
+        }
+        let mut own = vec![true; writing.len()];
         let mut lost = Vec::new();
         loop {
-            let e = self.edited_ops(page, &parsed, edits, &own)?;
+            let e = self.edited_ops(page, &parsed, &writing, &own, &watch)?;
             let misread = self.misread(page, &parsed.inline, &e.ops, &e.checks)?;
             if misread.is_empty() {
-                self.commit(page, e.ops, e.depth, &parsed.inline)?;
+                let lines = Lines {
+                    edits,
+                    objs: &lines,
+                    unchanged: &unchanged,
+                    asked,
+                    old: &old,
+                };
+                let (ops, depth) = self.decorated(page, &parsed, &lines, e)?;
+                self.commit(page, ops, depth, &parsed.inline)?;
                 return Ok(lost);
             }
             for k in misread {
                 own[k] = false;
-                lost.push(edits[k].0);
+                lost.push(writing[k].0);
             }
         }
+    }
+
+    /// The page's operators `e`, with each edited line's decorations drawn for its new text:
+    /// as asked, else its old ones carried with their characters. An old one not drawn again
+    /// as it was stops painting; new ones go on top.
+    fn decorated(
+        &self,
+        page: ObjectId,
+        parsed: &Parsed,
+        l: &Lines,
+        e: Edited,
+    ) -> Result<(Vec<Operation>, usize)> {
+        let (edits, lines, old) = (l.edits, l.objs, l.old);
+        let origins: Vec<Vec<Option<usize>>> = (edits.iter().zip(lines))
+            .map(|((_, edit), o)| {
+                let t = o.text.as_ref().expect("text");
+                edit.origins(&t.text, t.spans.first().map(|s| (s.size, s.fill, s.rise)))
+            })
+            .collect();
+        let want: Vec<Vec<Decorated>> = match l.asked {
+            Some(asked) => asked.to_vec(),
+            None => (old.iter().zip(&origins))
+                .map(|(o, origins)| crate::decorate::carried(o, origins))
+                .collect(),
+        };
+        if want.iter().all(Vec::is_empty) && old.iter().all(Vec::is_empty) {
+            return Ok((e.ops, e.depth));
+        }
+        let bytes = (parsed.inline.encode(e.ops.clone()))
+            .map_err(|err| anyhow!("cannot encode the page content: {err}"))?;
+        let back = self.parse_as_page(page, &bytes)?;
+        // Where each line is: written, or as it was where its operators went.
+        let mut written = e.places.iter();
+        let places: Vec<Option<Check>> = (lines.iter().zip(l.unchanged))
+            .map(|(o, &u)| match u {
+                true => Some(Check::Within(
+                    *e.watched.get(&o.first)?,
+                    *e.watched.get(&o.last)? + 1,
+                )),
+                false => written.next().copied().flatten(),
+            })
+            .collect();
+        let mut ops = e.ops;
+        let mut added = Vec::new();
+        for (k, o) in lines.iter().enumerate() {
+            let t = o.text.as_ref().expect("text");
+            let kept = match places[k] {
+                Some(place) => {
+                    let was = Laid::of(t, o.ctm);
+                    let line = Redraw {
+                        text: &edits[k].1.text,
+                        want: &want[k],
+                        old: &old[k],
+                        was: was.as_ref(),
+                        origins: &origins[k],
+                    };
+                    let (more, kept) = self.decoration_ops(page, &back, place, &line);
+                    added.extend(more);
+                    kept
+                }
+                None => vec![false; old[k].len()],
+            };
+            for (d, kept) in old[k].iter().zip(kept) {
+                for &p in d.paths.iter().filter(|_| !kept) {
+                    let at = (parsed.objs.get(p)).and_then(|p| e.watched.get(&p.last));
+                    if let Some(&at) = at {
+                        ops[at] = op("n", vec![]);
+                    }
+                }
+            }
+        }
+        if added.is_empty() {
+            return Ok((ops, e.depth));
+        }
+        let mut ops = closed(ops, e.depth);
+        ops.extend(added);
+        Ok((ops, 0))
     }
 
     /// The page's operators with `edits` made ([`Pdf::edit_texts`]), each edit's characters
@@ -1438,6 +1662,7 @@ impl Pdf {
         parsed: &Parsed,
         edits: &[(usize, TextEdit)],
         own: &[bool],
+        watch: &HashSet<usize>,
     ) -> Result<Edited> {
         // A line is written in place of its first show, as one show in its own font, or on
         // top of the page without its shows.
@@ -1563,6 +1788,8 @@ impl Pdf {
         }
         let mut out = Vec::with_capacity(parsed.ops.len() + 8 * edits.len());
         let mut checks = Vec::new();
+        let mut places = vec![None; edits.len()];
+        let mut watched = HashMap::new();
         for (i, o) in parsed.ops.iter().enumerate() {
             out.extend(fixes.get(&i).into_iter().flatten().cloned());
             match shows.get(&i) {
@@ -1573,23 +1800,39 @@ impl Pdf {
                             if let Some(want) = check[k].take() {
                                 checks.push((k, Check::InPlace(out.len()), want));
                             }
+                            places[k] = Some(Check::InPlace(out.len()));
                             out.push(line.clone());
                         }
                     }
                 }
-                None => out.push(o.clone()),
+                None => {
+                    if watch.contains(&i) {
+                        watched.insert(i, out.len());
+                    }
+                    out.push(o.clone())
+                }
             }
         }
         if plans.iter().all(|p| matches!(p, Plan::InPlace(..))) {
             let (ops, depth) = (out, parsed.depth_left);
-            return Ok(Edited { ops, depth, checks });
+            return Ok(Edited {
+                ops,
+                depth,
+                checks,
+                places,
+                watched,
+            });
         }
         // Closing what the page leaves open may put a `q` before it all.
         let shift = usize::from(leaks_state(&out));
-        for (_, at, _) in &mut checks {
+        let checked = (checks.iter_mut().map(|(_, at, _)| at)).chain(places.iter_mut().flatten());
+        for at in checked {
             if let Check::InPlace(i) = at {
                 *i += shift;
             }
+        }
+        for at in watched.values_mut() {
+            *at += shift;
         }
         let mut ops = closed(out, parsed.depth_left);
         for (k, plan) in plans.into_iter().enumerate() {
@@ -1599,12 +1842,17 @@ impl Pdf {
                 if let Some(want) = check[k].take() {
                     checks.push((k, Check::OnTop(from, ops.len()), want));
                 }
+                if !lines[k].1.hidden {
+                    places[k] = Some(Check::OnTop(from, ops.len()));
+                }
             }
         }
         Ok(Edited {
             ops,
             depth: 0,
             checks,
+            places,
+            watched,
         })
     }
 
@@ -2053,13 +2301,41 @@ impl Pdf {
         pos: (f32, f32),
         parts: &[TextPart],
     ) -> Result<()> {
+        self.add_text_decorated(page_index, pos, parts, &[])
+    }
+
+    /// [`Pdf::add_text_parts`] with underlines and strike-throughs over its text (the parts'
+    /// texts one after the other), each at its font's place unless given a look.
+    pub fn add_text_decorated(
+        &mut self,
+        page_index: usize,
+        pos: (f32, f32),
+        parts: &[TextPart],
+        decorations: &[Decorated],
+    ) -> Result<()> {
         if parts.iter().all(|p| p.text.is_empty()) {
             bail!("empty text");
         }
         let parts = parts.to_vec();
+        let decorations = decorations.to_vec();
         self.append_layer(page_index, move |s, page| {
             let written = s.written(page, &parts)?;
-            Ok(line_ops([1.0, 0.0, 0.0, -1.0, pos.0, pos.1], &written))
+            let mut ops = line_ops([1.0, 0.0, 0.0, -1.0, pos.0, pos.1], &written);
+            if !decorations.is_empty() {
+                // Where the line went, read as the page will read it, in the layer's terms.
+                let bytes = (Content {
+                    operations: ops.clone(),
+                })
+                .encode()
+                .map_err(|e| anyhow!("cannot encode the new text: {e}"))?;
+                let back = s.parse_as_page(page, &bytes)?;
+                let text: String = parts.iter().map(|p| p.text.as_str()).collect();
+                let place = Check::OnTop(0, ops.len());
+                let (more, _) =
+                    s.decoration_ops(page, &back, place, &Redraw::new(&text, &decorations));
+                ops.extend(more);
+            }
+            Ok(ops)
         })
     }
 

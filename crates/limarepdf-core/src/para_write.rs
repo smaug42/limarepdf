@@ -2,13 +2,14 @@
 //! line set anew where its old line was in the content, inside its text object, with the
 //! text state put back after it; the lines that keep their breaks left as they were.
 
+use crate::decorate::{carried, Decorated, Decoration, Redraw};
 use crate::edit::{line_body, move_only, op, put_code, r, tj, Check, Following, Ink, Written};
 use crate::edit::{PartFont, TextPart, Way};
 use crate::fonts::FontChoice;
 use crate::layout::{shown, Setter};
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::{Obj, Parsed, Show};
-use crate::rewrap::{away_pieces, ParagraphSetting, Planned, SetLine};
+use crate::rewrap::{away_pieces, Paragraph, ParagraphSetting, Planned, SetLine};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::Operation;
@@ -45,17 +46,68 @@ impl Pdf {
         parts: &[TextPart],
         edges: (f32, f32),
     ) -> Result<Vec<usize>> {
+        self.paragraph_with(setting, parts, edges, None)
+    }
+
+    /// [`Pdf::edit_paragraph_between`] with the paragraph's underlines and strike-throughs as
+    /// given (over the text of `parts`), in place of its lines' old ones.
+    pub fn edit_paragraph_decorated(
+        &mut self,
+        setting: &ParagraphSetting,
+        parts: &[TextPart],
+        edges: (f32, f32),
+        decorations: &[Decorated],
+    ) -> Result<Vec<usize>> {
+        self.paragraph_with(setting, parts, edges, Some(decorations))
+    }
+
+    /// A paragraph edited ([`Pdf::edit_paragraph_between`]), its lines' decorations drawn
+    /// again for its new text: as `asked`, else carried with their characters
+    /// ([`crate::decorate::carried`]), each line's stretch where the line is written.
+    fn paragraph_with(
+        &mut self,
+        setting: &ParagraphSetting,
+        parts: &[TextPart],
+        edges: (f32, f32),
+        asked: Option<&[Decorated]>,
+    ) -> Result<Vec<usize>> {
         let set = setting.set_between(parts, edges);
-        if set.unchanged() {
+        if set.unchanged() && asked.is_none() {
             return Ok(Vec::new());
         }
         let para = setting.paragraph();
-        let (page, parsed) = self.load_edit(para.page)?;
+        let (page, mut parsed) = self.load_edit(para.page)?;
         for (id, text) in para.rows.iter().flat_map(|r| &r.pieces) {
             let now = parsed.objs.get(*id).and_then(|o| o.text.as_ref());
             if now.map(|t| &t.text) != Some(text) {
                 bail!("the page changed");
             }
+        }
+        // Its lines' decorations on its text, carried to the new text; the old ones stop
+        // painting, all drawn again where their characters are written.
+        let old = of_paragraph(para, &parsed);
+        let want: Vec<Decorated> = match asked {
+            Some(asked) => asked.to_vec(),
+            None => {
+                let origins: Vec<Option<usize>> = (parts.iter())
+                    .flat_map(|p| (0..p.text.chars().count()).map(move |j| p.origin(j)))
+                    .collect();
+                carried(&old.iter().collect::<Vec<_>>(), &origins)
+            }
+        };
+        let rows: Vec<usize> = para
+            .rows
+            .iter()
+            .flat_map(|r| &r.pieces)
+            .map(|(id, _)| *id)
+            .collect();
+        let paths: Vec<usize> = (parsed.decorations.iter())
+            .filter(|(line, _)| rows.contains(line))
+            .flat_map(|(_, d)| d.paths.clone())
+            .collect();
+        for p in paths {
+            let last = parsed.objs[p].last;
+            parsed.ops[last] = op("n", vec![]);
         }
         let mut own = vec![true; set.lines.len()];
         let mut lost = Vec::new();
@@ -64,7 +116,15 @@ impl Pdf {
                 self.paragraph_ops(page, &parsed, setting, parts, &set.lines, &own)?;
             let misread = self.misread(page, &parsed.inline, &ops, &checks)?;
             if misread.is_empty() {
-                self.commit(page, ops, parsed.depth_left, &parsed.inline)?;
+                let chars: Vec<char> = parts.iter().flat_map(|p| p.text.chars()).collect();
+                let lines = Set {
+                    lines: &set.lines,
+                    chars: &chars,
+                    checks: &checks,
+                };
+                let (ops, depth) =
+                    self.paragraph_decorated(page, &parsed, setting, &lines, &want, ops)?;
+                self.commit(page, ops, depth, &parsed.inline)?;
                 return Ok(lost);
             }
             for n in misread {
@@ -75,6 +135,67 @@ impl Pdf {
                 lost.push(n);
             }
         }
+    }
+
+    /// The edited paragraph's operators `ops`, with decorations `want` (over its new text)
+    /// drawn on top for each of its set lines: where a line written is (its read-back
+    /// place), or where a line kept is, as `parsed` read it.
+    fn paragraph_decorated(
+        &self,
+        page: ObjectId,
+        parsed: &Parsed,
+        setting: &ParagraphSetting,
+        lines: &Set,
+        want: &[Decorated],
+        ops: Vec<Operation>,
+    ) -> Result<(Vec<Operation>, usize)> {
+        let (set, chars, checks) = (lines.lines, lines.chars, lines.checks);
+        if want.is_empty() {
+            return Ok((ops, parsed.depth_left));
+        }
+        let bytes = (parsed.inline.encode(ops.clone()))
+            .map_err(|e| anyhow!("cannot encode the page content: {e}"))?;
+        let back = self.parse_as_page(page, &bytes)?;
+        let para = setting.paragraph();
+        let mut added = Vec::new();
+        for (n, l) in set.iter().enumerate() {
+            let (a, mut end) = l.chars;
+            while end > a && chars[end - 1].is_whitespace() {
+                end -= 1;
+            }
+            let here: Vec<Decorated> = (want.iter())
+                .filter(|d| d.chars.0 < end && d.chars.1 > a)
+                .map(|d| Decorated {
+                    chars: (d.chars.0.max(a) - a, d.chars.1.min(end) - a),
+                    ..d.clone()
+                })
+                .collect();
+            if here.is_empty() {
+                continue;
+            }
+            let (source, place) = match l.kept {
+                Some(i) => {
+                    let ids = para.rows[i].pieces.iter().map(|(id, _)| *id);
+                    let objs: Vec<&Obj> = ids.filter_map(|id| parsed.objs.get(id)).collect();
+                    let from = objs.iter().map(|o| o.first).min().unwrap_or(0);
+                    let to = objs.iter().map(|o| o.last + 1).max().unwrap_or(0);
+                    (parsed, Check::Within(from, to))
+                }
+                None => match checks.iter().find(|(m, ..)| *m == n) {
+                    Some((_, place, _)) => (&back, *place),
+                    None => continue,
+                },
+            };
+            let text: String = chars[a..end].iter().collect();
+            let (more, _) = self.decoration_ops(page, source, place, &Redraw::new(&text, &here));
+            added.extend(more);
+        }
+        if added.is_empty() {
+            return Ok((ops, parsed.depth_left));
+        }
+        let mut ops = crate::edit::closed(ops, parsed.depth_left);
+        ops.extend(added);
+        Ok((ops, 0))
     }
 
     /// The page's operators with paragraph `setting` edited to `parts` set as `lines`, each
@@ -418,6 +539,14 @@ type Placed = (usize, Vec<Operation>, Vec<Operation>);
 /// what it should read.
 type Checks = Vec<(usize, Check, String)>;
 
+/// An edited paragraph's set lines, for their decorations ([`Pdf::paragraph_decorated`]):
+/// the lines, the edited text's characters, and the lines written's read-back places.
+struct Set<'a> {
+    lines: &'a [SetLine],
+    chars: &'a [char],
+    checks: &'a Checks,
+}
+
 /// A stretch of a line as it is written ([`Pdf::written_line`]): characters kept in their
 /// part's font (from, to), a word in another font (its first character, the font, and its
 /// place in that font's words), or a space between such words.
@@ -570,6 +699,26 @@ fn para_em(setting: &ParagraphSetting, i: usize) -> f32 {
 fn matrix(m: M) -> Vec<Object> {
     let plain = |x: f32| if x == 0.0 { 0.0 } else { x };
     m.iter().map(|&x| r(plain(x))).collect()
+}
+
+/// The decorations of paragraph `para`'s lines, as `parsed` read them, over its text: each
+/// from its first character there to its last.
+fn of_paragraph(para: &Paragraph, parsed: &Parsed) -> Vec<Decoration> {
+    let n = para.text.chars().count();
+    let mut out = Vec::new();
+    for (line, d) in &parsed.decorations {
+        let over = |k: &usize| {
+            (para.source(*k)).is_some_and(|(o, c)| o == *line && d.chars.0 <= c && c < d.chars.1)
+        };
+        let ks: Vec<usize> = (0..n).filter(over).collect();
+        if let (Some(&a), Some(&b)) = (ks.first(), ks.last()) {
+            out.push(Decoration {
+                chars: (a, b + 1),
+                ..d.clone()
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

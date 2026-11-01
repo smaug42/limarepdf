@@ -1812,6 +1812,51 @@ form XObject, and per inline image.
   without it (below), the most common colour in a 3-point ring around its box standing in until that comes, from a
   separate drawing of that part of the page in the current page colours. Below that note the inspector names the words that then fall back from the font they go to
   (`page_text::fallback_note`), and the typing box draws each in the face it will be written in.
+- **Underlines and strike-throughs** (NEW-07, batch 46's stage 4a; `decorate.rs`, the design note
+  `limarepdf-underline-design.md`). PDF text has none: a decoration is a thin band drawn under or through some
+  characters. The parser records each painted path's shape (`Seg`; the dash pattern in `Gs::dashed`);
+  `decorate::straight` makes it a band (`Straight`: centre line and thickness in user space) when it is filled
+  rectangles (an `re`, or four corners, any way round) in a row of one thickness with gaps under a quarter of its
+  length (macOS breaks an underline around descenders; a dotted line is half gaps), or one stroked segment without
+  a dash. The page's own content's bands are kept apart (`Painted`: the path's first operator, the band, its colour,
+  and `InkAt`, the operators that set its colour, so no ink is copied while a page is read). `decorate::read` runs
+  at the end of `parse_content` for the page's own content (not a form's), lines and other drawings kept in
+  64-point cells (`Grid`) so a page of many objects isn't read pair by pair; a band running no way the page's lines
+  run is passed over, and a line is laid out only once a band is level with it and near its baseline
+  (`Lite::may_take`; performance.md's "Reading underlines and strike-throughs"). It keeps a band for the line it
+  fits best (`fits`, in the line's own frame,
+  `Frame::of`: along its baseline and up its letters, so turned pages and rotated text read alike; `Laid` is a
+  line's characters as laid out, their edges, sizes, rises, inks and UAX #29 word edges): at most 0.15 em thick
+  and 0.2 em long for the characters it covers, level with the line, an underline's centre between 0.40 em below
+  the baseline and 0.05 em above with its lower edge 0.02 em below, a strike-through's 0.15 to 0.45 em above,
+  both ends within 0.15 em of a character's and on word edges, over two characters or more that aren't spaces with
+  no jump of 2 em between neighbours, in their colour within 0.02. Then no other drawing may meet its ends (but a
+  band under the same line's text, and a fill reaching past both ends behind it), no other line's box overlap it,
+  and no text sit centred under it within its ends less than 0.6 em below while narrower than it or within 0.1 em
+  of it (a fraction's denominator; a justified paragraph's next line is as wide as its underline). Two bands of one
+  kind over the same characters are one `Decoration` with two bands (a double underline). `Parsed::decorations`
+  holds them by line; `PageObject::decorations` gives a line its own (kind, characters, `Look`: bands in ems of
+  the characters' size and the ink, and the paths' ids), `PageObject::decorates` a path its line. The rule's
+  numbers come from producer samples and the corpus check in the design note (469 decorations in 65 files).
+  `Pdf::edit_texts` carries a line's decorations with its characters (`decorate::carried`, by `TextEdit::origins`:
+  a character keeps its decoration, one typed takes the one before it's); `edit_texts_decorated` takes them as
+  given. A line whose words stay as they are (`TextEdit::unchanged`) isn't written, only its bands. After the
+  edit is built and read back, the page is parsed once more and each line's characters as written are found by
+  where they were written (`Edited::places`: the show in place, the operators on top, or an unchanged line's own,
+  through `Edited::watched`) and lined up with the edit's text by their longest common run of characters that
+  aren't spaces (`align`). A decoration wanted that is an old one in its look over the same characters where
+  they were stays as drawn; the others' paths stop painting (their paint operator becomes `n`) and each
+  decoration wanted is drawn on top, one filled rectangle a band (`band_ops`, in the line's frame) for each stretch
+  of one part of the written line, at its size and rise: a read one in its own look and ink, a new one at its
+  font's place (`font_lines`: an embedded TrueType or OpenType program's `post` underline and `OS/2` strike-out,
+  each given by its top; else the standard fonts' AFM underline, 0.1 em below to its centre and 0.05 em thick,
+  with the strike-out of the Liberation look-alike). Spaces at either end of the line are left bare.
+  `edit_paragraph` (`paragraph_with`) maps its lines' decorations onto the paragraph's text (`of_paragraph`, by
+  `Paragraph::source`), carries them as a line's are, stops all the old ones painting and draws each set line's
+  stretch where that line is written (its `Check::Within`) or kept. `add_text_decorated` draws new text's in the
+  layer the text is written in. `transform_objects` (and so `set_object_boxes`) moves a line's decoration paths with
+  the line's own matrix, and `delete_objects` deletes them with it. Redaction treats them as any drawing: one
+  crossing a mark is cut out of it.
 - **The page under text being edited** (ENH-21, batch 45's 3b-1; `tab/backdrop.rs`, `excerpt.rs`). A line drawn
   in place, or a paragraph, being edited asks for the page drawn without its text objects
   (`Editor::backdrop_wanted`: the page, the objects, the box the editor hides). Core's
