@@ -76,16 +76,25 @@ fn same(a: [f32; 4], b: [f32; 4], tol: f32) -> bool {
     a.iter().zip(&b).all(|(p, q)| (p - q).abs() < tol)
 }
 
-/// Whether a control called `name` is in `tree` (a menu item's name ends in its empty key).
+/// Whether `n` is an open menu's item called `name`: a button's name ends in its empty key,
+/// which the band's text alignments, called Align left and Align right too (NEW-15), lack;
+/// a checkbox's doesn't.
+fn item_named(n: &egui::accesskit::Node, name: &str) -> bool {
+    let label = n.label().unwrap_or_default();
+    let checkbox = n.role() == egui::accesskit::Role::CheckBox;
+    label == format!("{name} ") || (checkbox && label == name)
+}
+
+/// Whether an open menu's item called `name` is in `tree`.
 fn listed(tree: &egui::accesskit::TreeUpdate, name: &str) -> bool {
-    (tree.nodes.iter()).any(|(_, n)| n.label().map(str::trim_end) == Some(name))
+    (tree.nodes.iter()).any(|(_, n)| item_named(n, name))
 }
 
 /// Click the menu item called `name`, as a user does, then let the window carry it out.
 fn click_item(app: &mut App, ctx: &egui::Context, name: &str) {
     let tree = settled_at(app, ctx, 1400.0);
     let item = (tree.nodes.iter())
-        .find(|(_, n)| n.label().map(str::trim_end) == Some(name))
+        .find(|(_, n)| item_named(n, name))
         .and_then(|(_, n)| n.bounds())
         .unwrap_or_else(|| panic!("no {name}"));
     let (x, y) = ((item.x0 + item.x1) / 2.0, (item.y0 + item.y1) / 2.0);
@@ -354,11 +363,13 @@ fn align_is_in_the_band_the_right_click_menu_and_the_search() {
     let on_bar: Vec<_> = (bar.iter().flatten()).filter(arranged).collect();
     assert!(on_bar.is_empty(), "on the floating bar: {}", on_bar.len());
 
+    // With the text's Centre, in Align text (NEW-15).
     let found: Vec<Act> = (actions::ACTIONS.iter())
         .filter(|a| a.palette && actions::matches(a, "align centre"))
         .map(|a| a.act)
         .collect();
-    assert_eq!(found, [Act::Align(Align::Centre)]);
+    let text = Act::AlignText(crate::editor::TextAlign::Centre);
+    assert_eq!(found, [text, Act::Align(Align::Centre)]);
     let spread = |q| (actions::ACTIONS.iter()).any(|a| a.palette && actions::matches(a, q));
     assert!(spread("distribute") && spread("snap"));
 }

@@ -62,6 +62,16 @@
   edges dragged, and with Shift on a corner the nearer edge snaps and the other follows. Hold Alt (⌥ on a Mac)
   to drag freely, as in Word; Snap to objects (on at first, remembered between runs) turns snapping off or back
   on. The arrow keys still nudge by 1 point (10 with Shift), without snapping.
+- Text alignment for a paragraph being edited, as in Word: **Align left**, **Centre**, **Align right** and
+  **Justify** in a new **Alignment** group of Edit, beside Font, the paragraph's own shown pressed; Ctrl+L,
+  Ctrl+E, Ctrl+R and Ctrl+J (⌘ on a Mac, as in Word for Mac); ☰ > Edit > Align text and the command search; and
+  Centre on the floating toolbar, as on Word's mini toolbar. The lines move across between the paragraph's edges
+  at once, keeping their words, the editing staying open; justified, every line but the last reaches both edges.
+  Centre, Align right or Justify pressed again puts the paragraph back to the left, as in Word. Centred and
+  right-aligned lines take no first-line indent, and a paragraph aligned left or justified again has its own
+  back. Ctrl+Z in the paragraph takes each change back, and once kept the whole edit is one undo step. Other text
+  can't be aligned yet: the buttons are greyed for it and say where to click. In a narrower window the Alignment
+  group folds first, to one icon with a ▾, so Edit text and Find stay shown.
 
 ### Changed
 
@@ -81,6 +91,8 @@
   and Strikethrough are built.
 - The command band's menus show the same dividing lines between groups of commands as the ☰ menu does, for
   example in Insert pages ▾, Fill fields ▾, Digital signature ▾, Facing pages ▾ and Page colours ▾.
+- **Paragraph** (Edit > Text flow) and **Edit as paragraph** show the ¶ icon, so they aren't mistaken for the new
+  Align left.
 
 ### Fixed
 

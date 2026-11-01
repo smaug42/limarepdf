@@ -31,6 +31,9 @@ mod paragraph;
 mod replace;
 mod replace_all;
 pub use arrange::{Align, Axis};
+/// How a paragraph's text is aligned (NEW-15), as core reads and sets it; [`Align`] lines
+/// objects up.
+pub use limarepdf_core::Align as TextAlign;
 pub use replace::NotReplaced;
 pub use replace_all::{replace_all, AllJob, Pass, Prepared};
 
@@ -373,14 +376,14 @@ pub enum Action {
     /// line.
     EditText(usize, usize, TextEdit, Vec<Decorated>, bool),
     /// A paragraph of a page edited to these parts, with its underlines and strike-throughs
-    /// over them, as its setting sets them between its frame's left and right edges
-    /// ([`limarepdf_core::Pdf::edit_paragraph_decorated`]).
+    /// over them, as its setting sets them between its frame's left and right edges, aligned
+    /// as given ([`limarepdf_core::Pdf::edit_paragraph_decorated`]).
     EditParagraph(
         usize,
         Arc<ParagraphSetting>,
         Vec<TextPart>,
         Vec<Decorated>,
-        (f32, f32),
+        ((f32, f32), TextAlign),
     ),
     /// Words selected with the read tool restyled: each page's changed lines, and the lines
     /// with selected words left as they were. The words stay selected.

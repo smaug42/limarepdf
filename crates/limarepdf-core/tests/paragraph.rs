@@ -1919,6 +1919,138 @@ fn a_paragraph_narrowed_or_widened_is_written_between_its_new_edges() {
     }
 }
 
+/// Where a set line is placed by in a frame from `left` to `right` aligned as `align` says:
+/// how far its start, centre, end or (justified, but the last line) its stretched end is
+/// from where that alignment puts it. `text` is the edit's.
+fn off_place(l: &SetLine, text: &str, align: Align, (left, right): (f32, f32), last: bool) -> f32 {
+    match align {
+        Align::Left => l.x - left,
+        Align::Centre => l.x + l.width / 2.0 - (left + right) / 2.0,
+        Align::Right => l.x + l.width - right,
+        Align::Justified if last => l.x - left,
+        Align::Justified => line_end(l, text) - right,
+    }
+}
+
+#[test]
+fn a_paragraph_realigned_keeps_each_lines_words_and_is_placed_again_in_its_frame() {
+    for align in [Align::Centre, Align::Right, Align::Justified] {
+        let (p, lines, setting) = ragged(300.0);
+        let para = setting.paragraph();
+        assert_eq!(para.frame.align, Align::Left);
+        let f = para.frame;
+        let set = setting.set_in(&para.parts(), (f.left, f.right), align);
+        // No line breaks anew: each keeps its words.
+        assert_eq!(set_texts(&set, &para.text), lines, "{align:?}");
+        let last = set.lines.len() - 1;
+        for (n, l) in set.lines.iter().enumerate() {
+            let off = off_place(l, &para.text, align, (f.left, f.right), n == last);
+            assert!(off.abs() < 0.01, "{align:?}: {l:?} is {off} off");
+        }
+        // The longest line, from edge to edge, stays where it was, as it was, and justified
+        // the last line; the others are written anew.
+        let kept: Vec<bool> = set.lines.iter().map(|l| l.kept.is_some()).collect();
+        let spans = |l: &SetLine| (l.width - (f.right - f.left)).abs() < 1e-3;
+        let want: Vec<bool> = (set.lines.iter().enumerate())
+            .map(|(n, l)| spans(l) || (align == Align::Justified && n == last))
+            .collect();
+        assert!(want.iter().filter(|k| **k).count() >= 1);
+        assert_eq!(kept, want, "{align:?}");
+        // Written there, and read again as aligned so.
+        let mut q = p.clone();
+        let lost =
+            (q.edit_paragraph_in(&setting, &para.parts(), (f.left, f.right), align)).unwrap();
+        assert!(lost.is_empty(), "{align:?}: {lost:?}");
+        assert_eq!(line_texts(&q), lines, "{align:?}");
+        for (o, l) in lines_of(&q).iter().zip(&set.lines) {
+            let at = o.baseline.unwrap();
+            assert!(near(at, (l.x, l.baseline)), "{o:?} against {l:?}");
+        }
+        assert_eq!(only_paragraph(&q).frame.align, align);
+    }
+    // Aligned as it was: nothing to write.
+    let (_, _, setting) = ragged(300.0);
+    let (para, f) = (setting.paragraph(), setting.paragraph().frame);
+    let same = setting.set_in(&para.parts(), (f.left, f.right), Align::Left);
+    assert!(same.unchanged(), "{same:?}");
+}
+
+#[test]
+fn a_justified_paragraph_realigned_loses_its_stretch_and_keeps_its_indent_left_aligned() {
+    let p = indented_justified();
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    let f = para.frame;
+    let edges = (f.left, f.right);
+    for align in [Align::Left, Align::Centre, Align::Right] {
+        let set = setting.set_in(&para.parts(), edges, align);
+        let texts = set_texts(&set, &para.text);
+        let last = set.lines.len() - 1;
+        for (n, l) in set.lines.iter().enumerate() {
+            assert_eq!(l.stretch, 0.0, "{align:?}: {l:?}");
+            // Left-aligned, the first line keeps the paragraph's indent; centred or
+            // right-aligned, no line takes one.
+            let indent = match (align, n) {
+                (Align::Left, 0) => 18.0,
+                _ => 0.0,
+            };
+            let off = off_place(l, &para.text, align, (f.left + indent, f.right), n == last);
+            assert!(off.abs() < 0.01, "{align:?}: {l:?} is {off} off");
+        }
+        let mut q = p.clone();
+        q.edit_paragraph_in(&setting, &para.parts(), edges, align)
+            .unwrap();
+        assert_eq!(line_texts(&q), texts, "{align:?}");
+        // Its spaces no wider than a space: each line no wider than the 422 points its
+        // words were broken at, as the justified ones were stretched beyond.
+        for o in lines_of(&q) {
+            assert!(o.bbox[2] - o.bbox[0] <= 422.6, "{align:?}: {o:?}");
+        }
+        assert_eq!(only_paragraph(&q).frame.align, align);
+    }
+}
+
+#[test]
+fn a_centred_paragraph_made_left_aligned_takes_no_indent() {
+    for x in [centred as fn(f32) -> f32, right_aligned] {
+        let p = aligned_page(x);
+        let para = only_paragraph(&p);
+        let setting = p.paragraph_setting(&para).unwrap();
+        let f = para.frame;
+        let set = setting.set_in(&para.parts(), (f.left, f.right), Align::Left);
+        for l in &set.lines {
+            assert!((l.x - f.left).abs() < 0.01, "{:?}: {l:?}", f.align);
+        }
+        let mut q = p.clone();
+        (q.edit_paragraph_in(&setting, &para.parts(), (f.left, f.right), Align::Left)).unwrap();
+        let again = only_paragraph(&q);
+        assert_eq!(again.frame.align, Align::Left);
+        assert!(again.frame.indent.abs() < 0.05, "{:?}", again.frame);
+    }
+}
+
+#[test]
+fn the_narrowest_frame_takes_the_first_lines_indent_only_where_the_alignment_does() {
+    let p = indented_justified();
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    let parts = para.parts();
+    let justified = setting.narrowest(&parts);
+    assert_eq!(setting.narrowest_in(&parts, Align::Left), justified);
+    let indent = justified - setting.narrowest_in(&parts, Align::Centre);
+    assert!((indent - 18.0).abs() < 0.05, "{indent}");
+}
+
+/// Page 0's only paragraph written aligned as `align` says, and its text.
+fn realigned(mut p: Pdf, align: Align) -> (Pdf, String) {
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    let edges = (para.frame.left, para.frame.right);
+    p.edit_paragraph_in(&setting, &para.parts(), edges, align)
+        .unwrap();
+    (p, para.text.clone())
+}
+
 /// Page 0's only paragraph written with its frame `room` points wide from 72 points in, and
 /// its text.
 fn dragged_to(mut p: Pdf, room: f32) -> (Pdf, String) {
@@ -1950,6 +2082,8 @@ fn written_paragraphs() -> Vec<(&'static str, Pdf, String)> {
     let lines = wrap(&format!("{TEXT} {MORE}"), 300.0, 11.0);
     let per_line = tagged(&lines, &vec![0; lines.len()]);
     let tex = |para: &Paragraph| para.text.replacen("ton tony", "ton big tony", 1);
+    let from_left = |to: Align| realigned(ragged(300.0).0, to);
+    let to_left = |p: Pdf| realigned(p, Align::Left);
     [
         ("words typed", into_second(ragged(300.0).0)),
         ("words deleted", edited_to(ragged(300.0).0, deleted)),
@@ -1965,6 +2099,10 @@ fn written_paragraphs() -> Vec<(&'static str, Pdf, String)> {
         ("TeX's bitmap font", edited_to(tex_paragraph(), tex)),
         ("narrowed", dragged_to(ragged(300.0).0, 200.0)),
         ("widened", dragged_to(ragged(300.0).0, 420.0)),
+        ("centred from left", from_left(Align::Centre)),
+        ("justified from left", from_left(Align::Justified)),
+        ("left from justified", to_left(indented_justified())),
+        ("left from right", to_left(aligned_page(right_aligned))),
     ]
     .into_iter()
     .map(|(what, (p, new))| (what, p, new))

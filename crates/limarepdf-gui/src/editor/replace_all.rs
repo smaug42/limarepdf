@@ -507,7 +507,8 @@ fn paragraph(
         other_font = into_other_font(&put_at, &away);
         let f = &setting.paragraph().frame;
         let (edges, decos) = ((f.left, f.right), text.decorations());
-        lost = !(pdf.edit_paragraph_decorated(setting, &parts, edges, &decos)?).is_empty();
+        let align = f.align;
+        lost = !(pdf.edit_paragraph_decorated(setting, &parts, edges, align, &decos)?).is_empty();
     }
     let old = (pp.blocks[k].lines.iter().map(|l| l.bbox)).reduce(union);
     let written = set.lines.into_iter().filter(|l| l.kept.is_none()).collect();

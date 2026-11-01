@@ -9,6 +9,7 @@ use crate::fonts::FontChoice;
 use crate::layout::{shown, Setter};
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::{Obj, Parsed, Show};
+use crate::paragraph::Align;
 use crate::rewrap::{away_pieces, decorations_of, ParagraphSetting, Planned, SetLine};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -46,32 +47,48 @@ impl Pdf {
         parts: &[TextPart],
         edges: (f32, f32),
     ) -> Result<Vec<usize>> {
-        self.paragraph_with(setting, parts, edges, None)
+        let align = setting.paragraph().frame.align;
+        self.paragraph_with(setting, parts, edges, align, None)
     }
 
-    /// [`Pdf::edit_paragraph_between`] with the paragraph's underlines and strike-throughs as
+    /// [`Pdf::edit_paragraph_between`] with the paragraph aligned as `align` says, as
+    /// [`ParagraphSetting::set_in`] sets it (NEW-15).
+    pub fn edit_paragraph_in(
+        &mut self,
+        setting: &ParagraphSetting,
+        parts: &[TextPart],
+        edges: (f32, f32),
+        align: Align,
+    ) -> Result<Vec<usize>> {
+        self.paragraph_with(setting, parts, edges, align, None)
+    }
+
+    /// [`Pdf::edit_paragraph_in`] with the paragraph's underlines and strike-throughs as
     /// given (over the text of `parts`), in place of its lines' old ones.
     pub fn edit_paragraph_decorated(
         &mut self,
         setting: &ParagraphSetting,
         parts: &[TextPart],
         edges: (f32, f32),
+        align: Align,
         decorations: &[Decorated],
     ) -> Result<Vec<usize>> {
-        self.paragraph_with(setting, parts, edges, Some(decorations))
+        self.paragraph_with(setting, parts, edges, align, Some(decorations))
     }
 
-    /// A paragraph edited ([`Pdf::edit_paragraph_between`]), its lines' decorations drawn
-    /// again for its new text: as `asked`, else carried with their characters
-    /// ([`crate::decorate::carried`]), each line's stretch where the line is written.
+    /// A paragraph edited ([`Pdf::edit_paragraph_in`]) between its frame's edges, aligned
+    /// as given, its lines' decorations drawn again for its new text: as `asked`, else
+    /// carried with their characters ([`crate::decorate::carried`]), each line's stretch
+    /// where the line is written.
     fn paragraph_with(
         &mut self,
         setting: &ParagraphSetting,
         parts: &[TextPart],
         edges: (f32, f32),
+        align: Align,
         asked: Option<&[Decorated]>,
     ) -> Result<Vec<usize>> {
-        let set = setting.set_between(parts, edges);
+        let set = setting.set_in(parts, edges, align);
         if set.unchanged() && asked.is_none() {
             return Ok(Vec::new());
         }

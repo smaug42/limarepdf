@@ -872,16 +872,23 @@ impl ParagraphSetting {
     /// line stays as it was only where it starts and ends as it did in text that hasn't
     /// changed, and the frame moves it nowhere, across the page or in its stretch.
     pub fn set_between(&self, parts: &[TextPart], edges: (f32, f32)) -> SetParagraph {
+        self.set_in(parts, edges, self.para.frame.align)
+    }
+
+    /// [`ParagraphSetting::set_between`] with the paragraph aligned as `align` says
+    /// (NEW-15). A change of alignment alone breaks no line anew, as a word processor
+    /// realigns a paragraph: each line keeps its words and is placed again in the frame,
+    /// written anew where that moves it or changes its stretch. Centred and right-aligned
+    /// text takes no first-line indent; left or justified, a paragraph takes its own (none
+    /// for one read as centred or right-aligned).
+    pub fn set_in(&self, parts: &[TextPart], edges: (f32, f32), align: Align) -> SetParagraph {
         let new = self.measure(parts);
         let old = &self.old;
         let para = &self.para;
-        let frame = Frame {
-            left: edges.0,
-            right: edges.1,
-            ..para.frame
-        };
+        let frame = self.frame_in(edges, align);
         let moved = (frame.left - para.frame.left).abs() > 1e-3
             || (frame.right - para.frame.right).abs() > 1e-3;
+        let realigned = align != para.frame.align;
         let (nl, ol) = (new.chars.len(), old.chars.len());
         let starts: Vec<usize> = para.lines.iter().map(|l| l.0).collect();
         let rows = starts.len();
@@ -910,7 +917,7 @@ impl ParagraphSetting {
                 hyphen: end > a && old.chars[end - 1] == '\u{AD}',
             }
         };
-        if prefix == nl && nl == ol && !moved {
+        if prefix == nl && nl == ol && !moved && !realigned {
             return SetParagraph {
                 lines: (0..rows).map(|n| kept(n, 0)).collect(),
                 marked: Vec::new(),
@@ -994,9 +1001,9 @@ impl ParagraphSetting {
                 last,
             };
             let (x, stretch) = line.on(&frame);
-            // With the edges moved, a line that starts and ends as it did in text that hasn't
-            // changed, which the frame moves nowhere, stays as it was.
-            if moved && push == 0.0 && n < rows {
+            // With the edges moved or the text realigned, a line that starts and ends as it
+            // did in text that hasn't changed, which the frame moves nowhere, stays as it was.
+            if (moved || realigned) && push == 0.0 && n < rows {
                 let same = (e <= prefix && a == starts[n] && e == old_end(n))
                     || (was(a) == Some(starts[n]) && was(e) == Some(old_end(n)));
                 let (x0, stretch0) = line.on(&para.frame);
@@ -1019,6 +1026,25 @@ impl ParagraphSetting {
             a = e;
             n += 1;
         }
+        // Realigned in the frame as it was: the lines kept keep their words, each written
+        // anew where the new alignment places it otherwise than the old one did.
+        if realigned && !moved {
+            for l in lines.iter_mut().filter(|l| l.kept.is_some()) {
+                let (a, e) = l.chars;
+                let end = new.trimmed(a, e);
+                let line = Placing {
+                    opens: starts_paragraph(&new, a),
+                    width: l.width,
+                    gaps: new.chars[a..end].iter().filter(|c| **c == ' ').count(),
+                    last: e >= nl || matches!(new.chars[e - 1], '\u{2029}' | '\n'),
+                };
+                let (x, stretch) = line.on(&frame);
+                let (x0, stretch0) = line.on(&para.frame);
+                if (x - x0).abs() > 1e-3 || (stretch - stretch0).abs() > 1e-3 {
+                    (l.kept, l.x, l.stretch) = (None, x, stretch);
+                }
+            }
+        }
         // The hyphens that may be their word's a rewrap brought inside a line.
         let mut marked = Vec::new();
         for h in para.hyphens.iter().filter(|h| h.kind == Hyphen::Unknown) {
@@ -1039,6 +1065,12 @@ impl ParagraphSetting {
     /// right: its widest word whole on a line, with the first line's indent where it takes
     /// one.
     pub fn narrowest(&self, parts: &[TextPart]) -> f32 {
+        self.narrowest_in(parts, self.para.frame.align)
+    }
+
+    /// [`ParagraphSetting::narrowest`] with the paragraph aligned as `align` says, which
+    /// says whether its first line takes an indent.
+    pub fn narrowest_in(&self, parts: &[TextPart], align: Align) -> f32 {
         let m = self.measure(parts);
         let mut widest = 0.0f32;
         let mut a = 0;
@@ -1046,8 +1078,27 @@ impl ParagraphSetting {
             widest = widest.max(m.width(a, b));
             a = b;
         }
+        let p = &self.para.frame;
+        let f = self.frame_in((p.left, p.right), align);
+        widest + (f.right - f.left - room_in(&f, true)).max(0.0)
+    }
+
+    /// The paragraph's frame with its left and right edges at `edges` and its text aligned
+    /// as `align` says, with the first line's indent the paragraph has: one read as centred
+    /// or right-aligned has none, its first line's place being its width's.
+    fn frame_in(&self, edges: (f32, f32), align: Align) -> Frame {
         let f = &self.para.frame;
-        widest + (f.right - f.left - room_in(f, true)).max(0.0)
+        let indent = match f.align {
+            Align::Left | Align::Justified => f.indent,
+            Align::Right | Align::Centre => 0.0,
+        };
+        Frame {
+            left: edges.0,
+            right: edges.1,
+            align,
+            indent,
+            ..*f
+        }
     }
 
     /// How each character of `parts` is written: in its part's own font where it can be
@@ -1132,9 +1183,10 @@ impl ParagraphSetting {
         out
     }
 
-    /// The character spacing, word spacing (none in a justified paragraph, where spaces are
-    /// stretched instead) and horizontal scaling a part `p` of an edit is written with: its
-    /// paragraph part's, or for one in a font chosen, the paragraph's first part's.
+    /// The character spacing, word spacing (none in a paragraph read as justified, where it
+    /// stretched the spaces, whatever the paragraph is aligned to now) and horizontal scaling
+    /// a part `p` of an edit is written with: its paragraph part's, or for one in a font
+    /// chosen, the paragraph's first part's.
     pub(crate) fn spacing(&self, p: &TextPart) -> [f32; 3] {
         let parts = &self.para.parts;
         let i = match p.font {

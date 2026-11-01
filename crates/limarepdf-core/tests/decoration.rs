@@ -853,7 +853,8 @@ fn underlining_a_paragraphs_words_leaves_its_lines_as_they_were() {
         look: None,
     });
     let f = &para.frame;
-    (p.edit_paragraph_decorated(&setting, &para.parts(), (f.left, f.right), &decos)).unwrap();
+    let edges = (f.left, f.right);
+    (p.edit_paragraph_decorated(&setting, &para.parts(), edges, f.align, &decos)).unwrap();
     assert_eq!(text_ops(&operators(&p)), before);
     let mut covered: Vec<String> = read(&p).into_iter().map(|(c, ..)| c).collect();
     covered.sort();

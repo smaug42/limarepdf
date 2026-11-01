@@ -1249,12 +1249,12 @@ impl Tab {
                             words_only.then_some(((p, at), self.revision, self.undo.len(), now));
                     }
                 }
-                Action::EditParagraph(p, setting, parts, decos, edges) => {
+                Action::EditParagraph(p, setting, parts, decos, (edges, align)) => {
                     // The whole paragraph in one change, which one Undo takes back.
                     let mut lost = false;
                     let edit = |pdf: &mut Pdf| {
                         lost = !pdf
-                            .edit_paragraph_decorated(&setting, &parts, edges, &decos)?
+                            .edit_paragraph_decorated(&setting, &parts, edges, align, &decos)?
                             .is_empty();
                         Ok(())
                     };
@@ -2881,6 +2881,7 @@ impl Tab {
         c.line_edit = self.ed.editing_line();
         c.paragraph = self.ed.paragraphs;
         c.hyphen = self.ed.hyphen_here();
+        c.text_align = self.ed.text_align();
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The

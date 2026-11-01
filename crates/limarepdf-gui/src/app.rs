@@ -2428,10 +2428,11 @@ impl App {
         // command doesn't run (BUG-01). A question the command asks is then about the
         // document with the typing in it (BUG-10). The styles (Bold, Italic, Underline,
         // Strikethrough) change the line being edited on the page instead, which stays open,
-        // as Ctrl+B and Ctrl+I there do; Cut cuts from the text being typed.
+        // as Ctrl+B and Ctrl+I there do, and the alignments its paragraph; Cut cuts from the
+        // text being typed.
         let styles = matches!(
             a,
-            Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough
+            Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough | Act::AlignText(_)
         );
         let in_line = styles && has && self.tabs[self.active].ed.editing_line();
         let in_typing = a == Act::Cut && has && self.tabs[self.active].ed.typing_id().is_some();
@@ -2758,6 +2759,7 @@ impl App {
                 }
                 t.apply_actions(ctx);
             }
+            Act::AlignText(how) => self.tabs[self.active].ed.align_text(how),
             Act::DeleteObject => self.tabs[self.active].ed.delete_selected(),
             Act::DeleteSelection => {
                 if self.tabs[self.active].ed.has_object() {
@@ -7044,6 +7046,7 @@ mod tests {
     mod review;
     mod sign;
     mod tabs;
+    mod text_align;
     mod typing_box;
     mod typing_menus;
     mod underline;
@@ -8515,7 +8518,8 @@ mod tests {
 
     /// ENH-38: groups without room fold from the right into a button with the group's
     /// name, which opens them; groups of planned features alone are left out first; a group
-    /// of one command folds to that command's icon.
+    /// of one command folds to that command's icon, and Edit's Alignment, icons alone, to
+    /// one icon, first (NEW-15).
     #[test]
     fn groups_without_room_fold_into_their_names() {
         let ctx = egui::Context::default();
@@ -8525,8 +8529,13 @@ mod tests {
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert!(node(&tree, "Find").is_some());
         assert!(node(&tree, "Align objects").is_some());
+        assert!(node(&tree, "Centre").is_some(), "no Centre at 1400");
+        assert!(node(&tree, "Alignment").is_none(), "folded at 1400");
         let tree = settled_at(&mut app, &ctx, 1000.0);
         assert!(node(&tree, "Find").is_some(), "Editing folded at 1000");
+        let (at, _) = node(&tree, "Alignment").expect("Alignment open at 1000");
+        assert!(at.width() < 60.0, "Alignment folded to its name: {at:?}");
+        assert!(node(&tree, "Centre").is_none(), "Centre shown at 1000");
         // Folded, Text flow's Paragraph and Arrange's Align objects, the one command of
         // each, show as their icons.
         let tree = settled_at(&mut app, &ctx, 900.0);

@@ -4,7 +4,7 @@
 //! or what is typed next, as in a word processor; and the line goes to core in parts, with
 //! its underlines and strike-throughs over them.
 
-use crate::editor::{same_color, word_around};
+use crate::editor::{same_color, word_around, TextAlign};
 use crate::{font_list, page_text};
 use limarepdf_core::{
     DecoKind, Decorated, Decoration, Family, FontChoice, PageObject, PartFont, TextPart, TextSpan,
@@ -1051,7 +1051,8 @@ const STEPS: usize = 100;
 /// the step before it as text editors join it, and each style change is a step of its own,
 /// changes made while a list or colour picker is open joining into one. For a paragraph, it
 /// watches its frame's edges too ([`Self::observe_edges`]): a drag of an edge is a step, as
-/// Word undoes a resize, and moves by the arrow keys close together one.
+/// Word undoes a resize, and moves by the arrow keys close together one; and its alignment
+/// ([`Self::observe_align`]), each change a step, as Word undoes one.
 #[derive(Clone, Debug, Default)]
 pub struct History {
     undo: Vec<Step>,
@@ -1061,6 +1062,8 @@ pub struct History {
     sel: (usize, usize),
     /// A paragraph's frame's left and right edges when last watched; `None` for other text.
     edges: Option<(f32, f32)>,
+    /// A paragraph's alignment when last watched; `None` for other text.
+    align: Option<TextAlign>,
     /// The last change was typing, at this time, leaving the caret here.
     typing: Option<(f64, usize)>,
     /// The last change was a style change not yet finished.
@@ -1075,6 +1078,7 @@ pub struct History {
 struct Step {
     text: Styled,
     edges: Option<(f32, f32)>,
+    align: Option<TextAlign>,
     sel: (usize, usize),
 }
 
@@ -1087,10 +1091,12 @@ impl History {
         }
     }
 
-    /// Nothing to undo yet in a paragraph's `text` set between its frame's `edges`.
-    pub fn with_edges(text: &Styled, edges: (f32, f32)) -> Self {
+    /// Nothing to undo yet in a paragraph's `text` set between its frame's `edges`, aligned
+    /// as `align` says.
+    pub fn with_frame(text: &Styled, edges: (f32, f32), align: TextAlign) -> Self {
         Self {
             edges: Some(edges),
+            align: Some(align),
             ..Self::new(text)
         }
     }
@@ -1098,6 +1104,25 @@ impl History {
     /// The paragraph's frame's edges as the last step taken back or forward left them.
     pub fn edges(&self) -> Option<(f32, f32)> {
         self.edges
+    }
+
+    /// The paragraph's alignment as the last step taken back or forward left it.
+    pub fn align(&self) -> Option<TextAlign> {
+        self.align
+    }
+
+    /// Watch a paragraph's alignment this frame: a change since the last frame is a step to
+    /// undo of its own.
+    pub fn observe_align(&mut self, align: TextAlign) {
+        if self.align == Some(align) {
+            return;
+        }
+        self.push(self.sel);
+        self.typing = None;
+        self.styling = false;
+        self.moving = None;
+        self.align = Some(align);
+        self.redo.clear();
     }
 
     /// Watch a paragraph's frame's `edges` this frame, at time `now`, one of them being
@@ -1163,6 +1188,7 @@ impl History {
         self.undo.push(Step {
             text: was,
             edges: self.edges,
+            align: self.align,
             sel,
         });
         if self.undo.len() > STEPS {
@@ -1181,15 +1207,17 @@ impl History {
     }
 
     /// Take `text` back a step: returns the selection it had then, or `None` with nothing
-    /// to undo. A paragraph's frame's edges go back with it ([`Self::edges`]).
+    /// to undo. A paragraph's frame's edges and alignment go back with it ([`Self::edges`],
+    /// [`Self::align`]).
     pub fn undo(&mut self, text: &mut Styled) -> Option<(usize, usize)> {
         let was = self.undo.pop()?;
         self.redo.push(Step {
             text: std::mem::replace(text, was.text),
             edges: self.edges,
+            align: self.align,
             sel: self.sel,
         });
-        Some(self.went_to(text, was.edges, was.sel))
+        Some(self.went_to(text, (was.edges, was.align), was.sel))
     }
 
     /// Take `text` forward a step undone: returns the selection it had then.
@@ -1198,21 +1226,23 @@ impl History {
         self.undo.push(Step {
             text: std::mem::replace(text, next.text),
             edges: self.edges,
+            align: self.align,
             sel: self.sel,
         });
-        Some(self.went_to(text, next.edges, next.sel))
+        Some(self.went_to(text, (next.edges, next.align), next.sel))
     }
 
-    /// `text` is now a step taken back or forward, set between `edges`, with `sel`
-    /// selected.
+    /// `text` is now a step taken back or forward, a paragraph set between `edges` and
+    /// aligned as `align` says, with `sel` selected.
     fn went_to(
         &mut self,
         text: &Styled,
-        edges: Option<(f32, f32)>,
+        (edges, align): (Option<(f32, f32)>, Option<TextAlign>),
         sel: (usize, usize),
     ) -> (usize, usize) {
         self.last = text.clone();
         self.edges = edges;
+        self.align = align;
         self.sel = sel;
         self.typing = None;
         self.styling = false;
@@ -1451,7 +1481,7 @@ mod tests {
     #[test]
     fn undo_takes_back_a_frames_edges_with_the_typing() {
         let mut s = Styled::plain("ab", CharStyle::default());
-        let mut h = History::with_edges(&s, (72.0, 400.0));
+        let mut h = History::with_frame(&s, (72.0, 400.0), TextAlign::Left);
         // A drag over five seconds, then let go.
         for i in 0..5 {
             h.observe_edges((72.0, 390.0 - i as f32), i as f64, true);
@@ -1482,6 +1512,35 @@ mod tests {
         h.observe(&t, Some((3, 3)), 1.0, true);
         h.undo(&mut t);
         assert_eq!(h.edges(), None);
+    }
+
+    /// A paragraph's alignment is undone with its typing (NEW-15): each change a step of
+    /// its own, as Word undoes one, typing between them another; Undo and Redo put the
+    /// alignment back.
+    #[test]
+    fn undo_takes_back_a_paragraphs_alignment_with_the_typing() {
+        let mut s = Styled::plain("ab", CharStyle::default());
+        let mut h = History::with_frame(&s, (72.0, 400.0), TextAlign::Left);
+        h.observe_align(TextAlign::Centre);
+        h.observe_align(TextAlign::Centre);
+        s.sync("abc", Some(3));
+        h.observe(&s, Some((3, 3)), 1.0, true);
+        h.observe_align(TextAlign::Justified);
+        let mut back = Vec::new();
+        while h.undo(&mut s).is_some() {
+            back.push((s.text().to_string(), h.align().unwrap()));
+        }
+        let want = [
+            ("abc", TextAlign::Centre),
+            ("ab", TextAlign::Centre),
+            ("ab", TextAlign::Left),
+        ];
+        let want: Vec<(String, TextAlign)> =
+            want.iter().map(|(t, a)| (t.to_string(), *a)).collect();
+        assert_eq!(back, want);
+        h.redo(&mut s);
+        assert_eq!(h.align(), Some(TextAlign::Centre));
+        assert_eq!(h.edges(), Some((72.0, 400.0)));
     }
 
     #[test]

@@ -99,6 +99,14 @@ While you type:
   that edge a point at a time, ten with Shift; click in the text to type again. The edges stay on the page, and
   the paragraph can't be narrower than its longest word. Lines whose words and place stay the same are left as
   they were.
+- To align the paragraph, use **Edit > Alignment** in the band: **Align left**, **Centre**, **Align right** and
+  **Justify**, the paragraph's own shown pressed. Or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J (⌘L, ⌘E, ⌘R or ⌘J on a
+  Mac), as in Word. The lines move across between the paragraph's edges at once, keeping their words; justified,
+  every line but the last reaches both edges. Pressing Centre, Align right or Justify again puts the paragraph back
+  to the left, as in Word. Centred and right-aligned lines take no first-line indent; aligned left or justified
+  again, the paragraph has its own back. The paragraph is aligned between its own edges, not the page's margins:
+  drag an edge first to give it more room. Centre is on the floating toolbar too, and all four are in ☰ > Edit >
+  Align text and the command search (Ctrl+K: type "align" or "centre").
 - **Enter** starts a new paragraph within the frame, with the first line's indent if it has one; **Shift+Enter**
   starts a new line.
 - Each word keeps its own style, and letters keep their font, as in a line (see
@@ -116,9 +124,9 @@ While you type:
   is written over what follows it, so make room, shorten it or widen it.
 - While a link or a comment is over the paragraph, the inspector says **Links and comments over this paragraph
   stay in place**: they keep their place on the page, and don't move with the words under them.
-- Ctrl+Z and Ctrl+Y (and **Undo** and **Redo** in the band) undo and redo your typing inside the paragraph, and
-  each move of its edges (a drag, or a run of arrow keys), with a frame edge's square selected too. Once kept, the
-  whole change is one undo step. Opening a paragraph and leaving it as it was changes nothing.
+- Ctrl+Z and Ctrl+Y (and **Undo** and **Redo** in the band) undo and redo your typing inside the paragraph, each
+  move of its edges (a drag, or a run of arrow keys), with a frame edge's square selected too, and each change of
+  its alignment. Once kept, the whole change is one undo step. Opening a paragraph and leaving it as it was changes nothing.
 
 Words you select with the read tool in one paragraph (with **Paragraph** on; with it off, across the lines of one
 LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragraph, which rewraps; see
@@ -514,6 +522,10 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   is left a drawing, and stays where it is when its line changes.
 - Styling words doesn't rewrap: bold or larger words make their line longer and the rest of it moves along, and
   highlights, links and redaction marks over them stay where they were.
+- Alignment (Align left, Centre, Align right, Justify) works on a paragraph being edited only, for now: a line
+  edited alone, words selected while reading, new text and text boxes can't be aligned yet, and the buttons are
+  greyed for them. A paragraph is aligned between its own edges; there are no indents, line spacing or spacing
+  before and after a paragraph to set.
 - Editing a line does not change its width, and a paragraph keeps its frame's width unless you drag its edges:
   longer text can overlap its neighbours. The outline warns of it, a tag where it happens, but nothing is moved
   out of the way.

@@ -13,7 +13,7 @@ const PROSE: &str = "The harbour was quiet that morning, and the fishing boats s
 /// A tab of a Letter page with a heading on its own at the top and, below it, `PROSE` as one
 /// paragraph of 12-point Helvetica lines 15 points apart, about 330 points wide, with the
 /// read tool. Returns the paragraph's lines.
-fn prose_tab(app: &mut App, ctx: &egui::Context) -> Vec<String> {
+pub(super) fn prose_tab(app: &mut App, ctx: &egui::Context) -> Vec<String> {
     prose_tab_of(app, ctx, PROSE)
 }
 
@@ -79,7 +79,7 @@ pub(super) fn double_click_word(app: &mut App, ctx: &egui::Context, word: &str) 
 }
 
 /// Whether the status bar says `said`.
-fn status_says(tree: &egui::accesskit::TreeUpdate, said: &str) -> bool {
+pub(super) fn status_says(tree: &egui::accesskit::TreeUpdate, said: &str) -> bool {
     let mut values = tree.nodes.iter().filter_map(|(_, n)| n.value());
     values.any(|v| v.starts_with(said))
 }
@@ -87,7 +87,7 @@ fn status_says(tree: &egui::accesskit::TreeUpdate, said: &str) -> bool {
 /// Click the command band's button called `name` (the topmost control of that name, above
 /// the inspector's), then let half a second of frames pass, so that the next click isn't
 /// taken with this one as a double-click.
-fn click_band(app: &mut App, ctx: &egui::Context, name: &str) {
+pub(super) fn click_band(app: &mut App, ctx: &egui::Context, name: &str) {
     let tree = settled_at(app, ctx, 1400.0);
     let at = (tree.nodes.iter())
         .filter(|(_, n)| n.label() == Some(name))
@@ -104,13 +104,13 @@ fn click_band(app: &mut App, ctx: &egui::Context, name: &str) {
 }
 
 /// The page's paragraph as it reads now: its lines below the heading, joined by spaces.
-fn paragraph_now(pdf: &Pdf) -> String {
+pub(super) fn paragraph_now(pdf: &Pdf) -> String {
     let lines = line_texts(pdf, 0);
     lines[1..].join(" ")
 }
 
 /// The first page's content as it is.
-fn content(pdf: &Pdf) -> Vec<u8> {
+pub(super) fn content(pdf: &Pdf) -> Vec<u8> {
     pdf.doc.get_page_content(pdf.page_ids()[0])
 }
 
@@ -663,7 +663,10 @@ fn a_hyphen_brought_inside_a_line_is_marked_and_joined_on_asking() {
 
 /// The prose tab's paragraph switched to Paragraph and opened at "fishing"; the window
 /// settled.
-fn open_prose_paragraph(app: &mut App, ctx: &egui::Context) -> egui::accesskit::TreeUpdate {
+pub(super) fn open_prose_paragraph(
+    app: &mut App,
+    ctx: &egui::Context,
+) -> egui::accesskit::TreeUpdate {
     double_click_word(app, ctx, "fishing");
     app.act(ctx, Act::EditParagraph);
     let tree = settled_at(app, ctx, 1400.0);
@@ -694,7 +697,7 @@ fn drag(app: &mut App, ctx: &egui::Context, from: egui::Pos2, to: egui::Pos2) {
 }
 
 /// The paragraph's lines below the heading as they are on the page.
-fn paragraph_lines(pdf: &Pdf) -> Vec<limarepdf_core::PageObject> {
+pub(super) fn paragraph_lines(pdf: &Pdf) -> Vec<limarepdf_core::PageObject> {
     let mut objs = pdf.page_objects(0).unwrap();
     objs.retain(|o| o.text.is_some() && o.bbox[1] > 90.0);
     objs

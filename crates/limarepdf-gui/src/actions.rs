@@ -2,7 +2,7 @@
 //! (Ctrl+K) and the keyboard shortcuts are all built from [`ACTIONS`]; what a command
 //! does is in `App::act`.
 
-use crate::editor::{Align, Axis, Tool};
+use crate::editor::{Align, Axis, TextAlign, Tool};
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection, Toward};
@@ -68,6 +68,9 @@ pub enum Act {
     Underline,
     /// Strikethrough on or off, as [`Act::Bold`].
     Strikethrough,
+    /// Align the text's paragraph left, centred, right or justified, as Word's Paragraph
+    /// group's buttons: one already so goes back to left (NEW-15).
+    AlignText(TextAlign),
     /// Mark the selected words, in the colour last chosen for the kind.
     Mark(Mark),
     /// Choose the colour for highlights, or (`line`) for the other marks: an index into
@@ -274,6 +277,7 @@ impl Act {
             | Act::Italic
             | Act::Underline
             | Act::Strikethrough
+            | Act::AlignText(_)
             | Act::Undo
             | Act::Redo
             | Act::Mark(_)
@@ -512,6 +516,9 @@ pub struct Ctx {
     /// The paragraph being edited has a marked line-end hyphen at the right-click or the
     /// caret.
     pub hyphen: bool,
+    /// How the text the alignment commands act on is aligned, when there is some
+    /// ([`crate::editor::Editor::text_align`]).
+    pub text_align: Option<TextAlign>,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -658,6 +665,10 @@ fn lines_among(c: &Ctx) -> bool {
 /// Italic change.
 fn styleable(c: &Ctx) -> bool {
     (c.words || (c.object && c.obj_lines)) && !c.busy
+}
+/// Text the text alignments act on: a paragraph being edited (NEW-15).
+fn text_alignable(c: &Ctx) -> bool {
+    c.text_align.is_some() && !c.busy
 }
 fn arrow_tool(c: &Ctx) -> bool {
     c.doc && c.tool == Some(Tool::Select) && !c.organise
@@ -945,6 +956,56 @@ pub static ACTIONS: &[Action] = &[
         enabled: styleable,
         ..BASE
     },
+    // Word's Paragraph group's alignments, with its keys (⌘ on a Mac, as Word for Mac).
+    Action {
+        act: Act::AlignText(TextAlign::Left),
+        group: Group::Edit,
+        label: "Align left",
+        icon: icon::TEXT_ALIGN_LEFT,
+        keys: &[k(C, Key::L)],
+        enabled: text_alignable,
+        checked: Some(|c| c.text_align == Some(TextAlign::Left)),
+        sep: true,
+        hint: "Line the paragraph's lines up along its left edge.",
+        submenu: "Align text",
+        ..BASE
+    },
+    Action {
+        act: Act::AlignText(TextAlign::Centre),
+        group: Group::Edit,
+        label: "Centre",
+        icon: icon::TEXT_ALIGN_CENTER,
+        keys: &[k(C, Key::E)],
+        enabled: text_alignable,
+        checked: Some(|c| c.text_align == Some(TextAlign::Centre)),
+        hint: "Centre the paragraph's lines between its edges.",
+        submenu: "Align text",
+        ..BASE
+    },
+    Action {
+        act: Act::AlignText(TextAlign::Right),
+        group: Group::Edit,
+        label: "Align right",
+        icon: icon::TEXT_ALIGN_RIGHT,
+        keys: &[k(C, Key::R)],
+        enabled: text_alignable,
+        checked: Some(|c| c.text_align == Some(TextAlign::Right)),
+        hint: "Line the paragraph's lines up along its right edge.",
+        submenu: "Align text",
+        ..BASE
+    },
+    Action {
+        act: Act::AlignText(TextAlign::Justified),
+        group: Group::Edit,
+        label: "Justify",
+        icon: icon::TEXT_ALIGN_JUSTIFY,
+        keys: &[k(C, Key::J)],
+        enabled: text_alignable,
+        checked: Some(|c| c.text_align == Some(TextAlign::Justified)),
+        hint: "Spread the paragraph's lines from edge to edge, the last line left as it is.",
+        submenu: "Align text",
+        ..BASE
+    },
     Action {
         act: Act::PrintSelection,
         group: Group::Edit,
@@ -1054,7 +1115,7 @@ pub static ACTIONS: &[Action] = &[
         act: Act::EditParagraph,
         group: Group::Edit,
         label: "Edit as paragraph",
-        icon: icon::TEXT_ALIGN_LEFT,
+        icon: icon::PARAGRAPH,
         enabled: doc_idle,
         checked: Some(|c| c.paragraph),
         hint: "Edit page text a paragraph at a time, its lines rewrapping as you type, the \
@@ -2486,7 +2547,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 28] = [
+    let fixes: [Fix; 29] = [
         (|d| d.busy = false, BUSY),
         // A match to type over first: while the search runs, that it waits for it.
         (|d| d.found_match = true, "Find a match to replace first."),
@@ -2510,6 +2571,10 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         (
             |d| d.typing = true,
             "Click in text being typed, or where new text goes, first.",
+        ),
+        (
+            |d| d.text_align = Some(TextAlign::Left),
+            "Click in a paragraph's text first.",
         ),
         (|d| d.pages = true, "Select pages first."),
         (
@@ -2607,9 +2672,13 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 /// The floating toolbar's buttons: the right-click menu's commands that are available now
 /// and have an icon, in groups, but for Align objects. While a line is edited on the
 /// page, the styles, then Cut, Copy and Paste for what is selected in it, as the keys do
-/// there (ENH-20).
+/// there (ENH-20); in a paragraph, Centre after the styles, as Word's mini toolbar has it.
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
-    const LINE_EDIT: &[&[Act]] = &[STYLES, &[Act::Cut, Act::Copy, Act::Paste]];
+    const LINE_EDIT: &[&[Act]] = &[
+        STYLES,
+        &[Act::AlignText(TextAlign::Centre)],
+        &[Act::Cut, Act::Copy, Act::Paste],
+    ];
     let items = if c.line_edit {
         LINE_EDIT
     } else {
@@ -2654,6 +2723,15 @@ pub fn context_buttons(
             let b = egui::Button::new(glyph)
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(26.0, 26.0));
+            // Centre pressed while the paragraph is centred, as the band's button is; the
+            // others have no pressed state here.
+            let b = match a.act {
+                Act::AlignText(_) => {
+                    let on = a.checked.is_some_and(|f| f(c));
+                    b.frame_when_inactive(on).selected(on)
+                }
+                _ => b,
+            };
             let r = ui.add(b);
             let name = a.label.trim_end_matches('…');
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
@@ -2693,7 +2771,16 @@ pub fn menu_list<'a>(
 
 pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     let enabled = (a.enabled)(c);
+    // One of a set chosen by a key: the text's alignments, the one it has marked.
+    let one_of = matches!(a.act, Act::AlignText(_));
     let r = match (a.checked, a.act) {
+        (Some(on), _) if one_of => {
+            let key = shown_key(ui.ctx(), a).map(|k| ui.ctx().format_shortcut(&k));
+            let b = egui::Button::new(a.label)
+                .shortcut_text(key.unwrap_or_default())
+                .selected(on(c));
+            ui.add_enabled(enabled, b)
+        }
         (Some(on), _) => {
             let mut v = on(c);
             ui.add_enabled(enabled, egui::Checkbox::new(&mut v, a.label))
@@ -2717,7 +2804,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     let r = r.on_disabled_hover_text(why_not(c, a));
     if r.clicked() {
         acts.push(a.act);
-        if a.checked.is_none() {
+        if a.checked.is_none() || one_of {
             ui.close();
         }
     }
@@ -3042,6 +3129,47 @@ mod tests {
         let dark = Act::PageColours(PageLook::Fixed(PageColours::Dark));
         assert_eq!(found("page colours dark"), [dark]);
         assert_eq!(found("page colours").len(), 6);
+    }
+
+    /// NEW-15: the text's alignments take Word's keys (⌘ on a Mac, as Word for Mac), are
+    /// named apart from Align objects' in the menus and the command search, and Centre is on
+    /// the floating bar while a paragraph is edited, as on Word's mini toolbar.
+    #[test]
+    fn text_alignments_take_words_keys_and_names_and_centre_is_on_the_bar() {
+        let keys = [
+            (TextAlign::Left, Key::L),
+            (TextAlign::Centre, Key::E),
+            (TextAlign::Right, Key::R),
+            (TextAlign::Justified, Key::J),
+        ];
+        for (how, key) in keys {
+            assert_eq!(get(Act::AlignText(how)).keys, &[k(C, key)], "{how:?}");
+            let same = |s: &KeyboardShortcut| s.logical_key == key && s.modifiers == C;
+            let others = (ACTIONS.iter())
+                .filter(|a| a.act != Act::AlignText(how))
+                .filter(|a| a.keys.iter().any(same));
+            assert_eq!(others.count(), 0, "{key:?} taken twice");
+        }
+        let text = spoken_title(get(Act::AlignText(TextAlign::Left)));
+        let objects = spoken_title(get(Act::Align(Align::Left)));
+        assert_eq!(text, "Align text: Align left");
+        assert_eq!(objects, "Align objects: Align left");
+        let bar = |c: &Ctx| -> Vec<Act> {
+            let groups = toolbar_items(&Selection::default(), c);
+            groups.into_iter().flatten().map(|a| a.act).collect()
+        };
+        let mut c = Ctx {
+            doc: true,
+            line_edit: true,
+            ..Default::default()
+        };
+        let centre = Act::AlignText(TextAlign::Centre);
+        assert!(!bar(&c).contains(&centre), "a line alone");
+        c.text_align = Some(TextAlign::Left);
+        let shown = bar(&c);
+        assert!(shown.contains(&centre), "{shown:?}");
+        let right = Act::AlignText(TextAlign::Right);
+        assert!(!shown.contains(&right), "{shown:?}");
     }
 
     /// BUG-34: no two commands in the palette look or sound alike: each one's submenu and

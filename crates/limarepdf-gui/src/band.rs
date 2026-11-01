@@ -10,7 +10,7 @@
 //! planned features alone are left out first.
 
 use crate::actions::{self, Act, Ctx};
-use crate::editor::{Align, Axis, Tool};
+use crate::editor::{Align, Axis, TextAlign, Tool};
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::settings::{Accent, Layout, PageLook};
@@ -79,11 +79,18 @@ impl Group {
     /// Its controls change the text being typed, which they leave open: a click on them
     /// doesn't end the typing.
     fn keeps_typing(&self) -> bool {
-        // Paragraph switches the text being edited, which the click mustn't end first.
-        let keeps = |a: Act| matches!(a, Act::Paste | Act::Cut | Act::Copy | Act::EditParagraph);
+        // Paragraph switches the text being edited, which the click mustn't end first; the
+        // alignments align it.
+        let keeps = |a: Act| {
+            matches!(
+                a,
+                Act::Paste | Act::Cut | Act::Copy | Act::EditParagraph | Act::AlignText(_)
+            )
+        };
         self.items.iter().any(|i| match i {
             Item::Font => true,
             Item::Button(b) => b.act.is_some_and(keeps),
+            Item::Icons(acts) => acts.iter().any(|&a| keeps(a)),
             _ => false,
         })
     }
@@ -98,11 +105,20 @@ impl Group {
         self.items.iter().all(|i| matches!(i, Item::Planned(_)))
     }
 
+    /// The commands of a group of icons alone (Edit's Alignment), which folds to one icon.
+    fn icons(&self) -> Option<&'static [Act]> {
+        match self.items {
+            [Item::Icons(acts)] => Some(acts),
+            _ => None,
+        }
+    }
+
     /// The name screen readers give its first control.
     #[cfg(test)]
     pub fn first_name(&self) -> String {
         match &self.items[0] {
             Item::Button(b) => b.label.into(),
+            Item::Icons(acts) => actions::get(acts[0]).label.into(),
             Item::Font => "Font".into(),
             Item::Sign => "Fill and sign".into(),
             Item::Marks => "Highlight".into(),
@@ -113,6 +129,9 @@ impl Group {
 
 pub enum Item {
     Button(Button),
+    /// Commands shown by their icons alone, named on hover with their keys, as Word's
+    /// Paragraph group shows its alignments: each with the registry's label and icon.
+    Icons(&'static [Act]),
     /// Edit's font list and size, Bold, Italic, Underline, Strikethrough and the text
     /// colour, for the text selected or being typed (the editor's).
     Font,
@@ -195,6 +214,14 @@ const ALIGN_MENU: [Act; 9] = [
     Act::ToggleSnap,
 ];
 
+/// The text's alignments (NEW-15), as Word's Paragraph group has them.
+const TEXT_ALIGNS: [Act; 4] = [
+    Act::AlignText(TextAlign::Left),
+    Act::AlignText(TextAlign::Centre),
+    Act::AlignText(TextAlign::Right),
+    Act::AlignText(TextAlign::Justified),
+];
+
 // The planned features, each with the build plan's item that builds it.
 const LINK: Planned = Planned {
     label: "Link",
@@ -258,6 +285,8 @@ static EDIT: &[Group] = &[
         ],
     ),
     group("Font", &[Item::Font]),
+    // Beside Font, as Word's Paragraph group is.
+    group("Alignment", &[Item::Icons(&TEXT_ALIGNS)]),
     group(
         "Editing",
         &[
@@ -279,7 +308,7 @@ static EDIT: &[Group] = &[
     ),
     group(
         "Text flow",
-        &[b(Act::EditParagraph, "Paragraph", icon::TEXT_ALIGN_LEFT)],
+        &[b(Act::EditParagraph, "Paragraph", icon::PARAGRAPH)],
     ),
     // Word's tooltip for its Align, and LibreOffice's name: not read as aligning text.
     group(
@@ -729,12 +758,16 @@ pub fn show(ui: &mut egui::Ui, band: Band, parts: &mut Parts, acts: &mut Vec<Act
 }
 
 /// The order `groups` fold in as room runs out: those of planned features alone first (left
-/// out, as they run nothing), so that they never crowd out built commands, then the rest;
-/// each from the right.
+/// out, as they run nothing), so that they never crowd out built commands; then a group of
+/// icons alone (Edit's Alignment), which folds to one icon and loses least, as Word folds
+/// its Paragraph group to its icon; then the rest; each from the right.
 fn fold_order(groups: &[&Group]) -> Vec<usize> {
     let from_right = (0..groups.len()).rev();
     let (mut planned, rest): (Vec<usize>, Vec<usize>) =
         from_right.partition(|&i| groups[i].all_planned());
+    let (icons, rest): (Vec<usize>, Vec<usize>) =
+        rest.into_iter().partition(|&i| groups[i].icons().is_some());
+    planned.extend(icons);
     planned.extend(rest);
     planned
 }
@@ -811,14 +844,25 @@ fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<
         });
         return r.response.rect;
     }
+    // A group of icons alone folds to the icon of the one in use, else its first, and a
+    // caret, named on hover, as Word folds its Paragraph group to an icon.
+    let c = parts.c;
+    let icon_of = |list: &[Act]| {
+        let on = list.iter().find(|&&a| is_on(a, c)).unwrap_or(&list[0]);
+        theme::icon(actions::get(*on).icon).size(16.0)
+    };
+    let shown = g.icons().map(icon_of);
     let r = ui.allocate_ui_with_layout(row, centred, |ui| {
         ui.set_min_height(height);
         ui.add_space(2.0);
         let caret = egui::Atom::from(theme::icon(icon::CARET_DOWN).size(10.0));
-        let label = (g.name, caret);
-        let button = egui::Button::new(label)
-            .frame_when_inactive(false)
-            .min_size(egui::vec2(0.0, BUTTON));
+        let named = shown.is_none();
+        let button = match shown {
+            Some(glyph) => egui::Button::new((glyph, caret)),
+            None => egui::Button::new((g.name, caret)),
+        }
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(0.0, BUTTON));
         let config = egui::containers::menu::MenuConfig::new()
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
         let (r, _) = egui::containers::menu::MenuButton::from_button(button)
@@ -830,6 +874,9 @@ fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<
                 });
             });
         r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, g.name));
+        if !named {
+            r.on_hover_text(g.name);
+        }
         ui.add_space(2.0);
     });
     r.response.rect
@@ -844,6 +891,18 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
     for item in g.items {
         match item {
             Item::Button(b) => button(ui, b, acts),
+            Item::Icons(list) => {
+                for &act in *list {
+                    let a = actions::get(act);
+                    let b = Button {
+                        act: Some(act),
+                        label: a.label,
+                        icon: a.icon,
+                        menu: &[],
+                    };
+                    self::button(ui, &b, c, acts, true);
+                }
+            }
             Item::Planned(p) if c.planned => planned(ui, p, compact),
             Item::Planned(_) => {}
             Item::Font => (parts.font)(ui),
@@ -1068,13 +1127,21 @@ mod tests {
         assert_eq!(fold_level(5, 5, 1000.0, need), 0);
     }
 
-    /// Edit's groups of planned features alone fold before its built commands.
+    /// Edit's groups of planned features alone fold before its built commands, then its group
+    /// of icons alone (Alignment), then the rest from the right.
     #[test]
     fn planned_groups_fold_first() {
         let groups: Vec<&Group> = Band::Edit.groups().iter().collect();
         let order = fold_order(&groups);
         let names: Vec<&str> = order.iter().map(|&i| groups[i].name).collect();
-        let want = ["Arrange", "Text flow", "Editing", "Font", "Clipboard"];
+        let want = [
+            "Alignment",
+            "Arrange",
+            "Text flow",
+            "Editing",
+            "Font",
+            "Clipboard",
+        ];
         assert_eq!(names, want);
     }
 
@@ -1149,6 +1216,7 @@ mod tests {
                     let n = match i {
                         Item::Button(b) if b.act == Some(act) => choose,
                         Item::Button(b) if b.menu.contains(&act) => choose + 1,
+                        Item::Icons(acts) if acts.contains(&act) => choose,
                         Item::Sign if act == Act::Tool(Tool::Sign) => choose,
                         _ => continue,
                     };
@@ -1180,6 +1248,8 @@ mod tests {
             (Act::Align(Align::Left), 1),
             (Act::Distribute(Axis::Across), 1),
             (Act::ToggleSnap, 1),
+            (Act::AlignText(TextAlign::Centre), 0),
+            (Act::AlignText(TextAlign::Justified), 0),
         ] {
             assert_eq!(openings(act), Some(want), "{act:?}");
         }
@@ -1203,6 +1273,7 @@ mod tests {
                 for i in g.items {
                     match i {
                         Item::Button(b) => reach.extend(b.act.iter().chain(b.menu)),
+                        Item::Icons(acts) => reach.extend(acts.iter()),
                         Item::Sign => reach.push(Act::Tool(Tool::Sign)),
                         Item::Marks => reach.push(Act::Mark(Mark::Highlight)),
                         Item::Font | Item::Planned(_) => {}

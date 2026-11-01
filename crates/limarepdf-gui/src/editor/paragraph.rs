@@ -62,6 +62,8 @@ pub(super) struct ParaEdit {
     pub sel: (usize, usize),
     /// The frame's left and right edges as dragged (page points), its own until then.
     pub edges: (f32, f32),
+    /// How its text is aligned in the frame: its own until changed (NEW-15).
+    pub align: TextAlign,
     /// An edge being dragged (0 left, 1 right), and the edges when the drag started.
     pub dragging: Option<(usize, (f32, f32))>,
     /// A link or comment is over the paragraph, its old lines or what is typed: the
@@ -235,12 +237,13 @@ fn para_source(setting: &ParagraphSetting, text: &Styled) -> &'static str {
     }
 }
 
-/// Ctrl+Z or Ctrl+Y as taken (`t`) in paragraph `pe` (the editor `id`): its typing and its
-/// frame's edges a step back or forward in its own history.
+/// Ctrl+Z or Ctrl+Y as taken (`t`) in paragraph `pe` (the editor `id`): its typing, its
+/// frame's edges and its alignment a step back or forward in its own history.
 fn para_undo_redo(ctx: &egui::Context, id: egui::Id, t: &page_text::Taken, pe: &mut ParaEdit) {
     page_text::undo_redo(ctx, id, t, &mut pe.history, &mut pe.text);
     if t.undo || t.redo {
         pe.edges = pe.history.edges().unwrap_or(pe.edges);
+        pe.align = pe.history.align().unwrap_or(pe.align);
     }
 }
 
@@ -384,6 +387,27 @@ impl Editor {
         self.para.is_some()
     }
 
+    /// How the text the alignment commands act on is aligned, when they can act on some
+    /// (NEW-15): the paragraph being edited.
+    pub fn text_align(&self) -> Option<TextAlign> {
+        Some(self.para.as_ref()?.align)
+    }
+
+    /// Align the paragraph being edited as `align` says, as Word's alignment buttons do:
+    /// Centre, Align right or Justify on a paragraph already so puts it back to left. It
+    /// rewraps in its frame at once, its typing open and the keyboard going back to it; its
+    /// own Undo takes the change back, and it goes into the document with the typing.
+    pub fn align_text(&mut self, align: TextAlign) {
+        let Some(pe) = self.para.as_mut() else {
+            return;
+        };
+        pe.align = match align {
+            a if a == pe.align => TextAlign::Left,
+            a => a,
+        };
+        pe.refocus = true;
+    }
+
     /// Whether a handle of the frame of the paragraph being edited has the keyboard.
     pub fn edge_held(&self, ctx: &egui::Context) -> bool {
         let Some(pe) = self.para.as_ref() else {
@@ -467,14 +491,14 @@ impl Editor {
             .entry(page)
             .or_insert_with(|| pdf.page_links(page).unwrap_or_default());
         let text = Styled::of_paragraph(&para, font_of);
-        let edges = (para.frame.left, para.frame.right);
+        let (edges, align) = ((para.frame.left, para.frame.right), para.frame.align);
         self.para = Some(ParaEdit {
             page,
             line: id,
             block,
             setting: Arc::new(setting),
             orig: text.clone(),
-            history: History::with_edges(&text, edges),
+            history: History::with_frame(&text, edges, align),
             text,
             pick,
             fresh: true,
@@ -490,6 +514,7 @@ impl Editor {
             menu_at: None,
             sel: (0, 0),
             edges,
+            align,
             dragging: None,
             marked_over: false,
         });
@@ -518,13 +543,14 @@ impl Editor {
     pub(super) fn para_change(&self) -> Option<Action> {
         let pe = self.para.as_ref()?;
         let f = &pe.setting.paragraph().frame;
-        if pe.text.same_as(&pe.orig) && pe.edges == (f.left, f.right) {
+        let frame_as_it_was = pe.edges == (f.left, f.right) && pe.align == f.align;
+        if pe.text.same_as(&pe.orig) && frame_as_it_was {
             return None;
         }
         let parts = pe.text.parts();
         // A change of underlines or strike-throughs alone sets no line anew.
         let decos = pe.text.decorations();
-        let set = pe.setting.set_between(&parts, pe.edges);
+        let set = pe.setting.set_in(&parts, pe.edges, pe.align);
         if set.unchanged() && decos == pe.orig.decorations() {
             return None;
         }
@@ -533,7 +559,7 @@ impl Editor {
             pe.setting.clone(),
             parts,
             decos,
-            pe.edges,
+            (pe.edges, pe.align),
         ))
     }
 
@@ -853,18 +879,19 @@ impl Editor {
                 step
             });
             if step != 0.0 {
-                let narrowest = pe.setting.narrowest(&pe.text.parts());
+                let narrowest = pe.setting.narrowest_in(&pe.text.parts(), pe.align);
                 let x = [pe.edges.0, pe.edges.1][side] + step;
                 pe.edges = edge_to(pe.edges, side, x, narrowest, page_w);
             }
         }
         // The text as egui has it this frame, set on its lines in the faces it is written
-        // in, between the frame's edges.
+        // in, between the frame's edges, aligned as it is.
         let (styled, setting, edges) = (pe.text.clone(), pe.setting.clone(), pe.edges);
+        let align = pe.align;
         let laid = |t: &str| {
             let text = styled.preview(t);
             let parts = text.parts();
-            let set = setting.set_between(&parts, edges);
+            let set = setting.set_in(&parts, edges, align);
             let pieces = para_pieces(&setting, &text, &parts);
             let colour = |c| page_text::shown(mode, c);
             let runs = page_text::runs(&ctx, &pieces, k, colour, lang.as_deref());
@@ -873,7 +900,7 @@ impl Editor {
         let bands = |t: &str| {
             let text = styled.preview(t);
             let parts = text.parts();
-            let set = setting.set_between(&parts, edges);
+            let set = setting.set_in(&parts, edges, align);
             let pieces = para_pieces(&setting, &text, &parts);
             let colour = |c| page_text::shown(mode, c);
             let runs = page_text::runs(&ctx, &pieces, k, colour, lang.as_deref());
@@ -919,7 +946,7 @@ impl Editor {
         if let (Some((side, start)), Some((a, b))) = (pe.dragging, pointer) {
             let e = handles.map(|h| &h[side]);
             if e.is_some_and(|e| e.dragged()) {
-                let narrowest = pe.setting.narrowest(&pe.text.parts());
+                let narrowest = pe.setting.narrowest_in(&pe.text.parts(), pe.align);
                 let x = [start.0, start.1][side] + (b.x - a.x) / k;
                 let now = edge_to(start, side, x, narrowest, page_w);
                 if now != pe.edges {
@@ -931,11 +958,12 @@ impl Editor {
                 pe.dragging = None;
             }
         }
-        pe.set = setting.set_between(&pe.text.parts(), pe.edges);
+        pe.set = setting.set_in(&pe.text.parts(), pe.edges, pe.align);
         let now = ctx.input(|i| i.time);
         pe.history.observe(&pe.text, sel, now, settled(&ctx));
         let dragging = pe.dragging.is_some();
         pe.history.observe_edges(pe.edges, now, dragging);
+        pe.history.observe_align(pe.align);
         let on_edge = (handles.into_iter().flatten()).any(|e| e.has_focus());
         let over_edge = (handles.into_iter().flatten()).any(|e| e.hovered() || e.dragged());
         let edit = &out.response.response;

@@ -1690,9 +1690,21 @@ form XObject, and per inline image.
   rest kept), and a line is kept only where it starts and ends as an old line did in text that hasn't changed and
   `Placing::on` places it under the new edges as under the old ones (its x and, justified, its stretch), so a ragged
   paragraph's right edge moved keeps every line whose break stays, and a left edge moved or a justified edge moved
-  writes them anew. `ParagraphSetting::narrowest(parts)` is the widest stretch between break places, plus the first
-  line's indent where it takes one: how narrow the app lets the frame go. `Pdf::edit_paragraph_between` writes
-  that (`edit_paragraph` is it with the frame's own edges). `Pdf::edit_paragraph(&ParagraphSetting,
+  writes them anew. `ParagraphSetting::set_in(parts, edges, align)` (NEW-15, batch 49's stage 1; `set_between` is
+  it with the paragraph's own alignment) sets it aligned anew: the frame (`frame_in`) takes `align`, and the first
+  line's indent only from a paragraph read as left or justified (one read as centred or right-aligned has none: its
+  "indent" is its first line's width); `room_in` gives the indent's room to left and justified lines only. A change
+  of alignment alone breaks no line anew, as Word realigns: with the edges as they were the producer's breaks stand
+  as for an edit (lines kept, laid out by the same rules), then each kept line is placed again by `Placing::on`
+  under the new frame and written anew (`kept: None`) only where that differs from its place under the old one, in
+  x or stretch (the longest line of a ragged paragraph centred, and a justified one's last line made left, stay
+  byte for byte); the laying-out loop keeps a line that starts and ends as it did and is placed the same, as for
+  moved edges. Word spacing: a paragraph read as justified writes no `Tw` (its `Tw` was the stretch) whatever it
+  is aligned to now (`spacing`, by the alignment read), so justified made left is written at a space's own width.
+  `ParagraphSetting::narrowest(parts)` (`narrowest_in` for an alignment) is the widest stretch between break
+  places, plus the first line's indent where it takes one: how narrow the app lets the frame go.
+  `Pdf::edit_paragraph_between` writes that (`edit_paragraph` is it with the frame's own edges;
+  `edit_paragraph_in` and `edit_paragraph_decorated` take the alignment). `Pdf::edit_paragraph(&ParagraphSetting,
   &[TextPart])` writes it in one rewrite (section 7): line
   *i* in place of old line *i*'s first show, lines added after the last old line's last show, the old lines'
   shows taken out (`move_only`, `Following` keeping what follows each in place); inside the text object a `Tm` in
@@ -1742,8 +1754,8 @@ form XObject, and per inline image.
   `ParagraphSetting` (built on the window's thread: the installed fonts' list is read at start, so reading one is
   a few milliseconds, the cost line editing's fonts already pay on heavy pages), the text as `Styled`
   (`Styled::of_paragraph`, every character's origin kept, so `parts` names what is kept), its own `History`, and
-  the unknown hyphens kept as typed, and the frame's edges as dragged (`edges`). Each frame the text is set
-  between them (`ParagraphSetting::set_between`) and drawn by
+  the unknown hyphens kept as typed, the frame's edges as dragged (`edges`) and its alignment (`align`, NEW-15).
+  Each frame the text is set between them, so aligned (`ParagraphSetting::set_in`), and drawn by
   `page_text::paragraph_field` on `paragraph_galley`: the text laid out with a line break after each of core's
   lines (put in, taking no character, as `boxed_galley` does), each row then moved to its line's x and baseline
   (rows' positions are public; a glyph's `pos.y` is its baseline), a justified line's spaces widened by a
@@ -1784,7 +1796,23 @@ form XObject, and per inline image.
   are dotted under; `Act::JoinHyphen` and `KeepHyphen` act on the one at the right-click or the caret. The
   inspector's Editing row is a horizontal row as wide as the panel, not a grid of its own, which widened the panel.
   A band group of one command folds to that command's icon (`band::folded_group`), as a menu of one item would be
-  wider and no nearer.
+  wider and no nearer. **Alignment** (NEW-15, batch 49's stage 1): `Act::AlignText(TextAlign)` (`TextAlign` is
+  core's `Align`; `editor::Align` lines objects up), four registry entries in ☰ > Edit's "Align text" submenu
+  (named apart from Align objects' in the command search, `spoken_title`), Word's keys `k(C, L|E|R|J)`, global so
+  they reach a paragraph with the keyboard (Bold's keys are taken by the box instead); `checked` by
+  `Ctx::text_align` (`Editor::text_align`: the paragraph being edited's), which also enables them, else "Click in a
+  paragraph's text first." In the band, Edit's Alignment group is `Item::Icons` (each command's registry icon
+  alone, as Word's, named on hover with its key; a group that keeps typing open; without room it folds first after
+  planned-only groups, `fold_order`, to the icon of the alignment in use and a caret, `folded_group`, 50 points
+  against 160 open, so at a 1000-point window Editing's Edit text and Find stay shown); in menus they are buttons with
+  their keys, the one in use selected, closing the menu (`menu_item`'s one-of-a-set case); the floating bar has
+  Centre after the styles while a line or paragraph is edited (`toolbar_items`, enabled only in a paragraph), pressed
+  when centred. `App::act` treats them as the styles: they change the typing, which stays open (`in_line`).
+  `Editor::align_text` sets `ParaEdit::align` (the one it has pressed again: Left, as Word) and gives the text the
+  keyboard back (`refocus`); each frame `History::observe_align` makes a change a step of its own, and the
+  paragraph's Ctrl+Z and Ctrl+Y put it back with the text and edges (`History::align`, `para_undo_redo`).
+  `para_change` counts a changed alignment as a change, and `Action::EditParagraph` carries `(edges, align)` to
+  `Pdf::edit_paragraph_decorated`. The Paragraph switch's icon is ¶, so it isn't read as Align left.
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.

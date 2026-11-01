@@ -50,8 +50,9 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   760 the side panel folds away, leaving its icons. They come back when the window is wide enough again, unless
   you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
   panel is remembered between runs. The command band folds groups without room into a button with the group's
-  name, which opens them; groups of planned features go first, and a group of one command (Text flow's
-  Paragraph) folds to that command's icon. Under about 560 points wide, Print shows its icon alone.
+  name, which opens them; groups of planned features go first, then Edit's Alignment, which folds to the icon of
+  the paragraph's alignment with a ▾, as Word's Paragraph group folds to an icon; a group of one command (Text
+  flow's Paragraph) folds to that command's icon. Under about 560 points wide, Print shows its icon alone.
 - **Short windows:** below 600 points high the commands are compact by themselves (see
   [The command band](#the-command-band)).
 - **Panel widths:** drag the edge of the side panel or the inspector to make it wider or narrower. From the
@@ -88,7 +89,7 @@ undo.", "Select some text first." or "Click in a form field first."
 
 | Name | Groups and buttons |
 | --- | --- |
-| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
+| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); the **Alignment** group: Align left, Centre, Align right and Justify for the paragraph being edited, its own pressed ([Edit a paragraph](content-editing.md#edit-a-paragraph)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
 | Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
 | Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
@@ -414,8 +415,9 @@ it selected, and the menu has Cut, Copy and Paste, then Bold, Italic, Underline 
 apply, as in a word processor. A selected object or run of words also gets a small floating toolbar with the same
 commands but Align objects. It sits by the selection: above it, below it or beside it where that covers no other text, or else just
 above or below it, over as little text as it can; it never covers the selection. While a line is edited on the
-page, it has Bold, Italic, Underline, Strikethrough, Cut, Copy and Paste for what is selected in the line, and
-clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves
+page, it has Bold, Italic, Underline, Strikethrough, Cut, Copy and Paste for what is selected in the line (and in a
+paragraph Centre after the styles, as Word's mini toolbar has it), and clicking it leaves the line open with the
+keyboard back in it. Its last button, Dock controls on the right, moves
 these buttons to the top of the inspector (or its strip, when collapsed) instead; Float controls near selection
 there brings the floating toolbar back. View > Properties ▾ > Selection controls on the right does either. The
 choice is remembered between runs; resizing the window doesn't change it.
@@ -522,6 +524,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle, word selection or pages being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, take back pages cut, take away Organise's insertion bar, clear the selection, or leave a tool for the read tool. In a box of Edit > Font or the inspector (the font size, say) while typing is open on the page, it drops what was typed in the box and goes back to the typing |
 | Ctrl+B, Ctrl+I, Ctrl+U | Bold, Italic, Underline for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | ⌘⇧X (on a Mac only) | Strikethrough, for the same text as Ctrl+U, as in Word for Mac. On Windows and Linux it has no key, as in Word: use the Font group's **S**, the right-click menu or the command palette |
+| Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J (in a paragraph being edited) | Align left, Centre, Align right, Justify, as in Word; Centre, Align right or Justify again puts it back to the left |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so is Organise's grid); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+K every command |
