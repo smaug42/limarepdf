@@ -9,8 +9,10 @@
 //! of how well it finds paragraphs judged the default (testing.md, "Finding paragraphs":
 //! [`PARAGRAPH_DEFAULT`]).
 
+use super::replace_all::follow;
 use super::*;
-use limarepdf_core::{Block, Doubt, ParagraphSetting, SetParagraph};
+use limarepdf_core::{Block, DocWords, Doubt, ParagraphSetting, Pdf, SetParagraph};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Whether a double-click, a Text-tool click or Edit text in a block LimarePDF is sure of
@@ -42,6 +44,9 @@ pub(super) struct ParaEdit {
     /// What was typed before it had the keyboard (over words selected across its lines),
     /// given to it once it has it.
     pub typed: Vec<egui::Event>,
+    /// Replace typed it: once that is typed, the keyboard goes back to Search results and
+    /// the paragraph waits, open, as F6 leaves it ([`Editor::typed_over`]).
+    pub park: bool,
     /// What an input method is composing in it, from and to ([`page_text::composition`]).
     pub composing: Option<(usize, usize)>,
     /// Line-end hyphens LimarePDF can't tell are the word's (6.4) that were kept as typed
@@ -49,15 +54,18 @@ pub(super) struct ParaEdit {
     pub kept_hyphens: Vec<usize>,
     /// The text as set last frame, on its lines.
     pub set: SetParagraph,
-    /// Where the caret was last frame (page points, the middle of its line): switching to
-    /// One line edits the line there.
-    pub caret_at: Option<Pos2>,
+    /// Where the caret was last frame (page points, the middle of its line), and the
+    /// character its line as drawn starts at: switching to One line edits the line there,
+    /// the caret after the same characters.
+    pub caret_at: Option<(Pos2, usize)>,
     /// The character a right-click was on, for the menu's Join and Keep hyphen.
     pub menu_at: Option<usize>,
     /// What was selected last frame (characters, from the anchor to the caret).
     pub sel: (usize, usize),
     /// The frame's left and right edges as dragged (page points), its own until then.
     pub edges: (f32, f32),
+    /// How its text is aligned in the frame: its own until changed (NEW-15).
+    pub align: TextAlign,
     /// An edge being dragged (0 left, 1 right), and the edges when the drag started.
     pub dragging: Option<(usize, (f32, f32))>,
     /// A link or comment is over the paragraph, its old lines or what is typed: the
@@ -76,11 +84,139 @@ pub(super) enum ParaPick {
 }
 
 /// What comes once the typing kept for a switch between Paragraph and One line is in the
-/// document: the other editor, at the place the caret was (page, page points).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// document: the other editor, at the place the caret was (page, page points), the caret
+/// after the text of its line before it, as the line will read, where that is known. The
+/// characters, not the place, say where the caret goes: a font that comes in meanwhile
+/// draws the line at another width (BUG-44). A line edited alone whose alignment was
+/// pressed opens its paragraph so aligned (NEW-15).
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Then {
-    Line(usize, Pos2),
-    Paragraph(usize, Pos2),
+    Line(usize, Pos2, Option<String>),
+    Paragraph(usize, Pos2, Option<String>, Option<TextAlign>),
+}
+
+/// The text an alignment left as it was, by why, for its notice.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NotAligned {
+    /// Lines on their own, which have no paragraph to align them in.
+    pub alone: usize,
+    /// Lines in a table or a form.
+    pub table: usize,
+    /// Lines that don't run upright left to right.
+    pub turned: usize,
+    /// Invisible recognised text, text inside a group and vertical writing.
+    pub left: Left,
+    /// Paragraphs LimarePDF couldn't write again.
+    pub failed: usize,
+}
+
+impl NotAligned {
+    /// What was left as it was, for a notice; `None` when nothing was.
+    pub fn said(&self) -> Option<String> {
+        let lines = |n: usize, one: &str, many: &str| match n {
+            1 => format!("1 line {one}"),
+            n => format!("{n} lines {many}"),
+        };
+        let mut parts = Vec::new();
+        if self.alone > 0 {
+            parts.push(lines(self.alone, "on its own", "on their own"));
+        }
+        // The same words after one line and several.
+        let counts = [
+            (self.table, "in a table or form"),
+            (self.turned, "of turned text"),
+            (self.left.hidden, "of invisible recognised text"),
+            (self.left.grouped, "inside a group"),
+            (self.left.vertical, "of vertical writing"),
+        ];
+        for (n, why) in counts {
+            if n > 0 {
+                parts.push(lines(n, why, why));
+            }
+        }
+        match self.failed {
+            0 => {}
+            1 => parts.push("1 paragraph LimarePDF couldn't write again".into()),
+            n => parts.push(format!("{n} paragraphs LimarePDF couldn't write again")),
+        }
+        let last = parts.pop()?;
+        Some(if parts.is_empty() {
+            format!("Not aligned: {last}")
+        } else {
+            format!("Not aligned: {} and {last}", parts.join(", "))
+        })
+    }
+}
+
+/// What aligning paragraphs in the document did ([`align_paragraphs`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Aligned {
+    /// Letters of a line written anew went to a similar font.
+    pub similar: bool,
+    /// Paragraphs that couldn't be read or written again, left as they were.
+    pub failed: usize,
+}
+
+/// Each page's paragraphs `blocks` (as the page read when they were found, in reading
+/// order) aligned as `align` says between their frames' edges (the frame LimarePDF kept,
+/// else the block's: [`Pdf::paragraph`]), each line keeping its words
+/// ([`ParagraphSetting::set_in`]): a write each, a paragraph after the first on a page found
+/// again by its lines, which the writes before it left as they were. One that can't be read
+/// or written again is left as it was and counted; when none can be, the first one's
+/// reason is the error.
+pub fn align_paragraphs(
+    pdf: &mut Pdf,
+    words: &DocWords,
+    blocks: &[(usize, Vec<Block>)],
+    align: TextAlign,
+) -> limarepdf_core::Result<Aligned> {
+    let mut done = Aligned::default();
+    let (mut written, mut first) = (false, None);
+    for (page, blocks) in blocks {
+        let page = *page;
+        let before = pdf.page_objects(page)?;
+        for (n, b) in blocks.iter().enumerate() {
+            let mut one = || -> limarepdf_core::Result<bool> {
+                let block = match n {
+                    0 => b.clone(),
+                    _ => (refound(b, &follow(&before, &pdf.page_objects(page)?)))
+                        .ok_or_else(|| anyhow::anyhow!("the page changed"))?,
+                };
+                let para = pdf.paragraph(page, &block, words)?;
+                let setting = pdf.paragraph_setting(&para)?;
+                let parts = Styled::of_paragraph(&para, font_of).parts();
+                let edges = (para.frame.left, para.frame.right);
+                Ok(!(pdf.edit_paragraph_in(&setting, &parts, edges, align)?).is_empty())
+            };
+            match one() {
+                Ok(lost) => {
+                    done.similar |= lost;
+                    written = true;
+                }
+                Err(e) => {
+                    done.failed += 1;
+                    first.get_or_insert(e);
+                }
+            }
+        }
+    }
+    match first {
+        Some(e) if !written => Err(e),
+        _ => Ok(done),
+    }
+}
+
+/// Block `b` with each of its lines' objects where `now` says they are now ([`follow`]);
+/// `None` when one of them changed or went.
+pub(super) fn refound(b: &Block, now: &[Option<usize>]) -> Option<Block> {
+    let mut block = b.clone();
+    for l in &mut block.lines {
+        for id in &mut l.pieces {
+            *id = now.get(*id).copied().flatten()?;
+        }
+        l.pieces.sort_unstable();
+    }
+    Some(block)
 }
 
 /// Whether the selected text is, or would be, edited as a paragraph, whether it can be,
@@ -108,7 +244,7 @@ pub(super) fn covers(block: &Block) -> Vec<[f32; 4]> {
 
 /// Why a block can't be edited as a paragraph, if it can't: it is one line, in a table, or
 /// a turned line (the switch stays greyed and says so).
-fn refused(b: &Block) -> Option<&'static str> {
+pub(super) fn refused(b: &Block) -> Option<&'static str> {
     match b.doubt {
         _ if b.lines.len() < 2 => Some(ON_ITS_OWN),
         Some(Doubt::OneLine) => Some(ON_ITS_OWN),
@@ -228,12 +364,13 @@ fn para_source(setting: &ParagraphSetting, text: &Styled) -> &'static str {
     }
 }
 
-/// Ctrl+Z or Ctrl+Y as taken (`t`) in paragraph `pe` (the editor `id`): its typing and its
-/// frame's edges a step back or forward in its own history.
+/// Ctrl+Z or Ctrl+Y as taken (`t`) in paragraph `pe` (the editor `id`): its typing, its
+/// frame's edges and its alignment a step back or forward in its own history.
 fn para_undo_redo(ctx: &egui::Context, id: egui::Id, t: &page_text::Taken, pe: &mut ParaEdit) {
     page_text::undo_redo(ctx, id, t, &mut pe.history, &mut pe.text);
     if t.undo || t.redo {
         pe.edges = pe.history.edges().unwrap_or(pe.edges);
+        pe.align = pe.history.align().unwrap_or(pe.align);
     }
 }
 
@@ -363,11 +500,13 @@ impl Editor {
         }
     }
 
-    /// Read the blocks of `page` while one of its lines is selected, for the switch.
+    /// Read the blocks of `page` while one of its lines is selected, for the switch, or
+    /// while words or lines selected there are, for the alignments' state.
     pub(super) fn read_blocks(&mut self, pdf: &limarepdf_core::Pdf, page: usize) {
         let line = self.sel().filter(|&(p, _)| p == page);
         let text = line.and_then(|(p, id)| self.objs.get(&p)?.get(id));
-        if text.is_some_and(|o| o.kind == ObjectKind::Text && !o.hidden) {
+        let chosen = (self.chosen_now()).is_some_and(|c| c.line_ids().any(|(p, _)| p == page));
+        if text.is_some_and(|o| o.kind == ObjectKind::Text && !o.hidden) || chosen {
             self.blocks(pdf, page);
         }
     }
@@ -375,6 +514,180 @@ impl Editor {
     /// Whether a paragraph of page text is being edited on the page.
     pub fn editing_paragraph(&self) -> bool {
         self.para.is_some()
+    }
+
+    /// Whether there is text the alignment commands act on (NEW-15): a paragraph or line of
+    /// page text being edited, words selected with the read tool, or lines of page text
+    /// selected with the arrow. What can't be aligned among them is said when they act.
+    pub fn aligns_text(&self) -> bool {
+        let held = self.selection.objects().map_or(&[][..], |(_, held)| held);
+        let lines = held.iter().any(|h| h.kind == ObjKind::Text);
+        self.editing_line() || self.selection.words().is_some() || lines
+    }
+
+    /// How the text the alignment commands act on is aligned, when it is all aligned alike
+    /// (NEW-15): the paragraph being edited, else the paragraphs of the other text they act
+    /// on as far as their pages' blocks have been read ([`Self::read_blocks`]), those that
+    /// can't be aligned left out.
+    pub fn text_align(&self) -> Option<TextAlign> {
+        if let Some(pe) = self.para.as_ref() {
+            return Some(pe.align);
+        }
+        let mut aligns = (self.lines_to_align().into_iter()).filter_map(|(page, id)| {
+            let o = self.objs.get(&page)?.get(id)?;
+            let b = self.read_block_of(page, id).filter(|_| drawn_in_place(o))?;
+            refused(b).is_none().then_some(b.frame.align)
+        });
+        let first = aligns.next()?;
+        aligns.all(|a| a == first).then_some(first)
+    }
+
+    /// The lines of page text the alignment commands act on but for a paragraph being
+    /// edited: the line edited alone, the lines of the words selected with the read tool or
+    /// of the objects selected with the arrow, in reading order.
+    fn lines_to_align(&self) -> Vec<(usize, usize)> {
+        if let Some(le) = self.line_edit.as_ref() {
+            return vec![(le.page, le.id)];
+        }
+        if let Some(c) = self.chosen_now() {
+            return c.line_ids().collect();
+        }
+        let text = |&(page, id): &(usize, usize)| {
+            let o = self.objs.get(&page).and_then(|v| v.get(id));
+            o.is_some_and(|o| o.kind == ObjectKind::Text)
+        };
+        self.sel().into_iter().filter(text).collect()
+    }
+
+    /// Align the text the alignment commands act on as `align` says, as Word's alignment
+    /// buttons do: Centre, Align right or Justify on text already so puts it back to left.
+    /// The paragraph being edited rewraps in its frame at once, its typing open and the
+    /// keyboard going back to it; its own Undo takes the change back, and it goes into the
+    /// document with the typing. A line edited alone opens its paragraph so aligned, what
+    /// was typed kept first and paragraph editing left as it is (batch 49's Q2). The
+    /// paragraphs of the words selected with the read tool, or of the lines selected with
+    /// the arrow, are aligned as one step, staying selected. Returns what to say of text left
+    /// as it was: lines on their own, in a table or turned, and what [`Chosen`] leaves.
+    pub fn align_text(&mut self, pdf: &Pdf, align: TextAlign) -> Option<String> {
+        if let Some(pe) = self.para.as_mut() {
+            pe.align = match align {
+                a if a == pe.align => TextAlign::Left,
+                a => a,
+            };
+            pe.refocus = true;
+            return None;
+        }
+        if let Some((page, id)) = self.line_edit.as_ref().map(|le| (le.page, le.id)) {
+            let mut left = NotAligned::default();
+            match self.alignable(pdf, page, id, &mut left) {
+                Some(block) => self.line_to_paragraph(&block, Some(align)),
+                None => {
+                    if let Some(le) = self.line_edit.as_mut() {
+                        le.refocus = true;
+                    }
+                }
+            }
+            return left.said();
+        }
+        let mut left = NotAligned::default();
+        if self.chosen_of().is_some() {
+            self.sync_chosen(pdf);
+            left.left = self.chosen.as_ref().map(|c| c.left).unwrap_or_default();
+        }
+        // Each paragraph once, in reading order.
+        let (mut found, mut seen) = (Vec::<(usize, Block)>::new(), HashSet::new());
+        for (page, id) in self.lines_to_align() {
+            let Some(b) = self.alignable(pdf, page, id, &mut left) else {
+                continue;
+            };
+            if seen.insert((page, b.pieces().next())) {
+                found.push((page, b));
+            }
+        }
+        // Word's rule over them all: the alignment they all have, pressed again, gives left.
+        let all = !found.is_empty() && found.iter().all(|(_, b)| b.frame.align == align);
+        let align = if all { TextAlign::Left } else { align };
+        found.retain(|(_, b)| b.frame.align != align);
+        if found.is_empty() {
+            return left.said();
+        }
+        let mut pages: Vec<(usize, Vec<Block>)> = Vec::new();
+        for (page, b) in found {
+            match pages.last_mut() {
+                Some((p, blocks)) if *p == page => blocks.push(b),
+                _ => pages.push((page, vec![b])),
+            }
+        }
+        let aligning = Action::AlignParagraphs(pages, align, left);
+        self.actions.push(aligning);
+        None
+    }
+
+    /// The block of `page` line `id` is in, when it can be aligned as a paragraph; else
+    /// `None`, the line counted in `left` by why.
+    fn alignable(
+        &mut self,
+        pdf: &Pdf,
+        page: usize,
+        id: usize,
+        left: &mut NotAligned,
+    ) -> Option<Block> {
+        let o = self.objects(pdf, page).get(id)?;
+        if o.hidden {
+            left.left.hidden += 1;
+            return None;
+        }
+        if o.vertical {
+            left.left.vertical += 1;
+            return None;
+        }
+        if !drawn_in_place(o) {
+            left.turned += 1;
+            return None;
+        }
+        let Some(b) = self.block_of(pdf, page, id) else {
+            left.alone += 1;
+            return None;
+        };
+        match refused(&b) {
+            None => Some(b),
+            Some(TURNED) => {
+                left.turned += 1;
+                None
+            }
+            Some(ON_ITS_OWN) => {
+                left.alone += 1;
+                None
+            }
+            Some(_) => {
+                left.table += 1;
+                None
+            }
+        }
+    }
+
+    /// End the line being edited, keeping what was typed, and once that is in the document
+    /// open the paragraph of its block `block` at the caret's place, the caret after the
+    /// same characters ([`Then::Paragraph`]), aligned as `align` says where given.
+    fn line_to_paragraph(&mut self, block: &Block, align: Option<TextAlign>) {
+        let Some(le) = self.line_edit.as_ref() else {
+            return;
+        };
+        let at = le.caret_at.map_or_else(
+            || {
+                let b = block.lines[0].bbox;
+                Pos2::new(b[0], (b[1] + b[3]) / 2.0)
+            },
+            |(at, _)| at,
+        );
+        // The line's text before the caret, as typed and written (on one line).
+        let typed = self.insp.as_ref().map(|i| i.text.text());
+        let before = le.caret_at.zip(typed).map(|((_, c), t)| {
+            let flat = |c: char| if matches!(c, '\n' | '\r') { ' ' } else { c };
+            t.chars().take(c).map(flat).collect()
+        });
+        self.then = Some(Then::Paragraph(le.page, at, before, align));
+        self.end_line_edit();
     }
 
     /// Whether a handle of the frame of the paragraph being edited has the keyboard.
@@ -460,14 +773,14 @@ impl Editor {
             .entry(page)
             .or_insert_with(|| pdf.page_links(page).unwrap_or_default());
         let text = Styled::of_paragraph(&para, font_of);
-        let edges = (para.frame.left, para.frame.right);
+        let (edges, align) = ((para.frame.left, para.frame.right), para.frame.align);
         self.para = Some(ParaEdit {
             page,
             line: id,
             block,
             setting: Arc::new(setting),
             orig: text.clone(),
-            history: History::with_edges(&text, edges),
+            history: History::with_frame(&text, edges, align),
             text,
             pick,
             fresh: true,
@@ -475,6 +788,7 @@ impl Editor {
             refused: page_text::Refused::default(),
             area: Rect::NOTHING,
             typed: Vec::new(),
+            park: false,
             composing: None,
             kept_hyphens: Vec::new(),
             set: SetParagraph::default(),
@@ -482,6 +796,7 @@ impl Editor {
             menu_at: None,
             sel: (0, 0),
             edges,
+            align,
             dragging: None,
             marked_over: false,
         });
@@ -489,7 +804,8 @@ impl Editor {
     }
 
     /// Edit line `id` of `page` on the page with `pick` selected: as a paragraph when its
-    /// block opens as one ([`Self::opens_as_paragraph`]), else the line alone.
+    /// block opens as one ([`Self::opens_as_paragraph`]), else the line alone. A point
+    /// clicked is placed where the page draws the line's characters ([`on_line`]).
     pub(super) fn start_text_edit(
         &mut self,
         pdf: &limarepdf_core::Pdf,
@@ -497,6 +813,8 @@ impl Editor {
         id: usize,
         pick: Pick,
     ) {
+        let line = self.objs.get(&page).and_then(|v| v.get(id));
+        let pick = line.map_or(pick, |o| on_line(o, pick));
         if !(self.opens_as_paragraph(pdf, page, id) && self.start_paragraph(pdf, page, id, pick)) {
             self.start_line_edit(page, id, pick);
         }
@@ -507,18 +825,23 @@ impl Editor {
     pub(super) fn para_change(&self) -> Option<Action> {
         let pe = self.para.as_ref()?;
         let f = &pe.setting.paragraph().frame;
-        if pe.text.same_as(&pe.orig) && pe.edges == (f.left, f.right) {
+        let frame_as_it_was = pe.edges == (f.left, f.right) && pe.align == f.align;
+        if pe.text.same_as(&pe.orig) && frame_as_it_was {
             return None;
         }
         let parts = pe.text.parts();
-        if pe.setting.set_between(&parts, pe.edges).unchanged() {
+        // A change of underlines or strike-throughs alone sets no line anew.
+        let decos = pe.text.decorations();
+        let set = pe.setting.set_in(&parts, pe.edges, pe.align);
+        if set.unchanged() && decos == pe.orig.decorations() {
             return None;
         }
         Some(Action::EditParagraph(
             pe.page,
             pe.setting.clone(),
             parts,
-            pe.edges,
+            decos,
+            (pe.edges, pe.align),
         ))
     }
 
@@ -546,11 +869,21 @@ impl Editor {
         self.paragraphs = on;
         if let Some(pe) = self.para.as_ref().filter(|_| !on) {
             let (page, block) = (pe.page, &pe.block);
-            let at = pe.caret_at.unwrap_or_else(|| {
-                let l = &block.lines[0];
-                Pos2::new(l.bbox[0], (l.bbox[1] + l.bbox[3]) / 2.0)
+            let at = pe.caret_at.map_or_else(
+                || {
+                    let l = &block.lines[0];
+                    Pos2::new(l.bbox[0], (l.bbox[1] + l.bbox[3]) / 2.0)
+                },
+                |(at, _)| at,
+            );
+            // Its line's text before the caret, as written: a soft hyphen shows only at a
+            // line's end.
+            let before = pe.caret_at.map(|(_, from)| {
+                let chars = pe.text.text().chars().skip(from);
+                let chars = chars.take(pe.sel.1.saturating_sub(from));
+                chars.filter(|&c| c != page_text::SOFT_HYPHEN).collect()
             });
-            self.then = Some(Then::Line(page, at));
+            self.then = Some(Then::Line(page, at, before));
             self.end_paragraph(true);
             return;
         }
@@ -566,13 +899,8 @@ impl Editor {
         if refused(&block).is_some() {
             return;
         }
-        if let Some(le) = self.line_edit.as_ref() {
-            let at = le.caret_at.unwrap_or_else(|| {
-                let b = block.lines[0].bbox;
-                Pos2::new(b[0], (b[1] + b[3]) / 2.0)
-            });
-            self.then = Some(Then::Paragraph(le.page, at));
-            self.end_line_edit();
+        if self.line_edit.is_some() {
+            self.line_to_paragraph(&block, None);
             return;
         }
         let end = (self.objs.get(&page).and_then(|v| v.get(id)))
@@ -584,10 +912,11 @@ impl Editor {
     /// Open the editor a switch asked for ([`Then`]) once what was typed before it is in
     /// the document, at the line under the caret's place on `page`.
     pub(super) fn follow_then(&mut self, pdf: &limarepdf_core::Pdf, page: usize, k: f32) {
-        let Some(then) = self.then else {
+        let Some(then) = self.then.clone() else {
             return;
         };
-        let (Then::Line(p, at) | Then::Paragraph(p, at)) = then;
+        let (Then::Line(p, at, before) | Then::Paragraph(p, at, before, _)) = &then;
+        let (p, at) = (*p, *at);
         if p != page || !self.later.is_empty() || !self.actions.is_empty() {
             return;
         }
@@ -597,11 +926,31 @@ impl Editor {
         let Some(id) = hit.or_else(|| self.row_hit(page, at)) else {
             return;
         };
+        // The caret after the same characters where the line reads as they say (spaces
+        // that ended it dropped), else at the place.
+        let text = (self.objs.get(&page).and_then(|v| v.get(id))).and_then(|o| o.text.as_deref());
+        let after = before.as_deref().zip(text).and_then(|(b, t)| {
+            let b = [b, b.trim_end()].into_iter().find(|b| t.starts_with(b))?;
+            Some(b.chars().count())
+        });
+        let pick = after.map_or(Pick::At(at, false), |n| Pick::Chars(n, n));
         match then {
-            Then::Line(..) => self.start_line_edit(page, id, Pick::At(at, false)),
-            Then::Paragraph(..) => {
-                if !self.start_paragraph(pdf, page, id, Pick::At(at, false)) {
-                    self.start_line_edit(page, id, Pick::At(at, false));
+            Then::Line(..) => self.start_line_edit(page, id, pick),
+            Then::Paragraph(.., align) => {
+                if self.start_paragraph(pdf, page, id, pick) {
+                    if let Some(a) = align {
+                        self.align_text(pdf, a);
+                    }
+                    return;
+                }
+                self.start_line_edit(page, id, pick);
+                // The line's paragraph, asked to be aligned, can't be read now: say why.
+                if align.is_some() {
+                    let mut left = NotAligned::default();
+                    if self.alignable(pdf, page, id, &mut left).is_some() {
+                        left.failed += 1;
+                    }
+                    self.align_note = left.said();
                 }
             }
         }
@@ -641,10 +990,33 @@ impl Editor {
         if ids.iter().any(|&(p, _)| p != page) {
             return false;
         }
+        let ids: Vec<usize> = ids.iter().map(|&(_, id)| id).collect();
+        if !self.paragraph_over(pdf, page, &ids, (a, b), across) {
+            return false;
+        }
+        self.selection.clear_words();
+        true
+    }
+
+    /// Open the paragraph of `page` lines `ids` (in reading order) are all in, from
+    /// character `a` of the first to `b` of the last selected, when it can be one, with
+    /// paragraph editing on, or, `across` its lines, one LimarePDF is sure of. Whether it
+    /// opened.
+    pub(super) fn paragraph_over(
+        &mut self,
+        pdf: &limarepdf_core::Pdf,
+        page: usize,
+        ids: &[usize],
+        (a, b): (usize, usize),
+        across: bool,
+    ) -> bool {
+        let (Some(&first), Some(&last)) = (ids.first(), ids.last()) else {
+            return false;
+        };
         let Some(block) = self.block_of(pdf, page, first) else {
             return false;
         };
-        let inside = ids.iter().all(|&(_, id)| block.pieces().any(|p| p == id));
+        let inside = ids.iter().all(|&id| block.pieces().any(|p| p == id));
         let sure = self.paragraphs || across && block.confident();
         if !inside || !sure || refused(&block).is_some() {
             return false;
@@ -672,7 +1044,6 @@ impl Editor {
                 pe.pick = ParaPick::Chars(a, end);
             }
         }
-        self.selection.clear_words();
         true
     }
 
@@ -723,7 +1094,8 @@ impl Editor {
         let Some(pe) = self.para.as_mut() else {
             return false;
         };
-        if ctx.memory(|m| m.has_focus(id)) && !pe.typed.is_empty() {
+        let typed_over = ctx.memory(|m| m.has_focus(id)) && !pe.typed.is_empty();
+        if typed_over {
             // Typed as it opened, over what it selected: before the keys since, as typed.
             let typed = std::mem::take(&mut pe.typed);
             ctx.input_mut(|i| {
@@ -787,22 +1159,33 @@ impl Editor {
                 step
             });
             if step != 0.0 {
-                let narrowest = pe.setting.narrowest(&pe.text.parts());
+                let narrowest = pe.setting.narrowest_in(&pe.text.parts(), pe.align);
                 let x = [pe.edges.0, pe.edges.1][side] + step;
                 pe.edges = edge_to(pe.edges, side, x, narrowest, page_w);
             }
         }
         // The text as egui has it this frame, set on its lines in the faces it is written
-        // in, between the frame's edges.
+        // in, between the frame's edges, aligned as it is.
         let (styled, setting, edges) = (pe.text.clone(), pe.setting.clone(), pe.edges);
+        let align = pe.align;
         let laid = |t: &str| {
             let text = styled.preview(t);
             let parts = text.parts();
-            let set = setting.set_between(&parts, edges);
+            let set = setting.set_in(&parts, edges, align);
             let pieces = para_pieces(&setting, &text, &parts);
             let colour = |c| page_text::shown(mode, c);
             let runs = page_text::runs(&ctx, &pieces, k, colour, lang.as_deref());
             page_text::paragraph_galley(&ctx, t, &runs, &set.lines, k, &to_screen)
+        };
+        let bands = |t: &str| {
+            let text = styled.preview(t);
+            let parts = text.parts();
+            let set = setting.set_in(&parts, edges, align);
+            let pieces = para_pieces(&setting, &text, &parts);
+            let colour = |c| page_text::shown(mode, c);
+            let runs = page_text::runs(&ctx, &pieces, k, colour, lang.as_deref());
+            let bands = page_text::char_bands(&runs, &text.drawn_decos(), &colour);
+            (bands, set.lines.iter().map(|l| l.stretch * k).collect())
         };
         let style = page_text::ParaStyle {
             laid: &laid,
@@ -810,6 +1193,7 @@ impl Editor {
             accent,
             frame: (to_screen(edges.0, 0.0).x, to_screen(edges.1, 0.0).x),
             warn: &warn,
+            bands: &bands,
         };
         // Each old line hidden, as a line being edited is.
         let covers: Vec<Rect> = covers(&block).into_iter().map(on_screen).collect();
@@ -842,7 +1226,7 @@ impl Editor {
         if let (Some((side, start)), Some((a, b))) = (pe.dragging, pointer) {
             let e = handles.map(|h| &h[side]);
             if e.is_some_and(|e| e.dragged()) {
-                let narrowest = pe.setting.narrowest(&pe.text.parts());
+                let narrowest = pe.setting.narrowest_in(&pe.text.parts(), pe.align);
                 let x = [start.0, start.1][side] + (b.x - a.x) / k;
                 let now = edge_to(start, side, x, narrowest, page_w);
                 if now != pe.edges {
@@ -854,19 +1238,24 @@ impl Editor {
                 pe.dragging = None;
             }
         }
-        pe.set = setting.set_between(&pe.text.parts(), pe.edges);
+        pe.set = setting.set_in(&pe.text.parts(), pe.edges, pe.align);
         let now = ctx.input(|i| i.time);
         pe.history.observe(&pe.text, sel, now, settled(&ctx));
         let dragging = pe.dragging.is_some();
         pe.history.observe_edges(pe.edges, now, dragging);
+        pe.history.observe_align(pe.align);
         let on_edge = (handles.into_iter().flatten()).any(|e| e.has_focus());
         let over_edge = (handles.into_iter().flatten()).any(|e| e.hovered() || e.dragged());
         let edit = &out.response.response;
-        // Where the caret is, for a switch to One line; what a right-click was on.
+        // Where the caret is, and where its row starts, for a switch to One line; what a
+        // right-click was on.
         let galley_at = out.galley_pos;
         if let Some(c) = out.cursor_range {
             let at = out.galley.pos_from_cursor(c.primary).center() + galley_at.to_vec2();
-            pe.caret_at = Some(to_pt(at));
+            let row = out.galley.layout_from_cursor(c.primary).row;
+            let rows = out.galley.rows.iter().take(row);
+            let from = rows.map(|r| r.char_count_including_newline().0).sum();
+            pe.caret_at = Some((to_pt(at), from));
         }
         if edit.secondary_clicked() {
             pe.menu_at = (edit.interact_pointer_pos())
@@ -933,6 +1322,15 @@ impl Editor {
             return true;
         }
         let pointed = edit.hovered() || over_edge;
+        // Replace's text is in: the paragraph waits, open, for Replace again or a click,
+        // giving up the keyboard now, as it would be taken back if it still had it next
+        // frame.
+        if typed_over && std::mem::take(&mut pe.park) {
+            self.parked = Some(Parked::Typing(id));
+            self.typed_over = true;
+            ctx.memory_mut(|m| m.surrender_focus(id));
+            return pointed;
+        }
         // Under a dialog it waits, open, for it to close, and takes the keyboard back then.
         if crate::dialogs::any_open(&ctx) {
             pe.refocus = true;
@@ -1135,4 +1533,43 @@ pub(super) fn editing_switch(ui: &mut egui::Ui, state: ParaState) -> Option<bool
     });
     ui.add_space(4.0);
     asked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What an alignment's notice says of the text it left as it was: each reason with how
+    /// many lines (or paragraphs), in the order they are met, nothing when none was left.
+    #[test]
+    fn not_aligned_says_what_was_left_and_why() {
+        assert_eq!(NotAligned::default().said(), None);
+        let one = NotAligned {
+            alone: 1,
+            ..Default::default()
+        };
+        let said = "Not aligned: 1 line on its own";
+        assert_eq!(one.said().as_deref(), Some(said));
+        let many = NotAligned {
+            alone: 2,
+            table: 1,
+            turned: 3,
+            left: Left {
+                hidden: 1,
+                grouped: 0,
+                vertical: 2,
+            },
+            failed: 2,
+        };
+        let said = "Not aligned: 2 lines on their own, 1 line in a table or form, 3 lines of \
+                    turned text, 1 line of invisible recognised text, 2 lines of vertical \
+                    writing and 2 paragraphs LimarePDF couldn't write again";
+        assert_eq!(many.said().as_deref(), Some(said));
+        let failed = NotAligned {
+            failed: 1,
+            ..Default::default()
+        };
+        let said = "Not aligned: 1 paragraph LimarePDF couldn't write again";
+        assert_eq!(failed.said().as_deref(), Some(said));
+    }
 }

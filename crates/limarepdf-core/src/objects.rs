@@ -2,6 +2,7 @@
 //! recovered from the page's content stream so they can be selected and edited.
 
 use crate::colour::{Paint, Space};
+use crate::decorate::{self, Decoration, InkAt, Painted, Seg};
 use crate::fonts::{Family, FontChoice, FontCtx};
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::{Pdf, Result};
@@ -60,6 +61,12 @@ pub struct PageObject {
     /// For text: the parts of the line in one style each, in order. `font_name`,
     /// `font_size`, `fill` and `font_reusable` are the first part's.
     pub spans: Vec<TextSpan>,
+    /// For text: the underlines and strike-throughs drawn for it, by other apps or by
+    /// LimarePDF, as NEW-07's rule reads them (`decorate.rs`). Moving or deleting the line
+    /// takes them along.
+    pub decorations: Vec<Decoration>,
+    /// For a path: the text line (its id) it underlines or strikes through.
+    pub decorates: Option<usize>,
 }
 
 /// A part of a line of text in one style: [`PageObject::spans`].
@@ -234,6 +241,9 @@ pub(crate) struct Parsed {
     /// are read and searched like the others but are not page objects: editing works
     /// on the page's own operators.
     pub form_text: Vec<TextData>,
+    /// The page's own lines' decorations, each with its line's index in `objs`
+    /// ([`decorate::read`]); none for a form's content.
+    pub decorations: Vec<(usize, Decoration)>,
 }
 
 impl Parsed {
@@ -267,7 +277,13 @@ struct Gs {
     fill_space: Arc<Space>,
     stroke_space: Arc<Space>,
     paint: Paint,
+    /// The operators that set the fill and the stroke colours (`decorate::InkAt`), for a
+    /// band's ink, which is made from them only for a band read as a decoration.
+    fill_at: InkAt,
+    stroke_at: InkAt,
     lw: f32,
+    /// A dash pattern is set.
+    dashed: bool,
     font: Vec<u8>,
     size: f32,
     tc: f32,
@@ -287,7 +303,10 @@ impl Default for Gs {
             fill_space: Arc::new(Space::Gray),
             stroke_space: Arc::new(Space::Gray),
             paint: Paint::default(),
+            fill_at: InkAt::default(),
+            stroke_at: InkAt::default(),
             lw: 1.0,
+            dashed: false,
             font: Vec::new(),
             size: 0.0,
             tc: 0.0,
@@ -441,6 +460,8 @@ impl Pdf {
         // current path
         let mut path_first: Option<usize> = None;
         let mut path_pts: Vec<(f32, f32)> = Vec::new();
+        let mut path_segs: Vec<Seg> = Vec::new();
+        let mut painted: Vec<Painted> = Vec::new();
         let mut clip_pending = false;
 
         for (i, op) in ops.iter().enumerate() {
@@ -458,14 +479,21 @@ impl Pdf {
                 }
                 "cm" if v.len() == 6 => gs.ctm = mul([v[0], v[1], v[2], v[3], v[4], v[5]], gs.ctm),
                 "w" if !v.is_empty() => gs.lw = v[0],
+                "d" => {
+                    gs.dashed = (op.operands.first())
+                        .and_then(|o| o.as_array().ok())
+                        .is_some_and(|a| !a.is_empty());
+                }
                 "g" | "rg" | "k" => {
                     gs.fill = color_from(&v);
                     gs.fill_space = Arc::new(device_space(&op.operator));
                     gs.paint = Paint::device(&op.operator, &op.operands);
+                    gs.fill_at = InkAt::set_by(i);
                 }
                 "G" | "RG" | "K" => {
                     gs.stroke = color_from(&v);
                     gs.stroke_space = Arc::new(device_space(&op.operator));
+                    gs.stroke_at = InkAt::set_by(i);
                 }
                 // A colour space's colour, as it shows (PB-65); a pattern's, or one that
                 // can't be read, leaves the colour shown as it was.
@@ -474,17 +502,25 @@ impl Pdf {
                     gs.fill = gs.fill_space.rgb(&gs.fill_space.first()).or(gs.fill);
                     if let Some(name) = op.operands.first() {
                         gs.paint = Paint::space(name);
+                        gs.fill_at = InkAt::space_of(i);
                     }
                 }
                 "CS" => {
                     gs.stroke_space = space_named(op.operands.first());
                     gs.stroke = gs.stroke_space.rgb(&gs.stroke_space.first()).or(gs.stroke);
+                    if !op.operands.is_empty() {
+                        gs.stroke_at = InkAt::space_of(i);
+                    }
                 }
                 "sc" | "scn" => {
                     gs.fill = gs.fill_space.rgb(&v).or(gs.fill);
                     gs.paint = gs.paint.with(&op.operator, &op.operands);
+                    gs.fill_at.set = Some(i);
                 }
-                "SC" | "SCN" => gs.stroke = gs.stroke_space.rgb(&v).or(gs.stroke),
+                "SC" | "SCN" => {
+                    gs.stroke = gs.stroke_space.rgb(&v).or(gs.stroke);
+                    gs.stroke_at.set = Some(i);
+                }
                 "BT" => {
                     tm = mx::ID;
                     tlm = mx::ID;
@@ -691,21 +727,29 @@ impl Pdf {
                 "m" | "l" if v.len() >= 2 => {
                     path_first.get_or_insert(i);
                     path_pts.push((v[0], v[1]));
+                    path_segs.push(match op.operator.as_str() {
+                        "m" => Seg::Move(v[0], v[1]),
+                        _ => Seg::Line(v[0], v[1]),
+                    });
                 }
                 "c" if v.len() == 6 => {
                     path_first.get_or_insert(i);
                     path_pts.extend([(v[0], v[1]), (v[2], v[3]), (v[4], v[5])]);
+                    path_segs.push(Seg::Curve);
                 }
                 "v" | "y" if v.len() == 4 => {
                     path_first.get_or_insert(i);
                     path_pts.extend([(v[0], v[1]), (v[2], v[3])]);
+                    path_segs.push(Seg::Curve);
                 }
                 "re" if v.len() == 4 => {
                     path_first.get_or_insert(i);
                     path_pts.extend([(v[0], v[1]), (v[0] + v[2], v[1] + v[3])]);
+                    path_segs.push(Seg::Rect(v[0], v[1], v[2], v[3]));
                 }
                 "h" => {
                     path_first.get_or_insert(i);
+                    path_segs.push(Seg::Close);
                 }
                 "W" | "W*" => clip_pending = true,
                 "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" => {
@@ -726,6 +770,21 @@ impl Pdf {
                         let mut bb = mx::transform_rect(gs.ctm, mx::aabb(path_pts.iter().copied()));
                         bb = [bb[0] - sw, bb[1] - sw, bb[2] + sw, bb[3] + sw];
                         let _ = clip_pending;
+                        // A band is kept apart, with its ink, for the page's decorations.
+                        let band = match nesting {
+                            0 => decorate::straight(
+                                &path_segs, gs.ctm, fill, stroke, gs.lw, gs.dashed,
+                            ),
+                            _ => None,
+                        };
+                        if let Some(band) = band {
+                            painted.push(Painted {
+                                first,
+                                band,
+                                colour: if fill { gs.fill } else { gs.stroke },
+                                ink: if fill { gs.fill_at } else { gs.stroke_at },
+                            });
+                        }
                         objs.push(Obj {
                             kind: ObjectKind::Path,
                             first,
@@ -747,6 +806,7 @@ impl Pdf {
                     }
                     path_first = None;
                     path_pts.clear();
+                    path_segs.clear();
                     clip_pending = false;
                 }
                 "Do" => {
@@ -826,12 +886,17 @@ impl Pdf {
         }
         objs.sort_by_key(|o| o.first);
         objs.retain(|o| o.bbox.iter().all(|x| x.is_finite()));
+        let decorations = match nesting {
+            0 => decorate::read(&objs, &painted, &ops, &form_text),
+            _ => Vec::new(),
+        };
         Ok(Parsed {
             ops,
             objs,
             depth_left: depth,
             inline,
             form_text,
+            decorations,
         })
     }
 
@@ -879,6 +944,12 @@ impl Pdf {
     pub(crate) fn objects_of(&self, page: ObjectId, parsed: &Parsed) -> Result<Vec<PageObject>> {
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
+        let mut decorations: HashMap<usize, Vec<Decoration>> = HashMap::new();
+        let mut decorates: HashMap<usize, usize> = HashMap::new();
+        for (line, d) in &parsed.decorations {
+            decorates.extend(d.paths.iter().map(|&p| (p, *line)));
+            decorations.entry(*line).or_default().push(d.clone());
+        }
         Ok(parsed
             .objs
             .iter()
@@ -906,6 +977,8 @@ impl Pdf {
                     upright: false,
                     vertical: false,
                     spans: Vec::new(),
+                    decorations: decorations.remove(&id).unwrap_or_default(),
+                    decorates: decorates.get(&id).copied(),
                 };
                 if let Some(t) = &o.text {
                     po.hidden = t.hidden;
@@ -1022,23 +1095,34 @@ impl Pdf {
 
     /// What search reads of the page with object `page`: its words in reading order, each
     /// with its text line and first character there (see [`ordered_words`]), each text
-    /// line's pieces, and the matrix from page user space to displayed-page points.
+    /// line's pieces, the page object each of the page's own text lines is (as for
+    /// [`Pdf::page_words`]), and the matrix from page user space to displayed-page points.
     pub(crate) fn search_parts(&self, page: ObjectId) -> Result<SearchParts> {
         let parsed = self.parse_page_of(page)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         let lines: Vec<&TextData> = parsed.text_lines().collect();
         let words = ordered_words(&lines, to_vis);
+        let ids = (parsed.objs.iter().enumerate())
+            .filter(|(_, o)| o.text.is_some())
+            .map(|(id, _)| id)
+            .collect();
         Ok((
             words,
             lines.iter().map(|l| l.pieces.clone()).collect(),
+            ids,
             to_vis,
         ))
     }
 }
 
 /// See [`Pdf::search_parts`].
-pub(crate) type SearchParts = (Vec<(PageWord, usize, usize)>, Vec<Vec<Piece>>, M);
+pub(crate) type SearchParts = (
+    Vec<(PageWord, usize, usize)>,
+    Vec<Vec<Piece>>,
+    Vec<usize>,
+    M,
+);
 
 /// The words of a page's text lines in reading order (see [`Pdf::page_words`]), each with
 /// the index of the text line it came from and its first character there.

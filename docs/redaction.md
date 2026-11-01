@@ -143,8 +143,10 @@ What is ticked at first:
   checked to its end: if it is cut off or damaged part way, the command stops in the same way ("Part of this
   document is damaged..."). Data that is complete but whose checksum at the end is wrong is read in full, as other
   PDF readers read it, and the result says so.
-- **Thumbnails and private application data:** page thumbnail pictures, data other programs keep for themselves
-  (such as Illustrator's), and web capture information.
+- **Thumbnails and private application data:** page thumbnail pictures, data programs keep for themselves (such
+  as Illustrator's, and LimarePDF's note of the paragraphs whose edges or alignment you set, with the date the
+  page was last changed), and web capture information. Afterwards those paragraphs' edges are worked out from
+  their lines again.
 
 Not ticked at first, as they are often wanted:
 

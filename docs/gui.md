@@ -50,8 +50,9 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   760 the side panel folds away, leaving its icons. They come back when the window is wide enough again, unless
   you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
   panel is remembered between runs. The command band folds groups without room into a button with the group's
-  name, which opens them; groups of planned features go first, and a group of one command (Text flow's
-  Paragraph) folds to that command's icon. Under about 560 points wide, Print shows its icon alone.
+  name, which opens them; groups of planned features go first, then Edit's Alignment, which folds to the icon of
+  the paragraph's alignment with a ▾, as Word's Paragraph group folds to an icon; a group of one command (Text
+  flow's Paragraph) folds to that command's icon. Under about 560 points wide, Print shows its icon alone.
 - **Short windows:** below 600 points high the commands are compact by themselves (see
   [The command band](#the-command-band)).
 - **Panel widths:** drag the edge of the side panel or the inspector to make it wider or narrower. From the
@@ -88,20 +89,18 @@ undo.", "Select some text first." or "Click in a form field first."
 
 | Name | Groups and buttons |
 | --- | --- |
-| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs |
+| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); the **Alignment** group: Align left, Centre, Align right and Justify for the paragraph or line being edited, or the paragraphs of the words or lines selected, its own pressed ([Align text](content-editing.md#align-text)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
 | Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
-| Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline, strike out, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
+| Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
 | Forms and sign | Fill fields ▾ (next and previous field, highlight fields, clear, reset or flatten the form), Fill and sign ▾ (saved signatures and initials, Create signature…, the date, your name, text, marks); Digital signature ▾ (sign, certify, the signatures in this document, digital IDs, trusted certificates) |
 | Protect | Mark redaction ▾ (the area tool, the selected words, all search results), Apply redactions…; Passwords, Remove hidden data |
 | View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
-Underline, Replace and Align in Edit; Link and Blank document in Insert; Spelling and Export comments in
-Review; Create fields in Forms and sign; Your AI in View; Print preview and Reduce file size in
-the File menu. They do nothing, and Tab passes them by. In the inspector, selected text ends with **Future text
-tools**, marked Planned: open it to see which text tools are coming. Turn off **Show planned features** in the
-status bar (or View > Show) to hide them all; the choice is remembered.
+Link and Blank document in Insert; Spelling and Export comments in Review; Create fields in Forms and sign; Your
+AI in View; Print preview and Reduce file size in the File menu. They do nothing, and Tab passes them by. Turn
+off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is remembered.
 
 **Compact commands.** The small arrow at the right of the commands row (or View > Show > Compact commands) puts the
 band on one row of icons, which name themselves on hover; the arrow again brings their names back. The choice is
@@ -398,10 +397,7 @@ click a section's name to open or fold it.
 | An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (the **Editing** switch, **Paragraph** or **One line**, for page text, the one in use pressed, which turns paragraph editing on or off as Edit > Text flow's Paragraph does, Paragraph greyed with the reason for a line on its own, in a table or turned; New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
 | A form field you are typing in | Headed **Form field**. Words selected on the page before are let go, so Edit > Font and Ctrl+B don't change them meanwhile |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
-| Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
-
-Selected text, a line or words, ends with **Future text tools**, marked Planned: open it to read which text tools
-are coming. It is hidden while Show planned features is off.
+| Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, Underline, Strikethrough, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 
 The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
 use a tool is in its button's tooltip and the menus, and in this guide.
@@ -412,16 +408,19 @@ box. Saving, printing and other commands keep a field you are still typing in. P
 sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words, a thumbnail or a card in Organise for a short menu of what applies
-there. Right-clicking selects what is under the pointer first. In text you are typing on the page (a line being
-edited, new text, a note or a text box), a right-click on what is selected keeps it selected, and the menu has Cut,
-Copy and Paste, then Bold and Italic where they apply, as in a word processor. A selected object or run of words also gets a small
-floating toolbar with the same commands. It sits by the selection: above it, below it or beside it where that
-covers no other text, or else just above or below it, over as little text as it can; it never covers the
-selection. While a line is edited on the page, it has Bold, Italic, Cut, Copy and Paste for what is selected in
-the line, and clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves these buttons to the
-top of the inspector (or its strip, when collapsed) instead; Float controls near selection there brings the
-floating toolbar back. View > Properties ▾ > Selection controls on the right does either. The choice is remembered between
-runs; resizing the window doesn't change it.
+there. Right-clicking selects what is under the pointer first. Selected objects get an **Align objects** submenu
+of the Align and Distribute commands that apply ([Line up objects](content-editing.md#line-up-objects)). In text you are
+typing on the page (a line being edited, new text, a note or a text box), a right-click on what is selected keeps
+it selected, and the menu has Cut, Copy and Paste, then Bold, Italic, Underline and Strikethrough where they
+apply, as in a word processor. A selected object or run of words also gets a small floating toolbar with the same
+commands but Align objects. It sits by the selection: above it, below it or beside it where that covers no other text, or else just
+above or below it, over as little text as it can; it never covers the selection. While a line is edited on the
+page, it has Bold, Italic, Underline, Strikethrough, Cut, Copy and Paste for what is selected in the line (and in a
+paragraph Centre after the styles, as Word's mini toolbar has it), and clicking it leaves the line open with the
+keyboard back in it. Its last button, Dock controls on the right, moves
+these buttons to the top of the inspector (or its strip, when collapsed) instead; Float controls near selection
+there brings the floating toolbar back. View > Properties ▾ > Selection controls on the right does either. The
+choice is remembered between runs; resizing the window doesn't change it.
 
 Delete removes the selected words, object, comment or mark, or the selected pages. Words selected with the read
 tool can also be typed over or cut (see
@@ -490,7 +489,11 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+P | Print |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) | Undo, redo |
 | Ctrl+F | Find: Search results opens with the keyboard in its box; type, and the matches come once you pause |
+| Ctrl+H | Replace: Search results opens with Replace with, Replace and Replace all under its search box (Ctrl on a Mac too) |
 | Enter, Shift+Enter in the search box | Next, previous match (Enter before the pause searches at once) |
+| F3, Shift+F3 (or Ctrl+G, Ctrl+Shift+G) | Next, previous match, wherever the keyboard is; with nothing searched, F3 opens Find |
+| Enter in Replace with, or Alt+R in Search results | Replace the current match and go on to the next (Alt+R as in Word; not on a Mac) |
+| Alt+A in Search results | Replace all, after saying what that changes (as in Word; not on a Mac) |
 | Ctrl+K | Command palette |
 | F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the tabs, the commands, notices, navigation, the page, the inspector, the status bar |
 | Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |
@@ -517,8 +520,11 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+A (arrow) | Select every object on the page |
 | Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
 | Shift+drag (arrow) | Add what a rectangle holds to the selection |
+| Alt while dragging an object or one of its handles | Move or resize it freely, without snapping to the page or other objects |
 | Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle, word selection or pages being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, take back pages cut, take away Organise's insertion bar, clear the selection, or leave a tool for the read tool. In a box of Edit > Font or the inspector (the font size, say) while typing is open on the page, it drops what was typed in the box and goes back to the typing |
-| Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
+| Ctrl+B, Ctrl+I, Ctrl+U | Bold, Italic, Underline for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
+| ⌘⇧X (on a Mac only) | Strikethrough, for the same text as Ctrl+U, as in Word for Mac. On Windows and Linux it has no key, as in Word: use the Font group's **S**, the right-click menu or the command palette |
+| Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J (in page text being edited, or with words or lines selected) | Align left, Centre, Align right, Justify their paragraphs, as in Word; Centre, Align right or Justify again puts them back to the left |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so is Organise's grid); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+K every command |
@@ -527,22 +533,22 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 
 Every button, field, list and menu has a name a screen reader can say, in the window, the inspector, the side
 views and the dialogs: icons and symbols are named in words (◀ and ▶ in Search results are Previous match and
-Next match), a field is named by the label beside it, and toggles such as Bold and Italic, the picked signature
-and the picked mark say whether they are on. An open list or menu is named after the button that opened it. In a
-list with a button on each row, the button names its row: Restore Report.pdf in Recover unsaved changes, Remove
-Jane Example… in Trusted certificates. Each part of the window that F6 goes to is named (Tabs, the commands by the
-name shown, such as Edit commands, Notices, Navigation, Document, Inspector, Status bar), the side panel by the
-view it shows, and each document's tab says whether it is the one shown and whether it is unsaved. The command
-band's names are tabs that say which is shown, the side panel's icons say which view is shown, and so do the
-status bar's Page view and Organise pages. The thumbnails are one stop, Page thumbnails, and Organise's grid
-another, Page grid, where the arrow keys move between the pages; each card is named after its page (Page 3) and
-says whether it is selected, and its checkbox is named Select page 3. The Comments view's cards are one stop too,
-Comment list; each card is named by what it says (Highlight · Sam Lee · 2026-10-28 14:02: and the comment or the
-marked words, then Draft reply when it has one) and says whether it is selected. A planned feature's name ends in "Planned",
-and icon-only buttons are named in words, such as Close Watermark for a tool's ×. The inspector's Future text tools
-is named "Future text tools — Planned"; unlike the planned buttons, Tab stops on it, as it opens to show its note.
-The edges of the side panel and the inspector are named Side panel width and Inspector width; they move with the
-arrow keys, and a screen reader can set them too.
+Next match), a field is named by the label beside it, and toggles such as Bold, Italic, Underline and
+Strikethrough, the picked signature and the picked mark say whether they are on. An open list or menu is named
+after the button that opened it. In a list with a button on each row, the button names its row: Restore
+Report.pdf in Recover unsaved changes, Remove Jane Example… in Trusted certificates. Each part of the window that
+F6 goes to is named (Tabs, the commands by the name shown, such as Edit commands, Notices, Navigation, Document,
+Inspector, Status bar), the side panel by the view it shows, and each document's tab says whether it is the one
+shown and whether it is unsaved. The command band's names are tabs that say which is shown, the side panel's icons
+say which view is shown, and so do the status bar's Page view and Organise pages. The thumbnails are one stop,
+Page thumbnails, and Organise's grid another, Page grid, where the arrow keys move between the pages; each card is
+named after its page (Page 3) and says whether it is selected, and its checkbox is named Select page 3. The
+Comments view's cards are one stop too, Comment list; each card is named by what it says (Highlight · Sam Lee ·
+2026-10-28 14:02: and the comment or the marked words, then Draft reply when it has one) and says whether it is
+selected. A planned feature's name ends in "Planned", and icon-only buttons are named in words, such as Close
+Watermark for a tool's × and Underline and Strikethrough for the Font group's **U** and **S**. The edges of the
+side panel and the inspector are named Side panel width and Inspector width; they move with the arrow keys, and a
+screen reader can set them too.
 
 The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,
 Narrator or VoiceOver).

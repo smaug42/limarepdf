@@ -243,9 +243,22 @@ next page's characters it took) is where the next page's matching starts, and `T
 from there when its own first match began inside them, so a match is never found twice and the result is what one
 reading of the whole text would give, a group of pages at a time or all at once. `TextIndex` keeps the pages read,
 by page object: `update` forgets the pages an edit changed, or all of them when the pages themselves changed.
-`Pdf::search` (the CLI) and `find_text_matches` (one page alone, no next page) use the same code. Snippets are cut
-at word boundaries (`tail`, `head`; `Snippet::around` cuts shorter for the app's rows), and `match_count` says the
-count in words for the app and the CLI.
+`Pdf::search` and `search_with` (the CLI) and `find_text_matches` (one page alone, no next page) use the same code.
+Snippets are cut at word boundaries (`tail`, `head`; `Snippet::around` cuts shorter for the app's rows), and
+`match_count` says the count in words for the app and the CLI.
+
+A `Query` holds its options (`SearchOptions`, NEW-04a), so a changed option is a new search on the thread as a
+changed query is. Match case compares the page's original characters (`orig`, at the same indices as the folded
+ones, as `fold` maps one character to one) with the query only whitespace-collapsed (`collapse`), the skips worked
+out from the same text; Whole words only is a `keep` test `find_all` asks of each candidate before taking it
+(`whole_words`), so a candidate refused doesn't swallow the characters a later one starts in: no letter or digit
+may run on into the match's first or last character from just before or after it, the skipped characters
+passed over, so a word hyphenated at a line end is one word; across a page break `TextIndex::find` says whether the
+page's first word goes on from the page before (`runs_on`, the joint rule `joints` uses, read from the page before
+when it is in the index). Each hit also carries its `HitPart`s: per text line it touches, the page object
+(`PageText::objects`, the page's own text lines in object order as `page_words` numbers them; lines inside form
+XObjects none) and the characters there, the spaces between its words included, which Replace edits.
+`Query::count_in` counts a query in plain text, for what a replacement holds of what it replaced.
 
 In the app, `search.rs` runs a tab's searches on a thread of its own, started with its first search and ended
 with the tab. `Tab::poll_search`, each frame, notices the query changing (`note_query`: a query begun from empty
@@ -260,9 +273,77 @@ frame searches again, the document cloned for the thread only then and only with
 match kept by its page and place there (`ToHit::Keep`). The results view (`Tab::show_results`) checks the query
 again after its own field, before drawing, so a query typed in that frame shows no old rows; its rows are of fixed
 height (a page heading, a two-line match) and only those in view are drawn. Mark all for redaction uses the
-matches when the search for the query and the document as they are is complete (`Search::complete`), and otherwise
-runs `Pdf::search` itself first. The threads' indexes count against one budget (`fit_within`, 256 MB), letting go of
-the tab searched longest ago, then the pages already searched of the tab searching.
+matches when the search for the query, its options and the document as they are is complete (`Search::complete`),
+and otherwise runs `Pdf::search_with` itself first. The threads' indexes count against one budget (`fit_within`,
+256 MB), letting go of the tab searched longest ago, then the pages already searched of the tab searching. The
+options are the tab's (`Tab::search_options`), beside its query, noticed with it (`Search::seen`).
+
+Replace (NEW-04a, `tab/replace.rs`, `editor/replace.rs`) types over a match the way typing over selected words
+does, never substituting bytes. `Act::Replace` (Ctrl+H, `CT` so a Mac's Cmd+H stays the system's) shows Search
+results with `Replace`'s field; its button and Enter there are `Act::ReplaceMatch`, which joins `uses_document`, so
+typing waiting on the page is kept first, and is greyed through two `Ctx` conditions with `why_not` reasons
+(`found_match`: `Tab::match_ready`, the search shown is for the query, options and document as they are and its
+current match has come; `search_waits`). `Editor::replace` takes the hit's parts: on another page, in a group
+(no object), invisible or vertical text, or across blocks it refuses with a `NotReplaced::Match` note drawn under
+the match by `Editor::overlay` (`note_at_match`); a replacement `page_text::untypable` refuses in the font at the
+match's start (the filter typing uses) is `NotReplaced::Text`, said under the field. Otherwise one line opens with
+`start_text_edit(.., Pick::Chars(a, b))` (as a paragraph where it would), several lines of one block with
+`paragraph_over` (shared with `words_paragraph`, `across` so a block LimarePDF is sure of opens with paragraph
+editing off), and the replacement goes in as typed events (`Event::Text`, or `Delete` for an empty one, the range
+first widened by a space by `with_a_space`). The editor's `park` flag then, in the frame the events are typed,
+sets `Parked::Typing` (as F6 does), gives up the keyboard there (at the next frame's start the app would see the
+line focused and unpark it) and sets `Editor::typed_over`, on which Search results puts the keyboard back in the
+field: the line waits open, and Replace again (or a click, which unparks) keeps it as one step. The tab makes the
+next match current without moving the view, remembering the match typed over (`Over`: hit, page, and how many
+matches the replacement holds, `Query::count_in`); `Tab::search_changed` counts the current match again from it
+(`after_replacing`: one fewer on that page after it, plus those the replacement holds), so after the search runs
+again the current match is still the next. A Replace pressed while that search runs waits (`Replace::waiting`) and
+goes on from `take_search` once the current match is placed (`replace_when_placed`), unless typing began
+meanwhile or nothing is left. A waiting replacement that ends unchanged is forgotten (`forget_replaced`).
+`Act::FindNext` and `Act::FindPrevious` (F3 and Shift+F3, Ctrl+G and Ctrl+Shift+G) go through `Tab::find_step`,
+as Enter in the search field does; `App::shortcuts` lets them through with a text box focused, as F6, so F3
+passes a match over from Replace's field, and they show Search results, where the search keeps up, without moving
+the keyboard (Find, with nothing to search for). Menus and tooltips show a command's key through
+`actions::shown_key`: the first, but on a Mac the Cmd one before a plain function key (⌘G, not F3). Alt+R is
+the Replace button's key while Search results' fields, options or button have the keyboard, as Word's Find and
+Replace window has it, read in `replace_ui`, not in `ACTIONS`, and not on a Mac (Option+R types there).
+
+Replace all (NEW-04b, `editor/replace_all.rs`, the tab's side in `tab/replace.rs`) makes every replacement on a copy
+of the document and reviews it before the document takes it. `Act::ReplaceAll` (Replace all beside Replace, Alt+A
+read beside Alt+R, Edit > Replace all matches) joins `uses_document` and is greyed by `all_replaceable`: Replace's
+conditions and `Ctx::search_running` (the search shown hasn't looked through every page, `Tab::search_running`).
+`App::replace_all` keeps the page's typing, takes `Tab::replace_all_job` (the document, each hit's `parts`, the
+replacement on one line, `Editor::paragraphs`, `doc_words`), runs `editor::replace_all` on a thread (`App::busy`, the
+status bar saying so) and sends `Loaded::ReplaceAll`; a result for a tab whose revision moved, or with typing on its
+pages since, is put aside with a message, as a job's is. `replace_all` plans, then writes:
+
+- **Planning** (`plan`, the pages in parallel with Rayon, read-only on the document): each match is refused as
+  `Editor::replace` refuses it, through the same functions (`replace.rs`'s `page_of`, `lines_of`, `typed_font`,
+  `untypable`), counted as a `LeftOut` reason; otherwise it goes to its line (`Of::Line`) or to its paragraph
+  (`Of::Paragraph`, by block) where Replace would open one: across a block's lines with paragraph editing on or a
+  block LimarePDF is sure of, one line with paragraph editing on, the block not `refused` and its `paragraph` and
+  `paragraph_setting` made (kept for writing). A line in a paragraph changed goes with it, so each line or
+  paragraph is one change holding all its matches.
+- **Writing** (`write`, on a clone of the document): a page's paragraph changes one at a time, then its line
+  changes in one `Pdf::edit_texts`. Each change is a `Styled` read from the line (`Styled::of`) or paragraph
+  (`of_paragraph`), the matches put in from the last (`put`: `Styled::sync` with the caret after each, so a
+  replacement takes the style of what it types over, as typing does; an empty one widened by `with_a_space`), then
+  `text_change` or `Styled::parts` with `ParagraphSetting::set`: the writers typing uses, never bytes. A rewrite can
+  move the page's object ids, so each change finds its lines again by `follow` (the same kind, text and box as the
+  page was planned); the first change on a page uses the plan's objects and paragraph setting. A change that fails
+  marks it, and `settle` writes the copy again without it (a failed write may have left an added font in the copy).
+- **Judging** (`judge`): the page is read again and each line written anew is given to the change that wrote it (a
+  set paragraph line where it was set, else the edited line it starts on the baseline of); its rows go through the
+  one overflow rule, `page_text::overflow` over `obstacles_in` (shared with `Editor::obstacles`, in page points),
+  against the page's other things but those the old text met. Another font is counted from `kept_pieces` (a line,
+  with `page_line_fonts`) or `ParagraphSetting::pieces` (a paragraph) where a piece not kept touches a replacement.
+
+`Prepared` holds the `Pass` with every replacement and, when some run over and others don't, one written again
+without the changes that ran over (`fits`). The review, `dialogs::replace_all` (`ReplaceReview`, made by
+`Tab::replace_review`, the pages named by `page_name`, the first eight), joins app.rs's `question` list; Replace all
+or Replace where it fits takes that copy through `Tab::take_replaced`: `edit_pages` over the pages changed, the
+whole document swapped in as `spawn_job`'s result is, one undo step, a notice with Undo. Nothing replaceable is a
+message from the same review.
 
 Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
 signature look, selected text as a plain page) is set through one pipeline, core's `layout.rs` (below, "New text is
@@ -495,6 +576,30 @@ restyles their lines through a `Chosen` made from them (`chosen::Of::Lines`, eac
 and their shapes through a `Group` (each shape's `Look` as it is and as changed, `Typed::Objects`), and moves them
 by the box round them (`Group::at`). `Tab::after_insert` selects everything a change put down (`Editor::select_new`
 from the object count before), so new text of several lines is held as one.
+
+Align, distribute and snap (NEW-08, batch 46's stage 5) are pure functions over boxes (displayed-page points, y
+down) in `editor/arrange.rs`. `Act::Align(Align)` and `Act::Distribute(Axis)` call `Editor::align` and
+`Editor::distribute`, which act on what `object_moves` allows (anything with the arrow; the read tool's pictures,
+shapes and `loose` text) and queue one `Action::SetBox` holding only the boxes that move: one `set_object_boxes`
+rewrite and one undo step, none when nothing moves, the selection following through `Selection::expect`. Two or
+more align by the box round them (`union`), as Word aligns selected objects; one alone by its page, its size from
+`Tab::sizes` (as the view draws it). Distribute orders the boxes by their middles (ties by index), keeps the first
+and last where they are and gives the rest equal gaps, negative when the boxes are wider than the room. Snapping
+lives in `drag_to`: the first time a move (`Mode::Move`) or resize (`Mode::Handle`) of objects follows the pointer
+it reads an `arrange::Snaps` into `Drag::snapping`, the edges and middles of the page (its size as drawn, `r / k`)
+and of the page's other objects a click could select (not those moving, nor a line's decorations, invisible text
+only while shown), kept for the drag. A move snaps the nearest of the box's edges and middles to the nearest line
+within `SNAP_PX` (6) screen pixels, across and down apart; a resize snaps only the edges its handle moves
+(`moving_edges`), and with Shift on a corner the nearer of the two, giving the scale `resize` keeps the proportions
+with. `Snaps::guides` makes a dashed line (`GUIDE`, a pink seen on any paper) through each place meeting a line,
+along the box and every box meeting it there, drawn in `page_ui` after the marquee. Alt (`page_ui`'s `keys`) and
+the app's `Settings::snap` (`Act::ToggleSnap`, lent to each tab's `Editor::snap` every frame as `paragraphs` is)
+turn it off; comments (`Drag::annot`), a line's ends and turns never snap, nor do nudges. The band's Align objects
+(Word's Align, named by its tooltip so it isn't read as aligning text) is a menu button (`band::ALIGN_MENU`), the
+objects' right-click menu shows `actions::ALIGNS` as an Align objects submenu (`menu_of`), which `toolbar_items`
+leaves off the floating bar and the docked buttons (as word processors' bars do), and the band's menus draw the
+registry's separators (`actions::menu_list`). `Ctx::objects` counts the objects held,
+for Distribute's three (`why_not`: "Select three or more objects first.").
 
 Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a selection
 rectangle (`marquee`), a pen stroke or a word selection being dragged (`text_drag`), changing nothing and keeping the
@@ -1265,7 +1370,8 @@ of it. Without one, the approved mockup's teal palette stays.
 
 The side panel's views are the icon strip at the window's left edge (`SIDE_VIEWS`, each button's selected state a
 toggle for screen readers), the panel's heading a plain label (`side_name`); Find (`Act::Find`) shows Search
-results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard. `side_panel(Side)` gives each
+results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard; Replace (`Act::Replace`) shows
+them with Replace's field, the keyboard there when the query isn't empty. `side_panel(Side)` gives each
 view a panel id of its own, so egui keeps each view's width apart, and its starting width: `SIDE_WIDTH` (132
 points, the workspace's) for Pages, `SIDE_TEXT_WIDTH` (220) for Search results, Bookmarks, Comments and Digital
 signatures, whose lines wrapped a word or two at a time at 132. A width the user gives a panel is remembered
@@ -1400,10 +1506,8 @@ there were; when that changes it starts at 48 points a button, more than they ta
 place and widen the panel, which egui would then keep (`the_inspector_keeps_its_width`). The collapse button has a
 scope id of its own (`COLLAPSE`), the same with or without the close button before it, so a close from the keyboard
 (no pointer click that frame) can give it the keyboard; in the pop-out the keyboard goes to the strip's button that
-opens it (`POPOUT_OPENER`). `inspector_body` lends `Editor::planned` from Show planned features:
-`Editor::planned_text_tools` draws Future text tools at the end of selected words' and a visible text line's
-inspector, a `section` whose name is a `LayoutJob` with the 11-point Planned tag, named "Future text tools —
-Planned" for screen readers (a Tab stop, unlike the planned buttons, as it opens to show its note).
+opens it (`POPOUT_OPENER`). The inspector's Future text tools, marked Planned, went with Underline and
+Strikethrough built (batch 46's 4b), and with them `Editor::planned`, which showed it.
 
 F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`, the one shortcut `App::shortcuts` runs
 while a text box has the keyboard (and never while a list or menu is open), with Shift told apart exactly, as egui
@@ -1586,9 +1690,52 @@ form XObject, and per inline image.
   rest kept), and a line is kept only where it starts and ends as an old line did in text that hasn't changed and
   `Placing::on` places it under the new edges as under the old ones (its x and, justified, its stretch), so a ragged
   paragraph's right edge moved keeps every line whose break stays, and a left edge moved or a justified edge moved
-  writes them anew. `ParagraphSetting::narrowest(parts)` is the widest stretch between break places, plus the first
-  line's indent where it takes one: how narrow the app lets the frame go. `Pdf::edit_paragraph_between` writes
-  that (`edit_paragraph` is it with the frame's own edges). `Pdf::edit_paragraph(&ParagraphSetting,
+  writes them anew. `ParagraphSetting::set_in(parts, edges, align)` (NEW-15, batch 49's stage 1; `set_between` is
+  it with the paragraph's own alignment) sets it aligned anew: the frame (`frame_in`) takes `align`, and the first
+  line's indent only from a paragraph read as left or justified (one read as centred or right-aligned has none: its
+  "indent" is its first line's width); `room_in` gives the indent's room to left and justified lines only. A change
+  of alignment alone breaks no line anew, as Word realigns: with the edges as they were the producer's breaks stand
+  as for an edit (lines kept, laid out by the same rules), then each kept line is placed again by `Placing::on`
+  under the new frame and written anew (`kept: None`) only where that differs from its place under the old one, in
+  x or stretch (the longest line of a ragged paragraph centred, and a justified one's last line made left, stay
+  byte for byte); the laying-out loop keeps a line that starts and ends as it did and is placed the same, as for
+  moved edges. Word spacing: a paragraph read as justified writes no `Tw` (its `Tw` was the stretch) whatever it
+  is aligned to now (`spacing`, by the alignment read), so justified made left is written at a space's own width.
+  `ParagraphSetting::narrowest(parts)` (`narrowest_in` for an alignment) is the widest stretch between break
+  places, plus the first line's indent where it takes one: how narrow the app lets the frame go.
+  `Pdf::edit_paragraph_between` writes that (`edit_paragraph` is it with the frame's own edges;
+  `edit_paragraph_in` and `edit_paragraph_decorated` take the alignment). **Kept frames** (`para_frames.rs`, the
+  user's finding in batch 49's stage 1): a PDF keeps no paragraph's edges, so a centred paragraph read again took
+  its widest line's extent as its frame, and each realignment, kept and read again, moved it on (a justified
+  72–512 frame went 87–500 centred, then 87–504, 95–504...); a widened one narrowed back. After a write whose
+  edges or alignment differ from the frame read, or whose frame was itself kept (`Paragraph::kept`, so the record
+  follows its lines), `keep_set_frame` records `[top bottom left right indent]` (first and last baselines, the
+  frame's edges, `frame_in`'s indent) in the page's `/PieceInfo /LimarePDF /Private /Frames` (ISO 32000's
+  page-piece dictionary; other apps' entries kept; its `/LastModified` and the page's, as the standard asks),
+  replacing records of lines overlapping it before or now, at most 500 a page; nothing is written for an edit in
+  the frame read, so plain typing adds nothing. `Pdf::paragraph` takes a record's edges and indent
+  (`kept_for`: first and last baselines within 0.5 points, every line within its edges to its size, a hanging
+  first line its indent further) and marks it kept, and `frame_in` then keeps the indent whatever the alignment
+  read. `Pdf::page_blocks_by` reads the paragraphs recorded on its page as one block each (`regroup`): where
+  detection splits their lines (a centred paragraph's shorter lines read as paragraph ends) or joins a
+  neighbour's line to them, the lines between a record's first and last baselines within its edges become a
+  confident block in its frame, aligned as they sit there (`frame_of`: justified, left, right or centred within
+  0.15 of a size or a point, else the alignment read), the blocks they came from keeping the rest, in doubt.
+  Lines moved by other means stop matching and the frame is read from them again. Undo restores the page's
+  dictionary with the content; Remove hidden data's private data drops `PieceInfo` and `LastModified`
+  everywhere; redaction drops a redacted page's `PieceInfo`. The finding's other causes, found by realigning 406
+  corpus paragraphs ten times each, writing and reading each anew (a throwaway probe; drifting on stage 1's
+  code: 32 of 72 in the first sample and 269 of 334 in the second; now 3, two in fonts LimarePDF can't read
+  and one block whose widest first line reads as hanging): **measuring**, a kept character whose neighbour no
+  longer follows it is written at its code's own width (`LineFont::code_advance`) and is measured so (`own` in
+  `measure`), not at its drawn width, which a page drawing a line's last letter with its width taken back
+  (`[(e) 444] TJ`) reads as none: lines written anew had come out a letter (4–9 points) wider than set, right
+  of where they were placed (Type 3 fonts, whose widths are in their own units, keep the drawn width); and
+  **squeezed lines**, a line kept as its words were that is wider than its room at its spaces' own width (a
+  justified line its producer squeezed, or one read a letter short) fills the room with its spaces squeezed
+  (`Placing::on`, a negative stretch, at most 0.35 of its narrowest space, so a space written as a move still
+  reads as one), whatever the alignment, rather than reaching over a neighbouring column (rebreaking it instead
+  added a line over the text below). `Pdf::edit_paragraph(&ParagraphSetting,
   &[TextPart])` writes it in one rewrite (section 7): line
   *i* in place of old line *i*'s first show, lines added after the last old line's last show, the old lines'
   shows taken out (`move_only`, `Following` keeping what follows each in place); inside the text object a `Tm` in
@@ -1623,12 +1770,23 @@ form XObject, and per inline image.
   typed first (`keep_later`) and opens the other editor at the caret's place once that is in the document
   (`Then`, `follow_then`: the line under that point, as ids change with a rewrite, or else the line in its row
   nearest it, `row_hit`, as a caret placed while the line's font is still loading, drawn in Inter, can sit past the
-  line's end). `ParaEdit` holds the block, the
+  line's end). The caret goes after the same characters, not to the same point (BUG-44: a font that came in
+  between drew the other editor at another width, the caret three characters on): `Then` carries the line's text
+  before the caret, as the line will read (a line's typed text to its caret, `LineEdit::caret_at`'s character; a
+  paragraph's from the start of the caret's row as drawn, `ParaEdit::caret_at`'s row start from
+  `Galley::layout_from_cursor`, soft hyphens left out), and where the line found starts with it (spaces that ended
+  it dropped, as they aren't written) the editor opens with `Pick::Chars`, else at the point. A double-click or a
+  Text-tool click that opens a line or paragraph is placed by the line itself in `start_text_edit` (`on_line`: the
+  point among the line's characters by `PageObject::stops`, where the page draws them, the word around it for a
+  double-click), never on the editor's drawing (BUG-45: drawn in Inter while the line's font loads, wider, the
+  double-click selected an earlier word where the page's words didn't match the line's one for one, `word_pick`'s
+  fallback, and the click put the caret characters back); `Pick::At` reaches the editors only from a switch and for
+  a line whose `stops` don't match its characters. `ParaEdit` holds the block, the
   `ParagraphSetting` (built on the window's thread: the installed fonts' list is read at start, so reading one is
   a few milliseconds, the cost line editing's fonts already pay on heavy pages), the text as `Styled`
   (`Styled::of_paragraph`, every character's origin kept, so `parts` names what is kept), its own `History`, and
-  the unknown hyphens kept as typed, and the frame's edges as dragged (`edges`). Each frame the text is set
-  between them (`ParagraphSetting::set_between`) and drawn by
+  the unknown hyphens kept as typed, the frame's edges as dragged (`edges`) and its alignment (`align`, NEW-15).
+  Each frame the text is set between them, so aligned (`ParagraphSetting::set_in`), and drawn by
   `page_text::paragraph_field` on `paragraph_galley`: the text laid out with a line break after each of core's
   lines (put in, taking no character, as `boxed_galley` does), each row then moved to its line's x and baseline
   (rows' positions are public; a glyph's `pos.y` is its baseline), a justified line's spaces widened by a
@@ -1669,7 +1827,42 @@ form XObject, and per inline image.
   are dotted under; `Act::JoinHyphen` and `KeepHyphen` act on the one at the right-click or the caret. The
   inspector's Editing row is a horizontal row as wide as the panel, not a grid of its own, which widened the panel.
   A band group of one command folds to that command's icon (`band::folded_group`), as a menu of one item would be
-  wider and no nearer.
+  wider and no nearer. **Alignment** (NEW-15, batch 49's stages 1 and 2): `Act::AlignText(TextAlign)` (`TextAlign` is
+  core's `Align`; `editor::Align` lines objects up), four registry entries in ☰ > Edit's "Align text" submenu
+  (named apart from Align objects' in the command search, `spoken_title`), Word's keys `k(C, L|E|R|J)`, global so
+  they reach a paragraph with the keyboard (Bold's keys are taken by the box instead); enabled by
+  `Ctx::aligns_text` (`Editor::aligns_text`: page text being edited, words selected, or a text line among the
+  objects selected), else "Click in a paragraph's text first."; `checked` by `Ctx::text_align`
+  (`Editor::text_align`: the paragraph being edited's, else the alignment every block of the other text's lines
+  has, from blocks already read, `read_blocks` reading them for a visible page with selected lines too). In the band, Edit's Alignment group is `Item::Icons` (each command's registry icon
+  alone, as Word's, named on hover with its key; a group that keeps typing open; without room it folds first after
+  planned-only groups, `fold_order`, to the icon of the alignment in use and a caret, `folded_group`, 50 points
+  against 160 open, so at a 1000-point window Editing's Edit text and Find stay shown); in menus they are buttons with
+  their keys, the one in use selected, closing the menu (`menu_item`'s one-of-a-set case); the floating bar has
+  Centre after the styles while a line or paragraph is edited, and for words or lines selected after the group with
+  Bold or Edit text (`toolbar_items`; the right-click menu, `context_items`, hasn't it), pressed when centred. `App::act` treats them as the styles: they change the typing, which stays open (`in_line`).
+  `Editor::align_text` sets `ParaEdit::align` (the one it has pressed again: Left, as Word) and gives the text the
+  keyboard back (`refocus`); each frame `History::observe_align` makes a change a step of its own, and the
+  paragraph's Ctrl+Z and Ctrl+Y put it back with the text and edges (`History::align`, `para_undo_redo`).
+  `para_change` counts a changed alignment as a change, and `Action::EditParagraph` carries `(edges, align)` to
+  `Pdf::edit_paragraph_decorated`. The Paragraph switch's icon is ¶, so it isn't read as Align left. **Page text not
+  edited as a paragraph** (batch 49's stage 2): `App::act` hands `align_text` the document and shows what it returns
+  as a notice. In a line edited alone it finds the line's block (`alignable`: hidden, vertical, turned, no block or
+  `paragraph::refused` counted in `NotAligned` by why, the line given the keyboard back), then `line_to_paragraph`
+  (shared with the Paragraph switch) keeps the line's typing and sets `Then::Paragraph`, which carries the
+  alignment: `follow_then` opens the paragraph once the typing is in and applies it there by Word's rule, so
+  `Editor::paragraphs` stays as it was; if the paragraph can't open then, the line opens again and `align_note`
+  says why (the tab shows it after `apply_actions`). For words or lines selected (`lines_to_align`: `Chosen`'s lines,
+  whose `Left` counts too, or the one text line selected), each alignable block once, in reading order; Word's rule
+  over them all (every one already so gives Left), blocks already so left out, none left no action; else
+  `Action::AlignParagraphs(pages' blocks, align, NotAligned)`, one `edit_pages` for every page, through
+  `editor::align_paragraphs`: per block `Pdf::paragraph` (its kept frame), `paragraph_setting`,
+  `Styled::of_paragraph`'s parts, `Pdf::edit_paragraph_in` between its frame's edges; a block after a page's first
+  found again by `replace_all::follow` (its objects by kind, text and box, which the earlier writes left) and
+  `paragraph::refound` (shared with Replace all). A block that fails is left and counted, the error only when none
+  is written. Afterwards words are selected again (`reselect`) and selected lines found where they moved
+  (`Editor::lines_moved` sets each one's expected box to the line of its text in its row before the page is read
+  again, as `Selection::refind` needs boxes that meet).
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.
@@ -1719,6 +1912,90 @@ form XObject, and per inline image.
   without it (below), the most common colour in a 3-point ring around its box standing in until that comes, from a
   separate drawing of that part of the page in the current page colours. Below that note the inspector names the words that then fall back from the font they go to
   (`page_text::fallback_note`), and the typing box draws each in the face it will be written in.
+- **Underlines and strike-throughs** (NEW-07, batch 46's stage 4a; `decorate.rs`, the design note
+  `limarepdf-underline-design.md`). PDF text has none: a decoration is a thin band drawn under or through some
+  characters. The parser records each painted path's shape (`Seg`; the dash pattern in `Gs::dashed`);
+  `decorate::straight` makes it a band (`Straight`: centre line and thickness in user space) when it is filled
+  rectangles (an `re`, or four corners, any way round) in a row of one thickness with gaps under a quarter of its
+  length (macOS breaks an underline around descenders; a dotted line is half gaps), or one stroked segment without
+  a dash. The page's own content's bands are kept apart (`Painted`: the path's first operator, the band, its colour,
+  and `InkAt`, the operators that set its colour, so no ink is copied while a page is read). `decorate::read` runs
+  at the end of `parse_content` for the page's own content (not a form's), lines and other drawings kept in
+  64-point cells (`Grid`) so a page of many objects isn't read pair by pair; a band running no way the page's lines
+  run is passed over, and a line is laid out only once a band is level with it and near its baseline
+  (`Lite::may_take`; performance.md's "Reading underlines and strike-throughs"). It keeps a band for the line it
+  fits best (`fits`, in the line's own frame,
+  `Frame::of`: along its baseline and up its letters, so turned pages and rotated text read alike; `Laid` is a
+  line's characters as laid out, their edges, sizes, rises, inks and UAX #29 word edges): at most 0.15 em thick
+  and 0.2 em long for the characters it covers, level with the line, an underline's centre between 0.40 em below
+  the baseline and 0.05 em above with its lower edge 0.02 em below, a strike-through's 0.15 to 0.45 em above,
+  both ends within 0.15 em of a character's and on word edges, over two characters or more that aren't spaces with
+  no jump of 2 em between neighbours, in their colour within 0.02. Then no other drawing may meet its ends (but a
+  band under the same line's text, and a fill reaching past both ends behind it), no other line's box overlap it,
+  and no text sit centred under it within its ends less than 0.6 em below while narrower than it or within 0.1 em
+  of it (a fraction's denominator; a justified paragraph's next line is as wide as its underline). Two bands of one
+  kind over the same characters are one `Decoration` with two bands (a double underline). `Parsed::decorations`
+  holds them by line; `PageObject::decorations` gives a line its own (kind, characters, `Look`: bands in ems of
+  the characters' size and the ink, and the paths' ids), `PageObject::decorates` a path its line. The rule's
+  numbers come from producer samples and the corpus check in the design note (469 decorations in 65 files).
+  `Pdf::edit_texts` carries a line's decorations with its characters (`decorate::carried`, by `TextEdit::origins`:
+  a character keeps its decoration, one typed takes the one before it's); `edit_texts_decorated` takes them as
+  given. A line whose words stay as they are (`TextEdit::unchanged`) isn't written, only its bands. After the
+  edit is built and read back, the page is parsed once more and each line's characters as written are found by
+  where they were written (`Edited::places`: the show in place, the operators on top, or an unchanged line's own,
+  through `Edited::watched`) and lined up with the edit's text by their longest common run of characters that
+  aren't spaces (`align`). A decoration wanted that is an old one in its look over the same characters where
+  they were stays as drawn; the others' paths stop painting (their paint operator becomes `n`) and each
+  decoration wanted is drawn on top, one filled rectangle a band (`band_ops`, in the line's frame) for each stretch
+  of one part of the written line, at its size and rise: a read one in its own look and ink, a new one at its
+  font's place (`font_lines`: an embedded TrueType or OpenType program's `post` underline and `OS/2` strike-out,
+  each given by its top; else the standard fonts' AFM underline, 0.1 em below to its centre and 0.05 em thick,
+  with the strike-out of the Liberation look-alike of the standard font the font's name is nearest,
+  `FontChoice::from_name`, which reads no installed fonts). Spaces at either end of the line are left bare.
+  `edit_paragraph` (`paragraph_with`) maps its lines' decorations onto the paragraph's text
+  (`rewrap::decorations_of`, by `Paragraph::source`; `Pdf::paragraph` fills `Paragraph::decorations` the same way
+  for the app), carries them as a line's are, stops all the old ones painting and draws each set line's stretch
+  where that line is written (its `Check::Within`) or kept. `add_text_decorated` draws new text's in the layer the
+  text is written in. `transform_objects` (and so `set_object_boxes`) moves a line's decoration paths with the
+  line's own matrix, and `delete_objects` and `page_without` take them with it (`Pdf::with_decorations`). Redaction
+  treats them as any drawing: one crossing a mark is cut out of it. Where a font puts its bands is public for the
+  typing box (stage 4b): `LineFont::lines` (a line's part's, from the program bytes `OwnFont` holds, so none is read
+  twice) and `decoration_lines` for a `FontChoice` (a standard font's AFM underline and look-alike strike-out; an
+  installed face's own `post` underline and the look-alike strike-out of the standard font its PostScript name is
+  nearest, since `subsetter` keeps no `OS/2` in what it writes), each read once (a cache by font).
+- **Underline and Strikethrough in the app** (NEW-07, batch 46's stage 4b). `styled::CharStyle` has `underline` and
+  `strike`, each a `Deco`: none, `Font` (at its font's place, in its colour) or `Read(k)`, the look of the text's
+  decoration `k` as read (`Styled::looks`, filled by `Styled::of` from `PageObject::decorations` and by
+  `of_paragraph` from `Paragraph::decorations`), so `CharStyle` stays `Copy` and typed characters take a read
+  decoration as they take a font (`Styled::sync`). `Styled::switch_deco` is Word's rule (all on turns it off, else
+  the characters without it take `Font`, those with it keep theirs); `Restyle::switch_deco` for a line's selection
+  (`InLine`) and words across lines (`Across`, one selection), `Shown::underline` and `strike` all-on. Every writer
+  passes decorations: `Styled::decorations` (each stretch with one on: a read one's in its look, a `Font` character
+  beside a read one on the same stretch and in its colour in that look, others `look: None`), so the app carries the
+  read ones itself; `Action::EditText` and `EditParagraph` carry them, `Action::Restyle` holds `LineChange`s (`(id,
+  TextEdit, Vec<Decorated>)`), `Styled::lines` gives each new line its own, and Replace all writes through the
+  decorated calls too. A decoration-only change leaves a line's words as they are (`TextEdit::unchanged`), and a
+  paragraph's (`para_change` compares `decorations()` as well as the set lines). `Act::Underline` (Ctrl+U, ⌘U) and
+  `Act::Strikethrough` (`STRIKE_KEY`, Cmd+Shift+X with `mac_cmd`, which egui matches only on a Mac; `shown_key`
+  leaves such a key out elsewhere) run as Bold does (`styleable`, `uses_document`, `App::act`'s `styles`, the
+  `page_only` keys, `Editor::switch_style` with a `Switch`), and inside the typing boxes `take_typing` takes Ctrl+U
+  before egui's `TextEdit`, whose own Ctrl+U deletes to the start of the line; in any other box (a comment's text,
+  a field, Search, a dialog's field) `App::shortcuts` takes it first and does nothing (PB-77), unless
+  `Editor::styles_focused` says the box with the keyboard takes styles (new text, a visible line or a paragraph
+  being edited). The Font group's buttons are
+  `font_list::styles`'s (`font_list::Lines`; the next new text's are `Editor::tlines`, carried on as its font is),
+  in place of band.rs's Planned `UNDERLINE` (gone, with `Editor::planned_text_tools` and `FontGroup`'s planned
+  slot); the menus and floating bar list the styles in `actions::STYLES`. A line's decoration paths aren't
+  selected apart from it: `Editor::hit_where` takes a click on one for its line (`PageObject::decorates`), and
+  `select_all_objects` and the selection rectangle (`inside_rect`) leave them out. While typing, `page_text::Run::place` is
+  where the font a run is written in puts its bands (`Place::Own`, the line's own font's, though the run is drawn in
+  another; `Place::Set`, a standard font or installed face, read when a band is drawn), `char_bands` gives each
+  character its bands in pixels (`Styled::drawn_decos`), and `band_rects` places them on the galley: along each
+  row from its first character that isn't a space to its last, from a stretch's first glyph's pen (the advances
+  before it, plus a justified line's stretch after each space, `ParaStyle::bands`) to its last's end, on that
+  glyph's baseline (`pos.y`, a raised run's own), painted after the galley by `field` and `paragraph_field`
+  (egui's `TextFormat::underline` sits at the line box's bottom). `bands_are_drawn_where_they_are_written`
+  checks them against the bands written, within 0.13 px at 2 px a point.
 - **The page under text being edited** (ENH-21, batch 45's 3b-1; `tab/backdrop.rs`, `excerpt.rs`). A line drawn
   in place, or a paragraph, being edited asks for the page drawn without its text objects
   (`Editor::backdrop_wanted`: the page, the objects, the box the editor hides). Core's

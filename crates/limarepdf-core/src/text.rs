@@ -20,6 +20,22 @@ pub struct SearchHit {
     /// Where the match is: a box for each piece of each line it is on, in displayed-page
     /// points (y down), each with the page (0-based) it is on, in reading order.
     pub boxes: Vec<(usize, [f32; 4])>,
+    /// What the match is of the page's text lines, in reading order: what replacing it
+    /// changes.
+    pub parts: Vec<HitPart>,
+}
+
+/// The characters of a match on one text line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HitPart {
+    /// 0-based page.
+    pub page: usize,
+    /// The text line, as a page object ([`Pdf::page_objects`]); `None` for text inside a
+    /// form XObject, which is no line of its own.
+    pub object: Option<usize>,
+    /// Its characters in that line's text, from and to, the spaces between its words
+    /// included.
+    pub chars: (usize, usize),
 }
 
 /// The words around a match, as the page has them: whole words, up to [`CONTEXT`]
@@ -134,7 +150,12 @@ impl Pdf {
     /// line or page end are found whole (see [`joints`]). Each page is read once, for the
     /// matches, their snippets and their boxes together (see [`TextIndex`]).
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        let q = Query::new(query);
+        self.search_with(query, SearchOptions::default())
+    }
+
+    /// [`Pdf::search`] with `options`: Match case and Whole words only.
+    pub fn search_with(&self, query: &str, options: SearchOptions) -> Result<Vec<SearchHit>> {
+        let q = Query::with(query, options);
         if q.is_empty() {
             return Ok(vec![]);
         }
@@ -158,7 +179,7 @@ impl Pdf {
             return Ok(Vec::new());
         }
         let page = PageText::read(self, self.page_id_at(page_index)?)?;
-        Ok(find_on(page_index, &page, None, &q, 0)
+        Ok(find_on(page_index, &page, None, false, &q, 0)
             .into_iter()
             .map(|f| f.hit.boxes.into_iter().map(|(_, b)| b).collect::<Vec<_>>())
             .filter(|b| !b.is_empty())
@@ -166,18 +187,61 @@ impl Pdf {
     }
 }
 
-/// A search query as matched: see [`fold_query`].
+/// How a search compares the page's text with what it looks for: as a word processor's
+/// Find does, case is ignored and parts of words found unless these say otherwise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SearchOptions {
+    /// Capital and small letters differ: "Walrus" doesn't find "walrus".
+    pub match_case: bool,
+    /// Only whole words are found: no letter or digit runs on from just before or after a
+    /// match ("walrus" doesn't find "walruses"), across a hyphen at a line or page end too
+    /// (see [`joints`]), which joins a word.
+    pub whole_words: bool,
+}
+
+/// A search query as matched: whitespace runs as one space, lowercased unless case is
+/// matched ([`fold_query`]), and how it compares ([`SearchOptions`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Query(Vec<char>);
+pub struct Query {
+    chars: Vec<char>,
+    options: SearchOptions,
+}
 
 impl Query {
     pub fn new(query: &str) -> Self {
-        Query(fold_query(query))
+        Query::with(query, SearchOptions::default())
+    }
+
+    pub fn with(query: &str, options: SearchOptions) -> Self {
+        let chars = match options.match_case {
+            true => collapse(query).chars().collect(),
+            false => fold_query(query),
+        };
+        Query { chars, options }
     }
 
     /// Nothing to look for: the query was empty or only spaces.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.chars.is_empty()
+    }
+
+    pub fn options(&self) -> SearchOptions {
+        self.options
+    }
+
+    /// How many times it is found in `text` alone, read as a line of a page is: what a
+    /// replacement holds of what it replaces, so the matches after it are counted on from
+    /// it. Its two ends count as word ends.
+    pub fn count_in(&self, text: &str) -> usize {
+        let orig: Vec<char> = collapse(text).chars().collect();
+        let folded: Vec<char> = orig.iter().map(|&c| fold(c)).collect();
+        let text = match self.options.match_case {
+            true => &orig,
+            false => &folded,
+        };
+        let skip = joints(&folded, &[]);
+        let whole = |s, e| !self.options.whole_words || whole_words(text, &skip, s, e, false);
+        find_all(text, &skip, &self.chars, 0, text.len(), whole).len()
     }
 }
 
@@ -198,6 +262,9 @@ pub struct PageText {
     breaks: Vec<usize>,
     /// Each text line's pieces.
     lines: Vec<Vec<Piece>>,
+    /// The page object each of the page's own text lines is, in order; those after them,
+    /// inside form XObjects, are none.
+    objects: Vec<usize>,
     /// From page user space to displayed-page points.
     to_vis: M,
 }
@@ -205,9 +272,10 @@ pub struct PageText {
 impl PageText {
     /// The text of the page with object `page`.
     fn read(pdf: &Pdf, page: ObjectId) -> Result<Self> {
-        let (words, lines, to_vis) = pdf.search_parts(page)?;
+        let (words, lines, objects, to_vis) = pdf.search_parts(page)?;
         let mut t = PageText {
             lines,
+            objects,
             to_vis,
             ..Default::default()
         };
@@ -240,7 +308,7 @@ impl PageText {
             .sum();
         size_of::<Self>()
             + self.text.len() * (2 * size_of::<char>() + size_of::<Place>())
-            + self.breaks.len() * size_of::<usize>()
+            + (self.breaks.len() + self.objects.len()) * size_of::<usize>()
             + self.lines.len() * size_of::<Vec<Piece>>()
             + pieces
     }
@@ -254,13 +322,23 @@ struct Found {
     hit: SearchHit,
 }
 
+/// The characters of `t` a search compares: as they are when case is matched, else folded.
+fn compared(t: &PageText, case: bool) -> &[char] {
+    match case {
+        true => &t.orig,
+        false => &t.text,
+    }
+}
+
 /// The matches of `q` that start on page `page`, whose text is `here`, at or after its
 /// character `from`; a phrase running across the page break goes on into `next`, the next
-/// page's text.
+/// page's text. `joined`: the page's first word goes on from the last of the page before,
+/// hyphenated at its end ([`joints`]), so isn't a whole word by itself.
 fn find_on(
     page: usize,
     here: &PageText,
     next: Option<&PageText>,
+    joined: bool,
     q: &Query,
     from: usize,
 ) -> Vec<Found> {
@@ -268,20 +346,21 @@ fn find_on(
     // As much of the next page as a match may run into: the query's length, with room for
     // the hyphens and line breaks a match passes over.
     let head_len = match next {
-        Some(t) if n > 0 => t.text.len().min(3 * q.0.len() + 4),
+        Some(t) if n > 0 => t.text.len().min(3 * q.chars.len() + 4),
         _ => 0,
     };
     let next = next.filter(|_| head_len > 0);
+    let case = q.options.match_case;
     let (mut text, mut breaks) = (
-        Cow::Borrowed(&here.text[..]),
+        Cow::Borrowed(compared(here, case)),
         Cow::Borrowed(&here.breaks[..]),
     );
     if let Some(t) = next {
         // The page break joins the pages as a line break does.
         let mut joined = Vec::with_capacity(n + 1 + head_len);
-        joined.extend_from_slice(&here.text);
+        joined.extend_from_slice(compared(here, case));
         joined.push(' ');
-        joined.extend_from_slice(&t.text[..head_len]);
+        joined.extend_from_slice(&compared(t, case)[..head_len]);
         let mut b = here.breaks.clone();
         b.push(n);
         b.extend(
@@ -303,26 +382,35 @@ fn find_on(
         }
     };
     let text_of = |p: usize| if p == page { Some(here) } else { next };
-    find_all(&text, &skip, &q.0, from, n)
+    let whole = |s, e| !q.options.whole_words || whole_words(&text, &skip, s, e, joined);
+    find_all(&text, &skip, &q.chars, from, n, whole)
         .into_iter()
         .map(|(s, e)| {
             let spill = e.saturating_sub(n + 1);
             // The characters of the match on each text line it touches; a run on one line
             // includes the spaces between its words.
-            let mut parts: Vec<(usize, u32, u32, u32)> = Vec::new();
+            let mut runs: Vec<(usize, u32, u32, u32)> = Vec::new();
             for (pg, (li, ci)) in (s..e).filter_map(place) {
-                match parts.last_mut() {
+                match runs.last_mut() {
                     Some(p) if p.0 == pg && p.1 == li && ci >= p.3 => p.3 = ci + 1,
-                    _ => parts.push((pg, li, ci, ci + 1)),
+                    _ => runs.push((pg, li, ci, ci + 1)),
                 }
             }
-            let boxes = parts
+            let boxes = runs
                 .iter()
                 .filter_map(|&(pg, li, a, b)| Some((pg, text_of(pg)?, li, a, b)))
                 .flat_map(|(pg, t, li, a, b)| {
                     span_boxes(&t.lines[li as usize], a as usize, b as usize)
                         .into_iter()
                         .map(move |bb| (pg, mx::transform_rect(t.to_vis, bb)))
+                })
+                .collect();
+            let parts = runs
+                .iter()
+                .map(|&(pg, li, a, b)| HitPart {
+                    page: pg,
+                    object: text_of(pg).and_then(|t| t.objects.get(li as usize).copied()),
+                    chars: (a as usize, b as usize),
                 })
                 .collect();
             let (before, cut_before) = tail(&here.orig[..s], CONTEXT);
@@ -348,6 +436,7 @@ fn find_on(
                         cut_after,
                     },
                     boxes,
+                    parts,
                 },
             }
         })
@@ -451,8 +540,17 @@ impl TextIndex {
         let text = |p: usize| self.pages.get(p).and_then(Option::as_ref);
         let end = pages.end.min(self.pages.len());
         let start = pages.start.min(end);
-        let on =
-            |p: usize, from: usize| find_on(p, text(p).unwrap_or(&empty), text(p + 1), q, from);
+        // The page's first word goes on from the page before (read, as the page before a
+        // group is when the group is searched after it).
+        let joined = |p: usize| {
+            let before = p.checked_sub(1).and_then(text);
+            let pair = before.zip(text(p));
+            pair.is_some_and(|(a, b)| runs_on(&a.text, &b.text))
+        };
+        let on = |p: usize, from: usize| {
+            let here = text(p).unwrap_or(&empty);
+            find_on(p, here, text(p + 1), joined(p), q, from)
+        };
         let mut found: Vec<Vec<Found>> = (start..end)
             .into_par_iter()
             .map(|p| on(p, if p == start { from } else { 0 }))
@@ -476,15 +574,25 @@ pub(crate) fn fold(c: char) -> char {
     c.to_lowercase().next().unwrap_or(c)
 }
 
+/// `text` with each run of whitespace as one space, and none at its ends.
+fn collapse(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// A search query as matched: whitespace runs as one space, lowercased.
 pub(crate) fn fold_query(query: &str) -> Vec<char> {
-    query
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .map(fold)
-        .collect()
+    collapse(query).chars().map(fold).collect()
+}
+
+/// Whether text `after` goes on from text `before` as a hyphenated word does across a line
+/// break ([`joints`]): `before` ends in a hyphen after a letter or digit, `after` starts
+/// with one.
+fn runs_on(before: &[char], after: &[char]) -> bool {
+    let n = before.len();
+    n >= 2
+        && matches!(before[n - 1], '-' | '\u{ad}' | '\u{2010}')
+        && before[n - 2].is_alphanumeric()
+        && after.first().is_some_and(|c| c.is_alphanumeric())
 }
 
 /// Which characters of folded page text a match may skip: soft hyphens, and a hyphen at
@@ -494,12 +602,7 @@ pub(crate) fn fold_query(query: &str) -> Vec<char> {
 pub(crate) fn joints(text: &[char], breaks: &[usize]) -> Vec<bool> {
     let mut skip: Vec<bool> = text.iter().map(|&c| c == '\u{ad}').collect();
     for &k in breaks {
-        if k >= 2
-            && k + 1 < text.len()
-            && matches!(text[k - 1], '-' | '\u{ad}' | '\u{2010}')
-            && text[k - 2].is_alphanumeric()
-            && text[k + 1].is_alphanumeric()
-        {
+        if k + 1 < text.len() && runs_on(&text[..k], &text[k + 1..]) {
             skip[k - 1] = true;
             skip[k] = true;
         }
@@ -507,15 +610,36 @@ pub(crate) fn joints(text: &[char], breaks: &[usize]) -> Vec<bool> {
     skip
 }
 
-/// Where the folded query `q` occurs in folded text, as non-overlapping `start..end`
-/// ranges of `text` starting at or after `from` and before `until` (a match may end after
-/// it); characters marked in `skip` are passed over when they don't match.
+/// Whether `text[s..e]`, a match, is whole words: no letter or digit runs on into its
+/// first or last character from just before or after it, the characters `skip` marks
+/// passed over, so that a word hyphenated at a line end is one word. `joined`: the text's
+/// first word goes on from before it.
+pub(crate) fn whole_words(text: &[char], skip: &[bool], s: usize, e: usize, joined: bool) -> bool {
+    let word = |c: char| c.is_alphanumeric();
+    let mut i = s;
+    while i > 0 && skip[i - 1] {
+        i -= 1;
+    }
+    let before = if i == 0 { joined } else { word(text[i - 1]) };
+    let mut j = e;
+    while j < text.len() && skip[j] {
+        j += 1;
+    }
+    let after = j < text.len() && word(text[j]);
+    !(before && word(text[s])) && !(after && word(text[e - 1]))
+}
+
+/// Where the query `q` occurs in text (both folded, or both as they are when case is
+/// matched), as non-overlapping `start..end` ranges of `text` starting at or after `from`
+/// and before `until` (a match may end after it) that `keep` takes; characters marked in
+/// `skip` are passed over when they don't match.
 pub(crate) fn find_all(
     text: &[char],
     skip: &[bool],
     q: &[char],
     from: usize,
     until: usize,
+    keep: impl Fn(usize, usize) -> bool,
 ) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     if q.is_empty() {
@@ -533,7 +657,7 @@ pub(crate) fn find_all(
             }
             t += 1;
         }
-        if k == q.len() {
+        if k == q.len() && keep(i, t) {
             out.push((i, t));
             i = t;
         } else {

@@ -231,6 +231,9 @@ pub struct Settings {
     /// Page text is edited a paragraph at a time where it can be (Edit > Text flow's
     /// Paragraph, NEW-01); off, a line at a time, unless chosen.
     pub paragraphs: bool,
+    /// Objects moved or resized snap to the page's and other objects' edges and middles
+    /// (Edit > Arrange's Snap to objects, NEW-08; on unless turned off).
+    pub snap: bool,
     /// The zoom Organise shows the pages at, as cards (NEW-14).
     pub organise_zoom: f32,
     pub accent: Accent,
@@ -303,6 +306,7 @@ impl Settings {
             show_planned: true,
             compact_commands: false,
             paragraphs: false,
+            snap: true,
             organise_zoom: ORGANISE_ZOOM,
             accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
@@ -379,6 +383,7 @@ impl Settings {
                 "planned_features" => s.show_planned = value != "hidden",
                 "commands" => s.compact_commands = value == "compact",
                 "text_editing" => s.paragraphs = value == "paragraphs",
+                "snap_to_objects" => s.snap = value != "false",
                 "organise_size" => {
                     if let Ok(percent) = value.parse::<f32>() {
                         let zoom = percent / 100.0;
@@ -535,6 +540,7 @@ impl Settings {
             "lines"
         };
         text += &format!("text_editing = {editing}\n");
+        text += &format!("snap_to_objects = {}\n", self.snap);
         text += &format!("organise_size = {:.0}\n", self.organise_zoom * 100.0);
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
@@ -733,6 +739,19 @@ mod tests {
         assert!(Settings::from_file(Some(f.clone())).paragraphs);
         std::fs::write(&f, "text_editing = walrus\n").unwrap();
         assert!(!Settings::from_file(Some(f)).paragraphs);
+    }
+
+    /// Snap to objects is on unless turned off (NEW-08), and the choice is kept.
+    #[test]
+    fn snap_to_objects_is_remembered() {
+        let f = file("snap");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.snap);
+        s.snap = false;
+        s.save();
+        assert!(!Settings::from_file(Some(f.clone())).snap);
+        std::fs::write(&f, "snap_to_objects = walrus\n").unwrap();
+        assert!(Settings::from_file(Some(f)).snap);
     }
 
     /// The band's commands full unless made compact, and the desktop's accent unless

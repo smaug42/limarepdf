@@ -13,6 +13,7 @@ mod blank;
 mod cms_check;
 mod cms_write;
 mod colour;
+mod decorate;
 pub mod disk;
 mod display;
 mod doc;
@@ -43,6 +44,7 @@ mod own_font;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
+mod para_frames;
 mod para_write;
 mod paragraph;
 mod pkcs12;
@@ -79,6 +81,7 @@ pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle, MAX_ANNOTS};
 pub use atomic::NotConfirmed;
 pub use blank::BLANK_TOLERANCE;
 pub use cms_check::CertInfo;
+pub use decorate::{decoration_lines, DecoKind, Decorated, Decoration, FontLines, Look};
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};
 pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{KeptPiece, PartFont, PathStyle, Shape, TextEdit, TextPart};
@@ -129,7 +132,9 @@ pub use sign::{
 };
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use stand_in::{InstalledQuery, StandIn};
-pub use text::{match_count, Matches, Query, SearchHit, Snippet, TextIndex};
+pub use text::{
+    match_count, HitPart, Matches, Query, SearchHit, SearchOptions, Snippet, TextIndex,
+};
 pub use trust::{is_authority, read_certificates, Added, Trust, TrustEntry, TrustList, TrustRole};
 pub use typefaces::{add_font_files, typeface, typefaces, typefaces_ready, FaceFile, Typeface};
 pub use viewprefs::{OpenLayout, OpenPanel, ViewPrefs};

@@ -1,11 +1,52 @@
 //! A line of text being typed with a style for each character (the line styles design,
-//! section 6): typed text takes the style of the text around it; Bold, Italic, the font,
-//! size and colour change what is selected, the word at the caret, or what is typed next,
-//! as in a word processor; and the line goes to core in parts.
+//! section 6): typed text takes the style of the text around it; Bold, Italic, Underline,
+//! Strikethrough, the font, size and colour change what is selected, the word at the caret,
+//! or what is typed next, as in a word processor; and the line goes to core in parts, with
+//! its underlines and strike-throughs over them.
 
-use crate::editor::{same_color, word_around};
+use crate::editor::{same_color, word_around, TextAlign};
 use crate::{font_list, page_text};
-use limarepdf_core::{Family, FontChoice, PageObject, PartFont, TextPart, TextSpan};
+use limarepdf_core::{
+    DecoKind, Decorated, Decoration, Family, FontChoice, PageObject, PartFont, TextPart, TextSpan,
+};
+
+/// A character's underline or strike-through (NEW-07).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Deco {
+    #[default]
+    None,
+    /// At its font's own place and thickness, in its colour: one LimarePDF draws.
+    Font,
+    /// As the page drew it: in the look of the decoration of the text as read that it was
+    /// read as (its index in [`Styled`]'s list).
+    Read(usize),
+}
+
+impl Deco {
+    pub fn on(self) -> bool {
+        self != Deco::None
+    }
+}
+
+/// A style a command switches on or off by Word's rule: all of what it changes having it
+/// turns it off, otherwise all of it takes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    Bold,
+    Italic,
+    Underline,
+    Strikethrough,
+}
+
+/// How a character's underline or strike-through is drawn while it is typed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DrawnDeco {
+    /// At its font's own place, in its colour.
+    Font,
+    /// In a look read from the page: its bands (each one's centre above the baseline and
+    /// thickness, in ems) and its colour.
+    Look(Vec<(f32, f32)>, [f32; 3]),
+}
 
 /// How a character is set.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,6 +62,8 @@ pub struct CharStyle {
     /// How far it is raised above the line's baseline, in points (lowered when below
     /// zero).
     pub rise: f32,
+    pub underline: Deco,
+    pub strike: Deco,
 }
 
 impl Default for CharStyle {
@@ -31,6 +74,25 @@ impl Default for CharStyle {
             size: 12.0,
             color: [0.0; 3],
             rise: 0.0,
+            underline: Deco::None,
+            strike: Deco::None,
+        }
+    }
+}
+
+impl CharStyle {
+    /// Its underline, or its strike-through.
+    pub fn deco(&self, kind: DecoKind) -> Deco {
+        match kind {
+            DecoKind::Underline => self.underline,
+            DecoKind::Strike => self.strike,
+        }
+    }
+
+    fn deco_mut(&mut self, kind: DecoKind) -> &mut Deco {
+        match kind {
+            DecoKind::Underline => &mut self.underline,
+            DecoKind::Strike => &mut self.strike,
         }
     }
 }
@@ -46,6 +108,10 @@ pub struct Shown {
     pub bold: bool,
     /// All of it is italic.
     pub italic: bool,
+    /// All of it is underlined.
+    pub underline: bool,
+    /// All of it is struck through.
+    pub strike: bool,
 }
 
 /// Text with a style for each character.
@@ -67,6 +133,8 @@ pub struct Styled {
     origins: Vec<Option<usize>>,
     /// The line's text as it was read.
     read: Vec<char>,
+    /// The looks of its underlines and strike-throughs as read ([`Deco::Read`]).
+    looks: Vec<limarepdf_core::Look>,
 }
 
 impl Styled {
@@ -82,18 +150,17 @@ impl Styled {
         }
     }
 
-    /// Line `o` as it is, each character in the style of its part; `font_of` gives the
-    /// font a part's PDF font is shown as.
+    /// Line `o` as it is, each character in the style of its part, with its underlines and
+    /// strike-throughs; `font_of` gives the font a part's PDF font is shown as.
     pub fn of(o: &PageObject, font_of: impl Fn(&str) -> FontChoice) -> Self {
         let whole = CharStyle {
             font: font_of(o.font_name.as_deref().unwrap_or("")),
-            span: None,
             size: o.font_size.unwrap_or(12.0),
             color: o.fill.unwrap_or([0.0; 3]),
-            rise: 0.0,
+            ..CharStyle::default()
         };
         let text = o.text.clone().unwrap_or_default();
-        Self::read(text, &o.spans, whole, font_of)
+        Self::read(text, &o.spans, &o.decorations, whole, font_of)
     }
 
     /// A paragraph of page text as it is ([`limarepdf_core::Paragraph`]), each character in
@@ -102,16 +169,17 @@ impl Styled {
         para: &limarepdf_core::Paragraph,
         font_of: impl Fn(&str) -> FontChoice,
     ) -> Self {
-        let text = para.text.clone();
-        Self::read(text, &para.spans, CharStyle::default(), font_of)
+        let (text, whole) = (para.text.clone(), CharStyle::default());
+        Self::read(text, &para.spans, &para.decorations, whole, font_of)
     }
 
     /// `text` as read, in `spans`, its parts, each character in the style of its part (one
-    /// in none in the style of the one before it); `whole` the style of an empty text's
-    /// typing when it has no part.
+    /// in none in the style of the one before it) and with the decorations over it of
+    /// `decorations`; `whole` the style of an empty text's typing when it has no part.
     fn read(
         text: String,
         spans: &[TextSpan],
+        decorations: &[Decoration],
         whole: CharStyle,
         font_of: impl Fn(&str) -> FontChoice,
     ) -> Self {
@@ -128,6 +196,7 @@ impl Styled {
                 size: s.font_size,
                 color: s.fill.unwrap_or([0.0; 3]),
                 rise: s.rise,
+                ..CharStyle::default()
             };
             for c in found.iter_mut().take(s.chars.1.min(n)).skip(s.chars.0) {
                 *c = Some(style);
@@ -141,17 +210,23 @@ impl Styled {
                 size: s.font_size,
                 color: s.fill.unwrap_or([0.0; 3]),
                 rise: s.rise,
+                ..CharStyle::default()
             })
             .unwrap_or(whole);
         // A character in no part takes the style of the one before it.
         let mut last = found.iter().flatten().next().copied().unwrap_or(whole);
-        let styles = found
+        let mut styles: Vec<CharStyle> = found
             .into_iter()
             .map(|s| {
                 last = s.unwrap_or(last);
                 last
             })
             .collect();
+        for (i, d) in decorations.iter().enumerate() {
+            for s in styles.iter_mut().take(d.chars.1.min(n)).skip(d.chars.0) {
+                *s.deco_mut(d.kind) = Deco::Read(i);
+            }
+        }
         Self {
             read: text.chars().collect(),
             origins: (0..n).map(Some).collect(),
@@ -161,6 +236,7 @@ impl Styled {
             base: whole,
             spans,
             restyled: false,
+            looks: decorations.iter().map(|d| d.look.clone()).collect(),
         }
     }
 
@@ -346,6 +422,38 @@ impl Styled {
         });
     }
 
+    /// Style `s` on or off for `sel`, by Word's rule.
+    pub fn switch_style(&mut self, sel: (usize, usize), s: Switch) {
+        match s {
+            Switch::Bold => self.bold(sel),
+            Switch::Italic => self.italic(sel),
+            Switch::Underline => self.switch_deco(sel, DecoKind::Underline),
+            Switch::Strikethrough => self.switch_deco(sel, DecoKind::Strike),
+        }
+    }
+
+    /// Underline (with `kind` a strike-through, Strikethrough) on or off, by Word's rule:
+    /// all of it underlined becomes not underlined, otherwise all of it is. Characters
+    /// underlined already keep their underline as it is.
+    pub fn switch_deco(&mut self, sel: (usize, usize), kind: DecoKind) {
+        let all = self.looked_at(sel).iter().all(|s| s.deco(kind).on());
+        self.turn_deco(sel, kind, !all);
+    }
+
+    /// Underline (or with `kind` a strike-through, Strikethrough) turned `on` or off for
+    /// what a style command with `sel` selected changes.
+    pub fn turn_deco(&mut self, sel: (usize, usize), kind: DecoKind, on: bool) {
+        self.restyle(sel, |mut s| {
+            let d = s.deco_mut(kind);
+            match on {
+                true if !d.on() => *d = Deco::Font,
+                true => {}
+                false => *d = Deco::None,
+            }
+            s
+        });
+    }
+
     /// The font family set to `family`, each character in the face nearest its own that
     /// the family has.
     pub fn set_family(&mut self, sel: (usize, usize), family: Family) {
@@ -403,6 +511,95 @@ impl Styled {
         }]
     }
 
+    /// Each character's underline and strike-through, as drawn while it is typed (`None` for
+    /// neither), in the looks core writes them in ([`Self::decorations`]).
+    pub fn drawn_decos(&self) -> Vec<[Option<DrawnDeco>; 2]> {
+        let mut out = vec![[None, None]; self.styles.len()];
+        for d in self.decorations() {
+            let k = match d.kind {
+                DecoKind::Underline => 0,
+                DecoKind::Strike => 1,
+            };
+            let drawn = match &d.look {
+                Some(l) => DrawnDeco::Look(l.bands().to_vec(), l.colour()),
+                None => DrawnDeco::Font,
+            };
+            for c in out.iter_mut().take(d.chars.1).skip(d.chars.0) {
+                c[k] = Some(drawn.clone());
+            }
+        }
+        out
+    }
+
+    /// The underlines and strike-throughs over the whole text, as core draws them
+    /// ([`Self::decorations_in`]).
+    pub fn decorations(&self) -> Vec<Decorated> {
+        self.decorations_in(0..self.styles.len())
+    }
+
+    /// The underlines and strike-throughs of characters `range`, over them (from its start),
+    /// as core draws them: each stretch of characters with one on, in the look of the one
+    /// read that they were; one added beside one read, in the same colour, carries on in its
+    /// look, one line as a word processor draws it; others at their fonts' places.
+    fn decorations_in(&self, range: std::ops::Range<usize>) -> Vec<Decorated> {
+        let n = self.styles.len();
+        let styles = &self.styles[range.start.min(n)..range.end.min(n)];
+        let mut out = Vec::new();
+        for kind in [DecoKind::Underline, DecoKind::Strike] {
+            let mut i = 0;
+            while i < styles.len() {
+                if !styles[i].deco(kind).on() {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j < styles.len() && styles[j].deco(kind).on() {
+                    j += 1;
+                }
+                // Each character's look: its own read one, else that of one read beside it
+                // in the stretch, before it or after, when it is in that one's colour.
+                let joins = |s: &CharStyle, k: usize| {
+                    (self.looks.get(k)).is_some_and(|l| same_color(l.colour(), s.color))
+                };
+                let mut look: Vec<Option<usize>> = (styles[i..j].iter())
+                    .map(|s| match s.deco(kind) {
+                        Deco::Read(k) => Some(k),
+                        _ => None,
+                    })
+                    .collect();
+                let (mut before, mut after) = (None, None);
+                for (c, l) in look.iter_mut().enumerate() {
+                    match *l {
+                        Some(k) => before = Some(k),
+                        None => *l = before.filter(|&k| joins(&styles[i + c], k)),
+                    }
+                }
+                for (c, l) in look.iter_mut().enumerate().rev() {
+                    match (*l, styles[i + c].deco(kind)) {
+                        (_, Deco::Read(k)) => after = Some(k),
+                        (None, _) => *l = after.filter(|&k| joins(&styles[i + c], k)),
+                        _ => {}
+                    }
+                }
+                let mut a = 0;
+                while a < look.len() {
+                    let mut b = a + 1;
+                    while b < look.len() && look[b] == look[a] {
+                        b += 1;
+                    }
+                    out.push(Decorated {
+                        kind,
+                        chars: (i + a, i + b),
+                        look: look[a].and_then(|k| self.looks.get(k)).cloned(),
+                    });
+                    a = b;
+                }
+                i = j;
+            }
+        }
+        out
+    }
+
     /// The font the line's part `i` is shown as.
     pub fn span_font(&self, i: usize) -> FontChoice {
         self.spans.get(i).map_or(self.base.font, |(_, f)| *f)
@@ -448,6 +645,8 @@ impl Styled {
             color: all(&|s| same_color(s.color, first.color)).then_some(first.color),
             bold: all(&|s| s.font.bold),
             italic: all(&|s| s.font.italic),
+            underline: all(&|s| s.underline.on()),
+            strike: all(&|s| s.strike.on()),
         }
     }
 
@@ -531,11 +730,12 @@ impl Styled {
         self.parts_in(0..self.styles.len())
     }
 
-    /// The lines of new text to write (Enter starts one), each in parts, with how far its
-    /// baseline is below the first line's, in points: each line [`page_text::line_gap`]
-    /// below the one before, by the two lines' largest sizes, as they are drawn while
-    /// typing. Blank lines are left out but keep their space; spaces ending a line go.
-    pub fn lines(&self) -> Vec<(f32, Vec<TextPart>)> {
+    /// The lines of new text to write (Enter starts one), each in parts with its underlines
+    /// and strike-throughs over them, with how far its baseline is below the first line's,
+    /// in points: each line [`page_text::line_gap`] below the one before, by the two lines'
+    /// largest sizes, as they are drawn while typing. Blank lines are left out but keep
+    /// their space; spaces ending a line go.
+    pub fn lines(&self) -> Vec<(f32, Vec<TextPart>, Vec<Decorated>)> {
         let chars: Vec<char> = self.text.chars().collect();
         let mut out = Vec::new();
         let (mut start, mut dy, mut above) = (0, 0.0, None);
@@ -558,7 +758,8 @@ impl Styled {
                 last -= 1;
             }
             if last > start {
-                out.push((dy, self.parts_in(start..last)));
+                let decos = self.decorations_in(start..last);
+                out.push((dy, self.parts_in(start..last), decos));
             }
             start = end + 1;
         }
@@ -622,6 +823,7 @@ impl Styled {
                     && a.size == b.size
                     && same_color(a.color, b.color)
                     && a.rise == b.rise
+                    && (a.underline, a.strike) == (b.underline, b.strike)
             })
     }
 }
@@ -648,6 +850,18 @@ pub trait Restyle {
     fn bold(&mut self);
     /// Italic on or off, as [`Self::bold`].
     fn italic(&mut self);
+    /// Underline (with `kind` a strike-through, Strikethrough) on or off by Word's rule
+    /// ([`Styled::switch_deco`]).
+    fn switch_deco(&mut self, kind: DecoKind);
+    /// Style `s` on or off by Word's rule.
+    fn switch_style(&mut self, s: Switch) {
+        match s {
+            Switch::Bold => self.bold(),
+            Switch::Italic => self.italic(),
+            Switch::Underline => self.switch_deco(DecoKind::Underline),
+            Switch::Strikethrough => self.switch_deco(DecoKind::Strike),
+        }
+    }
     fn set_family(&mut self, family: Family);
     fn set_size(&mut self, size: f32);
     fn set_color(&mut self, color: [f32; 3]);
@@ -679,6 +893,10 @@ impl Restyle for InLine<'_> {
 
     fn italic(&mut self) {
         self.text.italic(self.sel);
+    }
+
+    fn switch_deco(&mut self, kind: DecoKind) {
+        self.text.switch_deco(self.sel, kind);
     }
 
     fn set_family(&mut self, family: Family) {
@@ -727,6 +945,11 @@ impl Across {
         self.each_range(|t, r| t.turn(r, bold, !all));
     }
 
+    fn switch_lines(&mut self, kind: DecoKind) {
+        let all = self.each().all(|(_, s)| s.deco(kind).on());
+        self.each_range(|t, r| t.turn_deco(r, kind, !all));
+    }
+
     /// Take the selected characters out of each line, as Delete takes a selection out of
     /// a word processor's text: where that would leave two spaces together, or one at the
     /// line's start or end, a space beside them goes too (as Word's smart cut has it).
@@ -761,6 +984,8 @@ impl Restyle for Across {
                 color: None,
                 bold: false,
                 italic: false,
+                underline: false,
+                strike: false,
             };
         };
         let all = |same: &dyn Fn(&Styled, &CharStyle) -> bool| self.each().all(|(t, s)| same(t, s));
@@ -771,6 +996,8 @@ impl Restyle for Across {
             color: all(&|_, s| same_color(s.color, first.color)).then_some(first.color),
             bold: all(&|_, s| s.font.bold),
             italic: all(&|_, s| s.font.italic),
+            underline: all(&|_, s| s.underline.on()),
+            strike: all(&|_, s| s.strike.on()),
         }
     }
 
@@ -794,6 +1021,10 @@ impl Restyle for Across {
 
     fn italic(&mut self) {
         self.switch(false);
+    }
+
+    fn switch_deco(&mut self, kind: DecoKind) {
+        self.switch_lines(kind);
     }
 
     fn set_family(&mut self, family: Family) {
@@ -820,7 +1051,8 @@ const STEPS: usize = 100;
 /// the step before it as text editors join it, and each style change is a step of its own,
 /// changes made while a list or colour picker is open joining into one. For a paragraph, it
 /// watches its frame's edges too ([`Self::observe_edges`]): a drag of an edge is a step, as
-/// Word undoes a resize, and moves by the arrow keys close together one.
+/// Word undoes a resize, and moves by the arrow keys close together one; and its alignment
+/// ([`Self::observe_align`]), each change a step, as Word undoes one.
 #[derive(Clone, Debug, Default)]
 pub struct History {
     undo: Vec<Step>,
@@ -830,6 +1062,8 @@ pub struct History {
     sel: (usize, usize),
     /// A paragraph's frame's left and right edges when last watched; `None` for other text.
     edges: Option<(f32, f32)>,
+    /// A paragraph's alignment when last watched; `None` for other text.
+    align: Option<TextAlign>,
     /// The last change was typing, at this time, leaving the caret here.
     typing: Option<(f64, usize)>,
     /// The last change was a style change not yet finished.
@@ -844,6 +1078,7 @@ pub struct History {
 struct Step {
     text: Styled,
     edges: Option<(f32, f32)>,
+    align: Option<TextAlign>,
     sel: (usize, usize),
 }
 
@@ -856,10 +1091,12 @@ impl History {
         }
     }
 
-    /// Nothing to undo yet in a paragraph's `text` set between its frame's `edges`.
-    pub fn with_edges(text: &Styled, edges: (f32, f32)) -> Self {
+    /// Nothing to undo yet in a paragraph's `text` set between its frame's `edges`, aligned
+    /// as `align` says.
+    pub fn with_frame(text: &Styled, edges: (f32, f32), align: TextAlign) -> Self {
         Self {
             edges: Some(edges),
+            align: Some(align),
             ..Self::new(text)
         }
     }
@@ -867,6 +1104,25 @@ impl History {
     /// The paragraph's frame's edges as the last step taken back or forward left them.
     pub fn edges(&self) -> Option<(f32, f32)> {
         self.edges
+    }
+
+    /// The paragraph's alignment as the last step taken back or forward left it.
+    pub fn align(&self) -> Option<TextAlign> {
+        self.align
+    }
+
+    /// Watch a paragraph's alignment this frame: a change since the last frame is a step to
+    /// undo of its own.
+    pub fn observe_align(&mut self, align: TextAlign) {
+        if self.align == Some(align) {
+            return;
+        }
+        self.push(self.sel);
+        self.typing = None;
+        self.styling = false;
+        self.moving = None;
+        self.align = Some(align);
+        self.redo.clear();
     }
 
     /// Watch a paragraph's frame's `edges` this frame, at time `now`, one of them being
@@ -932,6 +1188,7 @@ impl History {
         self.undo.push(Step {
             text: was,
             edges: self.edges,
+            align: self.align,
             sel,
         });
         if self.undo.len() > STEPS {
@@ -950,15 +1207,17 @@ impl History {
     }
 
     /// Take `text` back a step: returns the selection it had then, or `None` with nothing
-    /// to undo. A paragraph's frame's edges go back with it ([`Self::edges`]).
+    /// to undo. A paragraph's frame's edges and alignment go back with it ([`Self::edges`],
+    /// [`Self::align`]).
     pub fn undo(&mut self, text: &mut Styled) -> Option<(usize, usize)> {
         let was = self.undo.pop()?;
         self.redo.push(Step {
             text: std::mem::replace(text, was.text),
             edges: self.edges,
+            align: self.align,
             sel: self.sel,
         });
-        Some(self.went_to(text, was.edges, was.sel))
+        Some(self.went_to(text, (was.edges, was.align), was.sel))
     }
 
     /// Take `text` forward a step undone: returns the selection it had then.
@@ -967,21 +1226,23 @@ impl History {
         self.undo.push(Step {
             text: std::mem::replace(text, next.text),
             edges: self.edges,
+            align: self.align,
             sel: self.sel,
         });
-        Some(self.went_to(text, next.edges, next.sel))
+        Some(self.went_to(text, (next.edges, next.align), next.sel))
     }
 
-    /// `text` is now a step taken back or forward, set between `edges`, with `sel`
-    /// selected.
+    /// `text` is now a step taken back or forward, a paragraph set between `edges` and
+    /// aligned as `align` says, with `sel` selected.
     fn went_to(
         &mut self,
         text: &Styled,
-        edges: Option<(f32, f32)>,
+        (edges, align): (Option<(f32, f32)>, Option<TextAlign>),
         sel: (usize, usize),
     ) -> (usize, usize) {
         self.last = text.clone();
         self.edges = edges;
+        self.align = align;
         self.sel = sel;
         self.typing = None;
         self.styling = false;
@@ -1125,7 +1386,7 @@ mod tests {
         let lines = s.lines();
         let texts: Vec<Vec<&str>> = lines
             .iter()
-            .map(|(_, parts)| parts.iter().map(|p| p.text.as_str()).collect())
+            .map(|(_, parts, _)| parts.iter().map(|p| p.text.as_str()).collect())
             .collect();
         // Spaces ending a line go; blank lines are left out but keep their space.
         assert_eq!(texts, [vec!["Big"], vec!["  small"]]);
@@ -1220,7 +1481,7 @@ mod tests {
     #[test]
     fn undo_takes_back_a_frames_edges_with_the_typing() {
         let mut s = Styled::plain("ab", CharStyle::default());
-        let mut h = History::with_edges(&s, (72.0, 400.0));
+        let mut h = History::with_frame(&s, (72.0, 400.0), TextAlign::Left);
         // A drag over five seconds, then let go.
         for i in 0..5 {
             h.observe_edges((72.0, 390.0 - i as f32), i as f64, true);
@@ -1251,6 +1512,35 @@ mod tests {
         h.observe(&t, Some((3, 3)), 1.0, true);
         h.undo(&mut t);
         assert_eq!(h.edges(), None);
+    }
+
+    /// A paragraph's alignment is undone with its typing (NEW-15): each change a step of
+    /// its own, as Word undoes one, typing between them another; Undo and Redo put the
+    /// alignment back.
+    #[test]
+    fn undo_takes_back_a_paragraphs_alignment_with_the_typing() {
+        let mut s = Styled::plain("ab", CharStyle::default());
+        let mut h = History::with_frame(&s, (72.0, 400.0), TextAlign::Left);
+        h.observe_align(TextAlign::Centre);
+        h.observe_align(TextAlign::Centre);
+        s.sync("abc", Some(3));
+        h.observe(&s, Some((3, 3)), 1.0, true);
+        h.observe_align(TextAlign::Justified);
+        let mut back = Vec::new();
+        while h.undo(&mut s).is_some() {
+            back.push((s.text().to_string(), h.align().unwrap()));
+        }
+        let want = [
+            ("abc", TextAlign::Centre),
+            ("ab", TextAlign::Centre),
+            ("ab", TextAlign::Left),
+        ];
+        let want: Vec<(String, TextAlign)> =
+            want.iter().map(|(t, a)| (t.to_string(), *a)).collect();
+        assert_eq!(back, want);
+        h.redo(&mut s);
+        assert_eq!(h.align(), Some(TextAlign::Centre));
+        assert_eq!(h.edges(), Some((72.0, 400.0)));
     }
 
     #[test]
@@ -1288,6 +1578,8 @@ mod tests {
                 span((4, 8), "ABCDEF+Helvetica-Bold", 12.0),
                 span((8, 12), "Helvetica", 12.0),
             ],
+            decorations: Vec::new(),
+            decorates: None,
         };
         let mut s = Styled::of(&o, FontChoice::from_name);
         let fonts: Vec<PartFont> = s.parts().iter().map(|p| p.font).collect();
@@ -1346,6 +1638,8 @@ mod tests {
                 font_reusable: false,
                 rise: 0.0,
             }],
+            decorations: Vec::new(),
+            decorates: None,
         };
         Styled::of(&o, FontChoice::from_name)
     }
@@ -1382,6 +1676,149 @@ mod tests {
         assert_eq!(from(&s)[1], ("two".to_string(), None));
         // New text was never read.
         assert_eq!(from(&with_bold("new", 0, 1))[0].1, None);
+    }
+
+    /// Each character's underline (or with `kind` its strike-through), as `U` and `.`.
+    fn decos(s: &Styled, kind: DecoKind) -> String {
+        s.styles
+            .iter()
+            .map(|c| if c.deco(kind).on() { 'U' } else { '.' })
+            .collect()
+    }
+
+    /// Underline and Strikethrough follow Word's rule, as Bold does (NEW-07, batch 46's 4b):
+    /// what is selected, else the word at the caret, else what is typed next; partly on
+    /// becomes all on, all on becomes off; each a style of its own. Core draws them at the
+    /// font's place, each line of new text its own.
+    #[test]
+    fn underline_and_strikethrough_follow_word_processors() {
+        let (u, x) = (DecoKind::Underline, DecoKind::Strike);
+        let mut s = Styled::plain("one two three", CharStyle::default());
+        s.switch_deco((4, 7), u);
+        assert_eq!(decos(&s, u), "....UUU......");
+        s.switch_deco((2, 6), u);
+        assert_eq!(decos(&s, u), "..UUUUU......");
+        s.switch_deco((6, 2), u);
+        assert_eq!(decos(&s, u), "......U......");
+        assert!(s.restyled());
+        // The caret inside a word: that word. Between words: what is typed next.
+        let mut s = Styled::plain("one two", CharStyle::default());
+        s.switch_deco((5, 5), u);
+        assert_eq!(decos(&s, u), "....UUU");
+        s.switch_deco((3, 3), x);
+        assert!(s.shown((3, 3)).strike && !s.shown((3, 3)).underline);
+        s.sync("oneX two", Some(4));
+        assert_eq!(decos(&s, x), "...U....");
+        // Typed inside an underline, underlined; Bold leaves it as it is.
+        s.sync("oneX twoo", Some(9));
+        s.bold((0, 9));
+        assert_eq!(decos(&s, u), ".....UUUU");
+        assert!(s.shown((5, 9)).underline && !s.shown((0, 9)).underline);
+        let want = [
+            Decorated {
+                kind: u,
+                chars: (5, 9),
+                look: None,
+            },
+            Decorated {
+                kind: x,
+                chars: (3, 4),
+                look: None,
+            },
+        ];
+        assert_eq!(s.decorations(), want);
+        // New text: each line its own, over its own characters.
+        let mut s = Styled::plain("", CharStyle::default());
+        s.sync("Signed\nand sealed", None);
+        s.switch_deco((11, 17), u);
+        let lines = s.lines();
+        assert!(lines[0].2.is_empty());
+        let over = lines[1].2.iter().map(|d| d.chars).collect::<Vec<_>>();
+        assert_eq!(over, [(4, 10)]);
+    }
+
+    /// "one two three" written in Helvetica 12 in `colour`, "two" underlined at its font's
+    /// place, as read back: a line with an underline as read.
+    fn underlined_line(colour: [f32; 3]) -> PageObject {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let part = TextPart {
+            text: "one two three".into(),
+            font: PartFont::Choice(FontChoice::default()),
+            size: 12.0,
+            color: colour,
+            rise: 0.0,
+            from: None,
+            origins: Vec::new(),
+        };
+        let d = Decorated {
+            kind: DecoKind::Underline,
+            chars: (4, 7),
+            look: None,
+        };
+        pdf.add_text_decorated(0, (72.0, 100.0), &[part], &[d])
+            .unwrap();
+        let objs = pdf.page_objects(0).unwrap();
+        objs.into_iter().find(|o| o.text.is_some()).unwrap()
+    }
+
+    /// An underline read on the page shows as Underline on, and goes to core in its own look
+    /// over its characters, so that core leaves it as drawn; one added beside it in its
+    /// colour carries on in its look, one line; one in another colour is at its font's place.
+    #[test]
+    fn a_read_underline_is_kept_in_its_look_and_carried_on_beside_it() {
+        let u = DecoKind::Underline;
+        let o = underlined_line([0.0; 3]);
+        assert_eq!(o.decorations.len(), 1, "{:?}", o.decorations);
+        let look = o.decorations[0].look.clone();
+        let s = Styled::of(&o, FontChoice::from_name);
+        assert!(s.shown((4, 7)).underline && !s.shown((0, 7)).underline);
+        assert!(s.same_as(&Styled::of(&o, FontChoice::from_name)));
+        let read = |chars| Decorated {
+            kind: u,
+            chars,
+            look: Some(look.clone()),
+        };
+        assert_eq!(s.decorations(), [read((4, 7))]);
+        let drawn = DrawnDeco::Look(look.bands().to_vec(), [0.0; 3]);
+        assert_eq!(s.drawn_decos()[5][0], Some(drawn));
+        // "two three" underlined: one line in the read look.
+        let mut t = s.clone();
+        t.switch_deco((4, 13), u);
+        assert_eq!(t.decorations(), [read((4, 13))]);
+        assert!(!t.same_as(&s));
+        // Taken off, by Word's rule, as all of it was on.
+        t.switch_deco((4, 13), u);
+        assert!(t.decorations().is_empty());
+        // "three" red: added at its font's place, the black space with the read one.
+        let mut r = s.clone();
+        r.set_color((8, 13), [1.0, 0.0, 0.0]);
+        r.switch_deco((4, 13), u);
+        let fonts = Decorated {
+            kind: u,
+            chars: (8, 13),
+            look: None,
+        };
+        assert_eq!(r.decorations(), [read((4, 8)), fonts]);
+    }
+
+    /// Words selected across lines take Underline by Word's rule as one selection, as Bold.
+    #[test]
+    fn words_across_lines_are_underlined_as_one_selection() {
+        let read = Styled::of(&underlined_line([0.0; 3]), FontChoice::from_name);
+        let mut across = Across {
+            lines: vec![
+                (read, vec![(4, 13)]),
+                (Styled::plain("cc dd", CharStyle::default()), vec![(0, 2)]),
+            ],
+        };
+        assert!(!across.shown().underline);
+        across.switch_deco(DecoKind::Underline);
+        assert!(across.shown().underline, "partly on becomes all on");
+        assert_eq!(decos(&across.lines[1].0, DecoKind::Underline), "UU...");
+        across.switch_deco(DecoKind::Underline);
+        assert!(across.lines.iter().all(|(t, _)| t.decorations().is_empty()));
+        assert!(!across.shown().strike);
     }
 
     /// Words selected across lines take Bold by Word's rule as one selection, and show

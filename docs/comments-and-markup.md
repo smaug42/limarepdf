@@ -12,12 +12,16 @@ or in another app. To make them part of the pages for good, [flatten](#flatten-c
 2. Click **Review > Highlight**, or **Highlight** on the small toolbar above it, or right-click > Highlight, or press
    Ctrl+Shift+H.
 
-**Review > Highlight ▾**, the small arrow next to Highlight on the toolbar, or right-click > Underline, strike out,
-colour, has:
+**Review > Highlight ▾**, the small arrow next to Highlight on the toolbar, or right-click > Other marks and
+colours, has:
 
-- Underline, Strike out and Squiggly underline.
+- Underline comment, Strike-out comment and Squiggly underline.
 - The highlight colour (yellow, green, blue, pink, orange) and the line colour (red, blue, green, black). The
   colours chosen are remembered between runs.
+
+Like a highlight, these marks are comments over the text: the text itself isn't changed. To underline the words
+themselves or strike through them, see
+[Style words you select while reading](content-editing.md#style-words-you-select-while-reading).
 
 A selection across pages gets one highlight on each page, all in one undo step.
 

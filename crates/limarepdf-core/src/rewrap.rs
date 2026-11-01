@@ -5,12 +5,14 @@
 //! Positions are in points on the displayed page (y down), as [`crate::Block`]'s.
 
 use crate::colour::Paint;
-use crate::edit::{pieces, plan, Drawn, PartFont, TextPart, Way};
+use crate::decorate::Decoration;
+use crate::edit::{pieces, plan, Drawn, Ink, PartFont, TextPart, Way};
 use crate::fonts::FontChoice;
 use crate::layout::Setter;
 use crate::matrix::{self as mx, apply, M};
 use crate::objects::{PageObject, Parsed, TextData, TextSpan};
 use crate::own_font::{LineFont, PageFonts};
+use crate::para_frames::kept_for;
 use crate::paragraph::{Align, Block, Frame};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -43,12 +45,18 @@ pub struct Paragraph {
     pub frame: Frame,
     /// Its line-end hyphens, in order.
     pub hyphens: Vec<LineEndHyphen>,
+    /// Its lines' underlines and strike-throughs ([`PageObject::decorations`]) over its
+    /// text: each from its first character there to its last.
+    pub decorations: Vec<Decoration>,
     /// One for each character of `text`.
     pub(crate) chars: Vec<Char>,
     /// One for each part ([`Paragraph::spans`]).
     pub(crate) parts: Vec<Part>,
     /// One for each line.
     pub(crate) rows: Vec<Row>,
+    /// Its frame is the one LimarePDF wrote it in, read from its page's record
+    /// ([`crate::para_frames`]): its indent is its own whatever it is aligned to.
+    pub(crate) kept: bool,
 }
 
 /// A hyphen ending a line of a paragraph before a lower-case letter ([`Paragraph::hyphens`]).
@@ -194,12 +202,26 @@ struct Placing {
     gaps: usize,
     /// It ends the paragraph or a line typed to end there, so it isn't justified.
     last: bool,
+    /// How wide its spaces are, as it is written.
+    space: f32,
 }
+
+/// The most a line too wide for its room has each space squeezed, a share of the space:
+/// a space written as a move (a font without one) still reads as a space.
+const SQUEEZE: f32 = 0.35;
 
 impl Placing {
     /// Where the line starts across the page in frame `f`, and what justifying it there
-    /// adds to each space between its words.
+    /// adds to each space between its words. A line wider than its room, kept as its words
+    /// were (a justified line whose spaces its producer squeezed, realigned), fills the room
+    /// with its spaces squeezed as far as [`SQUEEZE`], whatever the alignment: wider, it
+    /// would reach over what is beside the paragraph (another column).
     fn on(&self, f: &Frame) -> (f32, f32) {
+        let room = room_in(f, self.opens);
+        let over = (self.width - room) / self.gaps.max(1) as f32;
+        if self.gaps > 0 && over > 1e-3 && over <= SQUEEZE * self.space {
+            return (f.right - room, -over);
+        }
         let left = f.left + if self.opens { f.indent } else { 0.0 };
         match f.align {
             Align::Left => (left, 0.0),
@@ -342,7 +364,9 @@ impl Pdf {
     /// Block `block` of page `page_index` ([`Pdf::page_blocks`]) read for editing as a
     /// paragraph, its line-end hyphens read by `words` ([`Pdf::document_words`]). Refused
     /// when the page has changed since the block was found, or a line of it is turned,
-    /// hidden, in vertical writing or in a text mode that clips.
+    /// hidden, in vertical writing or in a text mode that clips. Its frame is the one
+    /// LimarePDF wrote it in while its lines are where they were written (the page's record,
+    /// [`crate::para_frames`]), else the block's.
     pub fn paragraph(
         &self,
         page_index: usize,
@@ -354,7 +378,12 @@ impl Pdf {
         let objs = self.objects_of(page, &parsed)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
-        read(page_index, &parsed, &objs, to_vis, block, words)
+        let mut para = read(page_index, &parsed, &objs, to_vis, block, words)?;
+        if let Some(k) = kept_for(block, &self.kept_frames(page)) {
+            (para.frame.left, para.frame.right, para.frame.indent) = (k.left, k.right, k.indent);
+            para.kept = true;
+        }
+        Ok(para)
     }
 }
 
@@ -503,17 +532,44 @@ fn read(
             }
         }
     }
-    Ok(Paragraph {
+    let mut para = Paragraph {
         page,
         text: text.iter().map(|r| r.0).collect(),
         spans,
         lines: ranges,
         frame: block.frame,
         hyphens,
+        decorations: Vec::new(),
         chars: text.iter().map(|r| r.1).collect(),
         parts: span_parts.into_iter().map(|p| parts[p].clone()).collect(),
         rows,
-    })
+        kept: false,
+    };
+    para.decorations = decorations_of(&para, &parsed.decorations);
+    Ok(para)
+}
+
+/// The decorations of paragraph `para`'s lines, of the page's `decorations` (each with its
+/// line), over its text: each from its first character there to its last.
+pub(crate) fn decorations_of(
+    para: &Paragraph,
+    decorations: &[(usize, Decoration)],
+) -> Vec<Decoration> {
+    let n = para.text.chars().count();
+    let mut out = Vec::new();
+    for (line, d) in decorations {
+        let over = |k: &usize| {
+            (para.source(*k)).is_some_and(|(o, c)| o == *line && d.chars.0 <= c && c < d.chars.1)
+        };
+        let ks: Vec<usize> = (0..n).filter(over).collect();
+        if let (Some(&a), Some(&b)) = (ks.first(), ks.last()) {
+            out.push(Decoration {
+                chars: (a, b + 1),
+                ..d.clone()
+            });
+        }
+    }
+    out
 }
 
 /// The hyphen ending line `line` before line `next` (its characters), if it ends in one
@@ -670,6 +726,17 @@ impl Measured {
             w += self.shown[end - 1];
         }
         w
+    }
+
+    /// How wide the narrowest space among characters `a..b` is; none, 0.
+    fn space_in(&self, a: usize, b: usize) -> f32 {
+        let spaces = (a..b).filter(|&k| self.chars[k] == ' ');
+        let narrowest = spaces.map(|k| self.widths[k]).fold(f32::MAX, f32::min);
+        if narrowest == f32::MAX {
+            0.0
+        } else {
+            narrowest
+        }
     }
 
     /// Where characters `a..b` end without the spaces (and line breaks) they end with.
@@ -842,16 +909,23 @@ impl ParagraphSetting {
     /// line stays as it was only where it starts and ends as it did in text that hasn't
     /// changed, and the frame moves it nowhere, across the page or in its stretch.
     pub fn set_between(&self, parts: &[TextPart], edges: (f32, f32)) -> SetParagraph {
+        self.set_in(parts, edges, self.para.frame.align)
+    }
+
+    /// [`ParagraphSetting::set_between`] with the paragraph aligned as `align` says
+    /// (NEW-15). A change of alignment alone breaks no line anew, as a word processor
+    /// realigns a paragraph: each line keeps its words and is placed again in the frame,
+    /// written anew where that moves it or changes its stretch. Centred and right-aligned
+    /// text takes no first-line indent; left or justified, a paragraph takes its own (none
+    /// for one read as centred or right-aligned).
+    pub fn set_in(&self, parts: &[TextPart], edges: (f32, f32), align: Align) -> SetParagraph {
         let new = self.measure(parts);
         let old = &self.old;
         let para = &self.para;
-        let frame = Frame {
-            left: edges.0,
-            right: edges.1,
-            ..para.frame
-        };
+        let frame = self.frame_in(edges, align);
         let moved = (frame.left - para.frame.left).abs() > 1e-3
             || (frame.right - para.frame.right).abs() > 1e-3;
+        let realigned = align != para.frame.align;
         let (nl, ol) = (new.chars.len(), old.chars.len());
         let starts: Vec<usize> = para.lines.iter().map(|l| l.0).collect();
         let rows = starts.len();
@@ -880,7 +954,7 @@ impl ParagraphSetting {
                 hyphen: end > a && old.chars[end - 1] == '\u{AD}',
             }
         };
-        if prefix == nl && nl == ol && !moved {
+        if prefix == nl && nl == ol && !moved && !realigned {
             return SetParagraph {
                 lines: (0..rows).map(|n| kept(n, 0)).collect(),
                 marked: Vec::new(),
@@ -962,11 +1036,12 @@ impl ParagraphSetting {
                 width,
                 gaps,
                 last,
+                space: new.space_in(a, end),
             };
             let (x, stretch) = line.on(&frame);
-            // With the edges moved, a line that starts and ends as it did in text that hasn't
-            // changed, which the frame moves nowhere, stays as it was.
-            if moved && push == 0.0 && n < rows {
+            // With the edges moved or the text realigned, a line that starts and ends as it
+            // did in text that hasn't changed, which the frame moves nowhere, stays as it was.
+            if (moved || realigned) && push == 0.0 && n < rows {
                 let same = (e <= prefix && a == starts[n] && e == old_end(n))
                     || (was(a) == Some(starts[n]) && was(e) == Some(old_end(n)));
                 let (x0, stretch0) = line.on(&para.frame);
@@ -989,6 +1064,26 @@ impl ParagraphSetting {
             a = e;
             n += 1;
         }
+        // Realigned in the frame as it was: the lines kept keep their words, each written
+        // anew where the new alignment places it otherwise than the old one did.
+        if realigned && !moved {
+            for l in lines.iter_mut().filter(|l| l.kept.is_some()) {
+                let (a, e) = l.chars;
+                let end = new.trimmed(a, e);
+                let line = Placing {
+                    opens: starts_paragraph(&new, a),
+                    width: l.width,
+                    gaps: new.chars[a..end].iter().filter(|c| **c == ' ').count(),
+                    last: e >= nl || matches!(new.chars[e - 1], '\u{2029}' | '\n'),
+                    space: new.space_in(a, end),
+                };
+                let (x, stretch) = line.on(&frame);
+                let (x0, stretch0) = line.on(&para.frame);
+                if (x - x0).abs() > 1e-3 || (stretch - stretch0).abs() > 1e-3 {
+                    (l.kept, l.x, l.stretch) = (None, x, stretch);
+                }
+            }
+        }
         // The hyphens that may be their word's a rewrap brought inside a line.
         let mut marked = Vec::new();
         for h in para.hyphens.iter().filter(|h| h.kind == Hyphen::Unknown) {
@@ -1009,6 +1104,12 @@ impl ParagraphSetting {
     /// right: its widest word whole on a line, with the first line's indent where it takes
     /// one.
     pub fn narrowest(&self, parts: &[TextPart]) -> f32 {
+        self.narrowest_in(parts, self.para.frame.align)
+    }
+
+    /// [`ParagraphSetting::narrowest`] with the paragraph aligned as `align` says, which
+    /// says whether its first line takes an indent.
+    pub fn narrowest_in(&self, parts: &[TextPart], align: Align) -> f32 {
         let m = self.measure(parts);
         let mut widest = 0.0f32;
         let mut a = 0;
@@ -1016,8 +1117,29 @@ impl ParagraphSetting {
             widest = widest.max(m.width(a, b));
             a = b;
         }
+        let p = &self.para.frame;
+        let f = self.frame_in((p.left, p.right), align);
+        widest + (f.right - f.left - room_in(&f, true)).max(0.0)
+    }
+
+    /// The paragraph's frame with its left and right edges at `edges` and its text aligned
+    /// as `align` says, with the first line's indent the paragraph has: one read as centred
+    /// or right-aligned has none, its first line's place being its width's, unless its frame
+    /// is the one LimarePDF wrote it in, which keeps its own.
+    pub(crate) fn frame_in(&self, edges: (f32, f32), align: Align) -> Frame {
         let f = &self.para.frame;
-        widest + (f.right - f.left - room_in(f, true)).max(0.0)
+        let indent = match f.align {
+            _ if self.para.kept => f.indent,
+            Align::Left | Align::Justified => f.indent,
+            Align::Right | Align::Centre => 0.0,
+        };
+        Frame {
+            left: edges.0,
+            right: edges.1,
+            align,
+            indent,
+            ..*f
+        }
     }
 
     /// How each character of `parts` is written: in its part's own font where it can be
@@ -1102,9 +1224,10 @@ impl ParagraphSetting {
         out
     }
 
-    /// The character spacing, word spacing (none in a justified paragraph, where spaces are
-    /// stretched instead) and horizontal scaling a part `p` of an edit is written with: its
-    /// paragraph part's, or for one in a font chosen, the paragraph's first part's.
+    /// The character spacing, word spacing (none in a paragraph read as justified, where it
+    /// stretched the spaces, whatever the paragraph is aligned to now) and horizontal scaling
+    /// a part `p` of an edit is written with: its paragraph part's, or for one in a font
+    /// chosen, the paragraph's first part's.
     pub(crate) fn spacing(&self, p: &TextPart) -> [f32; 3] {
         let parts = &self.para.parts;
         let i = match p.font {
@@ -1153,6 +1276,24 @@ impl ParagraphSetting {
                 let x = para.chars[k].x;
                 (x.1 - x.0) * scale
             };
+            // What a kept character's own code advances as the page reads it, the font's
+            // width for it, where one code draws it alone: what the writer gives it when its
+            // neighbour no longer follows. Its place as drawn says less where the next
+            // character is placed by a move (a page drawing each letter apart reads a line's
+            // last letter as no width; the user's finding in batch 49's stage 1). A Type 3
+            // font's widths are in its own units: its drawn width stands.
+            let ordinary = para.parts.get(i).is_some_and(|q| (q.em - 1.0).abs() < 1e-3);
+            let own = |k: usize| {
+                let Some(Some(Drawn {
+                    ink: Ink::Code { n: 1, bytes, .. },
+                    ..
+                })) = self.drawn.get(k).filter(|_| ordinary)
+                else {
+                    return glyph(k);
+                };
+                let w = font.code_advance(bytes, self.chars[k]);
+                w.map_or(glyph(k), |w| w / 1000.0 * p.size * th)
+            };
             let space = |c: char| {
                 let w = match font.advance(c) {
                     Some(w) => w / 1000.0 * p.size * th,
@@ -1166,7 +1307,7 @@ impl ParagraphSetting {
                     let k = pl.from.filter(|_| matches!(way, Way::Own(_)));
                     let hyphen = font.advance('-').map(|w| w / 1000.0 * p.size * th);
                     m.shown[j] = match k {
-                        Some(k) => glyph(k) + tc * th,
+                        Some(k) => own(k) + tc * th,
                         None => hyphen.unwrap_or(0.33 * p.size),
                     };
                     0.0
@@ -1180,11 +1321,11 @@ impl ParagraphSetting {
                             && q.from == Some(k + 1)
                             && !m.chars[j + 1].is_whitespace()
                     }) && (para.neighbours(k) || para.accent_over(k));
-                    let after = match neighbour {
-                        true => para.gap_after(k) * scale,
-                        false => tc * th,
-                    };
-                    glyph(k) + after
+                    match (neighbour, way) {
+                        (true, _) => glyph(k) + para.gap_after(k) * scale,
+                        (false, Way::Own(_)) => own(k) + tc * th,
+                        (false, _) => glyph(k) + tc * th,
+                    }
                 }
                 Way::Code => {
                     let w = font.advance(c).unwrap_or(500.0);

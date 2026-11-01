@@ -5,7 +5,8 @@
 
 use super::*;
 
-const PROSE: &str = "The harbour was quiet that morning, and the fishing boats sat low in the \
+pub(super) const PROSE: &str =
+    "The harbour was quiet that morning, and the fishing boats sat low in the \
     water while gulls argued over the nets drying along the wall. Nobody on the quay was in a \
     hurry; the tide would turn when it turned, and the old men who mended the nets had seen \
     enough tides to know that worrying never brought one in sooner than the moon allowed.";
@@ -13,12 +14,23 @@ const PROSE: &str = "The harbour was quiet that morning, and the fishing boats s
 /// A tab of a Letter page with a heading on its own at the top and, below it, `PROSE` as one
 /// paragraph of 12-point Helvetica lines 15 points apart, about 330 points wide, with the
 /// read tool. Returns the paragraph's lines.
-fn prose_tab(app: &mut App, ctx: &egui::Context) -> Vec<String> {
+pub(super) fn prose_tab(app: &mut App, ctx: &egui::Context) -> Vec<String> {
     prose_tab_of(app, ctx, PROSE)
 }
 
 /// [`prose_tab`] with `text` as the paragraph.
 fn prose_tab_of(app: &mut App, ctx: &egui::Context, text: &str) -> Vec<String> {
+    prose_tab_with(app, ctx, text, &[])
+}
+
+/// [`prose_tab_of`] with `below`, lines that many line spaces (15 points) under the
+/// paragraph's last line.
+pub(super) fn prose_tab_with(
+    app: &mut App,
+    ctx: &egui::Context,
+    text: &str,
+    below: &[(&str, usize)],
+) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split(' ') {
         match lines.last_mut() {
@@ -32,6 +44,8 @@ fn prose_tab_of(app: &mut App, ctx: &egui::Context, text: &str) -> Vec<String> {
     let mut at = vec![("Harbour notes".to_string(), egui::pos2(72.0, 70.0))];
     let place = |i: usize| egui::pos2(72.0, 100.0 + 15.0 * i as f32);
     at.extend((lines.iter().enumerate()).map(|(i, l)| (l.clone(), place(i))));
+    let last = lines.len() - 1;
+    at.extend((below.iter()).map(|&(l, n)| (l.to_string(), place(last + n))));
     lines_tab(app, ctx, 792.0, &at);
     lines
 }
@@ -66,7 +80,7 @@ pub(super) fn double_click_word(app: &mut App, ctx: &egui::Context, word: &str) 
 }
 
 /// Whether the status bar says `said`.
-fn status_says(tree: &egui::accesskit::TreeUpdate, said: &str) -> bool {
+pub(super) fn status_says(tree: &egui::accesskit::TreeUpdate, said: &str) -> bool {
     let mut values = tree.nodes.iter().filter_map(|(_, n)| n.value());
     values.any(|v| v.starts_with(said))
 }
@@ -74,7 +88,7 @@ fn status_says(tree: &egui::accesskit::TreeUpdate, said: &str) -> bool {
 /// Click the command band's button called `name` (the topmost control of that name, above
 /// the inspector's), then let half a second of frames pass, so that the next click isn't
 /// taken with this one as a double-click.
-fn click_band(app: &mut App, ctx: &egui::Context, name: &str) {
+pub(super) fn click_band(app: &mut App, ctx: &egui::Context, name: &str) {
     let tree = settled_at(app, ctx, 1400.0);
     let at = (tree.nodes.iter())
         .filter(|(_, n)| n.label() == Some(name))
@@ -91,13 +105,13 @@ fn click_band(app: &mut App, ctx: &egui::Context, name: &str) {
 }
 
 /// The page's paragraph as it reads now: its lines below the heading, joined by spaces.
-fn paragraph_now(pdf: &Pdf) -> String {
+pub(super) fn paragraph_now(pdf: &Pdf) -> String {
     let lines = line_texts(pdf, 0);
     lines[1..].join(" ")
 }
 
 /// The first page's content as it is.
-fn content(pdf: &Pdf) -> Vec<u8> {
+pub(super) fn content(pdf: &Pdf) -> Vec<u8> {
     pdf.doc.get_page_content(pdf.page_ids()[0])
 }
 
@@ -380,6 +394,138 @@ fn a_line_switched_while_its_font_loads_is_still_switched() {
     assert!(status_says(&tree, "Editing one line"), "not switched back");
 }
 
+/// Helvetica, held back with [`crate::typing_fonts::hold`], let in and read, with frames
+/// that draw nothing of the window between: the text being edited keeps its caret where it
+/// was drawn last, in Inter, as when the font arrives just before a switch.
+fn font_in_unseen(ctx: &egui::Context) {
+    crate::typing_fonts::let_in(ctx, "Helvetica");
+    let want = egui::FontFamily::Name("Liberation Sans".into());
+    let helvetica = crate::typing_fonts::Wanted::Standard(FontChoice::default());
+    for _ in 0..6000 {
+        if crate::typing_fonts::family(ctx, helvetica) == want {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        out.textures_delta.clear();
+    }
+    panic!("Liberation Sans never came in");
+}
+
+/// The caret of the line being edited put `n` characters before its end, by the keys: a
+/// double-click while the line's font loads picks its word by the line as drawn in Inter
+/// where the page's words don't match the line's one for one (BUG-45).
+fn caret_from_end(app: &mut App, ctx: &egui::Context, n: usize) {
+    window(app, ctx, 1400.0, vec![key(Key::End)]);
+    window(app, ctx, 1400.0, vec![key(Key::ArrowLeft); n]);
+}
+
+/// Where `word` first ends in the paragraph being edited, and what is selected there.
+fn after(app: &App, word: &str) -> (usize, (usize, usize)) {
+    let (text, sel) = app.tabs[0].ed.para_text().expect("the paragraph");
+    let at = text.find(word).expect(word) + word.len();
+    (text[..at].chars().count(), sel)
+}
+
+/// BUG-44 (`main`'s CI on 0.12.0's merge, macOS Intel): a line drawn last in Inter, its
+/// font still loading, switched to its paragraph once the font is in opens it with the caret
+/// after the same character, not at the same place on the page, a few characters on.
+#[test]
+fn a_line_switched_to_its_paragraph_as_its_font_comes_in_keeps_its_caret() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    double_click_word(&mut app, &ctx, "fishing");
+    assert!(app.tabs[0].ed.editing_line());
+    caret_from_end(&mut app, &ctx, " boats sat".len());
+    font_in_unseen(&ctx);
+    app.act(&ctx, Act::EditParagraph);
+    settled_at(&mut app, &ctx, 1400.0);
+    let (at, sel) = after(&app, "fishing");
+    assert_eq!(sel, (at, at), "the caret moved");
+    type_in(&mut app, &ctx, " very");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let now = paragraph_now(&app.tabs[0].pdf);
+    assert!(now.contains("fishing very boats"), "{now:?}");
+}
+
+/// BUG-44's way back: a paragraph drawn last in Inter, its font still loading, switched to
+/// One line once the font is in edits the line with the caret after the same character,
+/// on a line below the first ("tide" ends the third).
+#[test]
+fn a_paragraph_switched_to_one_line_as_its_font_comes_in_keeps_its_caret() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    assert!(lines[2].ends_with(" tide would"), "{lines:?}");
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    double_click_word(&mut app, &ctx, "tide");
+    caret_from_end(&mut app, &ctx, " would".len());
+    app.act(&ctx, Act::EditParagraph);
+    settled_at(&mut app, &ctx, 1400.0);
+    let (at, sel) = after(&app, "tide");
+    assert_eq!(sel, (at, at), "drawn in Inter both");
+    font_in_unseen(&ctx);
+    app.act(&ctx, Act::EditParagraph);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(app.tabs[0].ed.editing_line(), "not switched back");
+    type_in(&mut app, &ctx, " very");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let now = paragraph_now(&app.tabs[0].pdf);
+    assert!(now.contains("tide very would"), "{now:?}");
+}
+
+/// BUG-45: a word double-clicked while its line's font loads is the word selected, though
+/// the line is drawn meanwhile in Inter, wider, and its punctuation ("wall.", "hurry;") keeps
+/// the page's words from matching the line's one for one: the word under the pointer on the
+/// page, not under it in that drawing ("the", five characters back).
+#[test]
+fn a_word_double_clicked_while_its_lines_font_loads_is_the_one_selected() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    assert!(lines[2].ends_with("hurry; the tide would"), "{lines:?}");
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    double_click_word(&mut app, &ctx, "tide");
+    assert!(app.tabs[0].ed.editing_line());
+    type_in(&mut app, &ctx, "moon");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let now = paragraph_now(&app.tabs[0].pdf);
+    assert!(now.contains("hurry; the moon would"), "{now:?}");
+}
+
+/// BUG-45's click: the Text tool clicked between two letters of a word while its line's font
+/// loads puts the caret between them, where the page draws them, not where the line drawn in
+/// Inter has the point.
+#[test]
+fn a_text_tool_click_while_the_lines_font_loads_puts_the_caret_where_clicked() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+    let line = (objs.iter())
+        .find(|o| {
+            o.text
+                .as_deref()
+                .is_some_and(|t| t.ends_with("the tide would"))
+        })
+        .expect("the third line");
+    let text = line.text.as_deref().unwrap();
+    // Between "ti" and "de".
+    let k = text[..text.find("tide").unwrap() + 2].chars().count();
+    let (x, y) = line.baseline.unwrap();
+    app.act(&ctx, Act::Tool(Tool::Text));
+    crate::typing_fonts::hold(&ctx, "Helvetica");
+    click_page(&mut app, &ctx, (x + line.stops[k], y - 3.0), false);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(app.tabs[0].ed.editing_line());
+    type_in(&mut app, &ctx, "X");
+    window(&mut app, &ctx, 1400.0, vec![key(Key::Escape)]);
+    settled_at(&mut app, &ctx, 1400.0);
+    let now = paragraph_now(&app.tabs[0].pdf);
+    assert!(now.contains("the tiXde would"), "{now:?}");
+}
+
 /// Words selected with the read tool across lines of a paragraph LimarePDF is sure of are
 /// typed over there, and deleted there, the paragraph rewrapping (stage 3's Q3), as a word
 /// processor takes a selection out of its text.
@@ -518,7 +664,10 @@ fn a_hyphen_brought_inside_a_line_is_marked_and_joined_on_asking() {
 
 /// The prose tab's paragraph switched to Paragraph and opened at "fishing"; the window
 /// settled.
-fn open_prose_paragraph(app: &mut App, ctx: &egui::Context) -> egui::accesskit::TreeUpdate {
+pub(super) fn open_prose_paragraph(
+    app: &mut App,
+    ctx: &egui::Context,
+) -> egui::accesskit::TreeUpdate {
     double_click_word(app, ctx, "fishing");
     app.act(ctx, Act::EditParagraph);
     let tree = settled_at(app, ctx, 1400.0);
@@ -549,7 +698,7 @@ fn drag(app: &mut App, ctx: &egui::Context, from: egui::Pos2, to: egui::Pos2) {
 }
 
 /// The paragraph's lines below the heading as they are on the page.
-fn paragraph_lines(pdf: &Pdf) -> Vec<limarepdf_core::PageObject> {
+pub(super) fn paragraph_lines(pdf: &Pdf) -> Vec<limarepdf_core::PageObject> {
     let mut objs = pdf.page_objects(0).unwrap();
     objs.retain(|o| o.text.is_some() && o.bbox[1] > 90.0);
     objs
@@ -756,4 +905,103 @@ fn the_inspector_says_links_and_comments_over_a_paragraph_stay_in_place() {
         let has = says.iter().any(|s| s == said);
         assert_eq!(has, case != "nothing", "{case}: {says:?}");
     }
+}
+
+/// NEW-04a: a match across a paragraph's lines is typed over in the paragraph, with
+/// paragraph editing on, which rewraps it; kept, it is one undo step.
+#[test]
+fn replace_types_over_a_match_across_a_paragraphs_lines() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    click_band(&mut app, &ctx, "Paragraph");
+    let last = lines[0].rsplit(' ').next().unwrap();
+    let first = lines[1].split(' ').next().unwrap();
+    let query = format!("{last} {first}");
+    let ty = Typist::new(&ctx);
+    ty.pause(&mut app);
+    app.act(&ctx, Act::Replace);
+    ty.frame(&mut app, vec![]);
+    ty.frame(&mut app, vec![egui::Event::Text(query.clone())]);
+    ty.key(&mut app, Key::Enter, egui::Modifiers::NONE);
+    searched_with(&mut app, |a| {
+        ty.frame(a, vec![]);
+    });
+    assert_eq!(app.tabs[0].hits[0].parts.len(), 2, "not across lines");
+    app.tabs[0].replace.with = "the long grey".into();
+    app.act(&ctx, Act::ReplaceMatch);
+    ty.pause(&mut app);
+    assert!(app.tabs[0].ed.editing_paragraph(), "not open");
+    assert!(app.tabs[0].keep_typing(&ctx));
+    let want = PROSE.replacen(&query, "the long grey", 1);
+    assert_eq!(paragraph_now(&app.tabs[0].pdf), want);
+    app.act(&ctx, Act::Undo);
+    assert_eq!(paragraph_now(&app.tabs[0].pdf), PROSE);
+}
+
+/// NEW-04b: with paragraph editing on, Replace all replaces each of a paragraph's matches
+/// in the paragraph, one across its lines too, rewrapped once: one undo step.
+#[test]
+fn replace_all_replaces_a_paragraphs_matches_in_it() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    click_band(&mut app, &ctx, "Paragraph");
+    // The words either side of the first line's end, and a word on a line.
+    let last = lines[0].rsplit(' ').next().unwrap();
+    let first = lines[1].split(' ').next().unwrap();
+    let ty = Typist::new(&ctx);
+    let mut want = PROSE.to_string();
+    for (query, with) in [
+        (format!("{last} {first}"), "the long grey"),
+        ("nets".into(), "lines"),
+    ] {
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Replace);
+        ty.frame(&mut app, vec![]);
+        app.tabs[0].query = query.clone();
+        app.tabs[0].replace.with = with.into();
+        app.tabs[0].find_step(1);
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        app.act(&ctx, Act::ReplaceAll);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        click(&mut app, &ctx, "Replace all");
+        want = want.replace(&query, with);
+        assert_eq!(paragraph_now(&app.tabs[0].pdf), want, "{query}");
+    }
+    assert_eq!(app.tabs[0].history().1, 2, "not a step each");
+    app.act(&ctx, Act::Undo);
+    app.act(&ctx, Act::Undo);
+    assert_eq!(paragraph_now(&app.tabs[0].pdf), PROSE);
+}
+
+/// NEW-04b: a paragraph Replace all would grow down over the line below it is said in the
+/// review by the one overflow rule, its matches with it; with none that fit, Replace where
+/// it fits isn't offered.
+#[test]
+fn replace_all_says_a_paragraph_grown_over_the_line_below() {
+    let (ctx, mut app) = new_app();
+    let below = [("Written down by the harbour master", 2)];
+    prose_tab_with(&mut app, &ctx, PROSE, &below);
+    click_band(&mut app, &ctx, "Paragraph");
+    let ty = Typist::new(&ctx);
+    ty.pause(&mut app);
+    app.act(&ctx, Act::Replace);
+    ty.frame(&mut app, vec![]);
+    app.tabs[0].query = "nets".into();
+    let with = "nets and the long ropes and the floats and all else a boat needs at sea";
+    app.tabs[0].replace.with = with.into();
+    app.tabs[0].find_step(1);
+    searched_with(&mut app, |a| {
+        ty.frame(a, vec![]);
+    });
+    app.act(&ctx, Act::ReplaceAll);
+    wait_for(&mut app, &ctx, |a| !a.busy);
+    let Dialog::ConfirmReplaceAll(q) = &app.dialog else {
+        panic!("no review");
+    };
+    let r = &q.review;
+    assert_eq!((r.replaced, r.over, r.fits), (2, 2, false));
+    let over = "2 of them would run past the page's edge or over other text, on page 1.";
+    assert_eq!(r.said()[1], over);
 }

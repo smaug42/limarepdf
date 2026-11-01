@@ -17,14 +17,16 @@ source.
   more room for the page.
 - **Read comfortably:** open documents in tabs, scroll and zoom smoothly, follow bookmarks and links, and switch
   pages to dark, sepia or high-contrast colours for easier reading.
-- **Find anything:** search a whole document as you type, with every match highlighted on the page.
+- **Find and replace:** search a whole document as you type, with every match highlighted on the page, then
+  replace words a match at a time or all at once, told first what replacing them all will change.
 - **Edit text where it is:** double-click a line to change it, or switch it to Paragraph to edit the whole
-  paragraph, its lines rewrapping as you type; make words bold, italic, or another font, size or colour, or just
-  select them as you read and press Ctrl+B.
+  paragraph, its lines rewrapping as you type; make words bold, italic, underlined, struck through, or another
+  font, size or colour, or just select them as you read and press Ctrl+B.
 - **Write in many languages:** Latin, Greek and Cyrillic letters, Chinese, Japanese and Korean, in any font: as in
   a word processor, a word your font lacks is written in an installed font that has it.
 - **Add and arrange content:** add text, pictures and shapes, and move, resize, restyle or delete what is already
-  on the page, one thing or several at once.
+  on the page, one thing or several at once; line things up or space them out evenly, and they snap into line
+  with the page and each other as you drag.
 - **Comment and mark up:** highlights, notes, text boxes, shapes, arrows, freehand drawing and replies.
 - **Organise pages:** see every page at once, as in a slide sorter, and drag or cut and paste pages into a new
   order; rotate, insert, delete and extract them; merge files into one or split one into several.

@@ -1,5 +1,130 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Search results has two choices under the search box, **Match case** and **Whole words only**, each document
+  its own, off when it opens. With Match case, "Walrus" doesn't find "walrus"; with Whole words only, "walrus"
+  doesn't find "walruses", a hyphen ending a word ("walrus-like") except at the end of a line or page, where the
+  hyphenated word is one word. Changing one searches again at once, and Mark all for redaction marks the matches
+  they find. `limarepdf-cli search` takes `--match-case` and `--whole-words`.
+- Replace, a match at a time: **Edit > Replace** (no longer marked Planned), Ctrl+H (on a Mac too) or the command
+  search opens Search results with a **Replace with** box and a **Replace** button. Replace, Enter in the box, or
+  Alt+R in Search results (as in Word; not on a Mac), also Edit > Replace current match, types the replacement
+  over the current match on the page, as typing over selected words does, in the line's own
+  fonts, sizes and colours; the view stays on the change while the next match becomes current, and Replace again
+  keeps it and replaces the next. Each replacement is one undo step. An empty Replace with deletes the match (a
+  whole word with a space beside it), and a match across the lines of one paragraph is replaced in the
+  paragraph, which rewraps. Invisible recognised text, text inside a group, vertical writing and a match across
+  paragraphs or on to the next page are left as they are, with a note at the match saying why; a replacement
+  LimarePDF can't write is refused before anything changes.
+- **Replace all**, beside Replace (also Alt+A in Search results, as in Word, not on a Mac, and Edit > Replace all
+  matches): every match of the search is replaced on a copy of the document first, each as Replace would, and a
+  window says what that does before anything changes: how many matches on how many pages, how many would run past
+  the page's edge or over other text (and on which pages), how many go into another font, and which are left as
+  they are and why. **Replace all** makes them all, **Replace where it fits** (when some would run over) leaves
+  those out, and Cancel changes nothing. The replacements are one undo step. Each match is replaced once, even
+  when the replacement contains what was searched for.
+- **Find next** and **Find previous** (Edit menu, the command search): F3 and Shift+F3, or Ctrl+G and
+  Ctrl+Shift+G (⌘G and ⌘⇧G on a Mac), go to the next match and the one before wherever the keyboard is, on the
+  page and in Replace with too, so a match can be passed over without replacing it; with nothing searched, F3
+  opens Find. Search results' ◀ and ▶ name the keys.
+- **Underline** and **Strikethrough** for page text, working as Bold does: on words selected while reading (across
+  lines and pages), in a line or paragraph being edited (what is selected, else the word at the caret, else what
+  is typed next), in new text being typed (the next new text carrying on in the style this one ended in), and on
+  a line or several lines selected with the arrow. Ctrl+U (⌘U on a Mac) underlines; Strikethrough is ⌘⇧X on a Mac,
+  as in Word for Mac, and has no key on Windows and Linux, as in Word. Both are **U** and **S** in Edit's Font
+  group after Bold and Italic (pressed when all of the text has the style), in the right-click menus and the
+  floating toolbar beside Bold and Italic, in ☰ > Edit and in the command search. As in Word, if all of it is
+  underlined Underline takes it off, otherwise it underlines all of it; each change is one undo step. While you
+  type, an underline or strike-through is drawn where it will be written, at the font's own place and thickness,
+  in the words' colour. Underlining adds a thin line and never writes the words again, so it works in any font,
+  even one LimarePDF can't write new text in. Underlines that other apps drew and LimarePDF reads show as
+  Underline pressed, Ctrl+U takes them off, and an underline added beside one on the same line, in the same
+  colour, carries on in its look; clicking one with the arrow selects its line, not the underline alone. Replace
+  and Replace all keep the underline of what they replace. Not offered:
+  double, dotted, dashed or wavy lines, or an underline colour of its own; nor in text boxes, form fields,
+  headers, footers, watermarks and stamps, or on the command line.
+- **Align**, **Distribute** and snapping for objects, as in Word. **Align objects ▾** in Edit's Arrange group
+  (no longer marked Planned as Align) has Align left, Align centre, Align right, Align top, Align middle and Align
+  bottom, then Distribute horizontally and Distribute vertically, then **Snap to objects**; they are also in ☰ >
+  Edit > Align objects and the command search ("align", "distribute", "snap"), and right-clicking selected
+  objects gives an **Align objects** submenu of the ones that apply. Two or more objects line up with each other by the box round them all (Align left at
+  the leftmost left edge, Align centre at the box's middle, and so on); one alone lines up with the page (Align
+  centre centres it across the page, Align bottom puts it at the foot). Objects keep their size. Distribute, for
+  three or more, leaves the first and last (judged by their middles) where they are and moves those between so
+  the gaps between neighbours are equal. They act on what the tool in use can move: any object with the arrow;
+  pictures and shapes with the read tool, and page text after Move or resize text (or just added). Each is one
+  undo step, and objects already lined up are left as they are. Dragging a picture, shape or line of text, or
+  one of its handles, snaps its edges and middle to the page's and to the other objects' on that page within a
+  few pixels on screen, a dashed pink guide showing the line and what lines up on it; a resize snaps only the
+  edges dragged, and with Shift on a corner the nearer edge snaps and the other follows. Hold Alt (⌥ on a Mac)
+  to drag freely, as in Word; Snap to objects (on at first, remembered between runs) turns snapping off or back
+  on. The arrow keys still nudge by 1 point (10 with Shift), without snapping.
+- Text alignment for a paragraph being edited, as in Word: **Align left**, **Centre**, **Align right** and
+  **Justify** in a new **Alignment** group of Edit, beside Font, the paragraph's own shown pressed; Ctrl+L,
+  Ctrl+E, Ctrl+R and Ctrl+J (⌘ on a Mac, as in Word for Mac); ☰ > Edit > Align text and the command search; and
+  Centre on the floating toolbar, as on Word's mini toolbar. The lines move across between the paragraph's edges
+  at once, keeping their words, the editing staying open; justified, every line but the last reaches both edges.
+  Centre, Align right or Justify pressed again puts the paragraph back to the left, as in Word. Centred and
+  right-aligned lines take no first-line indent, and a paragraph aligned left or justified again has its own
+  back. A justified line whose spaces were squeezed to fit, too wide at their own width, keeps its words and has
+  them squeezed to fit again, so no line reaches past the paragraph's edges. Ctrl+Z in the paragraph takes each change back, and once kept the whole edit is one undo step. In a narrower window the Alignment
+  group folds first, to one icon with a ▾, so Edit text and Find stay shown.
+- Alignment for page text not edited as a paragraph: in a line edited on its own (Paragraph off), an alignment
+  opens the line's paragraph aligned, what was typed in the line kept first and Paragraph staying off. With words
+  selected while reading, or lines selected with the arrow, it aligns every paragraph they touch as one undo
+  step, the words or lines staying selected; the alignment they share shows pressed, and Word's rule (pressed
+  again, back to the left) goes over them all. Centre is on the floating toolbar for them too, not in their
+  right-click menus. A line on its own, text in a table or form, turned text, invisible recognised text and
+  vertical writing are left as they were, a notice saying so ("Not aligned: 1 line on its own"). New text, text
+  boxes and form fields can't be aligned yet: the buttons are greyed for them and say where to click.
+
+### Changed
+
+- Underlines and strike-throughs that other apps drew under or through a line's words (Word, LibreOffice, web
+  browsers, macOS and others draw them as thin lines on the page) now go with their words: editing the line
+  moves and stretches them to where the words are, in their own colour, place and thickness; deleting the words
+  takes them away; moving or deleting the line takes them along; a paragraph that rewraps carries them to the
+  lines its words go to; Replace and Replace all keep them over what they replace. LimarePDF only treats a thin
+  line as an underline when it is sure: one in another colour than its text, under a single character, dotted,
+  dashed or wavy, or touching other drawings (a table's rules, a box) is left a drawing, as before, and stays where
+  it is when the line is edited.
+- The comment marks are named apart from the new text styles: **Underline comment** and **Strike-out comment**
+  (Squiggly underline keeps its name), in the menus, the command search and Highlight's ▾; the right-click submenu
+  that was "Underline, strike out, colour" is **Other marks and colours**, as is the floating toolbar's arrow
+  beside Highlight. They mark the text with a comment and don't change it. The Font group's greyed Underline,
+  marked Planned, and the inspector's Future text tools (Planned) for selected text are gone, now that Underline
+  and Strikethrough are built.
+- The command band's menus show the same dividing lines between groups of commands as the ☰ menu does, for
+  example in Insert pages ▾, Fill fields ▾, Digital signature ▾, Facing pages ▾ and Page colours ▾.
+- **Paragraph** (Edit > Text flow) and **Edit as paragraph** show the ¶ icon, so they aren't mistaken for the new
+  Align left.
+
+### Fixed
+
+- A paragraph made wider by dragging its edge opened narrower the next time, its edges worked out again from its
+  lines, which didn't reach them. LimarePDF now keeps a small note of the edges and first-line indent of a
+  paragraph whose edges or alignment you set, in the page's private data (which other apps don't show, and Remove
+  hidden data's private data takes away), and opens the paragraph with them while its lines are where it wrote
+  them, after saving too. This also keeps a centred or right-aligned paragraph from moving each time it was
+  realigned, kept and opened again. Such a paragraph is also read as one paragraph again, where its lines would
+  otherwise read as several, or with a line of the text beside it.
+- In some documents a paragraph's lines written anew came out a letter wider than LimarePDF set them, as the page
+  shows the last letter of each line with its width taken back and LimarePDF read it as having none: centred or
+  right-aligned, the lines ran past the paragraph's edge, and typed into, a line could run over what was beside it.
+  Each line now ends where it is set.
+- Ctrl+U in a box without text styles (Search, a comment's or text box's text, a form field, a window's field)
+  deleted everything before the caret on its line. Now it does nothing there, as in a word processor's plain
+  fields; where text can be underlined, it underlines.
+- Turning paragraph editing on or off while a line or paragraph was being edited could put the caret a few
+  characters away from where it was, if the text's font finished loading at that moment (just after starting, say),
+  so what was typed next went into the middle of a word. The caret now stays after the same characters.
+- A double-click on a word while its line's font was still loading (just after opening a document, say) could
+  select the word before it, and a click with the Text tool could put the caret a few characters back. The word
+  or place clicked on the page is now the one used.
+
 ## [0.12.0] - 2026-10-31
 
 ### Added

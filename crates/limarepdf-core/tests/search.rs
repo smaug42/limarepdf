@@ -1,7 +1,8 @@
 //! Search (batch 22): snippets cut at words, counts in words, phrases across a page break
-//! (PF-38), and the index the app searches as you type with (ENH-02, ENH-03).
+//! (PF-38), and the index the app searches as you type with (ENH-02, ENH-03); Match case,
+//! Whole words only and each hit's lines, for Replace (NEW-04a).
 
-use limarepdf_core::{match_count, FontChoice, Pdf, Query, TextIndex};
+use limarepdf_core::{match_count, FontChoice, HitPart, Pdf, Query, SearchOptions, TextIndex};
 use std::collections::BTreeSet;
 
 /// `text` on pages that hold two lines each.
@@ -195,6 +196,101 @@ fn the_index_follows_the_document() {
     ix.update(&p, Some(&[0]));
     assert_eq!(ix.page_count(), n + 1);
     assert!((0..=n).all(|i| !ix.has(i)));
+}
+
+/// What a search with `options` finds, as the words found.
+fn found(p: &Pdf, q: &str, options: SearchOptions) -> Vec<String> {
+    let hits = p.search_with(q, options).unwrap();
+    hits.into_iter().map(|h| h.snippet.found).collect()
+}
+
+const CASE: SearchOptions = SearchOptions {
+    match_case: true,
+    whole_words: false,
+};
+const WHOLE: SearchOptions = SearchOptions {
+    match_case: false,
+    whole_words: true,
+};
+const BOTH: SearchOptions = SearchOptions {
+    match_case: true,
+    whole_words: true,
+};
+
+/// NEW-04a: Match case and Whole words only, each and together, as a word processor's
+/// Find has them; whitespace still matches any run of it.
+#[test]
+fn match_case_and_whole_words_only() {
+    let p = Pdf::from_text("The Walrus and the walrus-like walruses", (600.0, 400.0)).unwrap();
+    let any = SearchOptions::default();
+    assert_eq!(found(&p, "walrus", any), ["Walrus", "walrus", "walrus"]);
+    assert_eq!(found(&p, "Walrus", CASE), ["Walrus"]);
+    assert_eq!(found(&p, "walrus", WHOLE), ["Walrus", "walrus"]);
+    assert_eq!(found(&p, "walrus", BOTH), ["walrus"]);
+    let spaced = found(&p, "the  WALRUS", WHOLE);
+    assert_eq!(spaced, ["The Walrus", "the walrus"]);
+    assert!(found(&p, "the  WALRUS", CASE).is_empty());
+    // Part of a word, or a word that runs on, isn't whole.
+    assert!(found(&p, "alrus", WHOLE).is_empty());
+    assert!(found(&p, "walrus-lik", WHOLE).is_empty());
+    assert_eq!(found(&p, "walrus-", WHOLE), ["walrus-"]);
+    // The same options through the index the app searches with.
+    let mut ix = TextIndex::new(&p);
+    assert!(ix.read(&p, 0..1, &|| false));
+    let q = Query::with("walrus", WHOLE);
+    assert_eq!(q.options(), WHOLE);
+    let hits = p.search_with("walrus", WHOLE).unwrap();
+    assert_eq!(ix.find(&q, 0..1, 0).hits, hits);
+}
+
+/// A word hyphenated at a line end is one word, within a page and across a page break.
+#[test]
+fn a_word_hyphenated_at_a_line_end_is_one_whole_word() {
+    let lines = Pdf::from_text("the infor-\nmation age", (400.0, 300.0)).unwrap();
+    let pages = paged("one\nthe infor-\nmation age\nend");
+    assert_eq!(pages.page_count(), 2);
+    for p in [&lines, &pages] {
+        assert_eq!(found(p, "information", WHOLE).len(), 1);
+        assert!(found(p, "infor", WHOLE).is_empty());
+        assert!(found(p, "mation", WHOLE).is_empty());
+        assert_eq!(found(p, "mation", SearchOptions::default()).len(), 1);
+    }
+}
+
+/// Each hit says what it is of the page's lines: their objects and characters, the
+/// spaces between its words with them.
+#[test]
+fn hits_carry_their_lines_and_characters() {
+    let p = Pdf::from_text("the walrus ate fish\nthe otter swam", (400.0, 300.0)).unwrap();
+    let objs = p.page_objects(0).unwrap();
+    let text_of = |part: &HitPart| -> String {
+        let line = objs[part.object.unwrap()].text.as_deref().unwrap();
+        let (a, b) = part.chars;
+        line.chars().skip(a).take(b - a).collect()
+    };
+    let hits = p.search("ate fish the").unwrap();
+    assert_eq!(hits.len(), 1);
+    let parts = &hits[0].parts;
+    assert_eq!(parts.len(), 2, "{parts:?}");
+    assert!(parts.iter().all(|h| h.page == 0));
+    assert_eq!(text_of(&parts[0]), "ate fish");
+    assert_eq!(text_of(&parts[1]), "the");
+    assert_ne!(parts[0].object, parts[1].object);
+    // A phrase across a page break has a part on each page.
+    let p = paged("first line\nthe walrus\nate fish\nlast line");
+    let hits = p.search("walrus ate").unwrap();
+    let pages: Vec<usize> = hits[0].parts.iter().map(|h| h.page).collect();
+    assert_eq!(pages, [0, 1]);
+}
+
+/// What a replacement holds of what it replaces, counted as a search counts.
+#[test]
+fn a_query_counts_itself_in_other_text() {
+    assert_eq!(Query::new("cat").count_in("cats and  Cat"), 2);
+    assert_eq!(Query::with("cat", CASE).count_in("cats and Cat"), 1);
+    assert_eq!(Query::with("cat", WHOLE).count_in("cats and Cat"), 1);
+    assert_eq!(Query::new("a b").count_in(" a  b "), 1);
+    assert_eq!(Query::new("dog").count_in("cat"), 0);
 }
 
 /// The sizes and crop margins of all pages at once are each page's.

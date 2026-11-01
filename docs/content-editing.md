@@ -2,10 +2,10 @@
 
 # Editing text and pictures
 
-Change the text already on a page, add new text and pictures, and move, resize, restyle or delete what is there.
-A double-click edits a line; turn on **Paragraph** to edit whole paragraphs instead, their lines rewrapping as you
-type (see [Edit a paragraph](#edit-a-paragraph)). Shortcuts are written with Ctrl; on a Mac, use ⌘ (Command)
-instead.
+Change the text already on a page, add new text and pictures, and move, resize, line up, restyle or delete what is
+there. A double-click edits a line; turn on **Paragraph** to edit whole paragraphs instead, their lines rewrapping
+as you type (see [Edit a paragraph](#edit-a-paragraph)). Shortcuts are written with Ctrl; on a Mac, use ⌘
+(Command) instead.
 
 ## Edit a line of text
 
@@ -52,11 +52,12 @@ While you type:
   caret. The inspector shows the font and size too, the font the PDF names (**PDF font**) and whether it is kept
   (**Source font**, see [Change size, font and colour](#change-size-font-and-colour)). Esc in the size box (or
   another box there) drops what you typed in it and goes back to the line.
-- The floating toolbar has **B**, ***I***, Cut, Copy and Paste for what is selected in the line. It sits above,
-  below or beside the line, clear of other text where there is room, never over the line; clicking it leaves the
-  line open.
-- Right-click what is selected in the line for Cut, Copy and Paste, then Bold and Italic: the selection stays as it
-  was. New text, a note and a text box being typed have it too, with Bold and Italic where the text takes them.
+- The floating toolbar has **B**, ***I***, **U** and **S** (Bold, Italic, Underline and Strikethrough), Cut, Copy
+  and Paste for what is selected in the line. It sits above, below or beside the line, clear of other text where
+  there is room, never over the line; clicking it leaves the line open.
+- Right-click what is selected in the line for Cut, Copy and Paste, then Bold, Italic, Underline and
+  Strikethrough: the selection stays as it was. New text, a note and a text box being typed have it too, with the
+  styles where the text takes them.
 - Going to another tab and back leaves the line open, ready to go on typing.
 
 A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
@@ -98,12 +99,19 @@ While you type:
   that edge a point at a time, ten with Shift; click in the text to type again. The edges stay on the page, and
   the paragraph can't be narrower than its longest word. Lines whose words and place stay the same are left as
   they were.
+- To align the paragraph, use **Edit > Alignment** in the band or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J, as in
+  Word ([Align text](#align-text)): the lines move across between the paragraph's edges at once, keeping their
+  words, and the editing stays open. Ctrl+Z inside takes the change back.
+- Once you move a paragraph's edges or change its alignment, LimarePDF keeps a small note of its edges and indent
+  in the file (in the page's private data, which other apps don't show), so the paragraph opens again with the
+  same edges, after saving too. Without it, a centred paragraph would open narrower, as its lines no longer
+  reach its edges. If another app moves the paragraph's lines, its edges are worked out from the lines again.
 - **Enter** starts a new paragraph within the frame, with the first line's indent if it has one; **Shift+Enter**
   starts a new line.
 - Each word keeps its own style, and letters keep their font, as in a line (see
-  [Edit a line of text](#edit-a-line-of-text)). Ctrl+B, Ctrl+I, **Edit > Font**, the floating toolbar and the
-  right-click menu act on what is selected in the paragraph. The inspector shows its font and size, the PDF's font
-  and how what you type is written, and names the words that go to another font.
+  [Edit a line of text](#edit-a-line-of-text)). Ctrl+B, Ctrl+I, Ctrl+U, **Edit > Font**, the floating toolbar and
+  the right-click menu act on what is selected in the paragraph. The inspector shows its font and size, the PDF's
+  font and how what you type is written, and names the words that go to another font.
 - A hyphen that ended a line: LimarePDF reads from the rest of the document whether it belongs to its word
   ("well-known") or was only put in to break it ("exam-ple"). One put in to break a word goes when the word moves
   inside a line, and comes back if it ends a line again. One it can't tell is kept as a hyphen and, once a rewrap
@@ -115,20 +123,48 @@ While you type:
   is written over what follows it, so make room, shorten it or widen it.
 - While a link or a comment is over the paragraph, the inspector says **Links and comments over this paragraph
   stay in place**: they keep their place on the page, and don't move with the words under them.
-- Ctrl+Z and Ctrl+Y (and **Undo** and **Redo** in the band) undo and redo your typing inside the paragraph, and
-  each move of its edges (a drag, or a run of arrow keys), with a frame edge's square selected too. Once kept, the
-  whole change is one undo step. Opening a paragraph and leaving it as it was changes nothing.
+- Ctrl+Z and Ctrl+Y (and **Undo** and **Redo** in the band) undo and redo your typing inside the paragraph, each
+  move of its edges (a drag, or a run of arrow keys), with a frame edge's square selected too, and each change of
+  its alignment. Once kept, the whole change is one undo step. Opening a paragraph and leaving it as it was changes nothing.
 
 Words you select with the read tool in one paragraph (with **Paragraph** on; with it off, across the lines of one
 LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragraph, which rewraps; see
 [Type over, delete or cut words](#type-over-delete-or-cut-words).
 
+## Align text
+
+Paragraphs of the page's text are aligned as in a word processor: use **Align left**, **Centre**, **Align right**
+or **Justify** in **Edit > Alignment** in the band, or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J (⌘L, ⌘E, ⌘R or ⌘J on
+a Mac). They act on:
+
+- **A paragraph you are editing** (with **Paragraph** on): its lines move across between its edges at once, and
+  the editing stays open. Ctrl+Z inside takes the change back.
+- **A line you are editing on its own** (with **Paragraph** off): its paragraph opens for editing, aligned, the
+  caret where it was. What you typed in the line is kept first. **Paragraph** stays off, so the next double-click
+  edits a line again.
+- **Words you select with the read tool**: every paragraph they touch is aligned, as one change that one Undo
+  takes back, and the words stay selected.
+- **Lines you select with the arrow**: their paragraphs are aligned the same way, and the lines stay selected.
+
+The alignment the text has shows pressed (none, when the paragraphs selected are aligned differently). As in Word,
+Centre, Align right or Justify pressed on text already aligned that way puts it back to the left. Each line keeps
+its words; justified, every line but the last reaches both edges. Centred and right-aligned lines take no
+first-line indent; aligned left or justified again, the paragraph has its own back.
+
+A paragraph is aligned between its own edges, not the page's margins: open it with **Paragraph** on and drag an
+edge first to give it more room. **Centre** is on the floating toolbar too, and all four are in ☰ > Edit > Align
+text and the command search (Ctrl+K: type "align" or "centre").
+
+A line on its own (a heading, say) has no paragraph to align it in, and text in a table or form, turned text,
+invisible recognised text and vertical writing aren't aligned either: a notice says what was left as it was.
+
 ## Style words in a line
 
 1. Double-click the line, then select the words: drag over them, or hold Shift and use the arrow keys. A
    double-click selects one word.
-2. Press Ctrl+B for Bold or Ctrl+I for Italic, use **B** and ***I*** on the floating toolbar, or use
-   **Edit > Font** in the band: the font list, size, Bold, Italic and text colour.
+2. Press Ctrl+B for Bold, Ctrl+I for Italic or Ctrl+U for Underline, use **B**, ***I***, **U** and **S** on the
+   floating toolbar, or use **Edit > Font** in the band: the font list, size, Bold, Italic, Underline,
+   Strikethrough and text colour.
 3. Press Enter, Esc or Tab, or click elsewhere, to keep it.
 
 As in a word processor:
@@ -136,41 +172,56 @@ As in a word processor:
 - With nothing selected, the caret inside a word changes that word. Between words, or at either end of a word,
   the change applies to what you type next there.
 - Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
-  Italic works the same way. Words in a family without a bold or italic face stay as they are: **B** or ***I***
-  is greyed, and says why when you point at it, and Ctrl+B or Ctrl+I says so at the caret.
+  Italic, Underline and Strikethrough work the same way. Words in a family without a bold or italic face stay as
+  they are: **B** or ***I*** is greyed, and says why when you point at it, and Ctrl+B or Ctrl+I says so at the
+  caret.
+- Strikethrough has no key on Windows and Linux, as in Word: use **S**, the right-click menu or the command search
+  (Ctrl+K). On a Mac it is ⌘⇧X, as in Word for Mac.
+- An underline or strike-through shows as you type where it will be written: at the font's own place and
+  thickness for it, in the words' colour. Spaces inside an underlined stretch are underlined; spaces at either end
+  of the line are not.
 - Where the selection mixes fonts, sizes or colours, **Edit > Font** shows that one blank: the font list with no
   name, the size box empty, the colour button (an **A** over a bar of the text's colour) with the colours side by
   side in its bar. A colour picked then makes the
   selection all that colour, even the one the picker starts from (the first); the picker also offers the colours
   in the text (**In the text**), to make it all one of them in a click. Opening and closing the picker changes
-  nothing. Bold and Italic show on only when all
-  of it is bold or italic. Picking a value there sets all of it.
+  nothing. Bold, Italic, Underline and Strikethrough show on only when all
+  of it has that style. Picking a value there sets all of it.
 - A change in **Edit > Font** shows on the line at once, the line stays in editing, and the keyboard comes back to
   it; the change is kept with the typing.
 
 Finishing (Esc, Enter, Tab or clicking elsewhere) leaves nothing selected, as in a word processor. A line selected
-as a whole with the arrow takes the font, size and colour in **Edit > Font**, and Ctrl+B and Ctrl+I, as a whole,
-with the same blanks for what it mixes; to change its words, double-click it or choose **Edit > Edit text**, and it
-is edited on the page here too. With the arrow, the line stays selected when you finish.
+as a whole with the arrow takes the font, size, colour and styles in **Edit > Font**, and Ctrl+B, Ctrl+I and
+Ctrl+U, as a whole, with the same blanks for what it mixes; to change its words, double-click it or choose
+**Edit > Edit text**, and it is edited on the page here too. With the arrow, the line stays selected when you
+finish.
 
 ## Style words you select while reading
 
 You don't need to open a line to style its words. Select them with the read tool, as you would to copy them (drag
 over them, across lines and pages if you like), then:
 
-- press Ctrl+B for Bold or Ctrl+I for Italic, or use **B** and ***I*** on the floating toolbar or in the right-click
-  menu;
+- press Ctrl+B for Bold, Ctrl+I for Italic or Ctrl+U for Underline, or use Bold, Italic, Underline and
+  Strikethrough on the floating toolbar or in the right-click menu;
 - or pick a font, size or colour in **Edit > Font** in the band. The inspector, headed **Selected text**, shows
   their font and size.
 
-The words stay selected, so you can go on changing them. Bold and Italic work over the whole selection as they do in
-a line, and **Edit > Font** shows a value blank where the selection mixes it. Each change is one undo step, however
-many lines and pages it covers.
+The words stay selected, so you can go on changing them. Bold, Italic, Underline and Strikethrough work over the
+whole selection as they do in a line, and **Edit > Font** shows a value blank where the selection mixes it. Each
+change is one undo step, however many lines and pages it covers.
 
 The words around the ones you change are left exactly as they were, in their own font, even one LimarePDF can't
 write new text in. Words whose size or colour is all you change keep their font too; Bold, Italic or another font
-writes them in that font. Invisible recognised (OCR) text, text inside a block of page content reused as a whole,
-and vertical writing keep their look; a short notice says when part of the selection was left that way.
+writes them in that font. Underline and Strikethrough never write the words again: they add a thin line under or
+through them in their colour, so they work in any font. Invisible recognised (OCR) text, text inside a block of
+page content reused as a whole, and vertical writing keep their look; a short notice says when part of the
+selection was left that way.
+
+Underlines and strike-throughs another app drew under or through a line's words are read as the words' own where
+LimarePDF is sure of them (see [Limits](#limits)): they go with the words when you edit, move or delete the line,
+Underline or Strikethrough in **Edit > Font** shows on for them, and Ctrl+U takes them off. An underline you add
+next to one of these, on the same line and in the same colour, carries on in its look, as one line. A double
+underline stays double. Clicking one with the arrow selects its line, as an underline is part of its words.
 
 ## Type over, delete or cut words
 
@@ -214,7 +265,7 @@ A picture or coloured box the first line starts on doesn't count, so you can put
 added as one undo step, and nothing typed adds nothing. Each line becomes its own line of page text, so
 afterwards it moves and is edited line by line.
 
-While you type, Ctrl+B, Ctrl+I and **Edit > Font** style what is selected, or what you type next, as when
+While you type, Ctrl+B, Ctrl+I, Ctrl+U and **Edit > Font** style what is selected, or what you type next, as when
 [styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards).
 Ctrl+Z and Ctrl+Y undo and redo typing and styles, and dragging the outline moves the text (Esc during the drag
 puts it back where it was). The next text you add
@@ -288,6 +339,9 @@ so that clicking a scan doesn't pick it up. A drag that starts anywhere else sti
 selects any object, page text and full-page pictures included: click to select, drag to move, drag a handle to
 resize (Shift keeps the proportions), and arrow keys to nudge.
 
+Pictures, shapes and lines of text snap into line with the page and other objects as you drag them, a guide
+showing where; hold **Alt** (Option on a Mac) to place them freely (see [Line up objects](#line-up-objects)).
+
 ## Select several objects
 
 Hold **Shift** and click pictures and shapes to add them to the selection. Shift+click one again to take it out. A
@@ -305,16 +359,69 @@ Each selected object is outlined, with a dashed box round them all. Drag any one
 move them together; Delete or Backspace deletes them all. The inspector says how many there are and what they are.
 **Edit > Font** changes the lines of text among them, each line as a whole, and the inspector's Fill, Outline and
 width change the shapes; a value they don't share shows blank or mixed. X and Y under **Position** move
-them all. Right-click one of them for Copy the selected text lines (in reading order), Cut (when they are all
-lines of text) and Delete. Each change is one undo step.
+them all. Right-click one of them for Copy the selected text lines (in reading order), **Align objects** (to line
+them up or space them out), Cut (when they are all lines of text) and Delete. Each change is one undo step.
 
-Several objects are selected on one page at a time. They move, restyle and delete together, but are resized one at
-a time. Comments and markup are selected one at a time, never with page objects.
+Several objects are selected on one page at a time. They move, restyle and delete together, and line up or space
+out evenly with **Align objects** (see [Line up objects](#line-up-objects)), but are resized one at a time.
+Comments and markup are selected one at a time, never with page objects.
+
+## Line up objects
+
+**Align objects ▾**, in the **Arrange** group of **Edit** in the band, lines up the selected objects or spaces
+them out evenly, as Word's Align does. Its menu has **Align left**, **Align centre**, **Align right**, **Align
+top**, **Align middle** and **Align bottom**, then **Distribute horizontally** and **Distribute vertically**, then
+**Snap to objects**. The same commands are in ☰ > Edit > Align objects and in the command search (Ctrl+K: type
+"align", "distribute" or "snap"). Right-click selected objects for an **Align objects** submenu of the Align and
+Distribute commands that apply just then. It moves pictures, shapes and lines of text on the page; it doesn't
+line text up inside a paragraph.
+
+1. Select the objects: Shift+click them, or drag a rectangle round them with the arrow (see
+   [Select several objects](#select-several-objects)).
+2. Choose **Edit > Align objects**, then how to line them up.
+
+Two or more objects line up with each other, by the box round them all:
+
+- **Align left** puts every left edge at the leftmost one, and **Align right** every right edge at the rightmost
+  one.
+- **Align top** puts every top at the highest one, and **Align bottom** every bottom at the lowest one.
+- **Align centre** puts each object's middle at the middle of the box round them all, across the page; **Align
+  middle** does the same down the page.
+
+One object on its own lines up with the page instead: **Align left** and **Align right** put it at the page's left
+or right edge, **Align top** and **Align bottom** at its top or foot, **Align centre** centres it across the page,
+and **Align middle** puts it halfway down. Objects keep their size.
+
+**Distribute horizontally** and **Distribute vertically** space out three or more objects: the first and last (the
+leftmost and rightmost, or the top and bottom ones, judged by their middles) stay where they are, and those
+between move so that the gaps between neighbours are equal. With fewer than three selected they are greyed, and
+say "Select three or more objects first."
+
+Align and Distribute act on what the tool in use can move. With the arrow (**Edit > Select > Select, move and
+resize objects**), that is any object, page text included. With the read tool, it is pictures and shapes, and page
+text only after **Move or resize text** (see [Move, resize or delete](#move-resize-or-delete)) or text you have
+just added. Otherwise they are greyed, and say "Select something the tool in use can move first." Each Align or
+Distribute is one undo step; objects already lined up are left as they are, with nothing added to undo.
+
+Objects also snap into line as you drag them. While you drag a picture, a shape or a line of text to move it, or
+one of its handles to resize it, its edges and middle snap to the page's edges and middle, and to the edges and
+middles of the other objects on that page, when they come within a few pixels of them on screen. A dashed pink
+guide line shows along the line it snapped to and the objects that line up there. A resize snaps only the edges
+you are dragging; with Shift on a corner, keeping the proportions, the nearer edge snaps and the other follows.
+
+Hold **Alt** (Option on a Mac) while you drag to move or resize freely, without snapping, as in Word. **Edit >
+Align objects > Snap to objects** turns snapping off, or back on: it is on at first, ticked while it is on, and remembered
+the next time you start LimarePDF. The arrow keys still move selected objects by 1 point (10 with Shift), and
+never snap.
+
+Comments and markup don't snap and can't be aligned, as they are selected one at a time. Objects are lined up on
+one page at a time, and there is no grid or ruler.
 
 ## Change size, font and colour
 
-For text, **Edit > Font** in the band has the font list, then size, Bold, Italic and colour (the words themselves
-are changed on the page). Pointing at the font list shows the names of the fonts the selected text uses in the PDF.
+For text, **Edit > Font** in the band has the font list, then size, Bold, Italic, Underline (an underlined **U**),
+Strikethrough (a struck-through **S**) and colour (the words themselves are changed on the page). Pointing at the
+font list shows the names of the fonts the selected text uses in the PDF.
 
 The inspector is headed by what is selected (Selected text, Image, Shape). For text it shows what is being edited
 (One line, Selected words or New text), its font and size (Mixed where they differ) and, for a line being edited,
@@ -333,11 +440,9 @@ will be written, and changes as you type:
 
 (See [How it works](#how-it-works).) For shapes it shows the fill, outline and width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
-stays open or closed as you left it. For selected text, **Future text tools**, marked Planned, comes last: open it
-to see what is planned (underline and strike-through). Changes in the band and the
-inspector are kept as you make them,
-without an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or
-leave its box, a colour when its picker closes. Each is one undo step.
+stays open or closed as you left it. Changes in the band and the inspector are kept as you make them, without an
+Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or leave its
+box, a colour when its picker closes. Each is one undo step.
 
 The font size box shows the exact size, which isn't rounded to a listed one (10.126 shows as 10.126). Type any
 size, or pick one from the list beside it. Going into the box and out again without typing changes nothing, and
@@ -435,9 +540,18 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 - A word written in another font (a letter its font lacks, or another font chosen) loses its own character and
   word spacing and horizontal scaling, and words moved by cut and paste lose the fine spacing between their
   letters; letters left as they were keep theirs.
-- There is no underline or strike-through for page text. Styling words doesn't rewrap: bold or larger words make
-  their line longer and the rest of it moves along, and highlights, links and redaction marks over them stay where
-  they were.
+- Underline and Strikethrough are one plain line in the text's colour: there are no double, dotted, dashed or wavy
+  ones, and no colour of their own. They aren't offered in text boxes (comments), form fields, headers and
+  footers, watermarks and stamps, where they are greyed, nor on the command line (nor are Bold and Italic). An
+  underline or strike-through another app drew that LimarePDF can't be sure of (in another colour than its text,
+  under one character alone, dotted, dashed or wavy, or touching other drawings such as a table's rules or a box)
+  is left a drawing, and stays where it is when its line changes.
+- Styling words doesn't rewrap: bold or larger words make their line longer and the rest of it moves along, and
+  highlights, links and redaction marks over them stay where they were.
+- Alignment (Align left, Centre, Align right, Justify) works on the page's paragraphs only, for now: new text,
+  text boxes and form fields can't be aligned yet, and the buttons are greyed for them. A paragraph is aligned
+  between its own edges; there are no indents, line spacing or spacing before and after a paragraph to set.
+  Aligning the paragraphs of a long selection takes a moment: about two seconds for 300 pages.
 - Editing a line does not change its width, and a paragraph keeps its frame's width unless you drag its edges:
   longer text can overlap its neighbours. The outline warns of it, a tag where it happens, but nothing is moved
   out of the way.
@@ -453,6 +567,8 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   safely are refused rather than risk losing them.
 - Replacing an image fits the new picture inside the old box, centred, upright as a photo's own orientation asks.
 - Rotating objects, grouping, changing the stacking order, and copying and pasting between pages are not implemented.
+- Comments and markup don't snap and can't be aligned (they are selected one at a time). Objects are lined up on one
+  page at a time, and there is no grid or ruler.
 - Moving an object does not move links or annotations over it.
 - Text inside a form XObject (a reusable block of page content) is searched and selected like other text, but it is
   not a separate object: the form moves, resizes and deletes as a whole, and its text cannot be edited.

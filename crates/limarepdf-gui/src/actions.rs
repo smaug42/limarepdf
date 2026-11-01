@@ -2,7 +2,7 @@
 //! (Ctrl+K) and the keyboard shortcuts are all built from [`ACTIONS`]; what a command
 //! does is in `App::act`.
 
-use crate::editor::Tool;
+use crate::editor::{Align, Axis, TextAlign, Tool};
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection, Toward};
@@ -64,6 +64,13 @@ pub enum Act {
     Bold,
     /// Italic on or off, as [`Act::Bold`].
     Italic,
+    /// Underline on or off, as [`Act::Bold`] (NEW-07).
+    Underline,
+    /// Strikethrough on or off, as [`Act::Bold`].
+    Strikethrough,
+    /// Align the text's paragraph left, centred, right or justified, as Word's Paragraph
+    /// group's buttons: one already so goes back to left (NEW-15).
+    AlignText(TextAlign),
     /// Mark the selected words, in the colour last chosen for the kind.
     Mark(Mark),
     /// Choose the colour for highlights, or (`line`) for the other marks: an index into
@@ -110,11 +117,30 @@ pub enum Act {
     DeleteObject,
     /// Move the selected object by this many points (×10 with Shift).
     Nudge(i8, i8),
+    /// Line up the selected objects: two or more by each other, one alone by the page
+    /// (Edit > Arrange's Align objects; NEW-08).
+    Align(Align),
+    /// Space out three or more selected objects evenly, the outer two staying.
+    Distribute(Axis),
+    /// Snap objects moved or resized to the page's and the other objects' edges and
+    /// middles, or not.
+    ToggleSnap,
     /// Move the moving end of the words selected (Shift with an arrow, Home or End).
     Extend(Toward),
     /// Cancel what is in progress: new text, a drawing tool, or the selection.
     Escape,
     Find,
+    /// Go to the next match of the search, or the one before (F3, Shift+F3), from
+    /// wherever the keyboard is; with nothing searched, Find.
+    FindNext,
+    FindPrevious,
+    /// Search results with Replace's field (NEW-04a).
+    Replace,
+    /// Type Replace's text over the current match: Search results' Replace.
+    ReplaceMatch,
+    /// Replace every match of the search, reviewed first: Search results' Replace all
+    /// (NEW-04b).
+    ReplaceAll,
     ZoomIn,
     ZoomOut,
     /// Zoom to this percentage: the status bar's slider. Not in [`ACTIONS`].
@@ -249,11 +275,16 @@ impl Act {
             | Act::SaveSelection
             | Act::Bold
             | Act::Italic
+            | Act::Underline
+            | Act::Strikethrough
+            | Act::AlignText(_)
             | Act::Undo
             | Act::Redo
             | Act::Mark(_)
             | Act::MarkRedact
             | Act::MarkResultsRedact
+            | Act::ReplaceMatch
+            | Act::ReplaceAll
             | Act::ApplyRedactions
             | Act::FinishSigning
             | Act::RemoveHidden
@@ -263,6 +294,8 @@ impl Act {
             | Act::ReplaceImage
             | Act::DeleteObject
             | Act::Nudge(..)
+            | Act::Align(_)
+            | Act::Distribute(_)
             | Act::SignDigital
             | Act::Certify
             | Act::DigitalPlaced
@@ -306,6 +339,9 @@ impl Act {
             | Act::CreateSign(_)
             | Act::Escape
             | Act::Find
+            | Act::FindNext
+            | Act::FindPrevious
+            | Act::Replace
             | Act::ZoomIn
             | Act::ZoomOut
             | Act::ZoomTo(_)
@@ -338,6 +374,7 @@ impl Act {
             | Act::TogglePageLabels
             | Act::TogglePlanned
             | Act::ToggleCompact
+            | Act::ToggleSnap
             | Act::Accent(_)
             | Act::NextField
             | Act::PrevField
@@ -418,6 +455,8 @@ pub struct Ctx {
     pub words: bool,
     /// Objects are selected, one or several.
     pub object: bool,
+    /// How many objects are selected.
+    pub objects: usize,
     /// The selected objects can be moved with the current tool: page text only with the
     /// arrow, or just after it was added.
     pub object_moves: bool,
@@ -464,6 +503,8 @@ pub struct Ctx {
     pub planned: bool,
     /// See [`Act::ToggleCompact`]: the setting, whatever a short window does.
     pub compact: bool,
+    /// See [`Act::ToggleSnap`].
+    pub snap: bool,
     pub accent: Accent,
     /// Text is being typed on the page: new text, a line of page text, a note or a text
     /// box, open whether or not it has the keyboard just now.
@@ -475,6 +516,12 @@ pub struct Ctx {
     /// The paragraph being edited has a marked line-end hyphen at the right-click or the
     /// caret.
     pub hyphen: bool,
+    /// There is text the alignment commands act on
+    /// ([`crate::editor::Editor::aligns_text`]).
+    pub aligns_text: bool,
+    /// How the text the alignment commands act on is aligned, when it is all aligned alike
+    /// ([`crate::editor::Editor::text_align`]).
+    pub text_align: Option<TextAlign>,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -486,6 +533,14 @@ pub struct Ctx {
     pub marked: bool,
     /// The crop is being set: the pages shown whole with their crop box (Crop).
     pub cropping: bool,
+    /// The search shown, for the query and the document as they are, has a current match
+    /// Replace can type over.
+    pub found_match: bool,
+    /// The search for the query as it is is still to run or come back for the document as
+    /// it is now, or its current match to come.
+    pub search_waits: bool,
+    /// The search shown is still looking through the pages.
+    pub search_running: bool,
     /// The markup colours last chosen; see [`Act::MarkColor`].
     pub highlight: usize,
     pub line: usize,
@@ -565,6 +620,14 @@ fn pages_selected(c: &Ctx) -> bool {
 fn doc_idle(c: &Ctx) -> bool {
     c.doc && !c.busy
 }
+/// A current match to type over, the search for the document as it is now.
+fn replaceable(c: &Ctx) -> bool {
+    doc_idle(c) && c.found_match && !c.search_waits
+}
+/// Every match found, the search for the document as it is now finished.
+fn all_replaceable(c: &Ctx) -> bool {
+    replaceable(c) && !c.search_running
+}
 fn signing(c: &Ctx) -> bool {
     doc_idle(c) && c.signing
 }
@@ -577,6 +640,14 @@ fn object(c: &Ctx) -> bool {
 /// An object or annotation that can be moved with the current tool.
 fn nudgeable(c: &Ctx) -> bool {
     c.object_moves || c.annot_moves
+}
+/// Objects selected that the current tool can move: what Align lines up.
+fn alignable(c: &Ctx) -> bool {
+    c.object_moves
+}
+/// Three or more of them, which Distribute spaces out.
+fn distributable(c: &Ctx) -> bool {
+    c.object_moves && c.objects >= 3
 }
 fn words_selected(c: &Ctx) -> bool {
     c.words
@@ -597,6 +668,11 @@ fn lines_among(c: &Ctx) -> bool {
 /// Italic change.
 fn styleable(c: &Ctx) -> bool {
     (c.words || (c.object && c.obj_lines)) && !c.busy
+}
+/// Text the text alignments act on (NEW-15): a paragraph or line being edited, selected
+/// words, or lines selected with the arrow.
+fn text_alignable(c: &Ctx) -> bool {
+    c.aligns_text && !c.busy
 }
 fn arrow_tool(c: &Ctx) -> bool {
     c.doc && c.tool == Some(Tool::Select) && !c.organise
@@ -626,10 +702,22 @@ const S: Modifiers = Modifiers::SHIFT;
 const AS: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
 /// Ctrl itself, on a Mac too, where Cmd+Tab goes from app to app.
 const CT: Modifiers = Modifiers::CTRL;
+/// Cmd+Shift on a Mac only: a key the command has there and not elsewhere.
+const MAC_CS: Modifiers = Modifiers {
+    alt: false,
+    ctrl: false,
+    shift: true,
+    mac_cmd: true,
+    command: true,
+};
 const CTS: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
 const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(m, key)
 }
+
+/// Strikethrough's key: Cmd+Shift+X on a Mac, as Word for Mac has it; none elsewhere, as in
+/// Word.
+pub const STRIKE_KEY: KeyboardShortcut = k(MAC_CS, Key::X);
 
 /// A command with the usual settings: listed in the menu and the palette, no
 /// shortcut, icon, hint or separator. Fields are overridden with struct update syntax.
@@ -855,6 +943,74 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Underline,
+        group: Group::Edit,
+        label: "Underline",
+        icon: icon::TEXT_UNDERLINE,
+        keys: &[k(C, Key::U)],
+        enabled: styleable,
+        ..BASE
+    },
+    Action {
+        act: Act::Strikethrough,
+        group: Group::Edit,
+        label: "Strikethrough",
+        icon: icon::TEXT_STRIKETHROUGH,
+        keys: &[STRIKE_KEY],
+        enabled: styleable,
+        ..BASE
+    },
+    // Word's Paragraph group's alignments, with its keys (⌘ on a Mac, as Word for Mac).
+    Action {
+        act: Act::AlignText(TextAlign::Left),
+        group: Group::Edit,
+        label: "Align left",
+        icon: icon::TEXT_ALIGN_LEFT,
+        keys: &[k(C, Key::L)],
+        enabled: text_alignable,
+        checked: Some(|c| c.text_align == Some(TextAlign::Left)),
+        sep: true,
+        hint: "Line the paragraph's lines up along its left edge.",
+        submenu: "Align text",
+        ..BASE
+    },
+    Action {
+        act: Act::AlignText(TextAlign::Centre),
+        group: Group::Edit,
+        label: "Centre",
+        icon: icon::TEXT_ALIGN_CENTER,
+        keys: &[k(C, Key::E)],
+        enabled: text_alignable,
+        checked: Some(|c| c.text_align == Some(TextAlign::Centre)),
+        hint: "Centre the paragraph's lines between its edges.",
+        submenu: "Align text",
+        ..BASE
+    },
+    Action {
+        act: Act::AlignText(TextAlign::Right),
+        group: Group::Edit,
+        label: "Align right",
+        icon: icon::TEXT_ALIGN_RIGHT,
+        keys: &[k(C, Key::R)],
+        enabled: text_alignable,
+        checked: Some(|c| c.text_align == Some(TextAlign::Right)),
+        hint: "Line the paragraph's lines up along its right edge.",
+        submenu: "Align text",
+        ..BASE
+    },
+    Action {
+        act: Act::AlignText(TextAlign::Justified),
+        group: Group::Edit,
+        label: "Justify",
+        icon: icon::TEXT_ALIGN_JUSTIFY,
+        keys: &[k(C, Key::J)],
+        enabled: text_alignable,
+        checked: Some(|c| c.text_align == Some(TextAlign::Justified)),
+        hint: "Spread the paragraph's lines from edge to edge, the last line left as it is.",
+        submenu: "Align text",
+        ..BASE
+    },
+    Action {
         act: Act::PrintSelection,
         group: Group::Edit,
         label: "Print selected text…",
@@ -881,20 +1037,25 @@ pub static ACTIONS: &[Action] = &[
         hint: "Highlight the selected text, in the colour last chosen.",
         ..BASE
     },
+    // Comments marking the words, named apart from the Underline and Strikethrough styles.
     Action {
         act: Act::Mark(Mark::Underline),
         group: Group::Edit,
-        label: "Underline",
+        label: "Underline comment",
         icon: icon::TEXT_UNDERLINE,
         enabled: words_idle,
+        hint: "Mark the selected text with an underline comment, in the line colour last \
+               chosen. The text itself isn't changed.",
         ..BASE
     },
     Action {
         act: Act::Mark(Mark::StrikeOut),
         group: Group::Edit,
-        label: "Strike out",
+        label: "Strike-out comment",
         icon: icon::TEXT_STRIKETHROUGH,
         enabled: words_idle,
+        hint: "Mark the selected text with a strike-out comment, in the line colour last \
+               chosen. The text itself isn't changed.",
         ..BASE
     },
     Action {
@@ -958,7 +1119,7 @@ pub static ACTIONS: &[Action] = &[
         act: Act::EditParagraph,
         group: Group::Edit,
         label: "Edit as paragraph",
-        icon: icon::TEXT_ALIGN_LEFT,
+        icon: icon::PARAGRAPH,
         enabled: doc_idle,
         checked: Some(|c| c.paragraph),
         hint: "Edit page text a paragraph at a time, its lines rewrapping as you type, the \
@@ -1027,6 +1188,53 @@ pub static ACTIONS: &[Action] = &[
         sep: true,
         ..BASE
     },
+    // F3 as Windows and Linux apps have it, Ctrl+G (Cmd+G) as browsers and Mac apps do.
+    Action {
+        act: Act::FindNext,
+        group: Group::Edit,
+        label: "Find next",
+        icon: icon::CARET_DOWN,
+        keys: &[k(N, Key::F3), k(C, Key::G)],
+        hint: "Go to the next match of the search.",
+        ..BASE
+    },
+    Action {
+        act: Act::FindPrevious,
+        group: Group::Edit,
+        label: "Find previous",
+        icon: icon::CARET_UP,
+        keys: &[k(S, Key::F3), k(CS, Key::G)],
+        hint: "Go to the match before the current one.",
+        ..BASE
+    },
+    Action {
+        act: Act::Replace,
+        group: Group::Edit,
+        label: "Replace…",
+        icon: icon::SWAP,
+        // Ctrl on a Mac too, where Cmd+H hides the app, as Word for Mac has it.
+        keys: &[k(CT, Key::H)],
+        hint: "Find text and replace it, a match at a time or all at once.",
+        ..BASE
+    },
+    Action {
+        act: Act::ReplaceMatch,
+        group: Group::Edit,
+        label: "Replace current match",
+        icon: icon::SWAP,
+        enabled: replaceable,
+        hint: "Type the replacement over the current match, then go on to the next.",
+        ..BASE
+    },
+    Action {
+        act: Act::ReplaceAll,
+        group: Group::Edit,
+        label: "Replace all matches…",
+        icon: icon::SWAP,
+        enabled: all_replaceable,
+        hint: "Replace every match of the search, after saying what that changes.",
+        ..BASE
+    },
     Action {
         act: Act::Escape,
         group: Group::Edit,
@@ -1078,6 +1286,111 @@ pub static ACTIONS: &[Action] = &[
         palette: false,
         hint: "One point; with Shift, ten.",
         submenu: "Move selected object",
+        ..BASE
+    },
+    // Word's Align menu, in its order: two or more objects line up by each other, one
+    // alone by the page.
+    Action {
+        act: Act::Align(Align::Left),
+        group: Group::Edit,
+        label: "Align left",
+        icon: icon::ALIGN_LEFT,
+        enabled: alignable,
+        hint: "Line up the left edges of the selected objects, or put one alone at the \
+               page's left edge.",
+        submenu: "Align objects",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Centre),
+        group: Group::Edit,
+        label: "Align centre",
+        icon: icon::ALIGN_CENTER_HORIZONTAL,
+        enabled: alignable,
+        hint: "Line up the middles of the selected objects across, or centre one alone on \
+               the page.",
+        submenu: "Align objects",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Right),
+        group: Group::Edit,
+        label: "Align right",
+        icon: icon::ALIGN_RIGHT,
+        enabled: alignable,
+        hint: "Line up the right edges of the selected objects, or put one alone at the \
+               page's right edge.",
+        submenu: "Align objects",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Top),
+        group: Group::Edit,
+        label: "Align top",
+        icon: icon::ALIGN_TOP,
+        enabled: alignable,
+        hint: "Line up the tops of the selected objects, or put one alone at the top of \
+               the page.",
+        submenu: "Align objects",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Middle),
+        group: Group::Edit,
+        label: "Align middle",
+        icon: icon::ALIGN_CENTER_VERTICAL,
+        enabled: alignable,
+        hint: "Line up the middles of the selected objects down the page, or put one alone \
+               halfway down it.",
+        submenu: "Align objects",
+        ..BASE
+    },
+    Action {
+        act: Act::Align(Align::Bottom),
+        group: Group::Edit,
+        label: "Align bottom",
+        icon: icon::ALIGN_BOTTOM,
+        enabled: alignable,
+        hint: "Line up the bottoms of the selected objects, or put one alone at the foot \
+               of the page.",
+        submenu: "Align objects",
+        ..BASE
+    },
+    Action {
+        act: Act::Distribute(Axis::Across),
+        group: Group::Edit,
+        label: "Distribute horizontally",
+        icon: icon::COLUMNS,
+        enabled: distributable,
+        sep: true,
+        hint: "Space three or more selected objects evenly across, the outer two staying \
+               where they are.",
+        submenu: "Align objects",
+        ..BASE
+    },
+    Action {
+        act: Act::Distribute(Axis::Down),
+        group: Group::Edit,
+        label: "Distribute vertically",
+        icon: icon::ROWS,
+        enabled: distributable,
+        hint: "Space three or more selected objects evenly down the page, the top and \
+               bottom ones staying where they are.",
+        submenu: "Align objects",
+        ..BASE
+    },
+    Action {
+        act: Act::ToggleSnap,
+        group: Group::Edit,
+        label: "Snap to objects",
+        icon: icon::MAGNET,
+        enabled: always,
+        checked: Some(|c| c.snap),
+        sep: true,
+        hint: "Pictures, shapes and text you move or resize line up with the edges and \
+               middles of the page and of other objects, a guide showing. Hold Alt to place \
+               them freely.",
+        submenu: "Align objects",
         ..BASE
     },
     Action {
@@ -2100,7 +2413,13 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[
             &[Act::Cut, Act::Copy, Act::Paste, Act::SelectAllText],
-            &[Act::EditObjectText, Act::Bold, Act::Italic],
+            &[
+                Act::EditObjectText,
+                Act::Bold,
+                Act::Italic,
+                Act::Underline,
+                Act::Strikethrough,
+            ],
             &[Act::Mark(Mark::Highlight)],
             &[Act::MarkRedact],
             &[Act::PrintSelection, Act::SaveSelection],
@@ -2116,10 +2435,11 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
                     Act::MoveText,
                     Act::CopyObjectText,
                 ],
+                &ALIGNS,
                 &[Act::Cut, Act::DeleteObject],
             ]
         }
-        Selection::Objects { .. } => &[&[Act::ReplaceImage], &[Act::DeleteObject]],
+        Selection::Objects { .. } => &[&[Act::ReplaceImage], &ALIGNS, &[Act::DeleteObject]],
         Selection::None | Selection::Pages(_) => &[
             &[Act::Cut, Act::Paste],
             &[Act::RotR, Act::RotL, Act::Crop],
@@ -2144,12 +2464,28 @@ pub const MOVES: [Act; 4] = [
     Act::MovePages(PageMove::End),
 ];
 
+/// Align and Distribute, in the objects' right-click menu as the submenu Align objects;
+/// with Snap to objects, the band's Align objects menu.
+pub const ALIGNS: [Act; 8] = [
+    Act::Align(Align::Left),
+    Act::Align(Align::Centre),
+    Act::Align(Align::Right),
+    Act::Align(Align::Top),
+    Act::Align(Align::Middle),
+    Act::Align(Align::Bottom),
+    Act::Distribute(Axis::Across),
+    Act::Distribute(Axis::Down),
+];
+
+/// The text styles, as word processors' menus and bars list them.
+const STYLES: &[Act] = &[Act::Bold, Act::Italic, Act::Underline, Act::Strikethrough];
+
 /// The right-click menu of text being typed on the page, as word processors' menu for
-/// text: Cut, Copy and Paste, then Bold and Italic where they apply.
+/// text: Cut, Copy and Paste, then the styles where they apply.
 const TYPING: &[&[Act]] = &[
     &[Act::JoinHyphen, Act::KeepHyphen],
     &[Act::Cut, Act::Copy, Act::Paste],
-    &[Act::Bold, Act::Italic],
+    STYLES,
     &[Act::EditParagraph],
 ];
 
@@ -2178,22 +2514,20 @@ fn menu_of(ui: &mut egui::Ui, groups: &[&[Act]], c: &Ctx, acts: &mut Vec<Act>) {
             ui.separator();
         }
         first = false;
-        // The moves as one submenu, as in the Pages menu.
+        // The moves as one submenu, as in the Pages menu; Align and Distribute as in Edit's.
         if group == &MOVES {
-            ui.menu_button("Move pages", |ui| {
-                for a in &items {
-                    menu_item(ui, a, c, acts);
-                }
-            });
+            ui.menu_button("Move pages", |ui| menu_list(ui, items, c, acts));
+            continue;
+        }
+        if group == &ALIGNS {
+            ui.menu_button("Align objects", |ui| menu_list(ui, items, c, acts));
             continue;
         }
         for a in &items {
             menu_item(ui, a, c, acts);
         }
         if items.iter().any(|a| a.act == Act::Mark(Mark::Highlight)) {
-            ui.menu_button("Underline, strike out, colour", |ui| {
-                markup::menu(ui, c, acts)
-            });
+            ui.menu_button("Other marks and colours", |ui| markup::menu(ui, c, acts));
         }
     }
 }
@@ -2217,8 +2551,18 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 24] = [
+    let fixes: [Fix; 29] = [
         (|d| d.busy = false, BUSY),
+        // A match to type over first: while the search runs, that it waits for it.
+        (|d| d.found_match = true, "Find a match to replace first."),
+        (
+            |d| d.search_waits = false,
+            "Waits until the search is done.",
+        ),
+        (
+            |d| d.search_running = false,
+            "Waits until the search is done.",
+        ),
         (|d| d.saving = false, "Waits until the document is saved."),
         (|d| d.file = true, "Save the document as a file first."),
         (|d| d.docs = 2, "Open another document first."),
@@ -2231,6 +2575,10 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         (
             |d| d.typing = true,
             "Click in text being typed, or where new text goes, first.",
+        ),
+        (
+            |d| d.aligns_text = true,
+            "Click in a paragraph's text first.",
         ),
         (|d| d.pages = true, "Select pages first."),
         (
@@ -2248,6 +2596,10 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         (
             |d| (d.object_moves, d.annot_moves) = (true, true),
             "Select something the tool in use can move first.",
+        ),
+        (
+            |d| d.objects = d.objects.max(3),
+            "Select three or more objects first.",
         ),
         (|d| d.signing = true, crate::signing::NOTHING_PLACED),
         (|d| d.marked = true, "Mark something for redaction first."),
@@ -2288,10 +2640,30 @@ pub fn greyed_tip(ctx: &egui::Context, a: &Action, c: &Ctx) -> String {
     format!("{}\n{}", tooltip(ctx, a), why_not(c, a))
 }
 
-/// Tooltip for a command: its label and first shortcut, then its hint on a line of its own.
+/// The shortcut a command's menus and tooltips show: its first, but on a Mac one with Cmd
+/// before a plain function key, as Mac apps show Find next as ⌘G. A key a command has only on
+/// a Mac (Strikethrough's) isn't shown elsewhere.
+pub fn shown_key(ctx: &egui::Context, a: &Action) -> Option<KeyboardShortcut> {
+    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+    let first = a
+        .keys
+        .first()
+        .copied()
+        .filter(|k| mac || !k.modifiers.mac_cmd)?;
+    let plain_f = first.modifiers.is_none() || first.modifiers == Modifiers::SHIFT;
+    let f_key = matches!(first.logical_key, Key::F1 | Key::F2 | Key::F3 | Key::F4);
+    let cmd = a.keys.iter().find(|k| k.modifiers.command).copied();
+    match mac && plain_f && f_key {
+        true => cmd.or(Some(first)),
+        false => Some(first),
+    }
+}
+
+/// Tooltip for a command: its label and the shortcut it shows ([`shown_key`]), then its
+/// hint on a line of its own.
 pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
-    let name = match a.keys.first() {
-        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(k)),
+    let name = match shown_key(ctx, a) {
+        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(&k)),
         None => a.label.to_string(),
     };
     if a.hint.is_empty() {
@@ -2301,21 +2673,30 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
     }
 }
 
-/// The floating toolbar's buttons: the right-click menu's commands that are
-/// available now and have an icon, in groups. While a line is edited on the page, Bold and
-/// Italic, then Cut, Copy and Paste for what is selected in it, as the keys do there (ENH-20).
+/// The floating toolbar's buttons: the right-click menu's commands that are available now
+/// and have an icon, in groups, but for Align objects. While a line or paragraph is edited
+/// on the page, the styles, then Cut, Copy and Paste for what is selected in it, as the keys
+/// do there (ENH-20). Centre, as Word's mini toolbar has it, after the styles, or for lines
+/// selected with the arrow after their text's commands; not in the right-click menu.
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
-    const LINE_EDIT: &[&[Act]] = &[
-        &[Act::Bold, Act::Italic],
-        &[Act::Cut, Act::Copy, Act::Paste],
-    ];
+    const CENTRE: &[Act] = &[Act::AlignText(TextAlign::Centre)];
+    const LINE_EDIT: &[&[Act]] = &[STYLES, CENTRE, &[Act::Cut, Act::Copy, Act::Paste]];
     let items = if c.line_edit {
         LINE_EDIT
     } else {
         context_items(sel)
     };
-    items
-        .iter()
+    // Align and Distribute are the menus' only, as word processors' floating bars have it.
+    let mut groups: Vec<&[Act]> = (items.iter().copied())
+        .filter(|g| g[..] != ALIGNS[..])
+        .collect();
+    if !c.line_edit {
+        let after = |g: &&[Act]| g.contains(&Act::Bold) || g.contains(&Act::EditObjectText);
+        if let Some(at) = groups.iter().position(after) {
+            groups.insert(at + 1, CENTRE);
+        }
+    }
+    (groups.into_iter())
         .map(|g| {
             let usable = |a: &&Action| (a.enabled)(c) && !a.icon.is_empty();
             g.iter().map(|&a| get(a)).filter(usable).collect::<Vec<_>>()
@@ -2344,12 +2725,23 @@ pub fn context_buttons(
                 Act::Bold => egui::RichText::new("B")
                     .family(crate::theme::semibold())
                     .size(16.0),
-                Act::Italic => crate::theme::icon(a.icon).size(19.0),
+                Act::Italic | Act::Underline | Act::Strikethrough => {
+                    crate::theme::icon(a.icon).size(19.0)
+                }
                 _ => crate::theme::icon(a.icon).size(16.0),
             };
             let b = egui::Button::new(glyph)
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(26.0, 26.0));
+            // Centre pressed while the paragraph is centred, as the band's button is; the
+            // others have no pressed state here.
+            let b = match a.act {
+                Act::AlignText(_) => {
+                    let on = a.checked.is_some_and(|f| f(c));
+                    b.frame_when_inactive(on).selected(on)
+                }
+                _ => b,
+            };
             let r = ui.add(b);
             let name = a.label.trim_end_matches('…');
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
@@ -2363,7 +2755,7 @@ pub fn context_buttons(
                 egui::containers::menu::MenuButton::from_button(more)
                     .ui(ui, |ui| markup::menu(ui, c, acts))
                     .0
-                    .on_hover_text("Underline, strike out, colours");
+                    .on_hover_text("Other marks and colours");
             }
         }
     }
@@ -2371,9 +2763,34 @@ pub fn context_buttons(
 
 /// One menu entry: a checkbox for on/off commands, else a button with its shortcut.
 /// A click queues the command in `acts`.
+/// Commands `list` in a menu, with a line above each that starts a run of its own in the
+/// registry (`Action::sep`), as the File menu's groups have.
+pub fn menu_list<'a>(
+    ui: &mut egui::Ui,
+    list: impl IntoIterator<Item = &'a Action>,
+    c: &Ctx,
+    acts: &mut Vec<Act>,
+) {
+    for (j, a) in list.into_iter().enumerate() {
+        if a.sep && j > 0 {
+            ui.separator();
+        }
+        menu_item(ui, a, c, acts);
+    }
+}
+
 pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     let enabled = (a.enabled)(c);
+    // One of a set chosen by a key: the text's alignments, the one it has marked.
+    let one_of = matches!(a.act, Act::AlignText(_));
     let r = match (a.checked, a.act) {
+        (Some(on), _) if one_of => {
+            let key = shown_key(ui.ctx(), a).map(|k| ui.ctx().format_shortcut(&k));
+            let b = egui::Button::new(a.label)
+                .shortcut_text(key.unwrap_or_default())
+                .selected(on(c));
+            ui.add_enabled(enabled, b)
+        }
         (Some(on), _) => {
             let mut v = on(c);
             ui.add_enabled(enabled, egui::Checkbox::new(&mut v, a.label))
@@ -2384,7 +2801,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
             ui.add_enabled(enabled, egui::RadioButton::new(on, a.label))
         }
         (None, _) => {
-            let key = a.keys.first().map(|k| ui.ctx().format_shortcut(k));
+            let key = shown_key(ui.ctx(), a).map(|k| ui.ctx().format_shortcut(&k));
             let b = egui::Button::new(a.label).shortcut_text(key.unwrap_or_default());
             ui.add_enabled(enabled, b)
         }
@@ -2397,7 +2814,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     let r = r.on_disabled_hover_text(why_not(c, a));
     if r.clicked() {
         acts.push(a.act);
-        if a.checked.is_none() {
+        if a.checked.is_none() || one_of {
             ui.close();
         }
     }
@@ -2450,6 +2867,29 @@ mod tests {
             ..open
         };
         assert_eq!(why(Act::ReplaceImage, &line), "Select a picture first.");
+        // Replace: no match yet, or the search running again for the document as it is.
+        let match_first = "Find a match to replace first.";
+        assert_eq!(why(Act::ReplaceMatch, &open), match_first);
+        let waits = Ctx {
+            search_waits: true,
+            ..open
+        };
+        let waiting = "Waits until the search is done.";
+        assert_eq!(why(Act::ReplaceMatch, &waits), waiting);
+        let found = Ctx {
+            found_match: true,
+            ..open
+        };
+        assert!((get(Act::ReplaceMatch).enabled)(&found));
+        // Replace all, besides, waits for the search to have looked through every page.
+        assert_eq!(why(Act::ReplaceAll, &open), match_first);
+        let running = Ctx {
+            search_running: true,
+            ..found
+        };
+        assert_eq!(why(Act::ReplaceAll, &running), waiting);
+        assert!((get(Act::ReplaceMatch).enabled)(&running));
+        assert!((get(Act::ReplaceAll).enabled)(&found));
         // Every greyed command in those states has a reason of its own.
         let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
         let mut states: Vec<Ctx> = tools
@@ -2699,6 +3139,77 @@ mod tests {
         let dark = Act::PageColours(PageLook::Fixed(PageColours::Dark));
         assert_eq!(found("page colours dark"), [dark]);
         assert_eq!(found("page colours").len(), 6);
+    }
+
+    /// NEW-15: the text's alignments take Word's keys (⌘ on a Mac, as Word for Mac), are
+    /// named apart from Align objects' in the menus and the command search, and Centre is on
+    /// the floating bar while text is edited, after the styles, as on Word's mini toolbar;
+    /// for words selected after the styles too, and for lines selected with the arrow after
+    /// their text's commands, but not in their right-click menus.
+    #[test]
+    fn text_alignments_take_words_keys_and_names_and_centre_is_on_the_bar() {
+        let keys = [
+            (TextAlign::Left, Key::L),
+            (TextAlign::Centre, Key::E),
+            (TextAlign::Right, Key::R),
+            (TextAlign::Justified, Key::J),
+        ];
+        for (how, key) in keys {
+            assert_eq!(get(Act::AlignText(how)).keys, &[k(C, key)], "{how:?}");
+            let same = |s: &KeyboardShortcut| s.logical_key == key && s.modifiers == C;
+            let others = (ACTIONS.iter())
+                .filter(|a| a.act != Act::AlignText(how))
+                .filter(|a| a.keys.iter().any(same));
+            assert_eq!(others.count(), 0, "{key:?} taken twice");
+        }
+        let text = spoken_title(get(Act::AlignText(TextAlign::Left)));
+        let objects = spoken_title(get(Act::Align(Align::Left)));
+        assert_eq!(text, "Align text: Align left");
+        assert_eq!(objects, "Align objects: Align left");
+        let bar = |c: &Ctx| -> Vec<Act> {
+            let groups = toolbar_items(&Selection::default(), c);
+            groups.into_iter().flatten().map(|a| a.act).collect()
+        };
+        let mut c = Ctx {
+            doc: true,
+            line_edit: true,
+            ..Default::default()
+        };
+        let centre = Act::AlignText(TextAlign::Centre);
+        assert!(!bar(&c).contains(&centre), "nothing to align");
+        c.aligns_text = true;
+        let shown = bar(&c);
+        assert!(shown.contains(&centre), "{shown:?}");
+        let right = Act::AlignText(TextAlign::Right);
+        assert!(!shown.contains(&right), "{shown:?}");
+        // Words selected, and a line selected with the arrow.
+        c.line_edit = false;
+        let words = Selection::Words {
+            anchor: (0, 0),
+            end: (0, 3),
+        };
+        let line = crate::selection::Selected {
+            id: 0,
+            kind: ObjKind::Text,
+            bbox: [72.0, 90.0, 300.0, 102.0],
+            text: Some("a line".into()),
+        };
+        let lines = Selection::Objects {
+            page: 0,
+            held: vec![line],
+            loose: false,
+        };
+        (c.words, c.object, c.obj_text, c.obj_lines) = (true, true, true, true);
+        for (sel, after) in [(&words, Act::Strikethrough), (&lines, Act::CopyObjectText)] {
+            let groups: Vec<Vec<Act>> = (toolbar_items(sel, &c).into_iter())
+                .map(|g| g.into_iter().map(|a| a.act).collect())
+                .collect();
+            let at = groups.iter().position(|g| g.last() == Some(&after));
+            let next = at.and_then(|i| groups.get(i + 1));
+            assert_eq!(next, Some(&vec![centre]), "{groups:?}");
+            let menu = context_items(sel).iter().flat_map(|g| g.iter());
+            assert!(!menu.copied().any(|a| a == centre), "in the menu");
+        }
     }
 
     /// BUG-34: no two commands in the palette look or sound alike: each one's submenu and

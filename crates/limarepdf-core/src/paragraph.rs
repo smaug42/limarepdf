@@ -254,7 +254,13 @@ impl Pdf {
             true => self.line_elements(page, &parsed),
             false => vec![None; objs.len()],
         };
-        Ok(blocks(&objs, &tags))
+        let found = blocks(&objs, &tags);
+        // The paragraphs LimarePDF wrote, one again however their lines read.
+        let kept = self.kept_frames(page);
+        Ok(match kept.is_empty() {
+            true => found,
+            false => crate::para_frames::regroup(found, &kept),
+        })
     }
 
     /// For each of the page's objects, the block element of the document's tags (a

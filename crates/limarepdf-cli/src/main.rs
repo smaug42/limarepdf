@@ -476,6 +476,12 @@ enum Cmd {
         /// from the top-left of the displayed page
         #[arg(long)]
         boxes: bool,
+        /// Capital and small letters must be as typed: "Walrus" doesn't find "walrus"
+        #[arg(long)]
+        match_case: bool,
+        /// Find whole words only: "walrus" doesn't find "walruses"
+        #[arg(long)]
+        whole_words: bool,
     },
     /// List editable page objects (text lines, images, paths) with their boxes
     Objects {
@@ -3565,9 +3571,15 @@ fn run(cmd: Cmd) -> Result<()> {
             query,
             password,
             boxes,
+            match_case,
+            whole_words,
         } => {
             let p = open(&input, &password)?;
-            let hits = p.search(&query)?;
+            let options = limarepdf_core::SearchOptions {
+                match_case,
+                whole_words,
+            };
+            let hits = p.search_with(&query, options)?;
             for h in &hits {
                 out!("page {}: {}", h.page + 1, shown(&h.snippet.to_string()));
             }

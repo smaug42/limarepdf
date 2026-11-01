@@ -230,6 +230,56 @@ What they show:
   field: 0.3 ms for text-300.pdf, 1.8 ms for the 17 MB scan-20.pdf and 1.0 ms for the corpus's largest file (5 MB,
   107 pages), about 0.1 ms a megabyte (each the best of five).
 
+## Replace all
+
+Batch 46's stage 3 (NEW-04b) prepares Replace all on a copy of the document, off the window's thread, then reviews
+it. Measured on 31 October 2026 on the machine above with the opt-in test `replace_all_speed_on_300_pages` (in
+`editor/replace_all.rs`; `cargo test -p limarepdf-gui --bin limarepdf --profile ci-test -- --ignored
+replace_all_speed --nocapture`): a made-up document of 300 Letter pages, ten 12-point Helvetica lines a page,
+1,100 matches of "walrus" (three lines a page with one, every third page a line with two more) replaced with
+"otter", every match replaced, nothing running over. The figures are the steady ones of three runs (a first run
+read 2.4 s for the lines while the machine was busy).
+
+| Lines changed as | Planning (pages read in parallel) | All of it: planning, writing the copy, judging each change |
+| --- | --- | --- |
+| Lines alone (Paragraph off) | 38 ms | 1.16 s |
+| Paragraphs (Paragraph on: the page's ten lines are one) | 380 ms | 3.47 s |
+
+What they show:
+
+- Writing is the cost: each page's lines are written in one rewrite of its content (read back to check, as every
+  edit is), then the page is read again to judge each change by the overflow rule. Pages are written one after
+  another on the copy; planning, which only reads, runs in parallel.
+- Before two changes, the paragraph case took 5.8 s and planning 2.05 s: the pages are now planned in parallel, and
+  the first paragraph written on a page uses the setting its planning made instead of reading it again.
+- When some replacements don't fit and others do, a second copy without them is made for Replace where it fits,
+  doubling the time. Taking the copy is one undo step, as any edit: the document's objects compared once.
+
+## Reading underlines and strike-throughs
+
+Batch 46's stage 4a (NEW-07) reads other apps' underlines and strike-throughs whenever a page's objects are read
+(`Pdf::page_objects`, which selecting, hit-testing and editing use). Measured on 1 November 2026 on the machine
+above: `page_objects` on every page of the render corpus (1,080 files that open, up to 300 pages each, 6,508
+pages), the best of three for each page, the same code built against the tree before the stage (f2510d3) and after
+it (`target/b46s4/timing` and `timing-old`, release builds, two files at a time, before and after run in turn).
+
+| Two runs | All pages | Median page | The 20 slowest pages |
+| --- | --- | --- | --- |
+| First | 14.93 → 15.19 s (+1.7%) | +1.0% | 2.79 → 2.81 s (+0.8%) |
+| Second | 15.10 → 15.04 s (−0.4%) | ±0 | 2.83 → 2.80 s (−1.2%) |
+
+Opening `big.pdf` (10,000 pages) and reading three of its pages' objects are unchanged (42 ms and 33 ms, within a
+run's spread). The pages that come out slower differ from run to run, but for one kind: a page drawn as thousands of
+filled rectangles (`pdfbox/539.pdf`, about 4,000 a page, the fill colour set before each) reads about 12% slower,
+the cost of telling each rectangle's shape and matching the thin ones to lines.
+
+What made it so: the first build read 21% slower over all, and one page went from 25 ms to 422 ms. A line's
+characters are now laid out only once a band is level with it and near its baseline (`Lite::may_take`), and their
+word edges only when a band's ends are tested; a band running no way the page's lines run (a table's column rule)
+is passed over at once; the other drawings and the form text the guards look at are gathered only when a band fits a
+line; and a band's ink isn't copied while the page is read, only the operators that set it remembered
+(`InkAt`), the ink made again for a band read as a decoration.
+
 ## Styling selected words
 
 Batch 24 (ENH-05) writes every changed line of a page in one parse and one commit (`Pdf::edit_texts`), each line
@@ -530,6 +580,27 @@ What they show:
   costs; the write narrowed 100 points, every line (`Pdf::edit_paragraph_between`, 10): median 2.13 ms, as a word
   typed at the start. Keystrokes measured again the same day: 0.17 to 0.21 ms at the median, as above. The corpus
   edit run again after 3b-2 (edges as they were) gave every block's record as 3a's run did, timings aside.
+
+## Aligning paragraphs
+
+Batch 49's stage 2 (NEW-15) aligns the paragraphs of words or lines selected as one step on the window's thread
+(architecture.md, "Alignment"): each page's blocks found (`Pdf::page_blocks`, kept until the document changes),
+then each paragraph read and written alone (`Pdf::paragraph`, `Pdf::edit_paragraph_in`). Measured on 1 November
+2026 on the machine above with the opt-in `speed_of_aligning_300_pages` (`app/tests/text_align.rs`; `cargo test -p
+limarepdf-gui --bin limarepdf --profile ci-test -- --ignored speed_of_aligning_300_pages --nocapture`), two runs
+alike: a made-up document of 300 Letter pages, each one paragraph of ten 12-point Helvetica lines, every word
+selected and justified.
+
+| Part | Time |
+| --- | --- |
+| The command: the paragraphs found | 0.25 s |
+| The command in all: found, each written, the undo step | 2.0 s |
+| The frame after (the selection's words and lines read again, the pages shown redrawn) | 0.5 s |
+
+About 6 ms a paragraph written, as a paragraph's read and write above add up to. Bold on the same selection took
+1.3 s with its frame. From these figures (not measured alone), a page of a few paragraphs takes some tens of
+milliseconds; a whole long document's take seconds, which is recorded, not a threshold (6.3 has none for edits),
+as for styling selected words.
 
 ## The page under text being edited
 

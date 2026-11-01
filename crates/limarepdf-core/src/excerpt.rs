@@ -92,9 +92,9 @@ impl Pdf {
     }
 
     /// Page `page_index` alone, as a new document's bytes, with the objects `ids` (as
-    /// [`Pdf::page_objects`] numbers them) taken out as [`Pdf::delete_objects`] takes them:
-    /// what the app shows under text being edited, so its old lines don't show through
-    /// (ENH-21). The page keeps its boxes, turn, resources and transparency group, and the
+    /// [`Pdf::page_objects`] numbers them) taken out as [`Pdf::delete_objects`] takes them, a
+    /// line's underlines and strike-throughs with it: what the app shows under text being
+    /// edited, so its old lines don't show through (ENH-21). The page keeps its boxes, turn, resources and transparency group, and the
     /// document's optional content settings (a hidden layer stays hidden); its comments and
     /// fields that have looks of their own are drawn as the app's pages draw them (PB-76;
     /// sticky notes, which the app draws over the page itself, left out). Only
@@ -103,7 +103,7 @@ impl Pdf {
     pub fn page_without(&self, page_index: usize, ids: &[usize]) -> Result<Vec<u8>> {
         let page = self.page_id_at(page_index)?;
         let parsed = self.parse_page_of(page)?;
-        let mut ops = Self::without_objects(&parsed, ids)?;
+        let mut ops = Self::without_objects(&parsed, &Self::with_decorations(&parsed, ids))?;
         ops.extend((0..parsed.depth_left).map(|_| Operation::new("Q", vec![])));
         let content = (parsed.inline.encode(ops))
             .map_err(|e| anyhow::anyhow!("cannot encode the page content: {e}"))?;

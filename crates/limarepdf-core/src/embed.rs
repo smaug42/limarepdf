@@ -340,6 +340,16 @@ impl Face {
         })
     }
 
+    /// Its font file, and its index there.
+    pub(crate) fn file(&self) -> (&'static [u8], u32) {
+        (self.data, self.index)
+    }
+
+    /// Its PostScript name, as PDF names it.
+    pub(crate) fn ps(&self) -> &str {
+        &self.ps
+    }
+
     /// Whether glyph `g` is in the face.
     pub(crate) fn has_glyph(&self, g: u16) -> bool {
         (g as usize) < self.advances.len()

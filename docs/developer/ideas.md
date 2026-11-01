@@ -45,7 +45,8 @@ Small or medium additions that build on what LimarePDF already has:
 
 ## Content editing
 
-- Find and replace text (M); spell check (L, needs a dictionary)
+- Spell check (L, needs a dictionary); `replace` on the command line (S–M, on Replace all's preparation, which is
+  built: NEW-04b)
 - Layers: add, merge, reorder, flatten (L)
 - Right-to-left (Hebrew, Arabic) and shaped (Indic, Thai) text, beyond the Latin, Greek and Cyrillic written
   today, and Chinese, Japanese and Korean outside installed fonts that have them (L: text shaping and
@@ -59,7 +60,8 @@ Small or medium additions that build on what LimarePDF already has:
 - Background images (S: a picture watermark at 100%, opaque and behind the content comes close; filling the page
   edge to edge is what's missing)
 - QR codes and barcodes stamped onto pages (S–M, needs a crate)
-- Guides, rulers, a grid and snapping (M)
+- Guides of your own, rulers and a grid to snap to (M; snapping to the page's and other objects' edges and middles
+  is built, NEW-08)
 
 ## Annotations and review
 

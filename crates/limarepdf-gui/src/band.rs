@@ -10,7 +10,7 @@
 //! planned features alone are left out first.
 
 use crate::actions::{self, Act, Ctx};
-use crate::editor::Tool;
+use crate::editor::{Align, Axis, TextAlign, Tool};
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::settings::{Accent, Layout, PageLook};
@@ -79,11 +79,18 @@ impl Group {
     /// Its controls change the text being typed, which they leave open: a click on them
     /// doesn't end the typing.
     fn keeps_typing(&self) -> bool {
-        // Paragraph switches the text being edited, which the click mustn't end first.
-        let keeps = |a: Act| matches!(a, Act::Paste | Act::Cut | Act::Copy | Act::EditParagraph);
+        // Paragraph switches the text being edited, which the click mustn't end first; the
+        // alignments align it.
+        let keeps = |a: Act| {
+            matches!(
+                a,
+                Act::Paste | Act::Cut | Act::Copy | Act::EditParagraph | Act::AlignText(_)
+            )
+        };
         self.items.iter().any(|i| match i {
             Item::Font => true,
             Item::Button(b) => b.act.is_some_and(keeps),
+            Item::Icons(acts) => acts.iter().any(|&a| keeps(a)),
             _ => false,
         })
     }
@@ -98,11 +105,20 @@ impl Group {
         self.items.iter().all(|i| matches!(i, Item::Planned(_)))
     }
 
+    /// The commands of a group of icons alone (Edit's Alignment), which folds to one icon.
+    fn icons(&self) -> Option<&'static [Act]> {
+        match self.items {
+            [Item::Icons(acts)] => Some(acts),
+            _ => None,
+        }
+    }
+
     /// The name screen readers give its first control.
     #[cfg(test)]
     pub fn first_name(&self) -> String {
         match &self.items[0] {
             Item::Button(b) => b.label.into(),
+            Item::Icons(acts) => actions::get(acts[0]).label.into(),
             Item::Font => "Font".into(),
             Item::Sign => "Fill and sign".into(),
             Item::Marks => "Highlight".into(),
@@ -113,8 +129,11 @@ impl Group {
 
 pub enum Item {
     Button(Button),
-    /// Edit's font list and size, Bold, Italic and the text colour, for the text selected
-    /// or being typed (the editor's), with the planned Underline and Strike-through.
+    /// Commands shown by their icons alone, named on hover with their keys, as Word's
+    /// Paragraph group shows its alignments: each with the registry's label and icon.
+    Icons(&'static [Act]),
+    /// Edit's font list and size, Bold, Italic, Underline, Strikethrough and the text
+    /// colour, for the text selected or being typed (the editor's).
     Font,
     /// Fill and sign, its menu the saved signatures and initials, the date, name and marks.
     Sign,
@@ -181,25 +200,29 @@ const fn group(name: &'static str, items: &'static [Item]) -> Group {
     Group { name, items }
 }
 
+/// Align objects' menu (NEW-08), as Word's Align: the six alignments, the two ways to
+/// distribute (the right-click menu's [`actions::ALIGNS`]), then Snap to objects.
+const ALIGN_MENU: [Act; 9] = [
+    Act::Align(Align::Left),
+    Act::Align(Align::Centre),
+    Act::Align(Align::Right),
+    Act::Align(Align::Top),
+    Act::Align(Align::Middle),
+    Act::Align(Align::Bottom),
+    Act::Distribute(Axis::Across),
+    Act::Distribute(Axis::Down),
+    Act::ToggleSnap,
+];
+
+/// The text's alignments (NEW-15), as Word's Paragraph group has them.
+const TEXT_ALIGNS: [Act; 4] = [
+    Act::AlignText(TextAlign::Left),
+    Act::AlignText(TextAlign::Centre),
+    Act::AlignText(TextAlign::Right),
+    Act::AlignText(TextAlign::Justified),
+];
+
 // The planned features, each with the build plan's item that builds it.
-pub const UNDERLINE: Planned = Planned {
-    label: "Underline",
-    icon: icon::TEXT_UNDERLINE,
-    item: "NEW-07",
-    what: "Underline or strike through the selected text.",
-};
-const REPLACE: Planned = Planned {
-    label: "Replace",
-    icon: icon::SWAP,
-    item: "NEW-04",
-    what: "Find text and replace it.",
-};
-const ALIGN: Planned = Planned {
-    label: "Align",
-    icon: icon::ALIGN_LEFT,
-    item: "NEW-08",
-    what: "Line up and space out the selected objects.",
-};
 const LINK: Planned = Planned {
     label: "Link",
     icon: icon::LINK,
@@ -262,12 +285,14 @@ static EDIT: &[Group] = &[
         ],
     ),
     group("Font", &[Item::Font]),
+    // Beside Font, as Word's Paragraph group is.
+    group("Alignment", &[Item::Icons(&TEXT_ALIGNS)]),
     group(
         "Editing",
         &[
             b(Act::EditObjectText, "Edit text", icon::CURSOR_TEXT),
             b(Act::Find, "Find", icon::MAGNIFYING_GLASS),
-            Item::Planned(&REPLACE),
+            b(Act::Replace, "Replace", icon::SWAP),
             menu(
                 "Select",
                 icon::CURSOR,
@@ -283,9 +308,13 @@ static EDIT: &[Group] = &[
     ),
     group(
         "Text flow",
-        &[b(Act::EditParagraph, "Paragraph", icon::TEXT_ALIGN_LEFT)],
+        &[b(Act::EditParagraph, "Paragraph", icon::PARAGRAPH)],
     ),
-    group("Arrange", &[Item::Planned(&ALIGN)]),
+    // Word's tooltip for its Align, and LibreOffice's name: not read as aligning text.
+    group(
+        "Arrange",
+        &[menu("Align objects", icon::ALIGN_LEFT, &ALIGN_MENU)],
+    ),
 ];
 
 static INSERT: &[Group] = &[
@@ -561,9 +590,8 @@ static VIEW: &[Group] = &[
     group("Optional assistance", &[Item::Planned(&YOUR_AI)]),
 ];
 
-/// Draws Edit's Font group for the text it acts on, calling the function it is given
-/// between Italic and the colour (the planned Underline and Strike-through).
-pub type FontGroup<'a> = dyn FnMut(&mut egui::Ui, &dyn Fn(&mut egui::Ui)) + 'a;
+/// Draws Edit's Font group for the text it acts on.
+pub type FontGroup<'a> = dyn FnMut(&mut egui::Ui) + 'a;
 
 /// What the band needs from the app to draw it.
 pub struct Parts<'a> {
@@ -730,12 +758,16 @@ pub fn show(ui: &mut egui::Ui, band: Band, parts: &mut Parts, acts: &mut Vec<Act
 }
 
 /// The order `groups` fold in as room runs out: those of planned features alone first (left
-/// out, as they run nothing), so that they never crowd out built commands, then the rest;
-/// each from the right.
+/// out, as they run nothing), so that they never crowd out built commands; then a group of
+/// icons alone (Edit's Alignment), which folds to one icon and loses least, as Word folds
+/// its Paragraph group to its icon; then the rest; each from the right.
 fn fold_order(groups: &[&Group]) -> Vec<usize> {
     let from_right = (0..groups.len()).rev();
     let (mut planned, rest): (Vec<usize>, Vec<usize>) =
         from_right.partition(|&i| groups[i].all_planned());
+    let (icons, rest): (Vec<usize>, Vec<usize>) =
+        rest.into_iter().partition(|&i| groups[i].icons().is_some());
+    planned.extend(icons);
     planned.extend(rest);
     planned
 }
@@ -812,14 +844,25 @@ fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<
         });
         return r.response.rect;
     }
+    // A group of icons alone folds to the icon of the one in use, else its first, and a
+    // caret, named on hover, as Word folds its Paragraph group to an icon.
+    let c = parts.c;
+    let icon_of = |list: &[Act]| {
+        let on = list.iter().find(|&&a| is_on(a, c)).unwrap_or(&list[0]);
+        theme::icon(actions::get(*on).icon).size(16.0)
+    };
+    let shown = g.icons().map(icon_of);
     let r = ui.allocate_ui_with_layout(row, centred, |ui| {
         ui.set_min_height(height);
         ui.add_space(2.0);
         let caret = egui::Atom::from(theme::icon(icon::CARET_DOWN).size(10.0));
-        let label = (g.name, caret);
-        let button = egui::Button::new(label)
-            .frame_when_inactive(false)
-            .min_size(egui::vec2(0.0, BUTTON));
+        let named = shown.is_none();
+        let button = match shown {
+            Some(glyph) => egui::Button::new((glyph, caret)),
+            None => egui::Button::new((g.name, caret)),
+        }
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(0.0, BUTTON));
         let config = egui::containers::menu::MenuConfig::new()
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
         let (r, _) = egui::containers::menu::MenuButton::from_button(button)
@@ -831,6 +874,9 @@ fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<
                 });
             });
         r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, g.name));
+        if !named {
+            r.on_hover_text(g.name);
+        }
         ui.add_space(2.0);
     });
     r.response.rect
@@ -845,16 +891,21 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
     for item in g.items {
         match item {
             Item::Button(b) => button(ui, b, acts),
+            Item::Icons(list) => {
+                for &act in *list {
+                    let a = actions::get(act);
+                    let b = Button {
+                        act: Some(act),
+                        label: a.label,
+                        icon: a.icon,
+                        menu: &[],
+                    };
+                    self::button(ui, &b, c, acts, true);
+                }
+            }
             Item::Planned(p) if c.planned => planned(ui, p, compact),
             Item::Planned(_) => {}
-            Item::Font => {
-                let show = c.planned;
-                (parts.font)(ui, &|ui| {
-                    if show {
-                        planned_style(ui, &UNDERLINE, "U", compact);
-                    }
-                });
-            }
+            Item::Font => (parts.font)(ui),
             Item::Sign => {
                 let sign = Button {
                     act: Some(Act::Tool(Tool::Sign)),
@@ -926,9 +977,7 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
         .min_size(egui::vec2(0.0, BUTTON));
         ui.add_enabled_ui(enabled, |ui| {
             let (r, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                for &a in b.menu {
-                    actions::menu_item(ui, actions::get(a), c, acts);
-                }
+                actions::menu_list(ui, b.menu.iter().map(|&a| actions::get(a)), c, acts);
             });
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, b.label));
             let r = if compact { r.on_hover_text(b.label) } else { r };
@@ -959,9 +1008,7 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
     }
     if !b.menu.is_empty() {
         caret(ui, &format!("{} options", b.label), |ui| {
-            for &m in b.menu {
-                actions::menu_item(ui, actions::get(m), c, acts);
-            }
+            actions::menu_list(ui, b.menu.iter().map(|&m| actions::get(m)), c, acts);
         });
     }
 }
@@ -988,18 +1035,6 @@ fn planned(ui: &mut egui::Ui, p: &Planned, compact: bool) {
         }
     }
     .frame_when_inactive(false);
-    planned_button(ui, button, p);
-}
-
-/// A planned text style's button in the Font group: its letter underlined, greyed and
-/// marked Planned (`compact`: the letter alone, named on hover).
-fn planned_style(ui: &mut egui::Ui, p: &Planned, letter: &str, compact: bool) {
-    let text = RichText::new(letter).size(15.0).underline();
-    let button = match compact {
-        true => egui::Button::new(text),
-        false => egui::Button::new((text, planned_tag(ui))),
-    }
-    .min_size(egui::vec2(26.0, 26.0));
     planned_button(ui, button, p);
 }
 
@@ -1056,10 +1091,10 @@ pub fn planned_menu_item(ui: &mut egui::Ui, p: &Planned) {
     r.on_disabled_hover_text(format!("{} Planned.", p.what));
 }
 
-/// Every planned feature shown: in the bands, the Font group and the File menu.
+/// Every planned feature shown: in the bands and the File menu.
 #[cfg(test)]
 pub fn all_planned() -> Vec<&'static Planned> {
-    let mut out: Vec<&Planned> = vec![&UNDERLINE];
+    let mut out: Vec<&Planned> = Vec::new();
     for band in Band::ALL {
         for g in band.groups() {
             for i in g.items {
@@ -1092,13 +1127,21 @@ mod tests {
         assert_eq!(fold_level(5, 5, 1000.0, need), 0);
     }
 
-    /// Edit's groups of planned features alone fold before its built commands.
+    /// Edit's groups of planned features alone fold before its built commands, then its group
+    /// of icons alone (Alignment), then the rest from the right.
     #[test]
     fn planned_groups_fold_first() {
         let groups: Vec<&Group> = Band::Edit.groups().iter().collect();
         let order = fold_order(&groups);
         let names: Vec<&str> = order.iter().map(|&i| groups[i].name).collect();
-        let want = ["Arrange", "Text flow", "Editing", "Font", "Clipboard"];
+        let want = [
+            "Alignment",
+            "Arrange",
+            "Text flow",
+            "Editing",
+            "Font",
+            "Clipboard",
+        ];
         assert_eq!(names, want);
     }
 
@@ -1143,7 +1186,9 @@ mod tests {
     #[test]
     fn planned_features_name_their_plan_items() {
         let all = all_planned();
-        assert!(all.len() >= 10);
+        assert!(all.len() >= 8);
+        // Built: Underline (NEW-07, batch 46's 4b) and Align (NEW-08, its stage 5).
+        assert!(!all.iter().any(|p| p.item == "NEW-07" || p.item == "NEW-08"));
         for p in &all {
             let id = p.item;
             let known = ["NEW-", "ENH-", "PF-"].iter().any(|k| id.starts_with(k));
@@ -1171,6 +1216,7 @@ mod tests {
                     let n = match i {
                         Item::Button(b) if b.act == Some(act) => choose,
                         Item::Button(b) if b.menu.contains(&act) => choose + 1,
+                        Item::Icons(acts) if acts.contains(&act) => choose,
                         Item::Sign if act == Act::Tool(Tool::Sign) => choose,
                         _ => continue,
                     };
@@ -1199,9 +1245,16 @@ mod tests {
             (Act::Tool(Tool::Sign), 1),
             (Act::SignDigital, 2),
             (Act::Find, 0),
+            (Act::Align(Align::Left), 1),
+            (Act::Distribute(Axis::Across), 1),
+            (Act::ToggleSnap, 1),
+            (Act::AlignText(TextAlign::Centre), 0),
+            (Act::AlignText(TextAlign::Justified), 0),
         ] {
             assert_eq!(openings(act), Some(want), "{act:?}");
         }
+        // Align objects' menu has the right-click menu's commands, then Snap.
+        assert_eq!(ALIGN_MENU[..8], actions::ALIGNS);
         // The font, size, Bold, Italic and colour: Edit's Font group, showing.
         let font = EDIT
             .iter()
@@ -1220,6 +1273,7 @@ mod tests {
                 for i in g.items {
                     match i {
                         Item::Button(b) => reach.extend(b.act.iter().chain(b.menu)),
+                        Item::Icons(acts) => reach.extend(acts.iter()),
                         Item::Sign => reach.push(Act::Tool(Tool::Sign)),
                         Item::Marks => reach.push(Act::Mark(Mark::Highlight)),
                         Item::Font | Item::Planned(_) => {}
@@ -1228,9 +1282,10 @@ mod tests {
             }
         }
         // The rest: File's commands in the File menu, Undo and Redo beside it; the Font
-        // group's Bold and Italic; the marks and Create signature in Highlight's and Fill
+        // group's styles; the marks and Create signature in Highlight's and Fill
         // and sign's own menus; what acts on a selection, or on a paragraph's marked
-        // hyphen, in its right-click menu and floating bar; and keys. Each is in the File
+        // hyphen, in its right-click menu and floating bar; Search results' Replace beside
+        // its field and its arrows (Find next and previous); and keys. Each is in the File
         // menu's groups too.
         let elsewhere = |a: Act| {
             actions::get(a).group == actions::Group::File
@@ -1240,6 +1295,8 @@ mod tests {
                         | Act::Redo
                         | Act::Bold
                         | Act::Italic
+                        | Act::Underline
+                        | Act::Strikethrough
                         | Act::Mark(_)
                         | Act::CreateSign(_)
                         | Act::FinishSigning
@@ -1252,6 +1309,10 @@ mod tests {
                         | Act::JoinHyphen
                         | Act::KeepHyphen
                         | Act::ReplaceImage
+                        | Act::ReplaceMatch
+                        | Act::ReplaceAll
+                        | Act::FindNext
+                        | Act::FindPrevious
                         | Act::Escape
                         | Act::Nudge(..)
                         | Act::Extend(_)

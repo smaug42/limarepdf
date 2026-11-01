@@ -4,7 +4,12 @@
 //! table (`src/variants/codepoints.rs`, MIT or Apache-2.0), which matches the fonts' version
 //! (Phosphor 2.1); a new icon takes its code point from there or from phosphoricons.com.
 
+pub const ALIGN_BOTTOM: &str = "\u{E506}";
+pub const ALIGN_CENTER_HORIZONTAL: &str = "\u{E50A}";
+pub const ALIGN_CENTER_VERTICAL: &str = "\u{E50C}";
 pub const ALIGN_LEFT: &str = "\u{E50E}";
+pub const ALIGN_RIGHT: &str = "\u{E510}";
+pub const ALIGN_TOP: &str = "\u{E512}";
 pub const ARROW_BEND_UP_LEFT: &str = "\u{E024}";
 pub const ARROW_CLOCKWISE: &str = "\u{E036}";
 pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
@@ -32,6 +37,7 @@ pub const CHECK: &str = "\u{E182}";
 pub const CIRCLE: &str = "\u{E18A}";
 pub const CIRCLE_HALF: &str = "\u{E18C}";
 pub const CLIPBOARD_TEXT: &str = "\u{E198}";
+pub const COLUMNS: &str = "\u{E546}";
 pub const COMMAND: &str = "\u{E1C4}";
 pub const COPY: &str = "\u{E1CA}";
 pub const CROP: &str = "\u{E1D4}";
@@ -67,6 +73,7 @@ pub const LIST_MAGNIFYING_GLASS: &str = "\u{EBE0}";
 pub const LIST_PLUS: &str = "\u{E2F8}";
 pub const LOCK_KEY: &str = "\u{E2FE}";
 pub const MAGIC_WAND: &str = "\u{E6B6}";
+pub const MAGNET: &str = "\u{E680}";
 pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
 pub const MAGNIFYING_GLASS_MINUS: &str = "\u{E30E}";
 pub const MAGNIFYING_GLASS_PLUS: &str = "\u{E310}";
@@ -107,7 +114,10 @@ pub const SWAP: &str = "\u{E83C}";
 pub const SWATCHES: &str = "\u{E5B8}";
 pub const TAG: &str = "\u{E478}";
 pub const TEXT_AA: &str = "\u{E6EE}";
+pub const TEXT_ALIGN_CENTER: &str = "\u{E480}";
+pub const TEXT_ALIGN_JUSTIFY: &str = "\u{E482}";
 pub const TEXT_ALIGN_LEFT: &str = "\u{E484}";
+pub const TEXT_ALIGN_RIGHT: &str = "\u{E486}";
 pub const TEXT_B: &str = "\u{E5BE}";
 pub const TEXT_ITALIC: &str = "\u{E5C0}";
 pub const TEXTBOX: &str = "\u{EB0A}";

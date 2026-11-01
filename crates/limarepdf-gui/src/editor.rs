@@ -9,16 +9,16 @@ use crate::inspector::{facts, note, section, section_name};
 use crate::page_text::{self, selection, PageText};
 use crate::selection::{ObjKind, Selected, Selection, Toward, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
-use crate::styled::{History, InLine, Restyle, Styled};
+use crate::styled::{History, InLine, Restyle, Styled, Switch};
 use crate::theme;
 use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    words_text, Annot, AnnotKind, BoxSetting, DocWords, FieldValue, FontChoice, FontRefusal,
-    LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord, ParagraphSetting, PartFont,
-    PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace, TextEdit, TextPart,
-    TextStyle, MIN_SIGNATURE_BOX,
+    words_text, Annot, AnnotKind, Block, BoxSetting, DecoKind, Decorated, DocWords, FieldValue,
+    FontChoice, FontRefusal, LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord,
+    ParagraphSetting, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
+    StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
 };
 use paragraph::{para_id, ParaEdit, Then};
 use std::collections::{BTreeMap, HashMap};
@@ -26,7 +26,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod arrange;
 mod paragraph;
+mod replace;
+mod replace_all;
+pub use arrange::{Align, Axis};
+/// How a paragraph's text is aligned (NEW-15), as core reads and sets it; [`Align`] lines
+/// objects up.
+pub use limarepdf_core::Align as TextAlign;
+pub use paragraph::{align_paragraphs, Aligned, NotAligned};
+pub use replace::NotReplaced;
+pub use replace_all::{replace_all, AllJob, Pass, Prepared};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -346,6 +356,10 @@ fn writable(a: &Annot) -> bool {
     !a.locked() && matches!(a.kind, AnnotKind::Note | AnnotKind::TextBox)
 }
 
+/// A line's change as core writes it ([`limarepdf_core::Pdf::edit_texts_decorated`]): the
+/// line, by object, its edit, and its underlines and strike-throughs over its new text.
+pub type LineChange = (usize, TextEdit, Vec<Decorated>);
+
 /// A change requested by the interface, applied by the tab after the frame is drawn.
 pub enum Action {
     /// Objects of a page moved or resized: each to the box given.
@@ -355,18 +369,30 @@ pub enum Action {
     AddShape(usize, Shape, [f32; 4]),
     /// New text, its lines separated by `\n`, from the first line's baseline at the point
     /// given, in the styles it was typed in.
-    AddText(usize, (f32, f32), Styled),
+    AddText(usize, (f32, f32), Box<Styled>),
     AddImage(usize, [f32; 4]),
     ReplaceImage(usize, usize, Vec<u8>),
-    /// A line's change; true when only its words changed, not their styles, so it can join
-    /// a recent change of the same line.
-    EditText(usize, usize, TextEdit, bool),
-    /// A paragraph of a page edited to these parts, as its setting sets them between its
-    /// frame's left and right edges ([`limarepdf_core::Pdf::edit_paragraph_between`]).
-    EditParagraph(usize, Arc<ParagraphSetting>, Vec<TextPart>, (f32, f32)),
-    /// Words selected with the read tool restyled: each page's changed lines, by object, and
-    /// the lines with selected words left as they were. The words stay selected.
-    Restyle(Vec<(usize, Vec<(usize, TextEdit)>)>, Left),
+    /// A line's change, with its underlines and strike-throughs over its new text; true when
+    /// only its words changed, not their styles, so it can join a recent change of the same
+    /// line.
+    EditText(usize, usize, TextEdit, Vec<Decorated>, bool),
+    /// A paragraph of a page edited to these parts, with its underlines and strike-throughs
+    /// over them, as its setting sets them between its frame's left and right edges, aligned
+    /// as given ([`limarepdf_core::Pdf::edit_paragraph_decorated`]).
+    EditParagraph(
+        usize,
+        Arc<ParagraphSetting>,
+        Vec<TextPart>,
+        Vec<Decorated>,
+        ((f32, f32), TextAlign),
+    ),
+    /// Each page's paragraphs, as its blocks were read, aligned as given
+    /// ([`align_paragraphs`]), and what was left as it was before. The words or lines
+    /// selected stay selected.
+    AlignParagraphs(Vec<(usize, Vec<Block>)>, TextAlign, NotAligned),
+    /// Words selected with the read tool restyled: each page's changed lines, and the lines
+    /// with selected words left as they were. The words stay selected.
+    Restyle(Vec<(usize, Vec<LineChange>)>, Left),
     /// Shapes of a page restyled.
     PathStyle(usize, Vec<(usize, PathStyle)>),
     /// Set the named form field, drawn on these pages.
@@ -529,7 +555,21 @@ struct Drag {
     /// Objects moved together (`Mode::Move`), with their boxes as they were: `orig` and
     /// `cur` are the box round them all.
     group: Vec<(usize, [f32; 4])>,
+    /// What a move or resize of objects snaps to, and the lines it meets now (NEW-08).
+    snapping: Snapping,
 }
+
+/// The lines a move or resize of objects snaps to, read when it first follows the pointer,
+/// and the guides of those it meets now.
+#[derive(Default)]
+struct Snapping {
+    lines: Option<arrange::Snaps>,
+    guides: Vec<arrange::Guide>,
+}
+
+/// The colour of the guides a move or resize snapped to: seen on paper of any colour, and
+/// apart from the selection's outlines.
+const GUIDE: Color32 = Color32::from_rgb(224, 40, 130);
 
 struct Draw {
     page: usize,
@@ -1085,11 +1125,15 @@ struct LineEdit {
     /// the read tool, which it types over), given to it once it has it, before the keys
     /// since.
     typed: Vec<egui::Event>,
+    /// Replace typed it: once that is typed, the keyboard goes back to Search results and
+    /// the line waits, open, as F6 leaves it ([`Editor::typed_over`]).
+    park: bool,
     /// What an input method is composing in it, from and to ([`page_text::composition`]).
     composing: Option<(usize, usize)>,
-    /// Where the caret was last frame (page points, the middle of the line): switching to
-    /// Paragraph edits the paragraph there.
-    caret_at: Option<Pos2>,
+    /// Where the caret was last frame (page points, the middle of the line), and its
+    /// character: switching to Paragraph edits the paragraph there, the caret after the
+    /// same characters.
+    caret_at: Option<(Pos2, usize)>,
 }
 
 /// Take what an input method was still composing in the line being edited, `le`, whose
@@ -1108,10 +1152,13 @@ fn commit_line_composition(le: &mut LineEdit, insp: &mut Insp, hidden: bool) -> 
 /// What a line editor selects when it opens.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Pick {
-    /// These characters (from, to): the word double-clicked, found among the page's words.
+    /// These characters (from, to): the word double-clicked, found among the page's words,
+    /// or the place clicked among the line's characters ([`on_line`]).
     Chars(usize, usize),
     /// The character nearest this point (page points) as the line is drawn; with `word`,
-    /// the word around it.
+    /// the word around it. A click on the page is placed by the line itself when the edit
+    /// starts ([`on_line`]); this is left for a switch between the editors, and for a line
+    /// whose characters' places aren't known.
     At(Pos2, bool),
 }
 
@@ -1136,16 +1183,15 @@ fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
 }
 
 /// Edit's Font group (ENH-38) for what a style command changes in `text`: the font list
-/// and size (within `sizes`) in a row, then Bold, Italic, `planned` (the planned styles)
-/// and the colour below them, or beside them when `compact`; each shows blank where that
-/// mixes values. `in_pdf` names the PDF fonts of text already in the PDF. Returns whether
-/// one was used.
+/// and size (within `sizes`) in a row, then Bold, Italic, Underline, Strikethrough and the
+/// colour below them, or beside them when `compact`; each shows blank where that mixes
+/// values. `in_pdf` names the PDF fonts of text already in the PDF. Returns whether one was
+/// used.
 fn styles_ui(
     ui: &mut egui::Ui,
     text: &mut dyn Restyle,
     sizes: std::ops::RangeInclusive<f32>,
     in_pdf: &[String],
-    planned: &dyn Fn(&mut egui::Ui),
     compact: bool,
 ) -> bool {
     let shown = text.shown();
@@ -1156,6 +1202,11 @@ fn styles_ui(
         ..shown.font.unwrap_or(first.font)
     };
     let mut font = was;
+    let lines_were = crate::font_list::Lines {
+        underline: shown.underline,
+        strike: shown.strike,
+    };
+    let mut lines = lines_were;
     let mut used = false;
     let mut picked = false;
     ui.with_layout(look_layout(compact), |ui| {
@@ -1170,14 +1221,22 @@ fn styles_ui(
             }
         });
         ui.horizontal(|ui| {
-            crate::font_list::styles(ui, &mut font);
-            planned(ui);
+            crate::font_list::styles(ui, &mut font, &mut lines);
             if let Some(c) = text_color_button(ui, &text.colors()) {
                 text.set_color(c);
                 used = true;
             }
         });
     });
+    for (on, was, kind) in [
+        (lines.underline, lines_were.underline, DecoKind::Underline),
+        (lines.strike, lines_were.strike, DecoKind::Strike),
+    ] {
+        if on != was {
+            text.switch_deco(kind);
+            used = true;
+        }
+    }
     if picked {
         // Each character takes the family's face nearest its own.
         if shown.font.is_none() || font.family != was.family {
@@ -1416,6 +1475,24 @@ fn caret_along(o: &PageObject, p: Pos2, n: usize) -> usize {
     (f * n as f32).round() as usize
 }
 
+/// What `pick` asks for on line `o`: a point clicked on the page, placed among the line's
+/// characters where the page draws them ([`PageObject::stops`]), and with `word` the word
+/// around it, as the editor may draw the line in another face until its font is read
+/// (BUG-45). A point stays one where those places don't match the line's characters.
+fn on_line(o: &PageObject, pick: Pick) -> Pick {
+    let Pick::At(p, word) = pick else {
+        return pick;
+    };
+    let text = o.text.as_deref().unwrap_or("");
+    let n = text.chars().count();
+    if o.stops.len() != n + 1 {
+        return pick;
+    }
+    let i = caret_along(o, p, n);
+    let (a, b) = if word { word_around(text, i) } else { (i, i) };
+    Pick::Chars(a, b)
+}
+
 /// What hides line `o` while it is edited: its box, with room for accents above and
 /// descenders below, in page points.
 fn cover_box(o: &PageObject) -> [f32; 4] {
@@ -1519,6 +1596,8 @@ pub struct Editor {
     pub tfont: FontChoice,
     pub tsize: f32,
     pub tcolor: [f32; 3],
+    /// Underline and Strikethrough for the next new text.
+    pub tlines: crate::font_list::Lines,
     pub fill_on: bool,
     pub fill: [f32; 3],
     pub stroke_on: bool,
@@ -1542,6 +1621,9 @@ pub struct Editor {
     /// Paragraph editing is on: page text opens as paragraphs where it can be one (the app's
     /// setting, lent to each tab; [`Editor::set_paragraph`]).
     pub paragraphs: bool,
+    /// Objects moved or resized snap to the page's and other objects' edges and middles
+    /// (Edit > Arrange's Snap to objects, the app's setting, lent to each tab).
+    pub snap: bool,
     /// The editor a switch between Paragraph and One line opens once what was typed is in
     /// the document.
     then: Option<Then>,
@@ -1570,6 +1652,9 @@ pub struct Editor {
     /// committed, and this, the first character that can't be written, left out of it
     /// (PB-54). The tab says so ([`page_text::left_note`]).
     pub left_composing: Option<String>,
+    /// A line's paragraph, which an alignment pressed in the line was to open aligned, can't
+    /// be: what to say. The tab says it.
+    pub align_note: Option<String>,
     /// The document's language (`/Lang`), as the pages were drawn last: text typed on the
     /// page is drawn in the fonts core sets it in for it ([`page_text::runs`]).
     lang: Option<String>,
@@ -1592,6 +1677,13 @@ pub struct Editor {
     pub writing: Option<Writing>,
     /// What had the keyboard on the page when F6 took it elsewhere, for when it comes back.
     pub parked: Option<Parked>,
+    /// Replace typed over a match and left its line or paragraph waiting ([`Parked`]):
+    /// Search results takes the keyboard back.
+    pub typed_over: bool,
+    /// Why Replace left a match as it was, shown at it a while: the page and the match's
+    /// first box (displayed-page points).
+    match_note: page_text::Refused,
+    match_note_at: Option<(usize, [f32; 4])>,
     /// The pass in which a click outside a note closed it: that click puts down nothing
     /// else, whichever page it was on.
     note_closed: Option<u64>,
@@ -1600,8 +1692,6 @@ pub struct Editor {
     pub box_style: TextStyle,
     /// The name new annotations are signed with (from the settings).
     pub author: String,
-    /// The features planned but not built are shown (from the settings; ENH-41).
-    pub planned: bool,
     /// How many areas are marked for redaction (counted by the tab).
     pub redact_marks: usize,
     /// The Redact tool's Apply button was pressed; the tab runs the command.
@@ -1692,6 +1782,7 @@ impl Default for Editor {
             tfont: FontChoice::default(),
             tsize: 14.0,
             tcolor: [0.0; 3],
+            tlines: crate::font_list::Lines::default(),
             fill_on: false,
             fill: [0.95, 0.75, 0.2],
             stroke_on: true,
@@ -1705,6 +1796,7 @@ impl Default for Editor {
             para: None,
             blocks: HashMap::new(),
             paragraphs: false,
+            snap: true,
             then: None,
             switch: None,
             hyphens_wanted: None,
@@ -1715,6 +1807,7 @@ impl Default for Editor {
             not_kept: None,
             left_out: false,
             left_composing: None,
+            align_note: None,
             lang: None,
             show_hidden: false,
             words: HashMap::new(),
@@ -1727,6 +1820,9 @@ impl Default for Editor {
             annot_tool: Tool::Note,
             writing: None,
             parked: None,
+            typed_over: false,
+            match_note: page_text::Refused::default(),
+            match_note_at: None,
             note_closed: None,
             note_color: [1.0, 0.85, 0.2],
             box_style: TextStyle {
@@ -1734,7 +1830,6 @@ impl Default for Editor {
                 ..TextStyle::default()
             },
             author: String::new(),
-            planned: false,
             redact_marks: 0,
             apply_redactions: false,
             zoom: 1.0,
@@ -1823,6 +1918,29 @@ fn norm(r: [f32; 4]) -> [f32; 4] {
         r[0].max(r[2]),
         r[1].max(r[3]),
     ]
+}
+
+/// Whether object `o` covers most of a page of `area` square points, as a scanned page's
+/// picture or a background does.
+fn covers_most(o: &PageObject, area: f32) -> bool {
+    let b = o.bbox;
+    (b[2] - b[0]) * (b[3] - b[1]) >= 0.8 * area
+}
+
+/// What text typed on a page of `area` square points may run over ([`page_text::overflow`],
+/// PB-35), in page points, with what each is: the page's visible things, `objs`, but those
+/// `leave` says (by number and object: the text being edited, and what it was already
+/// over), invisible text and a background covering most of the page.
+fn obstacles_in(
+    objs: &[PageObject],
+    area: f32,
+    leave: impl Fn(usize, &PageObject) -> bool,
+) -> Vec<([f32; 4], &'static str)> {
+    (objs.iter().enumerate())
+        .filter(|(i, o)| !leave(*i, o) && !(o.kind == ObjectKind::Text && o.hidden))
+        .filter(|(_, o)| !covers_most(o, area))
+        .map(|(_, o)| (o.bbox, page_text::over(o.kind)))
+        .collect()
 }
 
 /// Whether two boxes meet (touching counts).
@@ -2117,7 +2235,7 @@ impl Editor {
         let (action, held) = match piece {
             Typed::Text => {
                 let a = self.adding.take().filter(PageText::has_text)?;
-                let add = Action::AddText(a.page, a.at, a.text.clone());
+                let add = Action::AddText(a.page, a.at, Box::new(a.text.clone()));
                 (add, Kept::Text(Box::new(a)))
             }
             Typed::Writing => {
@@ -2207,6 +2325,10 @@ impl Editor {
         if let Kept::Text(a) = &held.0 {
             let end = page_text::Look::of(a.text.end_style());
             (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
+            self.tlines = crate::font_list::Lines {
+                underline: end.underline,
+                strike: end.strike,
+            };
         }
     }
 
@@ -2281,6 +2403,8 @@ impl Editor {
             font: self.tfont,
             size: self.tsize,
             color: self.tcolor,
+            underline: self.tlines.underline,
+            strike: self.tlines.strike,
         }
     }
 
@@ -2320,8 +2444,9 @@ impl Editor {
             ObjectKind::Text => {
                 let te = text_change(&insp.text, obj);
                 let words_only = !insp.text.restyled();
+                let decos = insp.text.decorations();
                 (!insp.text.same_as(&insp.orig))
-                    .then_some(Action::EditText(page, id, te, words_only))
+                    .then_some(Action::EditText(page, id, te, decos, words_only))
             }
             ObjectKind::Path => {
                 let was = Insp::of(insp.key, obj);
@@ -2381,6 +2506,7 @@ impl Editor {
             refused: page_text::Refused::default(),
             area: Rect::NOTHING,
             typed: Vec::new(),
+            park: false,
             composing: None,
             caret_at: None,
         });
@@ -2575,9 +2701,8 @@ impl Editor {
     }
 
     /// What text typed on `page` (drawn at `r`, `k` pixels per point) may run over, on the
-    /// screen, with what each is ([`page_text::overflow`], PB-35): the page's visible things
-    /// but those `leave` says (by number and object: the text being edited, and what it was
-    /// already over), invisible text and a background covering most of the page.
+    /// screen, with what each is ([`page_text::overflow`], PB-35): [`obstacles_in`] the
+    /// page's objects.
     fn obstacles(
         &self,
         page: usize,
@@ -2587,14 +2712,9 @@ impl Editor {
     ) -> Vec<(Rect, &'static str)> {
         let at = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let area = (r.width() / k) * (r.height() / k);
-        (self.objs.get(&page).into_iter().flatten().enumerate())
-            .filter(|(i, o)| !leave(*i, o) && !(o.kind == ObjectKind::Text && o.hidden))
-            .filter(|(i, _)| !self.background(page, *i, area))
-            .map(|(_, o)| {
-                let b = o.bbox;
-                let on_screen = Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3]));
-                (on_screen, page_text::over(o.kind))
-            })
+        let objs = self.objs.get(&page).map_or(&[][..], |v| &v[..]);
+        (obstacles_in(objs, area, leave).into_iter())
+            .map(|(b, what)| (Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3])), what))
             .collect()
     }
 
@@ -2664,7 +2784,8 @@ impl Editor {
         let ctx = ui.ctx().clone();
         let id = line_edit_id(self.scope, page);
         let drawn = drawn_in_place(&o);
-        if ctx.memory(|m| m.has_focus(id)) && !le.typed.is_empty() {
+        let typed_over = ctx.memory(|m| m.has_focus(id)) && !le.typed.is_empty();
+        if typed_over {
             // Typed as it opened, over what it selected: before the keys since, as typed.
             let typed = std::mem::take(&mut le.typed);
             ctx.input_mut(|i| {
@@ -2701,11 +2822,16 @@ impl Editor {
         };
         let (out, area) = if drawn {
             let runs = |t: &str| runs(t, k, &|c| page_text::shown(mode, c));
+            let decos = |t: &str| insp.text.preview(t).drawn_decos();
+            let bands = |t: &str, runs: &[page_text::Run]| {
+                page_text::char_bands(runs, &decos(t), &|c| page_text::shown(mode, c))
+            };
             let style = page_text::Style {
                 runs: &runs,
                 mode,
                 accent: ui.visuals().selection.stroke.color,
                 warn: &warn,
+                bands: &bands,
             };
             let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
             let c = cover_box(&o);
@@ -2766,10 +2892,15 @@ impl Editor {
                         .clip_text(false)
                         .margin(egui::Margin::same(2));
                     if o.hidden {
-                        te.show(ui)
-                    } else {
-                        te.layouter(&mut layouter).show(ui)
+                        return te.show(ui);
                     }
+                    let out = te.layouter(&mut layouter).show(ui);
+                    let paper = |c| page_text::shown(PageColours::Normal, c);
+                    let now = out.galley.text();
+                    let decos = insp.text.preview(now).drawn_decos();
+                    let bands = page_text::char_bands(&runs(now, scale, &paper), &decos, &paper);
+                    page_text::paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands, &[]);
+                    out
                 })
                 .inner;
             page_text::keep_on_right_click(&ctx, id, &mut out, held);
@@ -2791,7 +2922,8 @@ impl Editor {
         // Where the caret is, for a switch to Paragraph.
         if let Some(c) = out.cursor_range.filter(|_| drawn) {
             let at = out.galley.pos_from_cursor(c.primary).center() + out.galley_pos.to_vec2();
-            le.caret_at = Some(Pos2::new((at.x - r.min.x) / k, (at.y - r.min.y) / k));
+            let at = Pos2::new((at.x - r.min.x) / k, (at.y - r.min.y) / k);
+            le.caret_at = Some((at, c.primary.index.0));
         }
         let edit = &out.response.response;
         // What an input method composes shows unchecked; left without the keyboard, it is
@@ -2831,6 +2963,14 @@ impl Editor {
             edit.request_focus();
             le.fresh = false;
             return true;
+        }
+        // Replace's text is in: the line waits, open, for Replace again or a click, giving
+        // up the keyboard now, as it would be taken back if it still had it next frame.
+        if typed_over && std::mem::take(&mut le.park) {
+            self.parked = Some(Parked::Typing(id));
+            self.typed_over = true;
+            ctx.memory_mut(|m| m.surrender_focus(id));
+            return edit.hovered();
         }
         // Under a dialog (a change's failure said, say) it waits, open, for it to close, and
         // takes the keyboard back then: its Esc and clicks are the dialog's.
@@ -3212,11 +3352,12 @@ impl Editor {
     }
 
     /// Select every object on `page` that a click could select with the arrow: invisible
-    /// text only while it is shown (Ctrl+A with the arrow).
+    /// text only while it is shown, a line's underlines with the line, not on their own
+    /// (Ctrl+A with the arrow).
     pub fn select_all_objects(&mut self, pdf: &limarepdf_core::Pdf, page: usize) {
         let shown = self.show_hidden;
         let ids: Vec<usize> = (self.objects(pdf, page).iter().enumerate())
-            .filter(|(_, o)| shown || !o.hidden)
+            .filter(|(_, o)| (shown || !o.hidden) && o.decorates.is_none())
             .map(|(i, _)| i)
             .collect();
         self.select_objects(page, ids);
@@ -3671,7 +3812,8 @@ impl Editor {
     }
 
     /// The smallest object under `p` (within `tol`) that `keep` accepts; invisible text
-    /// only while it is shown.
+    /// only while it is shown. A line's underline or strike-through is its line
+    /// ([`PageObject::decorates`]): a click on it selects the line.
     fn hit_where(
         &self,
         page: usize,
@@ -3680,11 +3822,13 @@ impl Editor {
         keep: impl Fn(&PageObject) -> bool,
     ) -> Option<usize> {
         let objs = self.objs.get(&page)?;
+        let own = |i: usize| objs[i].decorates.filter(|&l| l < objs.len()).unwrap_or(i);
         objs.iter()
             .enumerate()
-            .filter(|(_, o)| {
-                keep(o)
-                    && (self.show_hidden || !o.hidden)
+            .filter(|&(i, o)| {
+                let line = &objs[own(i)];
+                keep(line)
+                    && (self.show_hidden || !line.hidden)
                     && p.x >= o.bbox[0] - tol
                     && p.x <= o.bbox[2] + tol
                     && p.y >= o.bbox[1] - tol
@@ -3699,7 +3843,7 @@ impl Editor {
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then(ib.cmp(ia))
             })
-            .map(|(i, _)| i)
+            .map(|(i, _)| own(i))
     }
 
     fn handle_hit(&self, b: [f32; 4], p: Pos2, tol: f32) -> Option<usize> {
@@ -3761,6 +3905,7 @@ impl Editor {
                 }
             }
         }
+        self.show_match_note(ui.ctx(), page, r, k);
         if !self.show_hidden {
             return;
         }
@@ -3890,7 +4035,10 @@ impl Editor {
         let tol = 3.0 / k;
         let htol = 6.0 / k;
         let shift = ui.input(|i| i.modifiers.shift);
-        let area = (r.width() / k) * (r.height() / k);
+        // Alt moves and resizes freely, without snapping.
+        let keys = (shift, ui.input(|i| i.modifiers.alt));
+        let size = (r.width() / k, r.height() / k);
+        let area = size.0 * size.1;
         // Where a drag with the arrow or the read tool begins, the frame it does: once the
         // pointer has gone further from the press than a click can. One let go before that,
         // however long it was held, is a click there.
@@ -3988,6 +4136,7 @@ impl Editor {
             orig: a.bbox,
             cur: a.bbox,
             group: Vec::new(),
+            snapping: Snapping::default(),
         };
         // A press at `p` starts moving, resizing or turning: by the selected item's
         // handles; else with the arrow whatever is under it, which is selected, and with
@@ -4008,6 +4157,7 @@ impl Editor {
                     orig: *b,
                     cur: [0.0; 4],
                     group: Vec::new(),
+                    snapping: Snapping::default(),
                 });
             } else if let (Some(i), Some((id, ends))) = (end_hit(p), sel_line) {
                 ed.drag = Some(Drag {
@@ -4019,6 +4169,7 @@ impl Editor {
                     orig: ends,
                     cur: ends,
                     group: Vec::new(),
+                    snapping: Snapping::default(),
                 });
             } else if let (Some(h), Some(a)) = (h, &selected) {
                 ed.drag = Some(annot_drag(a, Mode::Handle(h), p));
@@ -4119,7 +4270,7 @@ impl Editor {
                     if let Some(pos) = resp.interact_pointer_pos() {
                         match self.marquee.as_mut().filter(|m| m.page == page) {
                             Some(m) => m.cur = to_pt(pos),
-                            None => self.drag_to(ui.ctx(), page, to_pt(pos), shift),
+                            None => self.drag_to(ui.ctx(), page, to_pt(pos), keys, size),
                         }
                     }
                 }
@@ -4223,7 +4374,7 @@ impl Editor {
                 if self.drag.is_some() {
                     if resp.dragged() {
                         if let Some(pos) = resp.interact_pointer_pos() {
-                            self.drag_to(ui.ctx(), page, to_pt(pos), shift);
+                            self.drag_to(ui.ctx(), page, to_pt(pos), keys, size);
                         }
                     }
                     if resp.drag_stopped() {
@@ -4663,6 +4814,17 @@ impl Editor {
             let fill = accent.gamma_multiply(0.25);
             painter.rect(screen_rect(rect), 0.0, fill, st, StrokeKind::Inside);
         }
+        // The lines a move or resize snapped to, dashed along what lines up there.
+        if let Some(d) = self.drag.as_ref().filter(|d| d.page == page) {
+            for g in &d.snapping.guides {
+                let ends = match g.upright {
+                    true => [to_screen(g.at, g.from), to_screen(g.at, g.to)],
+                    false => [to_screen(g.from, g.at), to_screen(g.to, g.at)],
+                };
+                let st = Stroke::new(1.0, GUIDE);
+                painter.extend(egui::Shape::dashed_line(&ends, st, 4.0, 3.0));
+            }
+        }
         // Notes at a fixed size on screen, over the page's small drawing of them.
         for a in self.annots.get(&page).into_iter().flatten() {
             if a.kind != AnnotKind::Note || !a.on_page() {
@@ -4818,6 +4980,7 @@ impl Editor {
                 orig: o.bbox,
                 cur: o.bbox,
                 group: Vec::new(),
+                snapping: Snapping::default(),
             });
         }
     }
@@ -4837,6 +5000,7 @@ impl Editor {
             orig: b,
             cur: b,
             group,
+            snapping: Snapping::default(),
         });
     }
 
@@ -4855,8 +5019,10 @@ impl Editor {
     /// invisible text only while it is shown.
     fn inside_rect(&self, page: usize, rect: [f32; 4]) -> Vec<usize> {
         let objs = self.objs.get(&page).map_or(&[][..], |v| v);
+        // A line's underlines go with it, not on their own.
         (objs.iter().enumerate())
-            .filter(|(_, o)| (self.show_hidden || !o.hidden) && inside(o.bbox, rect))
+            .filter(|(_, o)| (self.show_hidden || !o.hidden) && o.decorates.is_none())
+            .filter(|(_, o)| inside(o.bbox, rect))
             .map(|(i, _)| i)
             .collect()
     }
@@ -4893,30 +5059,74 @@ impl Editor {
     /// scanned page's picture or a background does: a drag that starts on it while it isn't
     /// selected draws a rectangle, so it isn't dragged away by accident.
     fn background(&self, page: usize, id: usize, area: f32) -> bool {
-        self.objs
-            .get(&page)
+        (self.objs.get(&page))
             .and_then(|v| v.get(id))
-            .is_some_and(|o| {
-                let b = o.bbox;
-                (b[2] - b[0]) * (b[3] - b[1]) >= 0.8 * area
-            })
+            .is_some_and(|o| covers_most(o, area))
     }
 
     /// Follow the pointer, at `p` (page points) on `page`, with the move, resize or turn
-    /// being dragged. Shift keeps proportions, lines at 45° and turns to steps of 15°.
-    fn drag_to(&mut self, ctx: &egui::Context, page: usize, p: Pos2, shift: bool) {
+    /// being dragged. Shift keeps proportions, lines at 45° and turns to steps of 15°. With
+    /// Snap to objects on, a move or resize of objects snaps to the edges and middles of the
+    /// page (`size`, its width and height) and of its other objects, unless `free` (Alt
+    /// held, as word processors place freely).
+    fn drag_to(
+        &mut self,
+        ctx: &egui::Context,
+        page: usize,
+        p: Pos2,
+        (shift, free): (bool, bool),
+        size: (f32, f32),
+    ) {
+        let objs = self.objs.get(&page).map_or(&[][..], |v| v);
+        let (snap, shown) = (self.snap && !free, self.show_hidden);
+        let reach = arrange::SNAP_PX / self.zoom.max(0.01);
         let Some(d) = self.drag.as_mut().filter(|d| d.page == page) else {
             return;
         };
         let (dx, dy) = (p.x - d.start.x, p.y - d.start.y);
+        // The lines, read the first time: the page's, and those of the other objects a click
+        // could select. Comments, a line's ends and turns don't snap.
+        let objects = d.annot.is_none() && matches!(d.mode, Mode::Move | Mode::Handle(_));
+        let (id, group) = (d.id, &d.group);
+        let snaps = match snap && objects {
+            true => Some(&*d.snapping.lines.get_or_insert_with(|| {
+                let moving = |i: usize| i == id || group.iter().any(|g| g.0 == i);
+                let others = (objs.iter().enumerate())
+                    .filter(|&(i, o)| !moving(i) && (shown || !o.hidden))
+                    .filter(|(_, o)| o.decorates.is_none())
+                    .map(|(_, o)| o.bbox);
+                arrange::Snaps::new(size, others)
+            })),
+            false => None,
+        };
+        let mut guides = Vec::new();
         d.cur = match d.mode {
-            Mode::Move => [
-                d.orig[0] + dx,
-                d.orig[1] + dy,
-                d.orig[2] + dx,
-                d.orig[3] + dy,
-            ],
-            Mode::Handle(h) => resize(d.orig, h, dx, dy, shift),
+            Mode::Move => {
+                let b = shifted(d.orig, dx, dy);
+                match snaps {
+                    Some(s) => {
+                        let (sx, sy) = s.snap_move(b, reach);
+                        let b = shifted(b, sx, sy);
+                        let (xs, ys) = arrange::features(b);
+                        guides = s.guides(b, &xs, &ys);
+                        b
+                    }
+                    None => b,
+                }
+            }
+            Mode::Handle(h) => {
+                let pointer = (dx, dy);
+                let (dx, dy) =
+                    snaps.map_or(pointer, |s| s.snap_resize(d.orig, h, pointer, shift, reach));
+                let b = resize(d.orig, h, dx, dy, shift);
+                if let Some(s) = snaps {
+                    // Along the edges the handle moves.
+                    let (x, y) = arrange::moving_edges(h);
+                    let (x, y) = (x.map(|i| b[i]), y.map(|i| b[i]));
+                    guides = s.guides(b, x.as_slice(), y.as_slice());
+                }
+                b
+            }
             // Shift keeps the line at a multiple of 45° from its other end.
             Mode::End(i) => {
                 let o = 1 - i;
@@ -4943,6 +5153,7 @@ impl Editor {
                 [deg, 0.0, 0.0, 0.0]
             }
         };
+        d.snapping.guides = guides;
         match d.mode {
             Mode::Move => ctx.set_cursor_icon(CursorIcon::Grabbing),
             Mode::Handle(h) => ctx.set_cursor_icon(handle_cursor(h)),
@@ -5104,6 +5315,21 @@ impl Editor {
         Some((page, bbox))
     }
 
+    /// Whether the box with the keyboard takes text styles from its keys (Ctrl+B, Ctrl+I,
+    /// Ctrl+U): new text, or a visible line or a paragraph being edited on the page.
+    pub fn styles_focused(&self, ctx: &egui::Context) -> bool {
+        let has = |id: egui::Id| ctx.memory(|m| m.has_focus(id));
+        let hidden = |page: usize, id: usize| {
+            (self.objs.get(&page))
+                .and_then(|v| v.get(id))
+                .is_some_and(|o| o.hidden)
+        };
+        self.adding.as_ref().is_some_and(|a| has(a.id()))
+            || (self.line_edit.as_ref())
+                .is_some_and(|le| has(line_edit_id(self.scope, le.page)) && !hidden(le.page, le.id))
+            || (self.para.as_ref()).is_some_and(|pe| has(para_id(self.scope, pe.page)))
+    }
+
     /// A line or paragraph of page text is being edited on the page: Bold, Italic and the
     /// floating bar act in it.
     pub fn editing_line(&self) -> bool {
@@ -5222,6 +5448,43 @@ impl Editor {
         if !boxes.is_empty() {
             self.actions.push(Action::SetBox(p, boxes));
         }
+    }
+
+    /// Line up the objects selected, if the tool in use can move them (NEW-08): two or more
+    /// by the box round them all, one alone by its page (its size in `sizes`, the pages'
+    /// as shown), in one change. Already lined up, nothing changes.
+    pub fn align(&mut self, how: Align, sizes: &[(f32, f32)]) {
+        let Some((page, _)) = self.selection.objects().filter(|_| self.object_moves()) else {
+            return;
+        };
+        let Some(&size) = sizes.get(page) else {
+            return;
+        };
+        let boxes = arrange::align(&self.held_boxes(page), how, size);
+        if !boxes.is_empty() {
+            self.actions.push(Action::SetBox(page, boxes));
+        }
+    }
+
+    /// Space out three or more objects selected evenly along `axis`, the outer two staying,
+    /// if the tool in use can move them, in one change.
+    pub fn distribute(&mut self, axis: Axis) {
+        let Some((page, _)) = self.selection.objects().filter(|_| self.object_moves()) else {
+            return;
+        };
+        let boxes = arrange::distribute(&self.held_boxes(page), axis);
+        if !boxes.is_empty() {
+            self.actions.push(Action::SetBox(page, boxes));
+        }
+    }
+
+    /// The guides the move or resize being dragged snapped to: upright or level, and where.
+    #[cfg(test)]
+    pub fn guides(&self) -> Vec<(bool, f32)> {
+        let d = self.drag.as_ref();
+        (d.into_iter().flat_map(|d| &d.snapping.guides))
+            .map(|g| (g.upright, g.at))
+            .collect()
     }
 
     /// Esc: let go of a move, resize, turn, shape, pen stroke, selection rectangle or word
@@ -5491,16 +5754,17 @@ impl Editor {
         self.selection.words().is_some() && self.chosen_now().is_some_and(Chosen::restylable)
     }
 
-    /// Bold (with `bold` false, Italic) on or off by Word's rule, as one undo step: for the
-    /// words selected with the read tool, or the lines of page text selected with the arrow.
-    /// In the line being edited on the page, for what is selected there, or the word at the
-    /// caret, as Ctrl+B there does: the line stays open and takes the keyboard back.
-    /// Returns what to say when none of the selected words or lines can change.
+    /// Style `s` (Bold, Italic, Underline, Strikethrough) on or off by Word's rule, as one
+    /// undo step: for the words selected with the read tool, or the lines of page text
+    /// selected with the arrow. In the line or paragraph being edited on the page, for what
+    /// is selected there, or the word at the caret, as Ctrl+B there does: the typing stays
+    /// open and takes the keyboard back. Returns what to say when none of the selected words
+    /// or lines can change.
     pub fn switch_style(
         &mut self,
         ctx: &egui::Context,
         pdf: &limarepdf_core::Pdf,
-        bold: bool,
+        s: Switch,
     ) -> Option<String> {
         if self.chosen_of().is_some() {
             self.sync_chosen(pdf);
@@ -5508,20 +5772,14 @@ impl Editor {
             if !c.restylable() {
                 return c.left.said();
             }
-            match bold {
-                true => c.text.bold(),
-                false => c.text.italic(),
-            }
+            c.text.switch_style(s);
             self.keep(Typed::Words);
             return None;
         }
         let scope = self.scope;
         if let Some(pe) = self.para.as_mut() {
             let sel = page_text::held(ctx, para_id(scope, pe.page)).unwrap_or((0, 0));
-            match bold {
-                true => pe.text.bold(sel),
-                false => pe.text.italic(sel),
-            }
+            pe.text.switch_style(sel, s);
             pe.refocus = true;
             return None;
         }
@@ -5534,18 +5792,12 @@ impl Editor {
         let insp = self.insp.as_mut()?;
         if let Some(le) = (self.line_edit.as_mut()).filter(|le| (le.page, le.id) == (page, id)) {
             let sel = page_text::held(ctx, line_edit_id(scope, page)).unwrap_or((0, 0));
-            match bold {
-                true => insp.text.bold(sel),
-                false => insp.text.italic(sel),
-            }
+            insp.text.switch_style(sel, s);
             le.refocus = true;
             return None;
         }
         let all = (0, insp.text.text().chars().count());
-        match bold {
-            true => insp.text.bold(all),
-            false => insp.text.italic(all),
-        }
+        insp.text.switch_style(all, s);
         self.commit_insp();
         None
     }
@@ -5604,6 +5856,23 @@ impl Editor {
         }
     }
 
+    /// After lines of `page` moved along their rows (aligned), before its objects are read
+    /// again: each line selected there is to be found where it is now, among `objs`, the
+    /// line of its text in its row nearest where it started.
+    pub fn lines_moved(&mut self, page: usize, objs: &[PageObject]) {
+        self.selection.expect(page, |h| {
+            let (a, text) = (h.bbox, &h.text);
+            let row = |o: &&PageObject| {
+                ObjKind::of(o) == h.kind && o.text == *text && o.bbox[1] < a[3] && a[1] < o.bbox[3]
+            };
+            let off = |o: &PageObject| (o.bbox[0] - a[0]).abs();
+            let there = objs.iter().filter(row);
+            if let Some(o) = there.min_by(|x, y| off(x).total_cmp(&off(y))) {
+                h.bbox = o.bbox;
+            }
+        });
+    }
+
     /// The look of the words selected with the read tool, across lines and pages, which
     /// the band's Font group changes ([`Self::font_band`]).
     fn words_ui(&mut self, ui: &mut egui::Ui) {
@@ -5614,48 +5883,20 @@ impl Editor {
         let [font, size] = look_facts(&c.text);
         let editing = ("Editing", "Selected words".into());
         facts(ui, "words-look", &[editing, font, size]);
-        self.planned_text_tools(ui);
     }
 
-    /// The text tools planned (ENH-41), folded at the end of selected text's inspector as the
-    /// workspace has them: marked Planned, saying what is planned. Not with the planned
-    /// features hidden.
-    fn planned_text_tools(&self, ui: &mut egui::Ui) {
-        if !self.planned {
-            return;
-        }
-        let text = |size, color| egui::TextFormat::simple(egui::FontId::proportional(size), color);
-        let ink = ui.visuals().text_color();
-        let muted = theme::muted(ui.visuals().dark_mode);
-        let mut name = egui::text::LayoutJob::default();
-        name.append("Future text tools", 0.0, text(12.0, ink));
-        name.append("Planned", 6.0, text(11.0, muted));
-        let r = section(ui, name)
-            .id_salt("future-text-tools")
-            .show(ui, |ui| {
-                note(
-                    ui,
-                    "Underline and strike-through are planned. Your existing text tools \
-                     keep working.",
-                );
-            });
-        let said = "Future text tools — Planned";
-        r.header_response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::DisclosureTriangle, true, said));
-    }
-
-    /// Edit's Font group (ENH-38): the font list, size, Bold, Italic, `planned` (the planned
-    /// styles) and the colour, for the text they change: the new text being typed (what
+    /// Edit's Font group (ENH-38): the font list, size, Bold, Italic, Underline,
+    /// Strikethrough and the colour, for the text they change: the new text being typed (what
     /// is selected in it) or, before it, the next new text's look; the words selected with
     /// the read tool; the line of page text selected or being edited (what is selected in
     /// it); the lines among several objects. With none of them, the next new text's look,
     /// greyed. Changes apply as they are made, each finished one an undo step
     /// ([`Self::settle_look`]); the typing stays open and takes the keyboard back. `compact`:
     /// on one row.
-    pub fn font_band(&mut self, ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui), compact: bool) {
+    pub fn font_band(&mut self, ui: &mut egui::Ui, compact: bool) {
         if self.adding_text() {
             let Some(a) = self.adding.as_mut() else {
-                self.next_text_look(ui, planned, compact);
+                self.next_text_look(ui, compact);
                 return;
             };
             let end = a.text.text().chars().count();
@@ -5664,14 +5905,14 @@ impl Editor {
                 text: &mut a.text,
                 sel,
             };
-            if styles_ui(ui, &mut text, 4.0..=200.0, &[], planned, compact) {
+            if styles_ui(ui, &mut text, 4.0..=200.0, &[], compact) {
                 a.refocus = true;
             }
             return;
         }
         if self.chosen_now().is_some_and(Chosen::restylable) {
             if let Some(c) = self.chosen.as_mut() {
-                styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf, planned, compact);
+                styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf, compact);
                 return;
             }
         }
@@ -5698,7 +5939,7 @@ impl Editor {
                 text: &mut pe.text,
                 sel,
             };
-            if styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, planned, compact) {
+            if styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, compact) {
                 pe.refocus = true;
             }
             return;
@@ -5723,19 +5964,14 @@ impl Editor {
                 text: &mut insp.text,
                 sel,
             };
-            styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, planned, compact);
+            styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, compact);
             return;
         }
-        ui.add_enabled_ui(false, |ui| self.next_text_look(ui, planned, compact));
+        ui.add_enabled_ui(false, |ui| self.next_text_look(ui, compact));
     }
 
     /// The look of the next new text, in the band's Font group.
-    fn next_text_look(
-        &mut self,
-        ui: &mut egui::Ui,
-        planned: &dyn Fn(&mut egui::Ui),
-        compact: bool,
-    ) {
+    fn next_text_look(&mut self, ui: &mut egui::Ui, compact: bool) {
         ui.with_layout(look_layout(compact), |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
             ui.horizontal(|ui| {
@@ -5747,8 +5983,7 @@ impl Editor {
                 }
             });
             ui.horizontal(|ui| {
-                crate::font_list::styles(ui, &mut self.tfont);
-                planned(ui);
+                crate::font_list::styles(ui, &mut self.tfont, &mut self.tlines);
                 if let Some(c) = text_color_button(ui, &[self.tcolor]) {
                     self.tcolor = c;
                 }
@@ -6357,7 +6592,6 @@ impl Editor {
             }
             ui.add_space(4.0);
             self.paragraph_inspector(ui);
-            self.planned_text_tools(ui);
             return;
         }
         let para_state = self.para_state();
@@ -6515,9 +6749,6 @@ impl Editor {
             // A line being edited on the page shows the change as it is made, and keeps
             // it with the typing when the editing finishes.
             self.commit_insp();
-        }
-        if obj.kind == ObjectKind::Text && !obj.hidden {
-            self.planned_text_tools(ui);
         }
     }
 }
@@ -6736,6 +6967,8 @@ mod tests {
             font: FontChoice::default(),
             size: 12.0,
             color: [0.0; 3],
+            underline: false,
+            strike: false,
         };
         for piece in [Typed::Text, Typed::Writing] {
             let mut ed = Editor::default();
@@ -7010,7 +7243,7 @@ mod tests {
         keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te, false)] if te.parts[0].size == 10.13
+            [Action::EditText(0, 2, te, _, false)] if te.parts[0].size == 10.13
         ));
     }
 
@@ -7107,8 +7340,14 @@ mod tests {
         let cold = words.iter().find(|w| w.text == "cold").unwrap().bbox;
         let at = Pos2::new(cold[2] - 1.0, (cold[1] + cold[3]) / 2.0);
         assert_eq!(ed.word_pick(0, 2, at, &words), Pick::Chars(12, 16));
-        // Without the words: around where the click falls on the line as it is drawn.
+        // Without the words: around where the click falls on the line, placed where the
+        // page draws its characters when the edit starts (BUG-45), a click between them.
         assert_eq!(ed.word_pick(0, 2, at, &[]), Pick::At(at, true));
+        let line = &ed.objs[&0][2];
+        assert_eq!(on_line(line, Pick::At(at, true)), Pick::Chars(12, 16));
+        let (x, y) = line.baseline.unwrap();
+        let between = Pos2::new(x + line.stops[14], y - 3.0);
+        assert_eq!(on_line(line, Pick::At(between, false)), Pick::Chars(14, 14));
     }
 
     #[test]
@@ -7132,7 +7371,7 @@ mod tests {
 
     /// The band's Font group for `ed`'s selection, drawn alone.
     fn band_tree(ed: &mut Editor) -> egui::accesskit::TreeUpdate {
-        drawn_tree(ed, |ed, ui| ed.font_band(ui, &|_| {}, false))
+        drawn_tree(ed, |ed, ui| ed.font_band(ui, false))
     }
 
     /// What `draw` draws of `ed`, alone in a window, settled.
@@ -7263,7 +7502,7 @@ mod tests {
         ed.chosen = None;
         ed.sync_chosen(&pdf);
         assert_eq!(
-            ed.switch_style(&egui::Context::default(), &pdf, true),
+            ed.switch_style(&egui::Context::default(), &pdf, Switch::Bold),
             None,
             "the visible lines can change"
         );
@@ -7271,7 +7510,7 @@ mod tests {
             panic!("{} changes", ed.actions.len());
         };
         assert_eq!(changes.len(), 1);
-        let ids: Vec<usize> = changes[0].1.iter().map(|(id, _)| *id).collect();
+        let ids: Vec<usize> = changes[0].1.iter().map(|(id, ..)| *id).collect();
         assert_eq!(ids, [0, 2]);
         assert_eq!(
             left.said().as_deref(),
@@ -7303,7 +7542,7 @@ mod tests {
         ed.sync_insp();
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te, true)]
+            [Action::EditText(0, 2, te, _, true)]
                 if te.text == "Walruses" && te.parts[0].font == PartFont::Span(0)
         ));
         // A shape's new outline, kept when nothing is selected any more.
@@ -7324,7 +7563,7 @@ mod tests {
         keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te, false)]
+            [Action::EditText(0, 2, te, _, false)]
                 if te.text == "Walrus like cold water"
                     && te.parts.len() == 1
                     && te.parts[0].size == 18.0
@@ -7342,7 +7581,7 @@ mod tests {
         assert!(!ed.typing_on_page() && !ed.pending());
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te, true)] if te.text == "Seal"
+            [Action::EditText(0, 2, te, _, true)] if te.text == "Seal"
         ));
         // With the read tool, the line isn't left selected.
         assert_eq!(ed.sel(), None);

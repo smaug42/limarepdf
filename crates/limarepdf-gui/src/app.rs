@@ -5,7 +5,7 @@ use crate::band::{self, Band};
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
-use crate::editor::{Action as EdAction, Parked, Tool};
+use crate::editor::{self, Action as EdAction, Parked, Prepared, Tool};
 use crate::icon;
 use crate::incoming::Incoming;
 use crate::inspector::{self, Apply, Section};
@@ -17,6 +17,7 @@ use crate::regions::{self, Region, Regions};
 use crate::selection::Selection;
 use crate::settings::{Accent, Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
+use crate::styled::Switch;
 use crate::tab::{Side, State, Tab};
 use crate::theme;
 use crate::timing;
@@ -25,8 +26,8 @@ use eframe::egui::{self, AtomExt as _, Key};
 use limarepdf_core::disk::{self, OnDisk};
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
-    parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, ScanResult,
-    SplitBy, TrustEntry, TrustRole,
+    parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, Query,
+    ScanResult, SplitBy, TrustEntry, TrustRole,
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -106,6 +107,14 @@ struct AppendForms {
     names: Vec<String>,
 }
 
+/// Replace all's review (NEW-04b), with the copies of the document it offers: every match
+/// replaced, and those that fit alone. Taken when it is answered.
+struct ReplacingAll {
+    asked: Asked,
+    review: dlg::ReplaceReview,
+    prepared: Option<Prepared>,
+}
+
 /// Why reading the files to append stopped at the next one.
 enum AppendStop {
     /// It needs a password, or (the message) the one given was wrong.
@@ -166,6 +175,15 @@ enum Loaded {
         revision: u64,
         title: &'static str,
         result: Result<(Pdf, bool, String), String>,
+    },
+    /// Replace all's preparation on a copy of tab `tab` at `revision` finished: `query`'s
+    /// matches replaced with `with` (NEW-04b).
+    ReplaceAll {
+        tab: u64,
+        revision: u64,
+        query: String,
+        with: String,
+        result: Result<Box<Prepared>, String>,
     },
     /// A save's thread finished writing (ENH-35).
     Saved(Box<save::Saved>),
@@ -415,6 +433,8 @@ enum Dialog {
     ConfirmStale(Asked, Box<disk::Version>),
     /// Reload the file, losing the unsaved changes?
     ConfirmReload(Asked),
+    /// Replace every match as reviewed, or those that fit (NEW-04b)?
+    ConfirmReplaceAll(Box<ReplacingAll>),
 }
 
 impl Dialog {
@@ -439,6 +459,7 @@ impl Dialog {
             Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&q.asked),
             Dialog::ConfirmAppendForms(q) => Some(&q.asked),
+            Dialog::ConfirmReplaceAll(q) => Some(&q.asked),
             _ => None,
         }
     }
@@ -464,6 +485,7 @@ impl Dialog {
             Dialog::ConfirmSaveDisallowed(s) => Some(&mut s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&mut q.asked),
             Dialog::ConfirmAppendForms(q) => Some(&mut q.asked),
+            Dialog::ConfirmReplaceAll(q) => Some(&mut q.asked),
             _ => None,
         }
     }
@@ -602,6 +624,9 @@ const OCR_JOB: &str = "Recognise text";
 
 /// Title of the split background job and its messages.
 const SPLIT_JOB: &str = "Split into files";
+
+/// Title of Replace all's review and messages (NEW-04b).
+const REPLACE_ALL: &str = "Replace all";
 
 /// Width of the inspector panel, and of its rail when collapsed (build plan 2.2's
 /// workspace: 205 points).
@@ -1843,6 +1868,48 @@ impl App {
                     }
                     self.show(Dialog::Message(title.into(), text));
                 }
+                Loaded::ReplaceAll {
+                    tab,
+                    revision,
+                    query,
+                    with,
+                    result,
+                } => {
+                    self.busy = false;
+                    self.status.clear();
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    let prepared = match result {
+                        Ok(p) => *p,
+                        Err(e) => {
+                            self.show(Dialog::Message(REPLACE_ALL.into(), e));
+                            continue;
+                        }
+                    };
+                    // Made without what was typed since, it is put aside, as a job's is.
+                    if !t.keep_page_typing(ctx) || t.revision != revision {
+                        self.show(Dialog::Message(
+                            REPLACE_ALL.into(),
+                            "The document changed while the replacements were being \
+                             prepared, so nothing was replaced. Replace all again."
+                                .into(),
+                        ));
+                        continue;
+                    }
+                    let review = t.replace_review(&prepared, &query, &with);
+                    if prepared.all.replaced == 0 {
+                        let said = review.said().join(" ");
+                        self.show(Dialog::Message(REPLACE_ALL.into(), said));
+                        continue;
+                    }
+                    let asked = Asked::of(t);
+                    self.show(Dialog::ConfirmReplaceAll(Box::new(ReplacingAll {
+                        asked,
+                        review,
+                        prepared: Some(prepared),
+                    })));
+                }
                 Loaded::Saved(s) => self.saved(ctx, *s),
             }
         }
@@ -1909,6 +1976,35 @@ impl App {
         });
         self.busy = true;
         self.status = format!("{title}…");
+    }
+
+    /// Replace all (NEW-04b): every match of the active tab's search replaced on a copy of
+    /// its document on a background thread, what is being typed on its pages kept first; the
+    /// review follows when it is done ([`Loaded::ReplaceAll`]).
+    fn replace_all(&mut self, ctx: &egui::Context) {
+        if !self.tabs[self.active].keep_page_typing(ctx) {
+            return;
+        }
+        let t = &self.tabs[self.active];
+        let Some(job) = t.replace_all_job() else {
+            return;
+        };
+        let (tab, revision, query) = (t.id, t.revision, t.query.trim().to_string());
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let result = crate::guard(|| Ok(Box::new(editor::replace_all(&job))))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Loaded::ReplaceAll {
+                tab,
+                revision,
+                query,
+                with: job.with,
+                result,
+            });
+            ctx.request_repaint();
+        });
+        self.busy = true;
+        self.status = "Preparing the replacements…".into();
     }
 
     /// Looks for the printers on a background thread, returning the search's number. Its
@@ -2330,10 +2426,14 @@ impl App {
         let has = !self.tabs.is_empty();
         // What is being typed goes into the document before a command uses it, or the
         // command doesn't run (BUG-01). A question the command asks is then about the
-        // document with the typing in it (BUG-10). Bold and Italic change the line being
-        // edited on the page instead, which stays open, as Ctrl+B and Ctrl+I there do; Cut
-        // cuts from the text being typed.
-        let styles = matches!(a, Act::Bold | Act::Italic);
+        // document with the typing in it (BUG-10). The styles (Bold, Italic, Underline,
+        // Strikethrough) change the line being edited on the page instead, which stays open,
+        // as Ctrl+B and Ctrl+I there do, and the alignments its paragraph; Cut cuts from the
+        // text being typed.
+        let styles = matches!(
+            a,
+            Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough | Act::AlignText(_)
+        );
         let in_line = styles && has && self.tabs[self.active].ed.editing_line();
         let in_typing = a == Act::Cut && has && self.tabs[self.active].ed.typing_id().is_some();
         let on_typing = in_line || in_typing;
@@ -2646,9 +2746,22 @@ impl App {
                 let t = &mut self.tabs[self.active];
                 t.ed.select_all_objects(&t.pdf, t.current);
             }
-            Act::Bold | Act::Italic => {
+            Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough => {
+                let s = match a {
+                    Act::Bold => Switch::Bold,
+                    Act::Italic => Switch::Italic,
+                    Act::Underline => Switch::Underline,
+                    _ => Switch::Strikethrough,
+                };
                 let t = &mut self.tabs[self.active];
-                if let Some(said) = t.ed.switch_style(ctx, &t.pdf, a == Act::Bold) {
+                if let Some(said) = t.ed.switch_style(ctx, &t.pdf, s) {
+                    t.info = Some(said);
+                }
+                t.apply_actions(ctx);
+            }
+            Act::AlignText(how) => {
+                let t = &mut self.tabs[self.active];
+                if let Some(said) = t.ed.align_text(&t.pdf, how) {
                     t.info = Some(said);
                 }
                 t.apply_actions(ctx);
@@ -2674,6 +2787,15 @@ impl App {
                 let step = if shift { 10.0 } else { 1.0 };
                 let (dx, dy) = (dx as f32 * step, dy as f32 * step);
                 self.tabs[self.active].ed.nudge(dx, dy);
+            }
+            Act::Align(how) => {
+                let t = &mut self.tabs[self.active];
+                t.ed.align(how, &t.sizes);
+            }
+            Act::Distribute(axis) => self.tabs[self.active].ed.distribute(axis),
+            Act::ToggleSnap => {
+                self.settings.snap = !self.settings.snap;
+                self.settings.save();
             }
             Act::Extend(toward) => {
                 let t = &mut self.tabs[self.active];
@@ -2826,7 +2948,34 @@ impl App {
             }
             Act::Find => {
                 self.show_view(Side::Search);
-                self.tabs[self.active].focus_query = true;
+                let t = &mut self.tabs[self.active];
+                t.focus_query = true;
+                t.replace.shown = false;
+            }
+            // Search results with Replace's field: the keyboard in the search field, or with
+            // something to search for already there, in Replace's.
+            Act::Replace if has => {
+                self.show_view(Side::Search);
+                let t = &mut self.tabs[self.active];
+                t.replace.shown = true;
+                match Query::new(&t.query).is_empty() {
+                    true => t.focus_query = true,
+                    false => t.replace.focus = true,
+                }
+            }
+            Act::ReplaceMatch if has => self.tabs[self.active].replace_match(ctx),
+            Act::ReplaceAll if has && !self.busy => self.replace_all(ctx),
+            // F3 and Shift+F3: the next match or the one before, the keyboard left where it
+            // is, Search results shown, where the search follows the document; with nothing
+            // to search for, Find, as a browser's F3 opens its find bar.
+            Act::FindNext | Act::FindPrevious if has => {
+                if Query::new(&self.tabs[self.active].query).is_empty() {
+                    self.act(ctx, Act::Find);
+                } else {
+                    self.show_view(Side::Search);
+                    let delta = if a == Act::FindNext { 1 } else { -1 };
+                    self.tabs[self.active].find_step(delta);
+                }
             }
             // Organise's cards have a zoom of their own (NEW-14).
             Act::ZoomIn | Act::ZoomOut | Act::Actual | Act::ZoomTo(_)
@@ -4243,6 +4392,20 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmReplaceAll(q) => {
+                let choice = dlg::replace_all(ctx, file, &q.review);
+                let fits = choice == Choice::Second;
+                if matches!(choice, Choice::First | Choice::Second) && self.still(&q.asked) {
+                    if let Some(p) = q.prepared.take() {
+                        let pass = match p.fits {
+                            Some(f) if fits => f,
+                            _ => p.all,
+                        };
+                        self.tabs[self.active].take_replaced(ctx, pass);
+                    }
+                }
+                done = choice != Choice::Open;
+            }
             Dialog::ConfirmSaveRepaired(asked) => match dlg::choose(
                 ctx,
                 Shell::new("Replace the damaged original?").file(file),
@@ -4542,6 +4705,7 @@ impl App {
             page_labels: self.settings.page_labels,
             planned: self.settings.show_planned,
             compact: self.settings.compact_commands,
+            snap: self.settings.snap,
             accent: self.settings.accent,
             layout: self.settings.layout,
             cover: self.settings.cover,
@@ -4718,6 +4882,14 @@ impl App {
     /// consumed, as before (Esc also closes menus). Nothing runs while the palette is
     /// open; it handles its own keys.
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        // Ctrl+U is Underline, as in word processors; in a box without text styles (a
+        // comment's text, a form field, Search, a dialog's field) it does nothing, as in
+        // their plain fields, rather than egui's own "delete to the start of the line"
+        // (PB-77). The boxes with styles take it themselves (`page_text::take_typing`).
+        let styles = (self.tabs.get(self.active)).is_some_and(|t| t.ed.styles_focused(ctx));
+        if ctx.text_edit_focused() && !styles {
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::U));
+        }
         // A dialog handles its own keys.
         if self.palette.is_some() || dlg::any_open(ctx) {
             return;
@@ -4774,14 +4946,22 @@ impl App {
                         | Act::SelectAllObjects
                         | Act::Bold
                         | Act::Italic
+                        | Act::Underline
+                        | Act::Strikethrough
                 );
                 let global = (k.modifiers.command || k.modifiers.ctrl) && !page_only;
                 let in_box = in_text && matches!(a.act, Act::Undo | Act::Redo);
                 let closes = (picking || back) && a.act == Act::Escape;
                 // F6 leaves a text box too (in a form, Tab stays among the fields), but
-                // not an open list or menu, which Esc closes first.
+                // not an open list or menu, which Esc closes first; F3 goes to the next match
+                // from one, as from Search results' fields.
                 let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
-                let skip = if region { picking } else { typing && !global };
+                let find = matches!(a.act, Act::FindNext | Act::FindPrevious);
+                let skip = if region || find {
+                    picking
+                } else {
+                    typing && !global
+                };
                 // Ctrl+V arrives as a paste, which App::type_over takes.
                 if skip || in_box || closes || a.act == Act::Paste || !(a.enabled)(&c) {
                     continue;
@@ -5646,7 +5826,6 @@ fn inspector_body(
             apply = inspector::show(ui, t, c);
             return;
         }
-        t.ed.planned = c.planned;
         // Stamp choices and the author's name are app-wide: lent to the tab's inspector
         // and saved when it changes them.
         let author = s.author();
@@ -5755,8 +5934,8 @@ fn palette_columns(ui: &egui::Ui, items: &[&Action]) -> (f32, f32) {
     let mut columns = (0.0_f32, 0.0_f32);
     for a in items {
         columns.0 = columns.0.max(width(a.group.name().to_string()));
-        if let Some(k) = a.keys.first() {
-            columns.1 = columns.1.max(width(ui.ctx().format_shortcut(k)));
+        if let Some(k) = actions::shown_key(ui.ctx(), a) {
+            columns.1 = columns.1.max(width(ui.ctx().format_shortcut(&k)));
         }
     }
     columns
@@ -5812,9 +5991,9 @@ fn palette_row(
     }
     // The shortcut flush right, the category in its column before it.
     let key_left = rect.right() - pad - columns.1;
-    if let Some(k) = a.keys.first() {
+    if let Some(k) = actions::shown_key(ui.ctx(), a) {
         let at = egui::pos2(rect.right() - pad, y);
-        let key = ui.ctx().format_shortcut(k);
+        let key = ui.ctx().format_shortcut(&k);
         painter.text(at, egui::Align2::RIGHT_CENTER, key, font.clone(), weak);
     }
     let cat_left = key_left - if columns.1 > 0.0 { gap } else { 0.0 } - columns.0;
@@ -6178,9 +6357,11 @@ impl eframe::App for App {
         if let Some(t) = t.filter(|t| enter && t.crop_view()) {
             t.end_crop();
         }
-        // Paragraph editing as the app has it, in every tab (a tab opened since too).
+        // Paragraph editing and snapping as the app has them, in every tab (a tab opened
+        // since too).
         for t in &mut self.tabs {
             t.ed.paragraphs = self.settings.paragraphs;
+            t.ed.snap = self.settings.snap;
         }
         self.type_over(&ctx);
         self.clipboard(&ctx);
@@ -6323,8 +6504,8 @@ impl eframe::App for App {
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(8, 4))
                     .show(ui, |ui| {
-                        let mut font = |ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)| {
-                            t.guarded(|t| t.ed.font_band(ui, planned, compact));
+                        let mut font = |ui: &mut egui::Ui| {
+                            t.guarded(|t| t.ed.font_band(ui, compact));
                         };
                         let mut parts = band::Parts {
                             c: &c,
@@ -6499,11 +6680,7 @@ impl eframe::App for App {
                         Side::Bookmarks => t.show_outline(ui),
                         Side::Comments => t.show_comments(ui),
                         Side::Signatures => t.show_signatures(ui),
-                        Side::Search => {
-                            if t.show_results(ui) {
-                                acts.push(Act::MarkResultsRedact);
-                            }
-                        }
+                        Side::Search => acts.extend(t.show_results(ui, &c)),
                     });
                 });
             panels::edge_shown(ui, panel, "Side panel width");
@@ -6862,6 +7039,7 @@ mod tests {
     use crate::page_text;
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
 
+    mod align;
     mod backdrop;
     mod forms;
     mod history;
@@ -6870,11 +7048,14 @@ mod tests {
     mod overflow;
     mod paragraphs;
     mod redact_marks;
+    mod replace;
     mod review;
     mod sign;
     mod tabs;
+    mod text_align;
     mod typing_box;
     mod typing_menus;
+    mod underline;
 
     /// The height of the window the tests draw: room for the commands above the pages.
     const TEST_HEIGHT: f32 = 1000.0;
@@ -7274,12 +7455,16 @@ mod tests {
             n.and_then(|(_, n)| n.toggled())
         };
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        assert_eq!(toggled(&tree, "Bold"), Some(Toggled::False));
-        assert_eq!(toggled(&tree, "Italic"), Some(Toggled::False));
+        for name in ["Bold", "Italic", "Underline", "Strikethrough"] {
+            assert_eq!(toggled(&tree, name), Some(Toggled::False), "{name}");
+        }
         app.tabs[0].ed.tfont.bold = true;
+        app.tabs[0].ed.tlines.strike = true;
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert_eq!(toggled(&tree, "Bold"), Some(Toggled::True));
         assert_eq!(toggled(&tree, "Italic"), Some(Toggled::False));
+        assert_eq!(toggled(&tree, "Underline"), Some(Toggled::False));
+        assert_eq!(toggled(&tree, "Strikethrough"), Some(Toggled::True));
         let font = tree.nodes.iter().find(|(_, n)| n.label() == Some("Font"));
         let value = font.and_then(|(_, n)| n.value());
         assert_eq!(value, Some("Helvetica"));
@@ -7292,6 +7477,8 @@ mod tests {
             "Font sizes",
             "Bold",
             "Italic",
+            "Underline",
+            "Strikethrough",
             "Text colour",
         ];
         let at = reached.iter().position(|n| n == "Font").expect("no Font");
@@ -7377,7 +7564,7 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
-        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 36);
+        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 37);
         // Not the zoom level, which depends on the window.
         reached.retain(|name| !name.ends_with('%'));
         // Redo is disabled, as nothing was undone, and Paste, Copy and the Font group as
@@ -7402,8 +7589,10 @@ mod tests {
             "Compact commands",
             "Edit text",
             "Find",
+            "Replace",
             "Select",
             "Paragraph",
+            "Align objects",
             "Show planned features",
             "Page view",
             "Organise pages",
@@ -8185,12 +8374,14 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
+        app.band = Band::Insert;
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        let name = "Replace — Planned";
-        let (at, _) = node(&tree, name).expect("Replace");
-        let replace = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
-        assert!(replace.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
-        let (paste, _) = node(&tree, "Paste").expect("Paste");
+        let name = "Link — Planned";
+        let (at, _) = node(&tree, name).expect("Link");
+        let link = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
+        assert!(link.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
+        let before = "Header and footer";
+        let (marks, _) = node(&tree, before).expect(before);
         let undo = app.tabs[0].can_undo();
         window(&mut app, &ctx, 1400.0, click_at(at.center()));
         settled_at(&mut app, &ctx, 1400.0);
@@ -8211,11 +8402,11 @@ mod tests {
             let shown = (tree.nodes.iter()).find(|(_, n)| planned(&n.label().map(str::to_string)));
             assert!(shown.is_none(), "{}: {shown:?}", band.name());
         }
-        app.band = Band::Edit;
+        app.band = Band::Insert;
         let tree = settled_at(&mut app, &ctx, 1400.0);
         // Those before the planned ones stay where they were.
-        let now = node(&tree, "Paste").map(|(r, _)| r);
-        assert_eq!(now, Some(paste), "Paste moved");
+        let now = node(&tree, before).map(|(r, _)| r);
+        assert_eq!(now, Some(marks), "{before} moved");
         app.act(&ctx, Act::TogglePlanned);
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert!(node(&tree, name).is_some(), "not back");
@@ -8333,7 +8524,8 @@ mod tests {
 
     /// ENH-38: groups without room fold from the right into a button with the group's
     /// name, which opens them; groups of planned features alone are left out first; a group
-    /// of one command folds to that command's icon.
+    /// of one command folds to that command's icon, and Edit's Alignment, icons alone, to
+    /// one icon, first (NEW-15).
     #[test]
     fn groups_without_room_fold_into_their_names() {
         let ctx = egui::Context::default();
@@ -8342,14 +8534,33 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert!(node(&tree, "Find").is_some());
-        assert!(node(&tree, "Align — Planned").is_some());
+        assert!(node(&tree, "Align objects").is_some());
+        assert!(node(&tree, "Centre").is_some(), "no Centre at 1400");
+        assert!(node(&tree, "Alignment").is_none(), "folded at 1400");
         let tree = settled_at(&mut app, &ctx, 1000.0);
         assert!(node(&tree, "Find").is_some(), "Editing folded at 1000");
-        let align = node(&tree, "Align — Planned");
-        assert!(align.is_none(), "Align shown at 1000");
-        // Text flow's Paragraph, its one command, folded to its icon.
-        assert!(node(&tree, "Text flow").is_none(), "folded to its name");
-        assert!(node(&tree, "Paragraph").is_some(), "no Paragraph at 1000");
+        let (at, _) = node(&tree, "Alignment").expect("Alignment open at 1000");
+        assert!(at.width() < 60.0, "Alignment folded to its name: {at:?}");
+        assert!(node(&tree, "Centre").is_none(), "Centre shown at 1000");
+        // Folded, Text flow's Paragraph and Arrange's Align objects, the one command of
+        // each, show as their icons.
+        let tree = settled_at(&mut app, &ctx, 900.0);
+        assert!(node(&tree, "Editing").is_some(), "not folded at 900");
+        let arrange = ("Arrange", "Align objects");
+        for (group, one) in [("Text flow", "Paragraph"), arrange] {
+            assert!(node(&tree, group).is_none(), "{group} folded to its name");
+            assert!(node(&tree, one).is_some(), "no {one} at 900");
+        }
+        // Planned features alone go first: Review's Proofing (Spelling) before the Review
+        // group to its right.
+        app.band = Band::Review;
+        let spelling = "Spelling — Planned";
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(node(&tree, spelling).is_some());
+        let tree = settled_at(&mut app, &ctx, 1200.0);
+        assert!(node(&tree, spelling).is_none(), "shown at 1200");
+        assert!(node(&tree, "Flatten…").is_some(), "Review folded at 1200");
+        app.band = Band::Edit;
         let tree = settled_at(&mut app, &ctx, 700.0);
         let (at, _) = node(&tree, "Editing").expect("Editing folded");
         assert!(node(&tree, "Find").is_none(), "Find shown");
@@ -9895,6 +10106,8 @@ mod tests {
             "Font sizes",
             "Bold",
             "Italic",
+            "Underline",
+            "Strikethrough",
             "Text colour",
         ];
         let at = reached.iter().position(|n| n == "Font").expect("no Font");
@@ -10270,16 +10483,18 @@ mod tests {
         }
     }
 
-    /// Batch 39 (the mockup): a selected line is headed Selected text, as selected words are,
-    /// with the planned text tools folded at the end, marked Planned, saying what is planned;
-    /// hidden with the planned features.
+    /// Batch 39 (the mockup): a selected line is headed Selected text, as selected words are.
+    /// Underline and Strikethrough are built (NEW-07, batch 46's 4b): the Font group has them
+    /// where the Planned Underline was, and the inspector's Future text tools, marked Planned,
+    /// are gone, with the planned features shown.
     #[test]
-    fn selected_text_shows_the_planned_text_tools() {
+    fn selected_text_has_underline_and_strikethrough_not_planned_tools() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_in_colours(&ctx, [0.0; 3], [0.0; 3]);
-        let planned = "Future text tools — Planned";
+        assert!(app.settings.show_planned);
+        let gone = ["Future text tools — Planned", "Underline — Planned"];
         app.act(&ctx, Act::Tool(Tool::Select));
         let t = &mut app.tabs[0];
         let objs = t.ed.objects(&t.pdf, 0).to_vec();
@@ -10291,26 +10506,22 @@ mod tests {
         app.open_inspector();
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
-        assert!(node(&tree, planned).is_some(), "no planned text tools");
-        click_named(&mut app, &ctx, planned);
-        let note = "Underline and strike-through are planned. Your existing text tools keep \
-                    working.";
-        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
-        assert!(says.iter().any(|s| s == note), "no note: {says:?}");
         // Words selected with the read tool.
         app.act(&ctx, Act::Tool(Tool::Read));
         app.tabs[0].ed.selection = Selection::Words {
             anchor: (0, 0),
             end: (0, 1),
         };
-        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let words = settled_at(&mut app, &ctx, 1400.0);
         assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
-        assert!(node(&tree, planned).is_some(), "none for words");
-        // Hidden with the planned features.
-        app.settings.show_planned = false;
-        let tree = settled_at(&mut app, &ctx, 1400.0);
-        let shown = node(&tree, planned).is_some();
-        assert!(!shown, "shown with planned features hidden");
+        for tree in [&tree, &words] {
+            for name in gone {
+                assert!(node(tree, name).is_none(), "{name} is shown");
+            }
+            for name in ["Underline", "Strikethrough"] {
+                assert!(node(tree, name).is_some(), "no {name}");
+            }
+        }
     }
 
     /// PF-40: the inspector's pop-out, for a narrow window, shows a tool as the panel does,
@@ -11242,6 +11453,8 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = objects_tab(&ctx);
+        // Moved by just what is dragged: no snapping (NEW-08's, `tests/align.rs`).
+        app.settings.snap = false;
         app.act(&ctx, Act::Tool(Tool::Select));
         select(&mut app, &ctx, &[0, 2, 4, 5]);
         let (before, steps) = (boxes(&app, 0), app.tabs[0].history().1);
@@ -11536,6 +11749,8 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = objects_tab(&ctx);
+        // Moved by just what is dragged: no snapping (NEW-08's, `tests/align.rs`).
+        app.settings.snap = false;
         assert_eq!(app.tabs[0].ed.tool, Tool::Read);
         click_page(&mut app, &ctx, (340.0, 90.0), false);
         assert_eq!(held(&app), Some((0, vec![0])), "the shape");
@@ -12628,6 +12843,29 @@ mod tests {
                     names: vec![format!("{long}.pdf"), "form.pdf".into()],
                 })),
             ),
+            // Replace all's review (NEW-04b), its query and replacement the user's.
+            31 => (
+                "Replace all".into(),
+                vec!["Replace all", "Replace where it fits", "Cancel"],
+                Dialog::ConfirmReplaceAll(Box::new(ReplacingAll {
+                    asked: app.asked(),
+                    review: dlg::ReplaceReview {
+                        query: long.into(),
+                        with: format!("{long} {long}"),
+                        replaced: 1000,
+                        pages: 300,
+                        over: 12,
+                        over_pages: "pages 3, 7, 12, 40, 41, 42, 77, 100 and 4 more".into(),
+                        other_font: 40,
+                        left: vec![
+                            (5, "are invisible recognised text"),
+                            (2, "run across paragraphs"),
+                        ],
+                        fits: true,
+                    },
+                    prepared: None,
+                })),
+            ),
             _ => return None,
         };
         Some(q)
@@ -12783,7 +13021,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 31, "a question was left out");
+                assert_eq!(i, 32, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -15907,7 +16145,7 @@ mod tests {
         for _ in 0..500 {
             frame(app);
             let t = &app.tabs[app.active];
-            if t.search.complete(&t.query) {
+            if t.search.complete(&t.query, t.search_options) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -17937,7 +18175,8 @@ mod tests {
     }
 
     /// The floating bar's buttons, by name and place: those in the row of its Dock button,
-    /// which only the bar has, up to it.
+    /// which only the bar has, up to it, as far as its widest (a line being edited's, about
+    /// 410 points with its frame since NEW-15's Centre) reaches.
     fn bar_buttons(tree: &egui::accesskit::TreeUpdate) -> Vec<(String, egui::Rect)> {
         let Some((dock, _)) = node(tree, "Dock controls on the right") else {
             return Vec::new();
@@ -17954,7 +18193,7 @@ mod tests {
                 );
                 let row = (r.center().y - dock.center().y).abs() < 2.0
                     && r.max.x <= dock.max.x
-                    && dock.min.x - r.min.x < 320.0;
+                    && dock.min.x - r.min.x < 440.0;
                 row.then(|| (n.label().unwrap_or_default().to_string(), r))
             })
             .collect()
