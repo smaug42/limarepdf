@@ -27,6 +27,8 @@ use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
 mod paragraph;
+mod replace;
+pub use replace::NotReplaced;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -1085,6 +1087,9 @@ struct LineEdit {
     /// the read tool, which it types over), given to it once it has it, before the keys
     /// since.
     typed: Vec<egui::Event>,
+    /// Replace typed it: once that is typed, the keyboard goes back to Search results and
+    /// the line waits, open, as F6 leaves it ([`Editor::typed_over`]).
+    park: bool,
     /// What an input method is composing in it, from and to ([`page_text::composition`]).
     composing: Option<(usize, usize)>,
     /// Where the caret was last frame (page points, the middle of the line), and its
@@ -1614,6 +1619,13 @@ pub struct Editor {
     pub writing: Option<Writing>,
     /// What had the keyboard on the page when F6 took it elsewhere, for when it comes back.
     pub parked: Option<Parked>,
+    /// Replace typed over a match and left its line or paragraph waiting ([`Parked`]):
+    /// Search results takes the keyboard back.
+    pub typed_over: bool,
+    /// Why Replace left a match as it was, shown at it a while: the page and the match's
+    /// first box (displayed-page points).
+    match_note: page_text::Refused,
+    match_note_at: Option<(usize, [f32; 4])>,
     /// The pass in which a click outside a note closed it: that click puts down nothing
     /// else, whichever page it was on.
     note_closed: Option<u64>,
@@ -1749,6 +1761,9 @@ impl Default for Editor {
             annot_tool: Tool::Note,
             writing: None,
             parked: None,
+            typed_over: false,
+            match_note: page_text::Refused::default(),
+            match_note_at: None,
             note_closed: None,
             note_color: [1.0, 0.85, 0.2],
             box_style: TextStyle {
@@ -2403,6 +2418,7 @@ impl Editor {
             refused: page_text::Refused::default(),
             area: Rect::NOTHING,
             typed: Vec::new(),
+            park: false,
             composing: None,
             caret_at: None,
         });
@@ -2686,7 +2702,8 @@ impl Editor {
         let ctx = ui.ctx().clone();
         let id = line_edit_id(self.scope, page);
         let drawn = drawn_in_place(&o);
-        if ctx.memory(|m| m.has_focus(id)) && !le.typed.is_empty() {
+        let typed_over = ctx.memory(|m| m.has_focus(id)) && !le.typed.is_empty();
+        if typed_over {
             // Typed as it opened, over what it selected: before the keys since, as typed.
             let typed = std::mem::take(&mut le.typed);
             ctx.input_mut(|i| {
@@ -2854,6 +2871,14 @@ impl Editor {
             edit.request_focus();
             le.fresh = false;
             return true;
+        }
+        // Replace's text is in: the line waits, open, for Replace again or a click, giving
+        // up the keyboard now, as it would be taken back if it still had it next frame.
+        if typed_over && std::mem::take(&mut le.park) {
+            self.parked = Some(Parked::Typing(id));
+            self.typed_over = true;
+            ctx.memory_mut(|m| m.surrender_focus(id));
+            return edit.hovered();
         }
         // Under a dialog (a change's failure said, say) it waits, open, for it to close, and
         // takes the keyboard back then: its Esc and clicks are the dialog's.
@@ -3784,6 +3809,7 @@ impl Editor {
                 }
             }
         }
+        self.show_match_note(ui.ctx(), page, r, k);
         if !self.show_hidden {
             return;
         }

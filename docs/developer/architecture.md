@@ -243,9 +243,22 @@ next page's characters it took) is where the next page's matching starts, and `T
 from there when its own first match began inside them, so a match is never found twice and the result is what one
 reading of the whole text would give, a group of pages at a time or all at once. `TextIndex` keeps the pages read,
 by page object: `update` forgets the pages an edit changed, or all of them when the pages themselves changed.
-`Pdf::search` (the CLI) and `find_text_matches` (one page alone, no next page) use the same code. Snippets are cut
-at word boundaries (`tail`, `head`; `Snippet::around` cuts shorter for the app's rows), and `match_count` says the
-count in words for the app and the CLI.
+`Pdf::search` and `search_with` (the CLI) and `find_text_matches` (one page alone, no next page) use the same code.
+Snippets are cut at word boundaries (`tail`, `head`; `Snippet::around` cuts shorter for the app's rows), and
+`match_count` says the count in words for the app and the CLI.
+
+A `Query` holds its options (`SearchOptions`, NEW-04a), so a changed option is a new search on the thread as a
+changed query is. Match case compares the page's original characters (`orig`, at the same indices as the folded
+ones, as `fold` maps one character to one) with the query only whitespace-collapsed (`collapse`), the skips worked
+out from the same text; Whole words only is a `keep` test `find_all` asks of each candidate before taking it
+(`whole_words`), so a candidate refused doesn't swallow the characters a later one starts in: no letter or digit
+may run on into the match's first or last character from just before or after it, the skipped characters
+passed over, so a word hyphenated at a line end is one word; across a page break `TextIndex::find` says whether the
+page's first word goes on from the page before (`runs_on`, the joint rule `joints` uses, read from the page before
+when it is in the index). Each hit also carries its `HitPart`s: per text line it touches, the page object
+(`PageText::objects`, the page's own text lines in object order as `page_words` numbers them; lines inside form
+XObjects none) and the characters there, the spaces between its words included, which Replace edits.
+`Query::count_in` counts a query in plain text, for what a replacement holds of what it replaced.
 
 In the app, `search.rs` runs a tab's searches on a thread of its own, started with its first search and ended
 with the tab. `Tab::poll_search`, each frame, notices the query changing (`note_query`: a query begun from empty
@@ -260,9 +273,33 @@ frame searches again, the document cloned for the thread only then and only with
 match kept by its page and place there (`ToHit::Keep`). The results view (`Tab::show_results`) checks the query
 again after its own field, before drawing, so a query typed in that frame shows no old rows; its rows are of fixed
 height (a page heading, a two-line match) and only those in view are drawn. Mark all for redaction uses the
-matches when the search for the query and the document as they are is complete (`Search::complete`), and otherwise
-runs `Pdf::search` itself first. The threads' indexes count against one budget (`fit_within`, 256 MB), letting go of
-the tab searched longest ago, then the pages already searched of the tab searching.
+matches when the search for the query, its options and the document as they are is complete (`Search::complete`),
+and otherwise runs `Pdf::search_with` itself first. The threads' indexes count against one budget (`fit_within`,
+256 MB), letting go of the tab searched longest ago, then the pages already searched of the tab searching. The
+options are the tab's (`Tab::search_options`), beside its query, noticed with it (`Search::seen`).
+
+Replace (NEW-04a, `tab/replace.rs`, `editor/replace.rs`) types over a match the way typing over selected words
+does, never substituting bytes. `Act::Replace` (Ctrl+H, `CT` so a Mac's Cmd+H stays the system's) shows Search
+results with `Replace`'s field; its button and Enter there are `Act::ReplaceMatch`, which joins `uses_document`, so
+typing waiting on the page is kept first, and is greyed through two `Ctx` conditions with `why_not` reasons
+(`found_match`: `Tab::match_ready`, the search shown is for the query, options and document as they are and its
+current match has come; `search_waits`). `Editor::replace` takes the hit's parts: on another page, in a group
+(no object), invisible or vertical text, or across blocks it refuses with a `NotReplaced::Match` note drawn under
+the match by `Editor::overlay` (`note_at_match`); a replacement `page_text::untypable` refuses in the font at the
+match's start (the filter typing uses) is `NotReplaced::Text`, said under the field. Otherwise one line opens with
+`start_text_edit(.., Pick::Chars(a, b))` (as a paragraph where it would), several lines of one block with
+`paragraph_over` (shared with `words_paragraph`, `across` so a block LimarePDF is sure of opens with paragraph
+editing off), and the replacement goes in as typed events (`Event::Text`, or `Delete` for an empty one, the range
+first widened by a space by `with_a_space`). The editor's `park` flag then, in the frame the events are typed,
+sets `Parked::Typing` (as F6 does), gives up the keyboard there (at the next frame's start the app would see the
+line focused and unpark it) and sets `Editor::typed_over`, on which Search results puts the keyboard back in the
+field: the line waits open, and Replace again (or a click, which unparks) keeps it as one step. The tab makes the
+next match current without moving the view, remembering the match typed over (`Over`: hit, page, and how many
+matches the replacement holds, `Query::count_in`); `Tab::search_changed` counts the current match again from it
+(`after_replacing`: one fewer on that page after it, plus those the replacement holds), so after the search runs
+again the current match is still the next. A Replace pressed while that search runs waits (`Replace::waiting`) and
+goes on from `take_search` once the current match is placed (`replace_when_placed`), unless typing began
+meanwhile or nothing is left. A waiting replacement that ends unchanged is forgotten (`forget_replaced`).
 
 Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
 signature look, selected text as a plain page) is set through one pipeline, core's `layout.rs` (below, "New text is
@@ -1265,7 +1302,8 @@ of it. Without one, the approved mockup's teal palette stays.
 
 The side panel's views are the icon strip at the window's left edge (`SIDE_VIEWS`, each button's selected state a
 toggle for screen readers), the panel's heading a plain label (`side_name`); Find (`Act::Find`) shows Search
-results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard. `side_panel(Side)` gives each
+results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard; Replace (`Act::Replace`) shows
+them with Replace's field, the keyboard there when the query isn't empty. `side_panel(Side)` gives each
 view a panel id of its own, so egui keeps each view's width apart, and its starting width: `SIDE_WIDTH` (132
 points, the workspace's) for Pages, `SIDE_TEXT_WIDTH` (220) for Search results, Bookmarks, Comments and Digital
 signatures, whose lines wrapped a word or two at a time at 132. A width the user gives a panel is remembered

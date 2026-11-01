@@ -889,3 +889,34 @@ fn the_inspector_says_links_and_comments_over_a_paragraph_stay_in_place() {
         assert_eq!(has, case != "nothing", "{case}: {says:?}");
     }
 }
+
+/// NEW-04a: a match across a paragraph's lines is typed over in the paragraph, with
+/// paragraph editing on, which rewraps it; kept, it is one undo step.
+#[test]
+fn replace_types_over_a_match_across_a_paragraphs_lines() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    click_band(&mut app, &ctx, "Paragraph");
+    let last = lines[0].rsplit(' ').next().unwrap();
+    let first = lines[1].split(' ').next().unwrap();
+    let query = format!("{last} {first}");
+    let ty = Typist::new(&ctx);
+    ty.pause(&mut app);
+    app.act(&ctx, Act::Replace);
+    ty.frame(&mut app, vec![]);
+    ty.frame(&mut app, vec![egui::Event::Text(query.clone())]);
+    ty.key(&mut app, Key::Enter, egui::Modifiers::NONE);
+    searched_with(&mut app, |a| {
+        ty.frame(a, vec![]);
+    });
+    assert_eq!(app.tabs[0].hits[0].parts.len(), 2, "not across lines");
+    app.tabs[0].replace.with = "the long grey".into();
+    app.act(&ctx, Act::ReplaceMatch);
+    ty.pause(&mut app);
+    assert!(app.tabs[0].ed.editing_paragraph(), "not open");
+    assert!(app.tabs[0].keep_typing(&ctx));
+    let want = PROSE.replacen(&query, "the long grey", 1);
+    assert_eq!(paragraph_now(&app.tabs[0].pdf), want);
+    app.act(&ctx, Act::Undo);
+    assert_eq!(paragraph_now(&app.tabs[0].pdf), PROSE);
+}

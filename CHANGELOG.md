@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- Search results has two choices under the search box, **Match case** and **Whole words only**, each document
+  its own, off when it opens. With Match case, "Walrus" doesn't find "walrus"; with Whole words only, "walrus"
+  doesn't find "walruses", a hyphen ending a word ("walrus-like") except at the end of a line or page, where the
+  hyphenated word is one word. Changing one searches again at once, and Mark all for redaction marks the matches
+  they find. `limarepdf-cli search` takes `--match-case` and `--whole-words`.
+- Replace, a match at a time: **Edit > Replace** (no longer marked Planned), Ctrl+H (on a Mac too) or the command
+  search opens Search results with a **Replace with** box and a **Replace** button. Replace, or Enter in the box,
+  types the replacement over the current match on the page, as typing over selected words does, in the line's own
+  fonts, sizes and colours; the view stays on the change while the next match becomes current, and Replace again
+  keeps it and replaces the next. Each replacement is one undo step. An empty Replace with deletes the match (a
+  whole word with a space beside it), and a match across the lines of one paragraph is replaced in the
+  paragraph, which rewraps. Invisible recognised text, text inside a group, vertical writing and a match across
+  paragraphs or on to the next page are left as they are, with a note at the match saying why; a replacement
+  LimarePDF can't write is refused before anything changes. Replace all is still to come.
+
 ### Fixed
 
 - Turning paragraph editing on or off while a line or paragraph was being edited could put the caret a few

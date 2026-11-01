@@ -20,7 +20,7 @@ use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
     Annot, BookmarkPlace, DocWords, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf,
-    Query, Restore, SearchHit, Shape, ShapeLook, StampPlace,
+    Query, Restore, SearchHit, SearchOptions, Shape, ShapeLook, StampPlace,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -31,10 +31,12 @@ mod comments;
 mod organise;
 mod previews;
 mod proofs;
+mod replace;
 pub use comments::Review;
 use organise::Organise;
 use previews::{CropDrag, Picture};
 use proofs::Proofs;
+use replace::Replace;
 
 const GAP: f32 = 16.0;
 /// Room left beside a fitted page, beyond the gaps, so it never meets the scroll bar.
@@ -362,8 +364,12 @@ pub struct Tab {
     last_line: Option<((usize, usize), u64, usize, f64)>,
     pub side: Side,
     pub query: String,
+    /// How the query matches: Search results' Match case and Whole words only.
+    pub search_options: SearchOptions,
     /// Put the keyboard in Search results' field when next drawn (Find, Ctrl+F).
     pub focus_query: bool,
+    /// Search results' Replace (Edit > Replace, Ctrl+H).
+    pub replace: Replace,
     /// The search's matches so far, in page order, for the query and the document as they
     /// are (see [`Tab::poll_search`]).
     pub hits: Vec<SearchHit>,
@@ -551,7 +557,9 @@ impl Tab {
             last_line: None,
             side: Side::Pages,
             query: String::new(),
+            search_options: SearchOptions::default(),
             focus_query: false,
+            replace: Replace::default(),
             hits: Vec::new(),
             hit_idx: 0,
             search: Search::new(ctx),
@@ -1596,10 +1604,10 @@ impl Tab {
             self.info = Some("Search first: there are no results to mark".into());
             return;
         }
-        let hits = if self.search.complete(&self.query) {
+        let hits = if self.search.complete(&self.query, self.search_options) {
             self.hits.clone()
         } else {
-            match crate::guard(|| self.pdf.search(&self.query)) {
+            match crate::guard(|| self.pdf.search_with(&self.query, self.search_options)) {
                 Ok(h) => h,
                 Err(e) => {
                     self.error = Some(format!("{e:#}"));
@@ -2192,19 +2200,21 @@ impl Tab {
         } else if self.search.stale() {
             self.start_search();
         }
-        self.take_search();
+        self.forget_replaced();
+        self.take_search(ctx);
     }
 
-    /// Notice a change to the query since the last look: a query begun from an empty one
-    /// starts from the page being read. Whether it changed.
+    /// Notice a change to the query or its options since the last look: a query begun from
+    /// an empty one starts from the page being read. Whether it changed.
     fn note_query(&mut self) -> bool {
-        if self.query == self.search.seen {
+        let (seen, options) = &self.search.seen;
+        if self.query == *seen && self.search_options == *options {
             return false;
         }
-        if Query::new(&self.search.seen).is_empty() {
+        if Query::new(seen).is_empty() {
             self.search.anchor = self.current;
         }
-        self.search.seen.clone_from(&self.query);
+        self.search.seen = (self.query.clone(), self.search_options);
         true
     }
 
@@ -2216,7 +2226,8 @@ impl Tab {
         self.hits.clear();
         self.matches.clear();
         self.hit_idx = 0;
-        self.search.start(&self.pdf, &self.query);
+        self.search
+            .start(&self.pdf, &self.query, self.search_options);
     }
 
     /// No search: the field was emptied.
@@ -2234,6 +2245,7 @@ impl Tab {
     fn search_changed(&mut self, pages: Option<&[usize]>) {
         self.search.text_changed(pages);
         if let Some((page, nth)) = self.current_match() {
+            let nth = self.after_replacing(page, nth);
             self.to_hit = Some(ToHit::Keep { page, nth });
         }
         self.hits.clear();
@@ -2241,9 +2253,11 @@ impl Tab {
         self.hit_idx = 0;
     }
 
-    /// Take in the matches the search thread found for the search shown.
-    fn take_search(&mut self) {
+    /// Take in the matches the search thread found for the search shown; a Replace waiting
+    /// for them goes on once the current match is placed.
+    fn take_search(&mut self, ctx: &egui::Context) {
         for f in self.search.take() {
+            let done = matches!(f, Found::Done { .. });
             match f {
                 Found::Some { hits, upto, .. } => {
                     let first = self.hits.is_empty();
@@ -2269,6 +2283,7 @@ impl Tab {
                 }
                 Found::Failed { .. } => self.to_hit = None,
             }
+            self.replace_when_placed(ctx, done);
         }
     }
 
@@ -2374,11 +2389,8 @@ impl Tab {
             return false;
         }
         let searched = self.search.typed.is_none()
-            && self
-                .search
-                .asked
-                .as_ref()
-                .is_some_and(|(_, q)| *q == self.query);
+            && (self.search.asked.as_ref())
+                .is_some_and(|(_, q, o)| *q == self.query && *o == self.search_options);
         if searched {
             self.step_hit(if back { -1 } else { 1 });
         } else {
@@ -2397,18 +2409,19 @@ impl Tab {
             return String::new();
         }
         let n = self.hits.len();
-        match (self.search.complete(&self.query), n) {
+        match (self.search.complete(&self.query, self.search_options), n) {
             (true, n) => limarepdf_core::match_count(n),
             (false, 0) => "Searching…".into(),
             (false, n) => format!("Searching… {} so far", limarepdf_core::match_count(n)),
         }
     }
 
-    /// The Search results view: the search field, the steps between matches and their
-    /// count, then the matches under their pages' headings, the match in bold. Only the
-    /// rows in view are drawn, so a long list costs no more than a short one. True when
-    /// Mark all for redaction is pressed.
-    pub fn show_results(&mut self, ui: &mut egui::Ui) -> bool {
+    /// The Search results view: the search field and its options, Replace's field and
+    /// button while it is shown, the steps between matches and their count, then the
+    /// matches under their pages' headings, the match in bold. Only the rows in view are
+    /// drawn, so a long list costs no more than a short one. The command pressed (Mark all
+    /// for redaction, Replace), for the app to run, `c` saying which can be.
+    pub fn show_results(&mut self, ui: &mut egui::Ui, c: &Ctx) -> Option<Act> {
         use egui::text::{LayoutJob, TextFormat, TextWrapping};
         let r = ui.add(
             egui::TextEdit::singleline(&mut self.query)
@@ -2421,8 +2434,13 @@ impl Tab {
             r.request_focus();
         }
         self.search_keys(ui, &r);
-        // A query just typed, here or in the top bar, takes the old matches away before
-        // they are drawn.
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut self.search_options.match_case, "Match case");
+            ui.checkbox(&mut self.search_options.whole_words, "Whole words only");
+        });
+        let mut act = self.replace_ui(ui, c);
+        // A query just typed, here or in the top bar, or an option changed, takes the old
+        // matches away before they are drawn.
         self.poll_search(ui.ctx());
         ui.horizontal(|ui| {
             for (glyph, name, step) in [("◀", "Previous match", -1), ("▶", "Next match", 1)] {
@@ -2434,13 +2452,15 @@ impl Tab {
             }
             ui.label(self.results_said());
         });
-        let mut mark = false;
         if !self.hits.is_empty() {
             let a = actions::get(Act::MarkResultsRedact);
             let label = "Mark all for redaction";
-            mark = theme::glyph_button(ui, a.icon, label)
+            if theme::glyph_button(ui, a.icon, label)
                 .on_hover_text(a.hint)
-                .clicked();
+                .clicked()
+            {
+                act = Some(Act::MarkResultsRedact);
+            }
         }
 
         // The rows: each page's heading, then its matches.
@@ -2575,7 +2595,7 @@ impl Tab {
         if let Some(i) = chosen {
             self.choose_hit(i);
         }
-        mark
+        act
     }
 
     // ------------------------------------------------------------ drawing
@@ -2839,6 +2859,8 @@ impl Tab {
         c.signing = self.ed.sign_items > 0;
         c.marked = self.ed.redact_marks > 0;
         c.cropping = self.crop_view();
+        c.found_match = self.match_ready();
+        c.search_waits = self.search_waits();
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
         c.paragraph = self.ed.paragraphs;

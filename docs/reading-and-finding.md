@@ -2,8 +2,8 @@
 
 # Reading and finding
 
-Move through a document, find words in it, follow its bookmarks and links, and copy its text. Shortcuts are
-written with Ctrl; on a Mac, use ⌘ (Command) instead.
+Move through a document, find and replace words in it, follow its bookmarks and links, and copy its text.
+Shortcuts are written with Ctrl; on a Mac, use ⌘ (Command) instead.
 
 ## Move around the pages
 
@@ -72,14 +72,25 @@ count reads "1 match", "12 matches" or "No matches". Changing what you typed sta
 once. Emptying the search box clears the results. If you change the document while searching, the results are
 brought up to date, and the match you were on stays the current one.
 
-Search ignores capitals, and treats any run of spaces as one space. A phrase can run across a line break, or from
-the bottom of one page to the top of the next: the break counts as a space, and the part on each line is
-highlighted. A word hyphenated at the end of a line or a page is found whole, with or without its hyphen:
-"information" and "self-employed" find "infor-" + "mation" and "self-" + "employed". Soft hyphens are ignored.
+Search treats any run of spaces as one space. A phrase can run across a line break, or from the bottom of one page
+to the top of the next: the break counts as a space, and the part on each line is highlighted. A word hyphenated
+at the end of a line or a page is found whole, with or without its hyphen: "information" and "self-employed" find
+"infor-" + "mation" and "self-" + "employed". Soft hyphens are ignored.
+
+Two choices under the search box narrow the search. Both are off when you open a document, each document has its
+own, and they aren't remembered between runs. Changing one searches again at once.
+
+- **Match case:** capitals and small letters must be as you typed them, so "Walrus" doesn't find "walrus". With
+  it off, search ignores capitals.
+- **Whole words only:** a match can't be part of a longer word, so "walrus" doesn't find "walruses", and "alrus"
+  finds nothing. A hyphen ends a word, so "walrus" is found in "walrus-like"; but a word hyphenated at the end of a
+  line or page is one word, so "infor" isn't found in "infor-" + "mation". In writing without spaces between
+  words, such as Chinese and Japanese, a match is found only where spaces or punctuation set it apart.
 
 Scanned pages have no text until you [recognise it](scanning-and-ocr.md#recognising-text-ocr). To remove every
 match from the document for good, press **Mark all for redaction** in Search results, then apply the marks (see
-[Redaction](redaction.md)). It marks every match, even if the search is still running.
+[Redaction](redaction.md)). It marks every match the search finds, with Match case and Whole words only as you
+set them, even if the search is still running.
 
 The headings in Search results, like the page thumbnails, use the document's own page numbering when it has one
 (such as iii or A-1; see [Number pages your own way](organising-pages.md#number-pages-your-own-way)). To number the pages 1, 2, 3 from the first
@@ -87,7 +98,45 @@ page instead, turn off View > Show > **Use the document's page labels** (also in
 both.
 
 On the command line, `limarepdf-cli search` lists the matches, one a line, as `page 3: …the words around it…`, then
-the count; `--boxes` also prints where each one is on its page.
+the count; `--boxes` also prints where each one is on its page, and `--match-case` and `--whole-words` work as the
+two choices above.
+
+### Replace words
+
+1. Press Ctrl+H, or choose **Edit > Replace**. Ctrl+H is the same on a Mac, where ⌘H hides the app. Search
+   results opens with a **Replace with** box and a **Replace** button under the search box and its choices, and
+   the keyboard in the search box (or in Replace with, when the search box already has words in it). Ctrl+F and
+   **Edit > Find** open Search results without them.
+2. Type what to look for in the search box, and what to put in its place in Replace with. The matches are found
+   as in [Find words](#find-words), and Match case and Whole words only work here too.
+3. Press **Replace**, or Enter in Replace with (or choose **Edit > Replace current match**). The current match is
+   typed over on the page, as when you [type over words you select](content-editing.md#type-over-delete-or-cut-words):
+   its line opens for editing with your words in the match's place, in the line's own fonts, sizes and colours. The
+   view stays on that line so you can see the change, and the next match is highlighted as the current one.
+4. Press **Replace** (or Enter) again to keep the change and replace the next match, and so on. To leave a match
+   as it is, go past it with ▶ before you press Replace.
+
+The change waiting on the page is also kept when you click elsewhere or use another command. Each replacement is
+one undo step, so Undo takes them back one at a time.
+
+- A match can be part of a word: "arb" in "harbour" is replaced on its own, and "h" and "our" stay as they are.
+  Turn on **Whole words only** to replace whole words alone.
+- With Replace with empty, Replace deletes the match. A whole word takes one of the spaces beside it with it, as
+  in a word processor, so no double space is left.
+- A match that runs on to the next line is replaced in its paragraph, which rewraps, when **Paragraph** in
+  **Edit > Text flow** is on (see [Edit a paragraph](content-editing.md#edit-a-paragraph)); with it off, only
+  where LimarePDF is sure the lines are one paragraph.
+- As when you type, the outline warns you if the line now runs past the page's edge or over other text.
+- Some matches are left as they are, and a short note under the match says why for a few seconds: invisible
+  recognised (OCR) text, text inside a group (a block of page content reused as a whole), vertical writing, and a
+  match that runs across paragraphs or on to the next page. The match stays the current one: go past it with ▶.
+- A replacement with characters LimarePDF can't write (Hebrew or Arabic, say, emoji made of several characters, or
+  a character no installed font has) is refused before anything changes, with a note under Replace with.
+- **Replace** is greyed until there is a match to replace, and says why when you point at it.
+
+Not yet: there is no **Replace all**, so matches are replaced one at a time, and there is no replacing from the
+command line. If what you put in contains what you are looking for (replacing "cat" with "cats", say), the search
+finds it again when it comes round to it, so going round more than once changes it again.
 
 ## Bookmarks
 

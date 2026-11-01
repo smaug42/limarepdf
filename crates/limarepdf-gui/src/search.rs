@@ -4,7 +4,7 @@
 //! for an older query, or an older state of the document, are never shown.
 
 use eframe::egui;
-use limarepdf_core::{Pdf, Query, SearchHit, TextIndex};
+use limarepdf_core::{Pdf, Query, SearchHit, SearchOptions, TextIndex};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -61,14 +61,14 @@ pub struct Search {
     ctx: egui::Context,
     thread: Option<Thread>,
     next: u64,
-    /// The query as the last frame had it, to notice typing.
-    pub seen: String,
+    /// The query and its options as the last frame had them, to notice typing.
+    pub seen: (String, SearchOptions),
     /// The page being read when the query was begun: typing goes to the first match from it.
     pub anchor: usize,
     /// When the query last changed without being searched yet (`egui` time).
     pub typed: Option<f64>,
-    /// The search shown: its number and query.
-    pub asked: Option<(u64, String)>,
+    /// The search shown: its number, query and options.
+    pub asked: Option<(u64, String, SearchOptions)>,
     /// The document's text changed since the thread last had it: the pages that did, or
     /// `None` for any.
     changed: Option<Option<BTreeSet<usize>>>,
@@ -86,7 +86,7 @@ impl Search {
             ctx: ctx.clone(),
             thread: None,
             next: 0,
-            seen: String::new(),
+            seen: Default::default(),
             anchor: 0,
             typed: None,
             asked: None,
@@ -113,24 +113,31 @@ impl Search {
         }
     }
 
-    /// Whether the search shown is the finished search for `query` on the document as it
-    /// is now.
-    pub fn complete(&self, query: &str) -> bool {
-        self.asked.as_ref().is_some_and(|(_, q)| q == query)
-            && self.progress.is_none()
+    /// Whether the search shown is for `query` with `options` on the document as it is
+    /// now, finished or still running, with no typing waiting to search.
+    pub fn shows(&self, query: &str, options: SearchOptions) -> bool {
+        self.asked
+            .as_ref()
+            .is_some_and(|(_, q, o)| q == query && *o == options)
             && self.failed.is_none()
             && self.typed.is_none()
             && self.changed.is_none()
     }
 
-    /// Start searching `pdf` for `query`, in place of any search running. The document
-    /// goes to the thread when its text changed since the thread last had it.
-    pub fn start(&mut self, pdf: &Pdf, query: &str) {
+    /// Whether the search shown is the finished search for `query` with `options` on the
+    /// document as it is now.
+    pub fn complete(&self, query: &str, options: SearchOptions) -> bool {
+        self.shows(query, options) && self.progress.is_none()
+    }
+
+    /// Start searching `pdf` for `query` with `options`, in place of any search running.
+    /// The document goes to the thread when its text changed since the thread last had it.
+    pub fn start(&mut self, pdf: &Pdf, query: &str, options: SearchOptions) {
         self.next += 1;
         let n = self.next;
         let job = Job {
             n,
-            query: Query::new(query),
+            query: Query::with(query, options),
             doc: self
                 .changed
                 .take()
@@ -148,7 +155,7 @@ impl Search {
             thread.latest.store(n, Ordering::Relaxed);
             let _ = thread.tx.send(job);
         }
-        self.asked = Some((n, query.to_owned()));
+        self.asked = Some((n, query.to_owned(), options));
         self.progress = Some((0, pdf.page_count()));
         self.failed = None;
         self.typed = None;
@@ -406,12 +413,42 @@ mod tests {
     fn a_newer_search_replaces_an_older_one() {
         let pdf = animals(300);
         let mut s = Search::new(&egui::Context::default());
-        s.start(&pdf, "walrus");
-        s.start(&pdf, "otter");
+        s.start(&pdf, "walrus", ANY);
+        s.start(&pdf, "otter", ANY);
         let hits = all_found(&mut s);
         assert_eq!(hits.len(), 300);
         assert!(hits.iter().all(|h| h.snippet.found == "otter"));
-        assert!(s.complete("otter"));
+        assert!(s.complete("otter", ANY));
+    }
+
+    const ANY: SearchOptions = SearchOptions {
+        match_case: false,
+        whole_words: false,
+    };
+
+    /// NEW-04a: the thread searches with the options asked, and a search shown is for its
+    /// query with its options alone.
+    #[test]
+    fn a_search_is_for_its_options_too() {
+        let pdf = Pdf::from_text("the Otter and the otters", (400.0, 65.0)).unwrap();
+        let mut s = Search::new(&egui::Context::default());
+        let case = SearchOptions {
+            match_case: true,
+            ..ANY
+        };
+        s.start(&pdf, "Otter", case);
+        assert_eq!(all_found(&mut s).len(), 1);
+        assert!(s.complete("Otter", case) && !s.complete("Otter", ANY));
+        let whole = SearchOptions {
+            whole_words: true,
+            ..ANY
+        };
+        s.start(&pdf, "otter", whole);
+        let hits = all_found(&mut s);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].snippet.found, "Otter");
+        s.start(&pdf, "otter", ANY);
+        assert_eq!(all_found(&mut s).len(), 2);
     }
 
     /// Past the budget, the other tabs' search text goes first, then this one's pages
@@ -452,15 +489,15 @@ mod tests {
     fn what_an_older_search_found_is_never_shown() {
         let pdf = animals(3);
         let mut s = Search::new(&egui::Context::default());
-        s.start(&pdf, "walrus");
+        s.start(&pdf, "walrus", ANY);
         // It is done by now, its matches waiting to be taken.
         std::thread::sleep(std::time::Duration::from_millis(300));
-        s.start(&pdf, "otter");
+        s.start(&pdf, "otter", ANY);
         let hits = all_found(&mut s);
         assert_eq!(hits.len(), 3);
         assert!(hits.iter().all(|h| h.snippet.found == "otter"));
         // A search stopped shows nothing more.
-        s.start(&pdf, "fish");
+        s.start(&pdf, "fish", ANY);
         s.stop();
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(s.take().is_empty() && s.asked.is_none());

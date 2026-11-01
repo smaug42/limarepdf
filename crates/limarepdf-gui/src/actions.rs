@@ -115,6 +115,10 @@ pub enum Act {
     /// Cancel what is in progress: new text, a drawing tool, or the selection.
     Escape,
     Find,
+    /// Search results with Replace's field (NEW-04a).
+    Replace,
+    /// Type Replace's text over the current match: Search results' Replace.
+    ReplaceMatch,
     ZoomIn,
     ZoomOut,
     /// Zoom to this percentage: the status bar's slider. Not in [`ACTIONS`].
@@ -254,6 +258,7 @@ impl Act {
             | Act::Mark(_)
             | Act::MarkRedact
             | Act::MarkResultsRedact
+            | Act::ReplaceMatch
             | Act::ApplyRedactions
             | Act::FinishSigning
             | Act::RemoveHidden
@@ -306,6 +311,7 @@ impl Act {
             | Act::CreateSign(_)
             | Act::Escape
             | Act::Find
+            | Act::Replace
             | Act::ZoomIn
             | Act::ZoomOut
             | Act::ZoomTo(_)
@@ -486,6 +492,12 @@ pub struct Ctx {
     pub marked: bool,
     /// The crop is being set: the pages shown whole with their crop box (Crop).
     pub cropping: bool,
+    /// The search shown, for the query and the document as they are, has a current match
+    /// Replace can type over.
+    pub found_match: bool,
+    /// The search for the query as it is is still to run or come back for the document as
+    /// it is now, or its current match to come.
+    pub search_waits: bool,
     /// The markup colours last chosen; see [`Act::MarkColor`].
     pub highlight: usize,
     pub line: usize,
@@ -564,6 +576,10 @@ fn pages_selected(c: &Ctx) -> bool {
 }
 fn doc_idle(c: &Ctx) -> bool {
     c.doc && !c.busy
+}
+/// A current match to type over, the search for the document as it is now.
+fn replaceable(c: &Ctx) -> bool {
+    doc_idle(c) && c.found_match && !c.search_waits
 }
 fn signing(c: &Ctx) -> bool {
     doc_idle(c) && c.signing
@@ -1025,6 +1041,25 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::MAGNIFYING_GLASS,
         keys: &[k(C, Key::F)],
         sep: true,
+        ..BASE
+    },
+    Action {
+        act: Act::Replace,
+        group: Group::Edit,
+        label: "Replace…",
+        icon: icon::SWAP,
+        // Ctrl on a Mac too, where Cmd+H hides the app, as Word for Mac has it.
+        keys: &[k(CT, Key::H)],
+        hint: "Find text and replace it, a match at a time.",
+        ..BASE
+    },
+    Action {
+        act: Act::ReplaceMatch,
+        group: Group::Edit,
+        label: "Replace current match",
+        icon: icon::SWAP,
+        enabled: replaceable,
+        hint: "Type the replacement over the current match, then go on to the next.",
         ..BASE
     },
     Action {
@@ -2217,8 +2252,14 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 24] = [
+    let fixes: [Fix; 26] = [
         (|d| d.busy = false, BUSY),
+        // A match to type over first: while the search runs, that it waits for it.
+        (|d| d.found_match = true, "Find a match to replace first."),
+        (
+            |d| d.search_waits = false,
+            "Waits until the search is done.",
+        ),
         (|d| d.saving = false, "Waits until the document is saved."),
         (|d| d.file = true, "Save the document as a file first."),
         (|d| d.docs = 2, "Open another document first."),
@@ -2450,6 +2491,20 @@ mod tests {
             ..open
         };
         assert_eq!(why(Act::ReplaceImage, &line), "Select a picture first.");
+        // Replace: no match yet, or the search running again for the document as it is.
+        let match_first = "Find a match to replace first.";
+        assert_eq!(why(Act::ReplaceMatch, &open), match_first);
+        let waits = Ctx {
+            search_waits: true,
+            ..open
+        };
+        let waiting = "Waits until the search is done.";
+        assert_eq!(why(Act::ReplaceMatch, &waits), waiting);
+        let found = Ctx {
+            found_match: true,
+            ..open
+        };
+        assert!((get(Act::ReplaceMatch).enabled)(&found));
         // Every greyed command in those states has a reason of its own.
         let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
         let mut states: Vec<Ctx> = tools

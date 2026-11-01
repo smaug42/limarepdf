@@ -25,8 +25,8 @@ use eframe::egui::{self, AtomExt as _, Key};
 use limarepdf_core::disk::{self, OnDisk};
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
-    parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, ScanResult,
-    SplitBy, TrustEntry, TrustRole,
+    parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, Query,
+    ScanResult, SplitBy, TrustEntry, TrustRole,
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -2826,8 +2826,22 @@ impl App {
             }
             Act::Find => {
                 self.show_view(Side::Search);
-                self.tabs[self.active].focus_query = true;
+                let t = &mut self.tabs[self.active];
+                t.focus_query = true;
+                t.replace.shown = false;
             }
+            // Search results with Replace's field: the keyboard in the search field, or with
+            // something to search for already there, in Replace's.
+            Act::Replace if has => {
+                self.show_view(Side::Search);
+                let t = &mut self.tabs[self.active];
+                t.replace.shown = true;
+                match Query::new(&t.query).is_empty() {
+                    true => t.focus_query = true,
+                    false => t.replace.focus = true,
+                }
+            }
+            Act::ReplaceMatch if has => self.tabs[self.active].replace_match(ctx),
             // Organise's cards have a zoom of their own (NEW-14).
             Act::ZoomIn | Act::ZoomOut | Act::Actual | Act::ZoomTo(_)
                 if has && self.tabs[self.active].organising() =>
@@ -6499,11 +6513,7 @@ impl eframe::App for App {
                         Side::Bookmarks => t.show_outline(ui),
                         Side::Comments => t.show_comments(ui),
                         Side::Signatures => t.show_signatures(ui),
-                        Side::Search => {
-                            if t.show_results(ui) {
-                                acts.push(Act::MarkResultsRedact);
-                            }
-                        }
+                        Side::Search => acts.extend(t.show_results(ui, &c)),
                     });
                 });
             panels::edge_shown(ui, panel, "Side panel width");
@@ -6870,6 +6880,7 @@ mod tests {
     mod overflow;
     mod paragraphs;
     mod redact_marks;
+    mod replace;
     mod review;
     mod sign;
     mod tabs;
@@ -7377,7 +7388,7 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
-        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 36);
+        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 37);
         // Not the zoom level, which depends on the window.
         reached.retain(|name| !name.ends_with('%'));
         // Redo is disabled, as nothing was undone, and Paste, Copy and the Font group as
@@ -7402,6 +7413,7 @@ mod tests {
             "Compact commands",
             "Edit text",
             "Find",
+            "Replace",
             "Select",
             "Paragraph",
             "Show planned features",
@@ -8186,10 +8198,10 @@ mod tests {
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        let name = "Replace — Planned";
-        let (at, _) = node(&tree, name).expect("Replace");
-        let replace = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
-        assert!(replace.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
+        let name = "Align — Planned";
+        let (at, _) = node(&tree, name).expect("Align");
+        let align = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
+        assert!(align.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
         let (paste, _) = node(&tree, "Paste").expect("Paste");
         let undo = app.tabs[0].can_undo();
         window(&mut app, &ctx, 1400.0, click_at(at.center()));
@@ -15907,7 +15919,7 @@ mod tests {
         for _ in 0..500 {
             frame(app);
             let t = &app.tabs[app.active];
-            if t.search.complete(&t.query) {
+            if t.search.complete(&t.query, t.search_options) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));

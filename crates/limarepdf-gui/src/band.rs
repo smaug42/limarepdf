@@ -188,12 +188,6 @@ pub const UNDERLINE: Planned = Planned {
     item: "NEW-07",
     what: "Underline or strike through the selected text.",
 };
-const REPLACE: Planned = Planned {
-    label: "Replace",
-    icon: icon::SWAP,
-    item: "NEW-04",
-    what: "Find text and replace it.",
-};
 const ALIGN: Planned = Planned {
     label: "Align",
     icon: icon::ALIGN_LEFT,
@@ -267,7 +261,7 @@ static EDIT: &[Group] = &[
         &[
             b(Act::EditObjectText, "Edit text", icon::CURSOR_TEXT),
             b(Act::Find, "Find", icon::MAGNIFYING_GLASS),
-            Item::Planned(&REPLACE),
+            b(Act::Replace, "Replace", icon::SWAP),
             menu(
                 "Select",
                 icon::CURSOR,
@@ -1230,8 +1224,8 @@ mod tests {
         // The rest: File's commands in the File menu, Undo and Redo beside it; the Font
         // group's Bold and Italic; the marks and Create signature in Highlight's and Fill
         // and sign's own menus; what acts on a selection, or on a paragraph's marked
-        // hyphen, in its right-click menu and floating bar; and keys. Each is in the File
-        // menu's groups too.
+        // hyphen, in its right-click menu and floating bar; Search results' Replace beside
+        // its field; and keys. Each is in the File menu's groups too.
         let elsewhere = |a: Act| {
             actions::get(a).group == actions::Group::File
                 || matches!(
@@ -1252,6 +1246,7 @@ mod tests {
                         | Act::JoinHyphen
                         | Act::KeepHyphen
                         | Act::ReplaceImage
+                        | Act::ReplaceMatch
                         | Act::Escape
                         | Act::Nudge(..)
                         | Act::Extend(_)

@@ -1022,23 +1022,34 @@ impl Pdf {
 
     /// What search reads of the page with object `page`: its words in reading order, each
     /// with its text line and first character there (see [`ordered_words`]), each text
-    /// line's pieces, and the matrix from page user space to displayed-page points.
+    /// line's pieces, the page object each of the page's own text lines is (as for
+    /// [`Pdf::page_words`]), and the matrix from page user space to displayed-page points.
     pub(crate) fn search_parts(&self, page: ObjectId) -> Result<SearchParts> {
         let parsed = self.parse_page_of(page)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         let lines: Vec<&TextData> = parsed.text_lines().collect();
         let words = ordered_words(&lines, to_vis);
+        let ids = (parsed.objs.iter().enumerate())
+            .filter(|(_, o)| o.text.is_some())
+            .map(|(id, _)| id)
+            .collect();
         Ok((
             words,
             lines.iter().map(|l| l.pieces.clone()).collect(),
+            ids,
             to_vis,
         ))
     }
 }
 
 /// See [`Pdf::search_parts`].
-pub(crate) type SearchParts = (Vec<(PageWord, usize, usize)>, Vec<Vec<Piece>>, M);
+pub(crate) type SearchParts = (
+    Vec<(PageWord, usize, usize)>,
+    Vec<Vec<Piece>>,
+    Vec<usize>,
+    M,
+);
 
 /// The words of a page's text lines in reading order (see [`Pdf::page_words`]), each with
 /// the index of the text line it came from and its first character there.

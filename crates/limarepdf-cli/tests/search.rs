@@ -96,3 +96,23 @@ fn search_prints_each_match_with_its_page_and_the_count_in_words() {
     assert_eq!(pages, ["page 1", "page 2"], "{out}");
     assert_eq!(search(&file, &["otter"]).trim(), "No matches");
 }
+
+/// NEW-04a: `--match-case` and `--whole-words`, as Search results' Match case and Whole
+/// words only.
+#[test]
+fn search_matches_case_and_whole_words_when_asked() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("search-options");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = make_pdf(&dir);
+    let last = |out: String| out.lines().last().unwrap_or("").to_string();
+    assert_eq!(last(search(&file, &["WALRUS"])), "2 matches");
+    let case = |q: &str| last(search(&file, &[q, "--match-case"]));
+    assert_eq!(case("WALRUS"), "No matches");
+    assert_eq!(case("walrus"), "2 matches");
+    assert_eq!(last(search(&file, &["walr"])), "2 matches");
+    let whole = last(search(&file, &["walr", "--whole-words"]));
+    assert_eq!(whole, "No matches");
+    let out = search(&file, &["fish", "--whole-words", "--match-case"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines, ["page 2: ate fish a walrus", "1 match"]);
+}

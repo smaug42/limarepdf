@@ -150,6 +150,12 @@ fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<Stri
     (kept, refused)
 }
 
+/// The first character of `s` (a grapheme cluster) typing it on a line in `font` would
+/// leave out ([`keep_typable`]), if any.
+pub fn untypable(s: &str, font: FontChoice) -> Option<String> {
+    keep_typable(s, true, font).1
+}
+
 /// The note at the caret of a text editor for `refused`, a character (grapheme cluster) no
 /// font can write: the typing's font, and every installed font it falls back to, lack it
 /// ([`REFUSED`]), or it is an emoji sequence ([`SEQUENCE`]) or of a script no font is

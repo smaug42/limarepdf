@@ -42,6 +42,9 @@ pub(super) struct ParaEdit {
     /// What was typed before it had the keyboard (over words selected across its lines),
     /// given to it once it has it.
     pub typed: Vec<egui::Event>,
+    /// Replace typed it: once that is typed, the keyboard goes back to Search results and
+    /// the paragraph waits, open, as F6 leaves it ([`Editor::typed_over`]).
+    pub park: bool,
     /// What an input method is composing in it, from and to ([`page_text::composition`]).
     pub composing: Option<(usize, usize)>,
     /// Line-end hyphens LimarePDF can't tell are the word's (6.4) that were kept as typed
@@ -479,6 +482,7 @@ impl Editor {
             refused: page_text::Refused::default(),
             area: Rect::NOTHING,
             typed: Vec::new(),
+            park: false,
             composing: None,
             kept_hyphens: Vec::new(),
             set: SetParagraph::default(),
@@ -676,10 +680,33 @@ impl Editor {
         if ids.iter().any(|&(p, _)| p != page) {
             return false;
         }
+        let ids: Vec<usize> = ids.iter().map(|&(_, id)| id).collect();
+        if !self.paragraph_over(pdf, page, &ids, (a, b), across) {
+            return false;
+        }
+        self.selection.clear_words();
+        true
+    }
+
+    /// Open the paragraph of `page` lines `ids` (in reading order) are all in, from
+    /// character `a` of the first to `b` of the last selected, when it can be one, with
+    /// paragraph editing on, or, `across` its lines, one LimarePDF is sure of. Whether it
+    /// opened.
+    pub(super) fn paragraph_over(
+        &mut self,
+        pdf: &limarepdf_core::Pdf,
+        page: usize,
+        ids: &[usize],
+        (a, b): (usize, usize),
+        across: bool,
+    ) -> bool {
+        let (Some(&first), Some(&last)) = (ids.first(), ids.last()) else {
+            return false;
+        };
         let Some(block) = self.block_of(pdf, page, first) else {
             return false;
         };
-        let inside = ids.iter().all(|&(_, id)| block.pieces().any(|p| p == id));
+        let inside = ids.iter().all(|&id| block.pieces().any(|p| p == id));
         let sure = self.paragraphs || across && block.confident();
         if !inside || !sure || refused(&block).is_some() {
             return false;
@@ -707,7 +734,6 @@ impl Editor {
                 pe.pick = ParaPick::Chars(a, end);
             }
         }
-        self.selection.clear_words();
         true
     }
 
@@ -758,7 +784,8 @@ impl Editor {
         let Some(pe) = self.para.as_mut() else {
             return false;
         };
-        if ctx.memory(|m| m.has_focus(id)) && !pe.typed.is_empty() {
+        let typed_over = ctx.memory(|m| m.has_focus(id)) && !pe.typed.is_empty();
+        if typed_over {
             // Typed as it opened, over what it selected: before the keys since, as typed.
             let typed = std::mem::take(&mut pe.typed);
             ctx.input_mut(|i| {
@@ -972,6 +999,15 @@ impl Editor {
             return true;
         }
         let pointed = edit.hovered() || over_edge;
+        // Replace's text is in: the paragraph waits, open, for Replace again or a click,
+        // giving up the keyboard now, as it would be taken back if it still had it next
+        // frame.
+        if typed_over && std::mem::take(&mut pe.park) {
+            self.parked = Some(Parked::Typing(id));
+            self.typed_over = true;
+            ctx.memory_mut(|m| m.surrender_focus(id));
+            return pointed;
+        }
         // Under a dialog it waits, open, for it to close, and takes the keyboard back then.
         if crate::dialogs::any_open(&ctx) {
             pe.refocus = true;
