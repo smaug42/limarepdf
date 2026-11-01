@@ -308,6 +308,43 @@ the keyboard (Find, with nothing to search for). Menus and tooltips show a comma
 the Replace button's key while Search results' fields, options or button have the keyboard, as Word's Find and
 Replace window has it, read in `replace_ui`, not in `ACTIONS`, and not on a Mac (Option+R types there).
 
+Replace all (NEW-04b, `editor/replace_all.rs`, the tab's side in `tab/replace.rs`) makes every replacement on a copy
+of the document and reviews it before the document takes it. `Act::ReplaceAll` (Replace all beside Replace, Alt+A
+read beside Alt+R, Edit > Replace all matches) joins `uses_document` and is greyed by `all_replaceable`: Replace's
+conditions and `Ctx::search_running` (the search shown hasn't looked through every page, `Tab::search_running`).
+`App::replace_all` keeps the page's typing, takes `Tab::replace_all_job` (the document, each hit's `parts`, the
+replacement on one line, `Editor::paragraphs`, `doc_words`), runs `editor::replace_all` on a thread (`App::busy`, the
+status bar saying so) and sends `Loaded::ReplaceAll`; a result for a tab whose revision moved, or with typing on its
+pages since, is put aside with a message, as a job's is. `replace_all` plans, then writes:
+
+- **Planning** (`plan`, the pages in parallel with Rayon, read-only on the document): each match is refused as
+  `Editor::replace` refuses it, through the same functions (`replace.rs`'s `page_of`, `lines_of`, `typed_font`,
+  `untypable`), counted as a `LeftOut` reason; otherwise it goes to its line (`Of::Line`) or to its paragraph
+  (`Of::Paragraph`, by block) where Replace would open one: across a block's lines with paragraph editing on or a
+  block LimarePDF is sure of, one line with paragraph editing on, the block not `refused` and its `paragraph` and
+  `paragraph_setting` made (kept for writing). A line in a paragraph changed goes with it, so each line or
+  paragraph is one change holding all its matches.
+- **Writing** (`write`, on a clone of the document): a page's paragraph changes one at a time, then its line
+  changes in one `Pdf::edit_texts`. Each change is a `Styled` read from the line (`Styled::of`) or paragraph
+  (`of_paragraph`), the matches put in from the last (`put`: `Styled::sync` with the caret after each, so a
+  replacement takes the style of what it types over, as typing does; an empty one widened by `with_a_space`), then
+  `text_change` or `Styled::parts` with `ParagraphSetting::set`: the writers typing uses, never bytes. A rewrite can
+  move the page's object ids, so each change finds its lines again by `follow` (the same kind, text and box as the
+  page was planned); the first change on a page uses the plan's objects and paragraph setting. A change that fails
+  marks it, and `settle` writes the copy again without it (a failed write may have left an added font in the copy).
+- **Judging** (`judge`): the page is read again and each line written anew is given to the change that wrote it (a
+  set paragraph line where it was set, else the edited line it starts on the baseline of); its rows go through the
+  one overflow rule, `page_text::overflow` over `obstacles_in` (shared with `Editor::obstacles`, in page points),
+  against the page's other things but those the old text met. Another font is counted from `kept_pieces` (a line,
+  with `page_line_fonts`) or `ParagraphSetting::pieces` (a paragraph) where a piece not kept touches a replacement.
+
+`Prepared` holds the `Pass` with every replacement and, when some run over and others don't, one written again
+without the changes that ran over (`fits`). The review, `dialogs::replace_all` (`ReplaceReview`, made by
+`Tab::replace_review`, the pages named by `page_name`, the first eight), joins app.rs's `question` list; Replace all
+or Replace where it fits takes that copy through `Tab::take_replaced`: `edit_pages` over the pages changed, the
+whole document swapped in as `spawn_job`'s result is, one undo step, a notice with Undo. Nothing replaceable is a
+message from the same review.
+
 Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
 signature look, selected text as a plain page) is set through one pipeline, core's `layout.rs` (below, "New text is
 set through one pipeline"): a `Setter` lays it out, then a `Pen` writes exactly the lines laid out.

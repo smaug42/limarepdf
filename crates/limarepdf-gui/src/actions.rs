@@ -123,6 +123,9 @@ pub enum Act {
     Replace,
     /// Type Replace's text over the current match: Search results' Replace.
     ReplaceMatch,
+    /// Replace every match of the search, reviewed first: Search results' Replace all
+    /// (NEW-04b).
+    ReplaceAll,
     ZoomIn,
     ZoomOut,
     /// Zoom to this percentage: the status bar's slider. Not in [`ACTIONS`].
@@ -263,6 +266,7 @@ impl Act {
             | Act::MarkRedact
             | Act::MarkResultsRedact
             | Act::ReplaceMatch
+            | Act::ReplaceAll
             | Act::ApplyRedactions
             | Act::FinishSigning
             | Act::RemoveHidden
@@ -504,6 +508,8 @@ pub struct Ctx {
     /// The search for the query as it is is still to run or come back for the document as
     /// it is now, or its current match to come.
     pub search_waits: bool,
+    /// The search shown is still looking through the pages.
+    pub search_running: bool,
     /// The markup colours last chosen; see [`Act::MarkColor`].
     pub highlight: usize,
     pub line: usize,
@@ -586,6 +592,10 @@ fn doc_idle(c: &Ctx) -> bool {
 /// A current match to type over, the search for the document as it is now.
 fn replaceable(c: &Ctx) -> bool {
     doc_idle(c) && c.found_match && !c.search_waits
+}
+/// Every match found, the search for the document as it is now finished.
+fn all_replaceable(c: &Ctx) -> bool {
+    replaceable(c) && !c.search_running
 }
 fn signing(c: &Ctx) -> bool {
     doc_idle(c) && c.signing
@@ -1075,7 +1085,7 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::SWAP,
         // Ctrl on a Mac too, where Cmd+H hides the app, as Word for Mac has it.
         keys: &[k(CT, Key::H)],
-        hint: "Find text and replace it, a match at a time.",
+        hint: "Find text and replace it, a match at a time or all at once.",
         ..BASE
     },
     Action {
@@ -1085,6 +1095,15 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::SWAP,
         enabled: replaceable,
         hint: "Type the replacement over the current match, then go on to the next.",
+        ..BASE
+    },
+    Action {
+        act: Act::ReplaceAll,
+        group: Group::Edit,
+        label: "Replace all matches…",
+        icon: icon::SWAP,
+        enabled: all_replaceable,
+        hint: "Replace every match of the search, after saying what that changes.",
         ..BASE
     },
     Action {
@@ -2277,12 +2296,16 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 26] = [
+    let fixes: [Fix; 27] = [
         (|d| d.busy = false, BUSY),
         // A match to type over first: while the search runs, that it waits for it.
         (|d| d.found_match = true, "Find a match to replace first."),
         (
             |d| d.search_waits = false,
+            "Waits until the search is done.",
+        ),
+        (
+            |d| d.search_running = false,
             "Waits until the search is done.",
         ),
         (|d| d.saving = false, "Waits until the document is saved."),
@@ -2544,6 +2567,15 @@ mod tests {
             ..open
         };
         assert!((get(Act::ReplaceMatch).enabled)(&found));
+        // Replace all, besides, waits for the search to have looked through every page.
+        assert_eq!(why(Act::ReplaceAll, &open), match_first);
+        let running = Ctx {
+            search_running: true,
+            ..found
+        };
+        assert_eq!(why(Act::ReplaceAll, &running), waiting);
+        assert!((get(Act::ReplaceMatch).enabled)(&running));
+        assert!((get(Act::ReplaceAll).enabled)(&found));
         // Every greyed command in those states has a reason of its own.
         let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
         let mut states: Vec<Ctx> = tools

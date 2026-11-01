@@ -45,8 +45,8 @@ Small or medium additions that build on what LimarePDF already has:
 
 ## Content editing
 
-- Replace all (M; Replace one match at a time is built, NEW-04a; Replace all is planned next, NEW-04b); spell
-  check (L, needs a dictionary)
+- Spell check (L, needs a dictionary); `replace` on the command line (S–M, on Replace all's preparation, which is
+  built: NEW-04b)
 - Layers: add, merge, reorder, flatten (L)
 - Right-to-left (Hebrew, Arabic) and shaped (Indic, Thai) text, beyond the Latin, Greek and Cyrillic written
   today, and Chinese, Japanese and Korean outside installed fonts that have them (L: text shaping and

@@ -5,7 +5,7 @@ use crate::band::{self, Band};
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
-use crate::editor::{Action as EdAction, Parked, Tool};
+use crate::editor::{self, Action as EdAction, Parked, Prepared, Tool};
 use crate::icon;
 use crate::incoming::Incoming;
 use crate::inspector::{self, Apply, Section};
@@ -106,6 +106,14 @@ struct AppendForms {
     names: Vec<String>,
 }
 
+/// Replace all's review (NEW-04b), with the copies of the document it offers: every match
+/// replaced, and those that fit alone. Taken when it is answered.
+struct ReplacingAll {
+    asked: Asked,
+    review: dlg::ReplaceReview,
+    prepared: Option<Prepared>,
+}
+
 /// Why reading the files to append stopped at the next one.
 enum AppendStop {
     /// It needs a password, or (the message) the one given was wrong.
@@ -166,6 +174,15 @@ enum Loaded {
         revision: u64,
         title: &'static str,
         result: Result<(Pdf, bool, String), String>,
+    },
+    /// Replace all's preparation on a copy of tab `tab` at `revision` finished: `query`'s
+    /// matches replaced with `with` (NEW-04b).
+    ReplaceAll {
+        tab: u64,
+        revision: u64,
+        query: String,
+        with: String,
+        result: Result<Box<Prepared>, String>,
     },
     /// A save's thread finished writing (ENH-35).
     Saved(Box<save::Saved>),
@@ -415,6 +432,8 @@ enum Dialog {
     ConfirmStale(Asked, Box<disk::Version>),
     /// Reload the file, losing the unsaved changes?
     ConfirmReload(Asked),
+    /// Replace every match as reviewed, or those that fit (NEW-04b)?
+    ConfirmReplaceAll(Box<ReplacingAll>),
 }
 
 impl Dialog {
@@ -439,6 +458,7 @@ impl Dialog {
             Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&q.asked),
             Dialog::ConfirmAppendForms(q) => Some(&q.asked),
+            Dialog::ConfirmReplaceAll(q) => Some(&q.asked),
             _ => None,
         }
     }
@@ -464,6 +484,7 @@ impl Dialog {
             Dialog::ConfirmSaveDisallowed(s) => Some(&mut s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&mut q.asked),
             Dialog::ConfirmAppendForms(q) => Some(&mut q.asked),
+            Dialog::ConfirmReplaceAll(q) => Some(&mut q.asked),
             _ => None,
         }
     }
@@ -602,6 +623,9 @@ const OCR_JOB: &str = "Recognise text";
 
 /// Title of the split background job and its messages.
 const SPLIT_JOB: &str = "Split into files";
+
+/// Title of Replace all's review and messages (NEW-04b).
+const REPLACE_ALL: &str = "Replace all";
 
 /// Width of the inspector panel, and of its rail when collapsed (build plan 2.2's
 /// workspace: 205 points).
@@ -1843,6 +1867,48 @@ impl App {
                     }
                     self.show(Dialog::Message(title.into(), text));
                 }
+                Loaded::ReplaceAll {
+                    tab,
+                    revision,
+                    query,
+                    with,
+                    result,
+                } => {
+                    self.busy = false;
+                    self.status.clear();
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    let prepared = match result {
+                        Ok(p) => *p,
+                        Err(e) => {
+                            self.show(Dialog::Message(REPLACE_ALL.into(), e));
+                            continue;
+                        }
+                    };
+                    // Made without what was typed since, it is put aside, as a job's is.
+                    if !t.keep_page_typing(ctx) || t.revision != revision {
+                        self.show(Dialog::Message(
+                            REPLACE_ALL.into(),
+                            "The document changed while the replacements were being \
+                             prepared, so nothing was replaced. Replace all again."
+                                .into(),
+                        ));
+                        continue;
+                    }
+                    let review = t.replace_review(&prepared, &query, &with);
+                    if prepared.all.replaced == 0 {
+                        let said = review.said().join(" ");
+                        self.show(Dialog::Message(REPLACE_ALL.into(), said));
+                        continue;
+                    }
+                    let asked = Asked::of(t);
+                    self.show(Dialog::ConfirmReplaceAll(Box::new(ReplacingAll {
+                        asked,
+                        review,
+                        prepared: Some(prepared),
+                    })));
+                }
                 Loaded::Saved(s) => self.saved(ctx, *s),
             }
         }
@@ -1909,6 +1975,35 @@ impl App {
         });
         self.busy = true;
         self.status = format!("{title}…");
+    }
+
+    /// Replace all (NEW-04b): every match of the active tab's search replaced on a copy of
+    /// its document on a background thread, what is being typed on its pages kept first; the
+    /// review follows when it is done ([`Loaded::ReplaceAll`]).
+    fn replace_all(&mut self, ctx: &egui::Context) {
+        if !self.tabs[self.active].keep_page_typing(ctx) {
+            return;
+        }
+        let t = &self.tabs[self.active];
+        let Some(job) = t.replace_all_job() else {
+            return;
+        };
+        let (tab, revision, query) = (t.id, t.revision, t.query.trim().to_string());
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let result = crate::guard(|| Ok(Box::new(editor::replace_all(&job))))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Loaded::ReplaceAll {
+                tab,
+                revision,
+                query,
+                with: job.with,
+                result,
+            });
+            ctx.request_repaint();
+        });
+        self.busy = true;
+        self.status = "Preparing the replacements…".into();
     }
 
     /// Looks for the printers on a background thread, returning the search's number. Its
@@ -2842,6 +2937,7 @@ impl App {
                 }
             }
             Act::ReplaceMatch if has => self.tabs[self.active].replace_match(ctx),
+            Act::ReplaceAll if has && !self.busy => self.replace_all(ctx),
             // F3 and Shift+F3: the next match or the one before, the keyboard left where it
             // is, Search results shown, where the search follows the document; with nothing
             // to search for, Find, as a browser's F3 opens its find bar.
@@ -4269,6 +4365,20 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmReplaceAll(q) => {
+                let choice = dlg::replace_all(ctx, file, &q.review);
+                let fits = choice == Choice::Second;
+                if matches!(choice, Choice::First | Choice::Second) && self.still(&q.asked) {
+                    if let Some(p) = q.prepared.take() {
+                        let pass = match p.fits {
+                            Some(f) if fits => f,
+                            _ => p.all,
+                        };
+                        self.tabs[self.active].take_replaced(ctx, pass);
+                    }
+                }
+                done = choice != Choice::Open;
+            }
             Dialog::ConfirmSaveRepaired(asked) => match dlg::choose(
                 ctx,
                 Shell::new("Replace the damaged original?").file(file),
@@ -12658,6 +12768,29 @@ mod tests {
                     names: vec![format!("{long}.pdf"), "form.pdf".into()],
                 })),
             ),
+            // Replace all's review (NEW-04b), its query and replacement the user's.
+            31 => (
+                "Replace all".into(),
+                vec!["Replace all", "Replace where it fits", "Cancel"],
+                Dialog::ConfirmReplaceAll(Box::new(ReplacingAll {
+                    asked: app.asked(),
+                    review: dlg::ReplaceReview {
+                        query: long.into(),
+                        with: format!("{long} {long}"),
+                        replaced: 1000,
+                        pages: 300,
+                        over: 12,
+                        over_pages: "pages 3, 7, 12, 40, 41, 42, 77, 100 and 4 more".into(),
+                        other_font: 40,
+                        left: vec![
+                            (5, "are invisible recognised text"),
+                            (2, "run across paragraphs"),
+                        ],
+                        fits: true,
+                    },
+                    prepared: None,
+                })),
+            ),
             _ => return None,
         };
         Some(q)
@@ -12813,7 +12946,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 31, "a question was left out");
+                assert_eq!(i, 32, "a question was left out");
                 break;
             };
             for (size, scale) in sizes

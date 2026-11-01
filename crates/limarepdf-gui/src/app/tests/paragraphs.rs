@@ -19,6 +19,17 @@ fn prose_tab(app: &mut App, ctx: &egui::Context) -> Vec<String> {
 
 /// [`prose_tab`] with `text` as the paragraph.
 fn prose_tab_of(app: &mut App, ctx: &egui::Context, text: &str) -> Vec<String> {
+    prose_tab_with(app, ctx, text, &[])
+}
+
+/// [`prose_tab_of`] with `below`, lines that many line spaces (15 points) under the
+/// paragraph's last line.
+fn prose_tab_with(
+    app: &mut App,
+    ctx: &egui::Context,
+    text: &str,
+    below: &[(&str, usize)],
+) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split(' ') {
         match lines.last_mut() {
@@ -32,6 +43,8 @@ fn prose_tab_of(app: &mut App, ctx: &egui::Context, text: &str) -> Vec<String> {
     let mut at = vec![("Harbour notes".to_string(), egui::pos2(72.0, 70.0))];
     let place = |i: usize| egui::pos2(72.0, 100.0 + 15.0 * i as f32);
     at.extend((lines.iter().enumerate()).map(|(i, l)| (l.clone(), place(i))));
+    let last = lines.len() - 1;
+    at.extend((below.iter()).map(|&(l, n)| (l.to_string(), place(last + n))));
     lines_tab(app, ctx, 792.0, &at);
     lines
 }
@@ -919,4 +932,72 @@ fn replace_types_over_a_match_across_a_paragraphs_lines() {
     assert_eq!(paragraph_now(&app.tabs[0].pdf), want);
     app.act(&ctx, Act::Undo);
     assert_eq!(paragraph_now(&app.tabs[0].pdf), PROSE);
+}
+
+/// NEW-04b: with paragraph editing on, Replace all replaces each of a paragraph's matches
+/// in the paragraph, one across its lines too, rewrapped once: one undo step.
+#[test]
+fn replace_all_replaces_a_paragraphs_matches_in_it() {
+    let (ctx, mut app) = new_app();
+    let lines = prose_tab(&mut app, &ctx);
+    click_band(&mut app, &ctx, "Paragraph");
+    // The words either side of the first line's end, and a word on a line.
+    let last = lines[0].rsplit(' ').next().unwrap();
+    let first = lines[1].split(' ').next().unwrap();
+    let ty = Typist::new(&ctx);
+    let mut want = PROSE.to_string();
+    for (query, with) in [
+        (format!("{last} {first}"), "the long grey"),
+        ("nets".into(), "lines"),
+    ] {
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Replace);
+        ty.frame(&mut app, vec![]);
+        app.tabs[0].query = query.clone();
+        app.tabs[0].replace.with = with.into();
+        app.tabs[0].find_step(1);
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        app.act(&ctx, Act::ReplaceAll);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        click(&mut app, &ctx, "Replace all");
+        want = want.replace(&query, with);
+        assert_eq!(paragraph_now(&app.tabs[0].pdf), want, "{query}");
+    }
+    assert_eq!(app.tabs[0].history().1, 2, "not a step each");
+    app.act(&ctx, Act::Undo);
+    app.act(&ctx, Act::Undo);
+    assert_eq!(paragraph_now(&app.tabs[0].pdf), PROSE);
+}
+
+/// NEW-04b: a paragraph Replace all would grow down over the line below it is said in the
+/// review by the one overflow rule, its matches with it; with none that fit, Replace where
+/// it fits isn't offered.
+#[test]
+fn replace_all_says_a_paragraph_grown_over_the_line_below() {
+    let (ctx, mut app) = new_app();
+    let below = [("Written down by the harbour master", 2)];
+    prose_tab_with(&mut app, &ctx, PROSE, &below);
+    click_band(&mut app, &ctx, "Paragraph");
+    let ty = Typist::new(&ctx);
+    ty.pause(&mut app);
+    app.act(&ctx, Act::Replace);
+    ty.frame(&mut app, vec![]);
+    app.tabs[0].query = "nets".into();
+    let with = "nets and the long ropes and the floats and all else a boat needs at sea";
+    app.tabs[0].replace.with = with.into();
+    app.tabs[0].find_step(1);
+    searched_with(&mut app, |a| {
+        ty.frame(a, vec![]);
+    });
+    app.act(&ctx, Act::ReplaceAll);
+    wait_for(&mut app, &ctx, |a| !a.busy);
+    let Dialog::ConfirmReplaceAll(q) = &app.dialog else {
+        panic!("no review");
+    };
+    let r = &q.review;
+    assert_eq!((r.replaced, r.over, r.fits), (2, 2, false));
+    let over = "2 of them would run past the page's edge or over other text, on page 1.";
+    assert_eq!(r.said()[1], over);
 }

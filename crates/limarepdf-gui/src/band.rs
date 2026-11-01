@@ -1248,6 +1248,7 @@ mod tests {
                         | Act::KeepHyphen
                         | Act::ReplaceImage
                         | Act::ReplaceMatch
+                        | Act::ReplaceAll
                         | Act::FindNext
                         | Act::FindPrevious
                         | Act::Escape

@@ -17,7 +17,8 @@ source.
   more room for the page.
 - **Read comfortably:** open documents in tabs, scroll and zoom smoothly, follow bookmarks and links, and switch
   pages to dark, sepia or high-contrast colours for easier reading.
-- **Find anything:** search a whole document as you type, with every match highlighted on the page.
+- **Find and replace:** search a whole document as you type, with every match highlighted on the page, then
+  replace words a match at a time or all at once, told first what replacing them all will change.
 - **Edit text where it is:** double-click a line to change it, or switch it to Paragraph to edit the whole
   paragraph, its lines rewrapping as you type; make words bold, italic, or another font, size or colour, or just
   select them as you read and press Ctrl+B.

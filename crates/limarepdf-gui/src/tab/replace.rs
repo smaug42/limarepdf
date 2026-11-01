@@ -3,15 +3,24 @@
 //! page ([`Editor::replace`]) and makes the next match current, the view staying at the
 //! match replaced, whose line waits open. Replace again keeps that change, one undo step,
 //! and replaces the next once the search, run again for the document as it is now, is
-//! back.
+//! back. Replace all (NEW-04b) replaces every match on a copy of the document
+//! ([`crate::editor::replace_all`]), which the document takes, as one change, once its
+//! review is answered.
 
 use super::*;
-use crate::editor::NotReplaced;
+use crate::dialogs::ReplaceReview;
+use crate::editor::{AllJob, NotReplaced, Pass, Prepared};
 use crate::page_text;
+
+/// The most pages Replace all's review names where replacements don't fit.
+const PAGES_NAMED: usize = 8;
 
 /// The Replace button's key while the keyboard is in Search results, but on a Mac.
 const ALT_R: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::R);
+/// Replace all's, as Word's Find and Replace window has it, but on a Mac.
+const ALT_A: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::A);
 
 /// Search results' Replace.
 #[derive(Default)]
@@ -57,6 +66,88 @@ impl Tab {
         !Query::new(&self.query).is_empty()
             && (!self.search.shows(&self.query, self.search_options) || self.to_hit.is_some())
             && self.search.failed.is_none()
+    }
+
+    /// Whether the search shown is still looking through the pages.
+    pub fn search_running(&self) -> bool {
+        let (q, o) = (&self.query, self.search_options);
+        self.search.shows(q, o) && !self.search.complete(q, o)
+    }
+
+    /// Replace all's work: every match of the search shown, which has looked through every
+    /// page, replaced with Replace's text on one line. `None` while it isn't so.
+    pub fn replace_all_job(&self) -> Option<AllJob> {
+        let done = self.search.complete(&self.query, self.search_options);
+        (done && !self.hits.is_empty()).then(|| AllJob {
+            pdf: self.pdf.clone(),
+            matches: self.hits.iter().map(|h| h.parts.clone()).collect(),
+            with: self.replace.with.replace(['\r', '\n', '\t'], " "),
+            paragraphs: self.ed.paragraphs,
+            words: self.ed.doc_words.clone(),
+        })
+    }
+
+    /// What Replace all's review says of `p`, `query`'s matches replaced with `with`: the
+    /// pages where some don't fit named as the view names them, the first few.
+    pub fn replace_review(&self, p: &Prepared, query: &str, with: &str) -> ReplaceReview {
+        let all = &p.all;
+        let mut names: Vec<String> = (all.over_pages.iter().take(PAGES_NAMED))
+            .map(|&i| self.page_name(i))
+            .collect();
+        let more = all.over_pages.len().saturating_sub(PAGES_NAMED);
+        let pages = match (names.len(), more) {
+            (0, _) => String::new(),
+            (1, _) => format!("page {}", names[0]),
+            (_, 0) => {
+                let last = names.pop().unwrap_or_default();
+                format!("pages {} and {last}", names.join(", "))
+            }
+            (_, n) => format!("pages {} and {n} more", names.join(", ")),
+        };
+        ReplaceReview {
+            query: query.to_string(),
+            with: with.to_string(),
+            replaced: all.replaced,
+            pages: all.pages.len(),
+            over: all.over,
+            over_pages: pages,
+            other_font: all.other_font,
+            left: (all.left.iter())
+                .map(|&(why, n)| (n, why.said(n)))
+                .collect(),
+            fits: p.fits.as_ref().is_some_and(|f| f.replaced > 0),
+        }
+    }
+
+    /// The document takes Replace all's copy `pass` (as reviewed), as one change, and says
+    /// so with Undo; only the pages it changed are drawn again.
+    pub fn take_replaced(&mut self, ctx: &egui::Context, pass: Pass) {
+        let (n, unfit, similar) = (pass.replaced, pass.unfit, pass.similar);
+        let pages = pass.pages.clone();
+        let take = move |p: &mut Pdf| {
+            *p = pass.pdf;
+            Ok(())
+        };
+        if !(self.keep_page_typing(ctx) && self.edit_pages(ctx, &pages, take)) {
+            return;
+        }
+        self.replace.over = None;
+        self.replace.waiting = false;
+        let mut said = match n {
+            1 => "Replaced 1 match".to_string(),
+            n => format!("Replaced {n} matches"),
+        };
+        if unfit > 0 {
+            let are = match unfit {
+                1 => "is left as it was",
+                _ => "are left as they were",
+            };
+            said = format!("{said}; {unfit} that didn't fit {are}");
+        }
+        if similar {
+            said = format!("{said}. {SIMILAR_FONT}");
+        }
+        self.notice = Some(said);
     }
 
     /// Replace the current match with Replace's text (Search results' Replace, Enter in
@@ -130,11 +221,13 @@ impl Tab {
         }
     }
 
-    /// Replace's field and its button, under the search field, while Replace is shown; the
-    /// Replace pressed, Enter in the field, or Alt+R with the keyboard in Search results
-    /// (`held`: the search field or an option has it; the field and button are added here),
-    /// is returned for the app to run. Alt+R is the key Word's Find and Replace window gives
-    /// its Replace button; on a Mac, where Option+R types "®" and Word has none, it isn't.
+    /// Replace's field and its buttons, Replace and Replace all, under the search field,
+    /// while Replace is shown; Replace pressed, Enter in the field, or Alt+R with the
+    /// keyboard in Search results (`held`: the search field or an option has it; the field
+    /// and buttons are added here), and Replace all pressed or Alt+A, are returned for the
+    /// app to run. Alt+R and Alt+A are the keys Word's Find and Replace window gives its
+    /// Replace and Replace All buttons; on a Mac, where Option types letters ("®", "å") and
+    /// Word has none, they aren't.
     pub(super) fn replace_ui(&mut self, ui: &mut egui::Ui, c: &Ctx, held: bool) -> Option<Act> {
         // Replace's text typed over a match, its line waiting: the keyboard comes back.
         let typed_over = std::mem::take(&mut self.ed.typed_over);
@@ -157,23 +250,55 @@ impl Tab {
             .show_at(ui.ctx(), r.rect.left_bottom() + Vec2::new(0.0, 4.0), id);
         let enter = r.has_focus()
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        // Its own word beside the field; the menus say which match it replaces.
-        let a = actions::get(Act::ReplaceMatch);
-        let enabled = (a.enabled)(c);
-        let b = ui.add_enabled(enabled, egui::Button::new("Replace"));
-        b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, "Replace"));
+        // Their own words, as in Word's window; the menus say what each replaces.
+        struct Drawn {
+            act: Act,
+            enabled: bool,
+            key: Option<egui::KeyboardShortcut>,
+            clicked: bool,
+            focused: bool,
+        }
         let ctx = ui.ctx().clone();
-        let alt_r = (ctx.os() != egui::os::OperatingSystem::Mac).then_some(ALT_R);
-        let held = held || r.has_focus() || b.has_focus();
-        let keyed = alt_r.is_some_and(|k| held && ui.input_mut(|i| i.consume_shortcut(&k)));
-        let tip = match alt_r {
-            Some(k) => format!("Replace ({})\n{}", ctx.format_shortcut(&k), a.hint),
-            None => format!("Replace\n{}", a.hint),
-        };
-        let clicked = b
-            .on_hover_text(tip)
-            .on_disabled_hover_text(actions::greyed_tip(&ctx, a, c))
-            .clicked();
-        (clicked || (enter || keyed) && enabled).then_some(Act::ReplaceMatch)
+        let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+        let buttons = [
+            (Act::ReplaceMatch, "Replace", ALT_R),
+            (Act::ReplaceAll, "Replace all", ALT_A),
+        ];
+        let drawn = ui.horizontal(|ui| {
+            buttons.map(|(act, name, key)| {
+                let a = actions::get(act);
+                let enabled = (a.enabled)(c);
+                let b = ui.add_enabled(enabled, egui::Button::new(name));
+                b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
+                let key = (!mac).then_some(key);
+                let tip = match key {
+                    Some(k) => format!("{name} ({})\n{}", ctx.format_shortcut(&k), a.hint),
+                    None => format!("{name}\n{}", a.hint),
+                };
+                let focused = b.has_focus();
+                let b = b.on_hover_text(tip);
+                Drawn {
+                    act,
+                    enabled,
+                    key,
+                    clicked: b
+                        .on_disabled_hover_text(actions::greyed_tip(&ctx, a, c))
+                        .clicked(),
+                    focused,
+                }
+            })
+        });
+        let held = held || r.has_focus() || drawn.inner.iter().any(|d| d.focused);
+        let mut pressed = None;
+        for d in drawn.inner {
+            let keyed = d
+                .key
+                .is_some_and(|k| held && ui.input_mut(|i| i.consume_shortcut(&k)));
+            let enter = enter && d.act == Act::ReplaceMatch;
+            if d.clicked || (enter || keyed) && d.enabled {
+                pressed = pressed.or(Some(d.act));
+            }
+        }
+        pressed
     }
 }

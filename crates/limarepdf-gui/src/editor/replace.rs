@@ -18,16 +18,66 @@ pub enum NotReplaced {
     Text(String),
 }
 
-const ON_TWO_PAGES: &str = "Not replaced: the match runs on to the next page";
-const ACROSS_PARAGRAPHS: &str = "Not replaced: the match runs across paragraphs";
-const HIDDEN: &str = "Not replaced: invisible recognised text";
-const GROUPED: &str = "Not replaced: text inside a group";
-const VERTICAL: &str = "Not replaced: vertical writing";
+pub(super) const ON_TWO_PAGES: &str = "Not replaced: the match runs on to the next page";
+pub(super) const ACROSS_PARAGRAPHS: &str = "Not replaced: the match runs across paragraphs";
+pub(super) const HIDDEN: &str = "Not replaced: invisible recognised text";
+pub(super) const GROUPED: &str = "Not replaced: text inside a group";
+pub(super) const VERTICAL: &str = "Not replaced: vertical writing";
+
+/// The page all of a match whose parts are `parts` is on, or why it isn't replaced.
+pub(super) fn page_of(parts: &[HitPart]) -> Result<usize, &'static str> {
+    let page = parts.first().map(|h| h.page).ok_or(ON_TWO_PAGES)?;
+    match parts.iter().all(|h| h.page == page) {
+        true => Ok(page),
+        false => Err(ON_TWO_PAGES),
+    }
+}
+
+/// A match's lines, by object id, in reading order, each with its characters (from, to).
+pub(super) type MatchLines = Vec<(usize, (usize, usize))>;
+
+/// The lines of the page's objects `objs` a match whose parts are `parts` is on, a line the
+/// match comes back to taken once; or why it isn't replaced: text in a group, invisible
+/// recognised text, vertical writing.
+pub(super) fn lines_of(objs: &[PageObject], parts: &[HitPart]) -> Result<MatchLines, &'static str> {
+    let mut lines: MatchLines = Vec::new();
+    for h in parts {
+        let id = h.object.ok_or(GROUPED)?;
+        match lines.iter_mut().find(|(l, _)| *l == id) {
+            Some((_, c)) => *c = (c.0.min(h.chars.0), c.1.max(h.chars.1)),
+            None => lines.push((id, h.chars)),
+        }
+    }
+    for &(id, _) in &lines {
+        let o = (objs.get(id).filter(|o| o.kind == ObjectKind::Text)).ok_or(GROUPED)?;
+        if o.hidden {
+            return Err(HIDDEN);
+        }
+        if o.vertical {
+            return Err(VERTICAL);
+        }
+    }
+    match lines.is_empty() {
+        true => Err(GROUPED),
+        false => Ok(lines),
+    }
+}
+
+/// The font a replacement typed over a match starting at character `a` of line `o` goes
+/// into: that of the line's part there, as typing it would take.
+pub(super) fn typed_font(o: Option<&PageObject>, a: usize) -> FontChoice {
+    o.map_or_else(FontChoice::default, |o| {
+        let at = (o.spans.iter()).find(|s| s.chars.0 <= a && a < s.chars.1);
+        let span = at.or(o.spans.first()).map(|s| s.font_name.as_str());
+        let name = span.or(o.font_name.as_deref());
+        name.map_or_else(FontChoice::default, font_of)
+    })
+}
 
 /// The characters `a..b` of a line's `text` deleting them takes, as a word processor deletes
 /// a word: with the space after it when a space or the line's start is before it, or the
 /// space before it at the line's end, so that no two spaces are left together.
-fn with_a_space(text: &str, (a, b): (usize, usize)) -> (usize, usize) {
+pub(super) fn with_a_space(text: &str, (a, b): (usize, usize)) -> (usize, usize) {
     let t: Vec<char> = text.chars().collect();
     let space = |i: usize| t.get(i) == Some(&' ');
     let after_space = a == 0 || space(a - 1);
@@ -53,45 +103,13 @@ impl Editor {
         parts: &[HitPart],
         with: &str,
     ) -> Result<(), NotReplaced> {
-        let Some(page) = parts.first().map(|h| h.page) else {
-            return Err(NotReplaced::Match(ON_TWO_PAGES));
-        };
-        if parts.iter().any(|h| h.page != page) {
-            return Err(NotReplaced::Match(ON_TWO_PAGES));
-        }
-        // Each line's characters, a line the match comes back to taken once.
-        let mut lines: Vec<(usize, (usize, usize))> = Vec::new();
-        for h in parts {
-            let Some(id) = h.object else {
-                return Err(NotReplaced::Match(GROUPED));
-            };
-            match lines.iter_mut().find(|(l, _)| *l == id) {
-                Some((_, c)) => *c = (c.0.min(h.chars.0), c.1.max(h.chars.1)),
-                None => lines.push((id, h.chars)),
-            }
-        }
+        let page = page_of(parts).map_err(NotReplaced::Match)?;
         let objs = self.objects(pdf, page);
-        for &(id, _) in &lines {
-            let Some(o) = objs.get(id).filter(|o| o.kind == ObjectKind::Text) else {
-                return Err(NotReplaced::Match(GROUPED));
-            };
-            if o.hidden {
-                return Err(NotReplaced::Match(HIDDEN));
-            }
-            if o.vertical {
-                return Err(NotReplaced::Match(VERTICAL));
-            }
-        }
+        let mut lines = lines_of(objs, parts).map_err(NotReplaced::Match)?;
         // What can't be written in the font the replacement goes into is refused first, as
         // typing it would leave it out.
         let (first, (a, _)) = lines[0];
-        let font = objs.get(first).map_or_else(FontChoice::default, |o| {
-            let at = (o.spans.iter()).find(|s| s.chars.0 <= a && a < s.chars.1);
-            let span = at.or(o.spans.first()).map(|s| s.font_name.as_str());
-            let name = span.or(o.font_name.as_deref());
-            name.map_or_else(FontChoice::default, font_of)
-        });
-        if let Some(c) = page_text::untypable(with, font) {
+        if let Some(c) = page_text::untypable(with, typed_font(objs.get(first), a)) {
             return Err(NotReplaced::Text(c));
         }
         // Deleted, a word on a line goes with a space beside it.

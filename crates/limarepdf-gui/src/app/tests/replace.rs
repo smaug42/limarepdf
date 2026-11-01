@@ -2,7 +2,8 @@
 //! results with a Replace with field; Replace types it over the current match on the page,
 //! the line waiting open and the next match current; Replace again keeps it, one undo step,
 //! and replaces the next. Match case and Whole words only change what is found. What isn't
-//! replaced says why.
+//! replaced says why. Replace all (NEW-04b, stage 3) replaces every match on a copy,
+//! reviewed first, as one undo step.
 
 use super::paragraphs::new_app;
 use super::*;
@@ -13,7 +14,12 @@ fn replacing(app: &mut App, ty: &Typist, lines: &[&str], query: &str, with: &str
     let at: Vec<(String, egui::Pos2)> = (lines.iter().enumerate())
         .map(|(i, l)| (l.to_string(), egui::pos2(72.0, 100.0 + 40.0 * i as f32)))
         .collect();
-    lines_tab(app, ty.ctx, 792.0, &at);
+    replacing_at(app, ty, &at, query, with);
+}
+
+/// [`replacing`] with each line where given (its baseline's left end, in points).
+fn replacing_at(app: &mut App, ty: &Typist, at: &[(String, egui::Pos2)], query: &str, with: &str) {
+    lines_tab(app, ty.ctx, 792.0, at);
     ty.pause(app);
     app.act(ty.ctx, Act::Replace);
     ty.frame(app, vec![]);
@@ -327,4 +333,171 @@ fn alt_r_replaces_from_search_results_but_on_a_mac() {
         let want = if mac { "⌘G" } else { "F3" };
         assert_eq!(shown.as_deref(), Some(want), "{os:?}");
     }
+}
+
+/// Wait for Replace all's preparation, off the window's thread, to come back.
+fn prepared(app: &mut App, ctx: &egui::Context) {
+    wait_for(app, ctx, |a| !a.busy);
+}
+
+/// Replace all, once the search is done, and its review once it is shown.
+fn review(app: &mut App, ty: &Typist) -> dlg::ReplaceReview {
+    searched_with(app, |a| {
+        ty.frame(a, vec![]);
+    });
+    app.act(ty.ctx, Act::ReplaceAll);
+    assert!(app.busy, "not preparing");
+    prepared(app, ty.ctx);
+    match &app.dialog {
+        Dialog::ConfirmReplaceAll(q) => q.review.clone(),
+        _ => panic!("no review"),
+    }
+}
+
+/// Replace all prepares every replacement on a copy and says what it does first, the
+/// document as it was; Replace all then makes them one undo step, said with Undo.
+#[test]
+fn replace_all_replaces_every_match_as_one_step() {
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    let lines = [
+        "the walrus ate fish",
+        "the walrus swam",
+        "a walrus met a walrus",
+    ];
+    replacing(&mut app, &ty, &lines, "walrus", "otter");
+    assert_eq!(app.tabs[0].hits.len(), 4);
+    let r = review(&mut app, &ty);
+    assert_eq!((r.replaced, r.pages, r.over, r.other_font), (4, 1, 0, 0));
+    assert!(r.left.is_empty() && !r.fits);
+    let first = "4 matches of “walrus” on 1 page are replaced with “otter”.";
+    assert_eq!(r.said(), [first, "Undo brings it all back."]);
+    assert_eq!(
+        line_texts(&app.tabs[0].pdf, 0),
+        lines,
+        "changed before the answer"
+    );
+    click(&mut app, &ctx, "Replace all");
+    let t = &app.tabs[0];
+    let all = [
+        "the otter ate fish",
+        "the otter swam",
+        "a otter met a otter",
+    ];
+    assert_eq!(line_texts(&t.pdf, 0), all);
+    assert_eq!(t.notice.as_deref(), Some("Replaced 4 matches"));
+    assert_eq!(t.history().1, 1, "not one step");
+    app.act(&ctx, Act::Undo);
+    assert_eq!(line_texts(&app.tabs[0].pdf, 0), lines);
+
+    // An empty replacement deletes each, a space with it, as deleting a word does.
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    replacing(&mut app, &ty, &["a walrus met a walrus"], "walrus", "");
+    let r = review(&mut app, &ty);
+    let first = "2 matches of “walrus” on 1 page are deleted.";
+    assert_eq!(r.said()[0], first);
+    click(&mut app, &ctx, "Replace all");
+    assert_eq!(line_texts(&app.tabs[0].pdf, 0), ["a met a"]);
+}
+
+/// A replacement that would run past the page's edge is said in the review, with its page;
+/// Replace where it fits leaves it as it was, and the notice says so. Cancel changes
+/// nothing.
+#[test]
+fn replace_where_it_fits_leaves_what_runs_over() {
+    let long = "a long-tusked otter of the far north";
+    let at = [
+        ("the walrus".to_string(), egui::pos2(72.0, 100.0)),
+        ("a walrus".to_string(), egui::pos2(470.0, 200.0)),
+    ];
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    replacing_at(&mut app, &ty, &at, "walrus", long);
+    let r = review(&mut app, &ty);
+    assert_eq!((r.replaced, r.over, r.fits), (2, 1, true));
+    let over = "1 of them would run past the page's edge or over other text, on page 1. \
+                Replace where it fits leaves those as they are.";
+    assert_eq!(r.said()[1], over);
+    click(&mut app, &ctx, "Replace where it fits");
+    let t = &app.tabs[0];
+    assert_eq!(
+        line_texts(&t.pdf, 0),
+        [format!("the {long}"), "a walrus".into()]
+    );
+    let said = "Replaced 1 match; 1 that didn't fit is left as it was";
+    assert_eq!(t.notice.as_deref(), Some(said));
+
+    // Replace all replaces it too; Cancel nothing.
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    replacing_at(&mut app, &ty, &at, "walrus", long);
+    review(&mut app, &ty);
+    click(&mut app, &ctx, "Cancel");
+    assert_eq!(line_texts(&app.tabs[0].pdf, 0), ["the walrus", "a walrus"]);
+    assert!(!app.tabs[0].can_undo(), "something changed");
+    review(&mut app, &ty);
+    click(&mut app, &ctx, "Replace all");
+    let all = [format!("the {long}"), format!("a {long}")];
+    assert_eq!(line_texts(&app.tabs[0].pdf, 0), all);
+}
+
+/// What Replace all can't replace is counted by why, the rest replaced; with nothing it
+/// can replace, a message says why, and nothing changes.
+#[test]
+fn replace_all_says_what_it_leaves_and_why() {
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    subset_tab(&mut app, &ctx);
+    ty.pause(&mut app);
+    app.act(&ctx, Act::Replace);
+    ty.frame(&mut app, vec![]);
+    ty.frame(&mut app, vec![egui::Event::Text("hidden".into())]);
+    ty.key(&mut app, Key::Enter, egui::Modifiers::NONE);
+    app.tabs[0].replace.with = "shown".into();
+    searched_with(&mut app, |a| {
+        ty.frame(a, vec![]);
+    });
+    app.act(&ctx, Act::ReplaceAll);
+    prepared(&mut app, &ctx);
+    let (title, text) = message(&app);
+    assert_eq!(title, "Replace all");
+    let said = "No match of “hidden” can be replaced. Not replaced: 1 is invisible recognised \
+                text.";
+    assert_eq!(text, said);
+    assert!(!app.tabs[0].can_undo(), "something changed");
+
+    // A replacement LimarePDF can't write in a line's font is left there.
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    replacing(&mut app, &ty, &["the walrus", "a walrus"], "walrus", "שלום");
+    app.act(&ctx, Act::ReplaceAll);
+    prepared(&mut app, &ctx);
+    let (_, text) = message(&app);
+    let why = "Not replaced: 2 need a character LimarePDF can't write there.";
+    assert!(text.ends_with(why), "{text}");
+}
+
+/// Alt+A with the keyboard in Search results is Replace all, as in Word's Find and Replace
+/// window; on a Mac, as there, it isn't. Replace all waits for the search to finish.
+#[test]
+fn alt_a_replaces_all_from_search_results_but_on_a_mac() {
+    use egui::os::OperatingSystem::{Mac, Nix};
+    for os in [Nix, Mac] {
+        let (ctx, mut app) = new_app();
+        ctx.set_os(os);
+        let ty = Typist::new(&ctx);
+        replacing(&mut app, &ty, &["the walrus ate fish"], "walrus", "otter");
+        ty.key(&mut app, Key::A, egui::Modifiers::ALT);
+        prepared(&mut app, &ctx);
+        let asked = matches!(app.dialog, Dialog::ConfirmReplaceAll(_));
+        assert_eq!(asked, os != Mac, "{os:?}");
+    }
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    replacing(&mut app, &ty, &["the walrus ate fish"], "walrus", "otter");
+    let mut c = app.state(&ctx);
+    c.search_running = true;
+    let a = actions::get(Act::ReplaceAll);
+    assert_eq!(actions::why_not(&c, a), "Waits until the search is done.");
 }

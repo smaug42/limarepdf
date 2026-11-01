@@ -1322,6 +1322,122 @@ pub fn restore(ctx: &Context, offers: &[Offer]) -> RestoreOut {
     out
 }
 
+// ------------------------------------------------------------------ replace all
+
+/// What Replace all's review says ([`replace_all`]).
+#[derive(Clone, Debug, Default)]
+pub struct ReplaceReview {
+    /// What is searched for, and what replaces it (nothing: it is deleted).
+    pub query: String,
+    pub with: String,
+    /// The matches replaced, and how many pages they are on.
+    pub replaced: usize,
+    pub pages: usize,
+    /// Of those, the matches that would run past the page's edge or over other text, and
+    /// those pages, named.
+    pub over: usize,
+    pub over_pages: String,
+    /// Of those, the matches that go into another font.
+    pub other_font: usize,
+    /// The matches not replaced: how many, and why, said after their number.
+    pub left: Vec<(usize, &'static str)>,
+    /// Replace where it fits replaces some: some fit and others don't.
+    pub fits: bool,
+}
+
+impl ReplaceReview {
+    /// What it says, a paragraph each: how many are replaced, those that would run over,
+    /// those in another font, what isn't replaced, and Undo; with none replaced, that and
+    /// why.
+    pub fn said(&self) -> Vec<String> {
+        let not_replaced = || {
+            let why: Vec<String> = (self.left.iter())
+                .map(|(n, why)| format!("{n} {why}"))
+                .collect();
+            format!("Not replaced: {}.", why.join("; "))
+        };
+        if self.replaced == 0 {
+            let none = format!("No match of “{}” can be replaced.", self.query);
+            return vec![none, not_replaced()];
+        }
+        let one = self.replaced == 1;
+        let pages = match self.pages {
+            1 => "1 page".to_string(),
+            n => format!("{n} pages"),
+        };
+        let done = match (self.with.is_empty(), one) {
+            (true, true) => "is deleted".to_string(),
+            (true, false) => "are deleted".to_string(),
+            (false, true) => format!("is replaced with “{}”", self.with),
+            (false, false) => format!("are replaced with “{}”", self.with),
+        };
+        let found = limarepdf_core::match_count(self.replaced);
+        let mut out = vec![format!("{found} of “{}” on {pages} {done}.", self.query)];
+        // Some of those: "It" when there is one.
+        let of_them = |n: usize| match one {
+            true => "It".to_string(),
+            false => format!("{n} of them"),
+        };
+        if self.over > 0 {
+            let mut s = format!(
+                "{} would run past the page's edge or over other text, on {}.",
+                of_them(self.over),
+                self.over_pages
+            );
+            if self.fits {
+                s.push_str(" Replace where it fits leaves those as they are.");
+            }
+            out.push(s);
+        }
+        if self.other_font > 0 {
+            let (goes, it) = match self.other_font {
+                1 => ("goes", "it"),
+                _ => ("go", "them"),
+            };
+            out.push(format!(
+                "{} {goes} into another font: this PDF's font hasn't the letters for {it}.",
+                of_them(self.other_font)
+            ));
+        }
+        if !self.left.is_empty() {
+            out.push(not_replaced());
+        }
+        out.push("Undo brings it all back.".to_string());
+        out
+    }
+}
+
+/// Replace all's review, `r`: Replace all ([`Choice::First`]), Replace where it fits
+/// ([`Choice::Second`], when it replaces some, but not all), or Cancel.
+pub fn replace_all(ctx: &Context, file: Option<&str>, r: &ReplaceReview) -> Choice {
+    let shell = Shell::new("Replace all").file(file);
+    let (out, esc) = shell.show(ctx, |ui| {
+        content(ui, |ui| {
+            for (i, s) in r.said().iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(6.0);
+                }
+                ui.add(egui::Label::new(s).wrap());
+            }
+        });
+        let mut buttons = vec![Btn::primary("Replace all")];
+        if r.fits {
+            buttons.push(Btn::plain("Replace where it fits"));
+        }
+        buttons.push(Btn::cancel());
+        match footer(ui, None, &buttons) {
+            Some(0) => Choice::First,
+            Some(1) if r.fits => Choice::Second,
+            Some(_) => Choice::Cancel,
+            None => Choice::Open,
+        }
+    });
+    if esc {
+        return Choice::Cancel;
+    }
+    out
+}
+
 /// What was picked in [`choose`].
 #[derive(PartialEq, Eq, Debug)]
 pub enum Choice {

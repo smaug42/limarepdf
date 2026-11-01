@@ -115,7 +115,7 @@ pub(super) fn covers(block: &Block) -> Vec<[f32; 4]> {
 
 /// Why a block can't be edited as a paragraph, if it can't: it is one line, in a table, or
 /// a turned line (the switch stays greyed and says so).
-fn refused(b: &Block) -> Option<&'static str> {
+pub(super) fn refused(b: &Block) -> Option<&'static str> {
     match b.doubt {
         _ if b.lines.len() < 2 => Some(ON_ITS_OWN),
         Some(Doubt::OneLine) => Some(ON_ITS_OWN),

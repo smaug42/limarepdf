@@ -28,7 +28,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 mod paragraph;
 mod replace;
+mod replace_all;
 pub use replace::NotReplaced;
+pub use replace_all::{replace_all, AllJob, Pass, Prepared};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -1862,6 +1864,29 @@ fn norm(r: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// Whether object `o` covers most of a page of `area` square points, as a scanned page's
+/// picture or a background does.
+fn covers_most(o: &PageObject, area: f32) -> bool {
+    let b = o.bbox;
+    (b[2] - b[0]) * (b[3] - b[1]) >= 0.8 * area
+}
+
+/// What text typed on a page of `area` square points may run over ([`page_text::overflow`],
+/// PB-35), in page points, with what each is: the page's visible things, `objs`, but those
+/// `leave` says (by number and object: the text being edited, and what it was already
+/// over), invisible text and a background covering most of the page.
+fn obstacles_in(
+    objs: &[PageObject],
+    area: f32,
+    leave: impl Fn(usize, &PageObject) -> bool,
+) -> Vec<([f32; 4], &'static str)> {
+    (objs.iter().enumerate())
+        .filter(|(i, o)| !leave(*i, o) && !(o.kind == ObjectKind::Text && o.hidden))
+        .filter(|(_, o)| !covers_most(o, area))
+        .map(|(_, o)| (o.bbox, page_text::over(o.kind)))
+        .collect()
+}
+
 /// Whether two boxes meet (touching counts).
 fn meet(a: [f32; 4], b: [f32; 4]) -> bool {
     a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
@@ -2613,9 +2638,8 @@ impl Editor {
     }
 
     /// What text typed on `page` (drawn at `r`, `k` pixels per point) may run over, on the
-    /// screen, with what each is ([`page_text::overflow`], PB-35): the page's visible things
-    /// but those `leave` says (by number and object: the text being edited, and what it was
-    /// already over), invisible text and a background covering most of the page.
+    /// screen, with what each is ([`page_text::overflow`], PB-35): [`obstacles_in`] the
+    /// page's objects.
     fn obstacles(
         &self,
         page: usize,
@@ -2625,14 +2649,9 @@ impl Editor {
     ) -> Vec<(Rect, &'static str)> {
         let at = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let area = (r.width() / k) * (r.height() / k);
-        (self.objs.get(&page).into_iter().flatten().enumerate())
-            .filter(|(i, o)| !leave(*i, o) && !(o.kind == ObjectKind::Text && o.hidden))
-            .filter(|(i, _)| !self.background(page, *i, area))
-            .map(|(_, o)| {
-                let b = o.bbox;
-                let on_screen = Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3]));
-                (on_screen, page_text::over(o.kind))
-            })
+        let objs = self.objs.get(&page).map_or(&[][..], |v| &v[..]);
+        (obstacles_in(objs, area, leave).into_iter())
+            .map(|(b, what)| (Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3])), what))
             .collect()
     }
 
@@ -4942,13 +4961,9 @@ impl Editor {
     /// scanned page's picture or a background does: a drag that starts on it while it isn't
     /// selected draws a rectangle, so it isn't dragged away by accident.
     fn background(&self, page: usize, id: usize, area: f32) -> bool {
-        self.objs
-            .get(&page)
+        (self.objs.get(&page))
             .and_then(|v| v.get(id))
-            .is_some_and(|o| {
-                let b = o.bbox;
-                (b[2] - b[0]) * (b[3] - b[1]) >= 0.8 * area
-            })
+            .is_some_and(|o| covers_most(o, area))
     }
 
     /// Follow the pointer, at `p` (page points) on `page`, with the move, resize or turn

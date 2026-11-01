@@ -2875,6 +2875,7 @@ impl Tab {
         c.cropping = self.crop_view();
         c.found_match = self.match_ready();
         c.search_waits = self.search_waits();
+        c.search_running = self.search_running();
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
         c.paragraph = self.ed.paragraphs;

@@ -18,7 +18,14 @@
   whole word with a space beside it), and a match across the lines of one paragraph is replaced in the
   paragraph, which rewraps. Invisible recognised text, text inside a group, vertical writing and a match across
   paragraphs or on to the next page are left as they are, with a note at the match saying why; a replacement
-  LimarePDF can't write is refused before anything changes. Replace all is still to come.
+  LimarePDF can't write is refused before anything changes.
+- **Replace all**, beside Replace (also Alt+A in Search results, as in Word, not on a Mac, and Edit > Replace all
+  matches): every match of the search is replaced on a copy of the document first, each as Replace would, and a
+  window says what that does before anything changes: how many matches on how many pages, how many would run past
+  the page's edge or over other text (and on which pages), how many go into another font, and which are left as
+  they are and why. **Replace all** makes them all, **Replace where it fits** (when some would run over) leaves
+  those out, and Cancel changes nothing. The replacements are one undo step. Each match is replaced once, even
+  when the replacement contains what was searched for.
 - **Find next** and **Find previous** (Edit menu, the command search): F3 and Shift+F3, or Ctrl+G and
   Ctrl+Shift+G (⌘G and ⌘⇧G on a Mac), go to the next match and the one before wherever the keyboard is, on the
   page and in Replace with too, so a match can be passed over without replacing it; with nothing searched, F3
