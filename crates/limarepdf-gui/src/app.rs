@@ -2428,13 +2428,15 @@ impl App {
         // command doesn't run (BUG-01). A question the command asks is then about the
         // document with the typing in it (BUG-10). The styles (Bold, Italic, Underline,
         // Strikethrough) change the line being edited on the page instead, which stays open,
-        // as Ctrl+B and Ctrl+I there do, and the alignments its paragraph; Cut cuts from the
-        // text being typed.
+        // as Ctrl+B and Ctrl+I there do, and the alignments its paragraph, or new text or a
+        // text box being typed; Cut cuts from the text being typed.
         let styles = matches!(
             a,
             Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough | Act::AlignText(_)
         );
-        let in_line = styles && has && self.tabs[self.active].ed.editing_line();
+        let aligning =
+            matches!(a, Act::AlignText(_)) && has && self.tabs[self.active].ed.aligns_typing();
+        let in_line = (styles && has && self.tabs[self.active].ed.editing_line()) || aligning;
         let in_typing = a == Act::Cut && has && self.tabs[self.active].ed.typing_id().is_some();
         let on_typing = in_line || in_typing;
         if has && a.uses_document() && !on_typing {
@@ -8840,7 +8842,8 @@ mod tests {
         let ed = &mut app.tabs[0].ed;
         // Nothing typed: Esc closes the editor, adding nothing; Esc again leaves the tool.
         let new = |ed: &crate::editor::Editor, at| {
-            Some(page_text::PageText::new(ed.scope(), 0, at, ed.new_look()))
+            let look = ed.new_look();
+            Some(page_text::PageText::new(ed.scope(), 0, at, look, ed.talign))
         };
         ed.adding = new(ed, (72.0, 72.0));
         ed.escape();
@@ -8864,7 +8867,7 @@ mod tests {
         ed.escape();
         assert!(matches!(
             ed.actions.as_slice(),
-            [EdAction::AddText(0, (72.0, 90.0), t)] if t.text() == "Walrus"
+            [EdAction::AddText(0, (72.0, 90.0), t, _)] if t.text() == "Walrus"
         ));
         app.tabs[0].apply_actions(&ctx);
         let objs = app.tabs[0].pdf.page_objects(0).unwrap();
@@ -11650,7 +11653,8 @@ mod tests {
         app.act(&ctx, Act::Tool(Tool::Text));
         let ed = &mut app.tabs[0].ed;
         ed.tsize = 30.0;
-        let mut a = page_text::PageText::new(ed.scope(), 0, (100.0, 200.0), ed.new_look());
+        let look = ed.new_look();
+        let mut a = page_text::PageText::new(ed.scope(), 0, (100.0, 200.0), look, ed.talign);
         a.text.sync("Walrus\nseal\nfish", None);
         ed.adding = Some(a);
         ed.escape();

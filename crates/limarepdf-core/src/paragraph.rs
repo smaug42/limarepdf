@@ -190,6 +190,36 @@ pub enum Align {
     Justified,
 }
 
+impl Align {
+    /// The alignment a field's or text box's `/Q` gives: 1 centred, 2 right, else left.
+    pub(crate) fn of_q(q: i64) -> Self {
+        match q {
+            1 => Align::Centre,
+            2 => Align::Right,
+            _ => Align::Left,
+        }
+    }
+
+    /// Its `/Q`: 1 centred, 2 right, 0 left. A box can't keep justified text, which is left.
+    pub(crate) fn q(self) -> i64 {
+        match self {
+            Align::Centre => 1,
+            Align::Right => 2,
+            Align::Left | Align::Justified => 0,
+        }
+    }
+
+    /// How much of the room a line leaves it goes before it: none for left (and justified,
+    /// whose lines new text and boxes write as left), half for centred, all for right.
+    pub(crate) fn share(self) -> f32 {
+        match self {
+            Align::Centre => 0.5,
+            Align::Right => 1.0,
+            Align::Left | Align::Justified => 0.0,
+        }
+    }
+}
+
 /// Why a block isn't edited as a paragraph by default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Doubt {

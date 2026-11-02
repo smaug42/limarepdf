@@ -1,7 +1,7 @@
 //! Filling in form fields on the page: tints, the text box over a field being typed in,
 //! the list of a choice's options, and moving between fields with Tab.
 
-use crate::editor::Action;
+use crate::editor::{Action, TextAlign};
 use eframe::egui::{self, Color32, CursorIcon, Key, Rect, Stroke, StrokeKind};
 use limarepdf_core::{BoxSetting, Field, FieldKind, FieldValue, Pdf};
 use std::cell::OnceCell;
@@ -471,8 +471,8 @@ impl FormUi {
         let FieldKind::Text {
             multiline,
             password,
+            comb,
             max_len,
-            ..
         } = f.kind
         else {
             return;
@@ -542,6 +542,16 @@ impl FormUi {
         }
         if !password {
             te = te.layouter(&mut layouter);
+        }
+        // One line where its form aligns it, as it is written (PB-59); a multi-line field's
+        // lines are placed in its layout, and a comb field's characters have a cell each.
+        if !multiline && !comb {
+            let along = match field.widgets.get(*widget).map(|w| w.align) {
+                Some(TextAlign::Centre) => egui::Align::Center,
+                Some(TextAlign::Right) => egui::Align::Max,
+                _ => egui::Align::Min,
+            };
+            te = te.align(egui::Align2([along, egui::Align::Min]));
         }
         // Light colours in either theme: the box sits on the paper.
         let theme = ui.visuals().clone();

@@ -3,8 +3,8 @@
 
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
-    AnnotKind, DateStyle, InkColor, Mark, Pdf, Shape, ShapeLook, SignArt, SignRole, SignStyle,
-    Stamp, StampColor, StampKind, StampPlace,
+    Align, AnnotKind, DateStyle, InkColor, Mark, Pdf, Shape, ShapeLook, SignArt, SignRole,
+    SignStyle, Stamp, StampColor, StampKind, StampPlace,
 };
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 
@@ -665,6 +665,7 @@ fn a_text_box_is_written_and_restyled() {
         color: [1.0, 0.0, 0.0],
         fill: Some([0.9, 0.9, 1.0]),
         border: 2.0,
+        align: Align::Left,
     };
     p.set_text_style(id, &red).unwrap();
     assert_eq!(p.annotations()[0].text_style, Some(red));
@@ -673,6 +674,50 @@ fn a_text_box_is_written_and_restyled() {
     assert!(p
         .add_text_box(0, [5.0, 5.0, 5.5, 50.0], "x", &style, "")
         .is_err());
+}
+
+/// A text box keeps its alignment (NEW-15's stage 3): left, centred or right, written as
+/// `/Q`, read back, changed with its style and drawn so. Justified is written left, as a PDF
+/// text box can't keep it; left is written as no `/Q`, which readers take as left.
+#[test]
+fn a_text_box_keeps_its_alignment() {
+    let mut p = page();
+    let style = limarepdf_core::TextStyle {
+        size: 20.0,
+        align: Align::Right,
+        ..Default::default()
+    };
+    let id = p
+        .add_text_box(0, [20.0, 60.0, 280.0, 100.0], "MM", &style, "")
+        .unwrap();
+    let q = |p: &Pdf| {
+        let d = p.doc.get_dictionary(id).unwrap();
+        d.get(b"Q").ok().map(|o| o.as_i64().unwrap())
+    };
+    let align = |p: &Pdf| p.annotations()[0].text_style.map(|s| s.align);
+    // Ink in the box's left part, middle and right.
+    let thirds = |p: &mut Pdf| {
+        [[20, 60, 106, 100], [106, 60, 193, 100], [193, 60, 280, 100]].map(|r| ink(p, r).0 > 0)
+    };
+    assert_eq!((q(&p), align(&p)), (Some(2), Some(Align::Right)));
+    assert_eq!(thirds(&mut p), [false, false, true]);
+    for (how, want, drawn) in [
+        (Align::Centre, Some(1), [false, true, false]),
+        (Align::Left, None, [true, false, false]),
+        (Align::Justified, None, [true, false, false]),
+    ] {
+        let style = limarepdf_core::TextStyle {
+            align: how,
+            ..style
+        };
+        p.set_text_style(id, &style).unwrap();
+        let read = match how {
+            Align::Justified => Align::Left,
+            how => how,
+        };
+        assert_eq!((q(&p), align(&p)), (want, Some(read)), "{how:?}");
+        assert_eq!(thirds(&mut p), drawn, "{how:?}");
+    }
 }
 
 #[test]

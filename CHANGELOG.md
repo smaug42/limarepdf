@@ -78,8 +78,16 @@
   step, the words or lines staying selected; the alignment they share shows pressed, and Word's rule (pressed
   again, back to the left) goes over them all. Centre is on the floating toolbar for them too, not in their
   right-click menus. A line on its own, text in a table or form, turned text, invisible recognised text and
-  vertical writing are left as they were, a notice saying so ("Not aligned: 1 line on its own"). New text, text
-  boxes and form fields can't be aligned yet: the buttons are greyed for them and say where to click.
+  vertical writing are left as they were, a notice saying so ("Not aligned: 1 line on its own").
+- Alignment for new text and text boxes. New text's lines line up with each other while you type them (Ctrl+L,
+  Ctrl+E, Ctrl+R or Edit > Alignment): the longest starts where you clicked, the others start there too, are
+  centred under it or end where it ends, and they are written so, each line measured as it is written. Ctrl+Z in
+  the text takes an alignment back, and the next new text starts aligned the same way. A text box is aligned
+  left, centred or right while you type in it or when it is selected (one undo step), kept in the PDF as other
+  readers show it (`/Q`), and a new text box takes the alignment the last one had. Neither can be justified (new
+  text's lines end at Enter; a PDF text box can't keep it), so Justify is greyed and says why; a form field's
+  alignment is its form's, and the alignments are greyed while you type in one ("A field's alignment is set by
+  its form.").
 
 ### Changed
 
@@ -124,6 +132,9 @@
 - A double-click on a word while its line's font was still loading (just after opening a document, say) could
   select the word before it, and a click with the Text tool could put the caret a few characters back. The word
   or place clicked on the page is now the one used.
+- A form field or text box whose text is centred or right-aligned showed it from the left while you typed in it,
+  and it jumped across when kept. Its lines now show where they are written as you type: a multi-line field's and
+  a text box's each placed as the PDF places it, a single-line field's text centred or at the right.
 
 ## [0.12.0] - 2026-10-31
 

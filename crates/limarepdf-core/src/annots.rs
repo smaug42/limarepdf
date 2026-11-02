@@ -7,7 +7,7 @@ use crate::doc::decode_text;
 use crate::form_flatten::Flat;
 use crate::form_write::parse_da;
 use crate::matrix as mx;
-use crate::{Pdf, Result};
+use crate::{Align, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::HashSet;
@@ -200,13 +200,16 @@ impl Default for ShapeLook {
 }
 
 /// How a text box's text is set: Helvetica at `size` points in `color`, on `fill` (none
-/// when transparent), with a border `border` points wide in the text colour (0 for none).
+/// when transparent), with a border `border` points wide in the text colour (0 for none),
+/// its lines aligned left, centred or right (its `/Q`). A PDF text box can't keep justified
+/// text: [`Align::Justified`] is written left.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextStyle {
     pub size: f32,
     pub color: [f32; 3],
     pub fill: Option<[f32; 3]>,
     pub border: f32,
+    pub align: Align,
 }
 
 impl Default for TextStyle {
@@ -216,6 +219,7 @@ impl Default for TextStyle {
             color: [0.0; 3],
             fill: None,
             border: 0.0,
+            align: Align::Left,
         }
     }
 }
@@ -582,11 +586,13 @@ impl Pdf {
                         .collect()
                 })
                 .unwrap_or_default();
+            let q = d.get(b"Q").ok().and_then(|o| self.int_value(o));
             TextStyle {
                 size: if size > 0.0 { size } else { 12.0 },
                 color: rgb(&color),
                 fill: self.colour(d, b"C").map(|c| rgb(&c)),
                 border: self.border(d).0,
+                align: Align::of_q(q.unwrap_or(0)),
             }
         });
         let shape = matches!(

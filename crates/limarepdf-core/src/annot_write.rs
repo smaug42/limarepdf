@@ -682,8 +682,9 @@ fn set_text(d: &mut Dictionary, key: &str, text: &str) {
     }
 }
 
-/// A text box's style entries: `/DA` for the text, `/C` for the fill (removed for none)
-/// and `/BS` for the border.
+/// A text box's style entries: `/DA` for the text, `/C` for the fill (removed for none),
+/// `/BS` for the border and `/Q` for the alignment (removed for left, which readers take
+/// when it is missing).
 fn text_style(d: &mut Dictionary, s: &TextStyle) {
     let [r, g, b] = s.color;
     let da = format!("/Helv {} Tf {r} {g} {b} rg", s.size.clamp(1.0, 400.0));
@@ -695,6 +696,12 @@ fn text_style(d: &mut Dictionary, s: &TextStyle) {
         }
     }
     d.set("BS", dictionary! { "W" => s.border.max(0.0), "S" => "S" });
+    match s.align.q() {
+        0 => {
+            d.remove(b"Q");
+        }
+        q => d.set("Q", q),
+    }
 }
 
 /// A shape's look: the `/BS` width; the `/IC` fill of a rectangle or ellipse; and, when

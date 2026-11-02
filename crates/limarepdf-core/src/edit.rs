@@ -2341,6 +2341,63 @@ impl Pdf {
         })
     }
 
+    /// New text of several lines (each ended by Enter), each line written as
+    /// [`Pdf::add_text_decorated`] writes one: its baseline `lines[i].0` points below the
+    /// first's, whose left end is `pos`, and aligned among the others as `align` says, each
+    /// line measured as it is written. The widest starts at `pos`; the others start there too
+    /// (left), are centred under it, or end where it ends (right). Justified is written left,
+    /// as each line ends where Enter ended it.
+    pub fn add_text_lines(
+        &mut self,
+        page_index: usize,
+        pos: (f32, f32),
+        lines: &[(f32, Vec<TextPart>, Vec<Decorated>)],
+        align: crate::Align,
+    ) -> Result<()> {
+        // Left (and justified) lines all start at `pos`: nothing to measure.
+        let share = align.share();
+        let widths = if share == 0.0 {
+            vec![0.0; lines.len()]
+        } else {
+            (lines.iter())
+                .map(|(_, parts, _)| self.new_text_width(parts))
+                .collect::<Result<Vec<f32>>>()?
+        };
+        let widest = widths.iter().copied().fold(0.0, f32::max);
+        for ((dy, parts, decos), w) in lines.iter().zip(widths) {
+            let x = pos.0 + (widest - w) * share;
+            self.add_text_decorated(page_index, (x, pos.1 + dy), parts, decos)?;
+        }
+        Ok(())
+    }
+
+    /// How wide a line of new text in `parts` is as it is written, in points: each part set
+    /// as [`Pdf::written_lines`] sets new text, the parts in one font by one setter.
+    fn new_text_width(&self, parts: &[TextPart]) -> Result<f32> {
+        let parts: Vec<&TextPart> = parts.iter().filter(|p| !p.text.is_empty()).collect();
+        let mut texts: Vec<(FontChoice, String)> = Vec::new();
+        for p in &parts {
+            let PartFont::Choice(c) = p.font else {
+                bail!("new text has no font of its own to keep");
+            };
+            match texts.iter_mut().find(|(f, _)| *f == c) {
+                Some((_, all)) => all.push_str(&p.text),
+                None => texts.push((c, p.text.clone())),
+            }
+        }
+        let setters: Vec<(FontChoice, Setter)> = (texts.iter())
+            .map(|(c, all)| (*c, self.setter(*c, all)))
+            .collect();
+        let width = |p: &TextPart| {
+            let PartFont::Choice(c) = p.font else {
+                return 0.0;
+            };
+            let set = setters.iter().find(|(f, _)| *f == c).map(|(_, s)| s);
+            set.map_or(0.0, |s| s.width(&p.text, p.size.max(1.0)))
+        };
+        Ok(parts.iter().map(|p| width(p)).sum())
+    }
+
     /// Add a picture filling `rect` (displayed-page points, y down), upright as the file's
     /// orientation asks.
     pub fn add_image(&mut self, page_index: usize, rect: [f32; 4], bytes: &[u8]) -> Result<()> {

@@ -133,9 +133,8 @@ LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragra
 
 ## Align text
 
-Paragraphs of the page's text are aligned as in a word processor: use **Align left**, **Centre**, **Align right**
-or **Justify** in **Edit > Alignment** in the band, or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J (⌘L, ⌘E, ⌘R or ⌘J on
-a Mac). They act on:
+Text is aligned as in a word processor: use **Align left**, **Centre**, **Align right** or **Justify** in **Edit >
+Alignment** in the band, or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J (⌘L, ⌘E, ⌘R or ⌘J on a Mac). They act on:
 
 - **A paragraph you are editing** (with **Paragraph** on): its lines move across between its edges at once, and
   the editing stays open. Ctrl+Z inside takes the change back.
@@ -145,6 +144,16 @@ a Mac). They act on:
 - **Words you select with the read tool**: every paragraph they touch is aligned, as one change that one Undo
   takes back, and the words stay selected.
 - **Lines you select with the arrow**: their paragraphs are aligned the same way, and the lines stay selected.
+- **New text you are typing** ([Add text](#add-text)): its lines line up with each other. The longest line starts
+  where you clicked; the others start there too, are centred under it, or end where it ends. Each line ends where
+  you press Enter, so there is nothing to justify: **Justify** is greyed. The next new text you add starts aligned
+  the same way.
+- **A text box**, while you type in it or when it is selected ([Add a note or a text box](comments-and-markup.md#add-a-note-or-a-text-box)):
+  its lines are aligned left, centred or right inside it, and other PDF readers show it the same way. A PDF text
+  box can't keep justified text, so **Justify** is greyed. A new text box takes the alignment the last one had.
+
+A form field's alignment is set by its form, so the alignments are greyed while you type in one; its text shows
+where the form puts it as you type.
 
 The alignment the text has shows pressed (none, when the paragraphs selected are aligned differently). As in Word,
 Centre, Align right or Justify pressed on text already aligned that way puts it back to the left. Each line keeps
@@ -266,10 +275,11 @@ added as one undo step, and nothing typed adds nothing. Each line becomes its ow
 afterwards it moves and is edited line by line.
 
 While you type, Ctrl+B, Ctrl+I, Ctrl+U and **Edit > Font** style what is selected, or what you type next, as when
-[styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards).
-Ctrl+Z and Ctrl+Y undo and redo typing and styles, and dragging the outline moves the text (Esc during the drag
+[styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards), and Ctrl+L,
+Ctrl+E and Ctrl+R or **Edit > Alignment** line its lines up with each other ([Align text](#align-text)).
+Ctrl+Z and Ctrl+Y undo and redo typing, styles and alignment, and dragging the outline moves the text (Esc during the drag
 puts it back where it was). The next text you add
-starts in the style this one ended in; before you click, **Edit > Font** sets it. A line with larger text in it
+starts in the style and alignment this one ended in; before you click, **Edit > Font** sets its style. A line with larger text in it
 sits further below the one before, as in a word processor. With this tool, a click on text already on the page
 edits that line instead, with the caret where you clicked (Edit > Font and the inspector then show that line's
 look), and a drag selects text, as with the read tool.
@@ -548,10 +558,12 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   is left a drawing, and stays where it is when its line changes.
 - Styling words doesn't rewrap: bold or larger words make their line longer and the rest of it moves along, and
   highlights, links and redaction marks over them stay where they were.
-- Alignment (Align left, Centre, Align right, Justify) works on the page's paragraphs only, for now: new text,
-  text boxes and form fields can't be aligned yet, and the buttons are greyed for them. A paragraph is aligned
-  between its own edges; there are no indents, line spacing or spacing before and after a paragraph to set.
-  Aligning the paragraphs of a long selection takes a moment: about two seconds for 300 pages.
+- Alignment (Align left, Centre, Align right, Justify) works on the page's paragraphs, new text and text boxes. New
+  text and text boxes can't be justified, and a form field takes its form's alignment, which can't be changed in
+  LimarePDF. New text's lines are aligned with each other once kept, but each stays a line of its own, so
+  afterwards they move and are edited line by line, not as a paragraph. A paragraph is aligned between its own
+  edges; there are no indents, line spacing or spacing before and after a paragraph to set. Aligning the
+  paragraphs of a long selection takes a moment: about two seconds for 300 pages.
 - Editing a line does not change its width, and a paragraph keeps its frame's width unless you drag its edges:
   longer text can overlap its neighbours. The outline warns of it, a tag where it happens, but nothing is moved
   out of the way.

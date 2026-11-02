@@ -2,7 +2,7 @@
 //! (Ctrl+K) and the keyboard shortcuts are all built from [`ACTIONS`]; what a command
 //! does is in `App::act`.
 
-use crate::editor::{Align, Axis, TextAlign, Tool};
+use crate::editor::{Align, Aligns, Axis, TextAlign, Tool};
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection, Toward};
@@ -516,9 +516,8 @@ pub struct Ctx {
     /// The paragraph being edited has a marked line-end hyphen at the right-click or the
     /// caret.
     pub hyphen: bool,
-    /// There is text the alignment commands act on
-    /// ([`crate::editor::Editor::aligns_text`]).
-    pub aligns_text: bool,
+    /// What the alignment commands act on ([`crate::editor::Editor::aligns_text`]).
+    pub aligns: Aligns,
     /// How the text the alignment commands act on is aligned, when it is all aligned alike
     /// ([`crate::editor::Editor::text_align`]).
     pub text_align: Option<TextAlign>,
@@ -670,9 +669,14 @@ fn styleable(c: &Ctx) -> bool {
     (c.words || (c.object && c.obj_lines)) && !c.busy
 }
 /// Text the text alignments act on (NEW-15): a paragraph or line being edited, selected
-/// words, or lines selected with the arrow.
+/// words, lines selected with the arrow, new text being typed, or a text box.
 fn text_alignable(c: &Ctx) -> bool {
-    c.aligns_text && !c.busy
+    !matches!(c.aligns, Aligns::Nothing | Aligns::Field) && !c.busy
+}
+/// Text Justify acts on: page text. New text's lines each end at Enter, and a text box
+/// can't keep justified text.
+fn justifiable(c: &Ctx) -> bool {
+    c.aligns == Aligns::PageText && !c.busy
 }
 fn arrow_tool(c: &Ctx) -> bool {
     c.doc && c.tool == Some(Tool::Select) && !c.organise
@@ -1004,7 +1008,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Justify",
         icon: icon::TEXT_ALIGN_JUSTIFY,
         keys: &[k(C, Key::J)],
-        enabled: text_alignable,
+        enabled: justifiable,
         checked: Some(|c| c.text_align == Some(TextAlign::Justified)),
         hint: "Spread the paragraph's lines from edge to edge, the last line left as it is.",
         submenu: "Align text",
@@ -2549,6 +2553,15 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     if matches!(a.act, Act::JoinHyphen | Act::KeepHyphen) {
         return "Click in a word whose hyphen is marked in a paragraph first.";
     }
+    // Text the alignments can't act on, or not justify, said as what it is (NEW-15).
+    if matches!(a.act, Act::AlignText(_)) && !c.busy {
+        match c.aligns {
+            Aligns::Field => return "A field's alignment is set by its form.",
+            Aligns::NewText => return "New text's lines end at Enter: there's nothing to justify.",
+            Aligns::TextBox => return "A text box can't keep justified text.",
+            Aligns::PageText | Aligns::Nothing => {}
+        }
+    }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
     let fixes: [Fix; 29] = [
@@ -2577,7 +2590,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
             "Click in text being typed, or where new text goes, first.",
         ),
         (
-            |d| d.aligns_text = true,
+            |d| d.aligns = Aligns::PageText,
             "Click in a paragraph's text first.",
         ),
         (|d| d.pages = true, "Select pages first."),
@@ -3141,6 +3154,54 @@ mod tests {
         assert_eq!(found("page colours").len(), 6);
     }
 
+    /// NEW-15's stage 3: new text and text boxes are aligned left, centred or right, but not
+    /// justified (new text's lines end at Enter; a PDF text box can't keep it), and a field
+    /// not at all, its form aligning it: each greyed alignment says so, and with nothing to
+    /// align, where to click.
+    #[test]
+    fn alignments_say_why_text_can_t_take_them() {
+        let all = [
+            TextAlign::Left,
+            TextAlign::Centre,
+            TextAlign::Right,
+            TextAlign::Justified,
+        ];
+        let mut c = Ctx {
+            doc: true,
+            ..Default::default()
+        };
+        let justify = get(Act::AlignText(TextAlign::Justified));
+        for (kind, why) in [
+            (
+                Aligns::NewText,
+                "New text's lines end at Enter: there's nothing to justify.",
+            ),
+            (Aligns::TextBox, "A text box can't keep justified text."),
+        ] {
+            c.aligns = kind;
+            for how in &all[..3] {
+                assert!((get(Act::AlignText(*how)).enabled)(&c), "{kind:?} {how:?}");
+            }
+            assert!(!(justify.enabled)(&c), "{kind:?}");
+            assert_eq!(why_not(&c, justify), why);
+        }
+        for (kind, why) in [
+            (Aligns::Field, "A field's alignment is set by its form."),
+            (Aligns::Nothing, "Click in a paragraph's text first."),
+        ] {
+            c.aligns = kind;
+            for how in all {
+                let a = get(Act::AlignText(how));
+                assert!(!(a.enabled)(&c), "{kind:?} {how:?}");
+                assert_eq!(why_not(&c, a), why, "{how:?}");
+            }
+        }
+        c.aligns = Aligns::PageText;
+        for how in all {
+            assert!((get(Act::AlignText(how)).enabled)(&c), "{how:?}");
+        }
+    }
+
     /// NEW-15: the text's alignments take Word's keys (⌘ on a Mac, as Word for Mac), are
     /// named apart from Align objects' in the menus and the command search, and Centre is on
     /// the floating bar while text is edited, after the styles, as on Word's mini toolbar;
@@ -3177,7 +3238,7 @@ mod tests {
         };
         let centre = Act::AlignText(TextAlign::Centre);
         assert!(!bar(&c).contains(&centre), "nothing to align");
-        c.aligns_text = true;
+        c.aligns = Aligns::PageText;
         let shown = bar(&c);
         assert!(shown.contains(&centre), "{shown:?}");
         let right = Act::AlignText(TextAlign::Right);

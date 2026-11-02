@@ -74,6 +74,10 @@ More about notes and text boxes:
 - A text box wraps its lines as you type where they are written in the PDF, inside its border and margin. One
   made by another app with a cloudy border, a callout line or inner margins of its own can wrap a little
   differently while you type.
+- **Edit > Alignment** (or Ctrl+L, Ctrl+E, Ctrl+R) aligns a text box's lines left, centred or right, while you
+  type in it or with it selected, as one change Undo takes back ([Align text](content-editing.md#align-text)). A
+  PDF text box can't keep justified text, so Justify is greyed. A new text box takes the alignment the last one
+  had, and its lines show aligned as you type, as they are written.
 - When you finish a text box, it grows downward to fit its text, keeping its width. It stops at the bottom of the
   page, and never shrinks (resize it by dragging its handles).
 - The Text box tool can be kept on to add several in a row (see [Keep tool active](gui.md#keep-tool-active)). The

@@ -474,10 +474,17 @@ text), puts a line break after each line core broke that has none, lays out with
 (`BoxSetting::leading`, 1.15; `job` keeps 1.2 elsewhere), then clears those rows' `ends_with_newline` and gives
 the galley the text as typed (sections' bytes mapped back), so the caret, selection and egui's double-click read
 the text the user typed; it adds the margin that puts the text where it is written (sides: border and padding,
-`BoxSetting::margin`; the first baseline 0.8 times the size below that). `writing_ui` (text boxes, with
-`Writing::border`) and `fields.rs`'s `text_box` (multi-line fields; the field's `BoxSetting` from
-`Pdf::field_setting`, kept in `Edit::Text`'s `set`, a `OnceCell` read when the box is first drawn) use it;
-single-line fields and passwords lay out on one line. The caret and deletes go by grapheme cluster:
+`BoxSetting::margin`; the first baseline 0.8 times the size below that). Its rows go where `/Q` places the lines
+as written (PB-59, batch 49's stage 3): `BoxSetting::placed` gives each line's start in from the text's left as
+`form_ap::draw` aligns it (`align` over `shown`'s width, one `Metrics` for both), and `moved_rows` moves each row
+by it, leaving the galley's `rect` as laid out: a right-aligned row's trailing space hangs past the side, and a
+galley widened by it would be centred in the field by `Ui::put`, moving every row (found in the stage, 2 px).
+`writing_ui` (text boxes, with `Writing::border` and `Writing::align` from the box's `TextStyle`, its setting
+`aligned`) and `fields.rs`'s `text_box` (multi-line fields; the field's `BoxSetting` from `Pdf::field_setting`,
+which sets `/Q` as the writer does, `widget_q`, kept in `Edit::Text`'s `set`, a `OnceCell` read when the box is
+first drawn) use it; single-line fields and passwords lay out on one line, a single-line field (not a comb) placed
+by `TextEdit::align` from `Widget::align` (centred, or at the right less the 2-pixel margin, where the writer puts
+it less the border and padding). The caret and deletes go by grapheme cluster:
 `page_text::Clusters` is the `TextBuffer` of every typing box (Delete and Backspace take a cluster, Backspace only
 the last mark of a letter typed with separate accents, variation selectors excepted; its `type_id` is
 `Clusters<'static>`'s), and `snap_to_clusters` (`snap_drawn`) moves a caret egui left inside a cluster to its
@@ -501,9 +508,8 @@ a new or existing text box and the form field typed in (`FormUi::typed_text`); `
 which can show beside it) names the words, as typed, each once, that a line's own font can't write ("Not in this
 PDF's font: größe Maße. Those words use Helvetica."). Not covered: a composition left in the inspector's
 annotation text box reaches core, which refuses it with BUG-39's message; form fields have no typing filter at
-all (core refuses what can't be written when the value is written); a field's `/Q` alignment isn't shown while
-typing (PB-59); another app's text box with `/RD`, a cloud or a callout can wrap otherwise while typed than as
-written (PB-60).
+all (core refuses what can't be written when the value is written); another app's text box with `/RD`, a cloud or
+a callout can wrap otherwise while typed than as written (PB-60).
 
 The interface's own text falls back to installed fonts too (ENH-33, built in batch 45's 1b instead of eframe's
 `system_fonts`): `typing_fonts::interface_fallback`, called each frame from `App::ui`, starts once a thread that
@@ -768,8 +774,10 @@ can't differ. They replace the three space splitters (`form_ap`'s wrapper, `exce
 excerpt starts no line after a final line break, and the signature's name shrinks before a word is broken.
 `BoxSetting` (`form_ap.rs`, public) lays a box out as `form_ap::draw` writes it, for the app to wrap typed text on
 the same lines: `lines(text, lang)` (the size, a field's auto size fitted as `draw` fits it, and each line's
-bytes; `draw`'s `Body::Lines` uses the same `wrapped`), `margin()` (border and `PAD`), `leading()` (1.15); made by
-`BoxSetting::text_box(width, border, size)` (Helvetica) or `Pdf::field_setting(name, widget)` (read only: the
+bytes; `draw`'s `Body::Lines` uses the same `wrapped`), `placed(text, lang)` (those lines, each with its start as
+`/Q` aligns it), `margin()` (border and `PAD`), `leading()` (1.15); made by
+`BoxSetting::text_box(width, border, size)` (Helvetica; `.aligned(align)` sets its `/Q`) or
+`Pdf::field_setting(name, widget)` (read only: the
 field's own font as `pick_font` keeps it, its widths unkerned, else the standard font nearest; `OwnFont` and
 `form_write::own_font` shared with `pick_font`; `Widget::id` names the widget). Core's other public text API:
 `fallbacks(f, text)` (the words set in another font, and the font: what the inspector names), `set_in(f, text,
@@ -1862,7 +1870,24 @@ form XObject, and per inline image.
   `paragraph::refound` (shared with Replace all). A block that fails is left and counted, the error only when none
   is written. Afterwards words are selected again (`reselect`) and selected lines found where they moved
   (`Editor::lines_moved` sets each one's expected box to the line of its text in its row before the page is read
-  again, as `Selection::refind` needs boxes that meet).
+  again, as `Selection::refind` needs boxes that meet). **New text, text boxes and fields** (batch 49's stage 3):
+  `Editor::aligns_text` gives what the commands act on (`editor::Aligns`: page text, new text, a text box typed in
+  or selected, a field typed in, nothing), in `Ctx::aligns`; `text_alignable` enables Left, Centre and Right for
+  all but a field and nothing, `justifiable` Justify for page text only, and `why_not` says the reason for a field,
+  and for Justify on new text or a text box, before its list. `App::act` leaves new text or a text box being typed
+  open for them (`Editor::aligns_typing`). New text (`PageText::align`, from `Editor::talign`, the alignment last
+  chosen, carried on as the style is by `carry_on`) aligns its rows among themselves while typed
+  (`page_text::aligned_rows` in `field`'s layouter through `Style::align`: each row moved by the room its letters,
+  measured from the pen as `band_rects` measures, leave beside the widest, `moved_rows`), its own `History` taking
+  each change as a step (`History::aligned`, `observe_align`, put back on Ctrl+Z); `Action::AddText` carries it to
+  core's `Pdf::add_text_lines`, which measures each line with the `Setter` the pen writes it with (the parts in one
+  font by one setter, as `written_lines` makes them, `new_text_width`) and writes each with `add_text_decorated`
+  (the widest at the point clicked, the others moved by `Align::share` of the room). A text box: `TextStyle::align`
+  (`/Q` read by `Align::of_q`, written by `text_style`, removed for left, justified written left by `Align::q`);
+  a new one changes the Text box tool's `box_style`, which `AddTextBox` writes; one typed in or selected gets an
+  `Action::SetAnnot` (`align_box`, taking the inspector's changes not yet kept with it), the typing staying open
+  as with the inspector's changes (ENH-13); `AnnotEdit::same_as` compares the alignment. A field's is its form's
+  (`Widget::align`, its `/Q` else its field's), only shown.
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.
@@ -2023,7 +2048,8 @@ form XObject, and per inline image.
   colour (`Cover::Flat`, the ring's), which also stands in until the first drawing comes and stays if it fails
   (the failure in the timing log). Nothing is drawn again as the text is typed.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
-  text line each, their baselines 1.2 times the size apart (Acrobat's spacing). In a standard font it is written
+  text line each, their baselines 1.2 times the size apart (Acrobat's spacing), aligned among themselves as chosen
+  (`Pdf::add_text_lines`, the widest starting at the point clicked; Alignment above). In a standard font it is written
   in one of the 12 standard fonts with the WinAnsi encoding, kerned with its Liberation face's pairs; a line with
   characters WinAnsi lacks (Polish, Czech, Vietnamese, Greek, Cyrillic and so on) is written in the bundled
   Liberation face of that font instead, embedded in the file and cut down to the characters used, shaped; one font

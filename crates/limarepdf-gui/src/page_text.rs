@@ -6,6 +6,7 @@
 
 use crate::actions::STRIKE_KEY;
 use crate::dialogs;
+use crate::editor::TextAlign;
 use crate::styled::{CharStyle, Deco, DrawnDeco, History, Styled};
 use crate::theme;
 use crate::typing_fonts::{self, Wanted};
@@ -94,6 +95,9 @@ pub struct PageText {
     pub at: (f32, f32),
     /// What is typed, a style for each character.
     pub text: Styled,
+    /// How its lines are aligned among themselves (NEW-15): the widest starting at `at`,
+    /// the others starting there too, centred under it or ending where it ends.
+    pub align: TextAlign,
     history: History,
     /// Takes the keyboard on the next frame.
     fresh: bool,
@@ -1048,7 +1052,8 @@ pub struct Boxed {
 }
 
 /// `text` typed in a box that wraps it, set as `set` sets it ([`boxed_galley`]): in `font`,
-/// at `k` pixels a point, in `color`, in a document whose language is `lang`.
+/// at `k` pixels a point, in `color`, in a document whose language is `lang`; each line
+/// where the box's alignment places it as it is written (PB-59).
 pub fn set_in_box(
     ctx: &egui::Context,
     set: &BoxSetting,
@@ -1058,10 +1063,13 @@ pub fn set_in_box(
     color: Color32,
     lang: Option<&str>,
 ) -> Boxed {
-    let (size, lines) = set.lines(text, lang);
+    let (size, placed) = set.placed(text, lang);
     let px = (size * k).max(1.0);
+    let lines: Vec<Range<usize>> = placed.iter().map(|(r, _)| r.clone()).collect();
     let lines = Some((&lines[..], set.leading()));
     let (galley, base) = boxed_galley(ctx, text, font, px, color, lines, lang);
+    let starts: Vec<f32> = placed.iter().map(|(_, x)| x * k).collect();
+    let galley = moved_rows(galley, &starts);
     let side = set.margin() * k;
     let at = |v: f32| v.round().clamp(-128.0, 127.0) as i8;
     let margin = egui::Margin {
@@ -1507,6 +1515,9 @@ pub struct Style<'a> {
     pub warn: &'a dyn Fn(&[Rect]) -> Option<Overflow>,
     /// The bands of the text as the editor has it, drawn in its runs ([`char_bands`]).
     pub bands: &'a dyn Fn(&str, &[Run]) -> Bands,
+    /// How new text's lines are aligned among themselves ([`aligned_rows`]); left for a
+    /// line of page text.
+    pub align: TextAlign,
 }
 
 /// One frame of an on-page editor.
@@ -1519,6 +1530,48 @@ pub struct Field {
     pub tag: Option<Rect>,
     /// A paragraph's frame's handles, left and right ([`paragraph_field`]).
     pub edges: Option<[egui::Response; 2]>,
+}
+
+/// `g` with each row moved along by its offset in `by` (pixels; rows past its end stay)
+/// within its width: what is drawn follows them, but its box stays as it was laid out. A
+/// row's letters stay inside it; the spaces a line ends with may hang past its side, as in
+/// word processors, and counted they would widen a text box's typing box, which is then
+/// centred on the box, moving every row.
+fn moved_rows(g: Arc<Galley>, by: &[f32]) -> Arc<Galley> {
+    if by.iter().all(|&d| d == 0.0) {
+        return g;
+    }
+    let mut g = (*g).clone();
+    let mut mesh = g.mesh_bounds;
+    let by = by.iter().chain(std::iter::repeat(&0.0));
+    for (row, d) in g.rows.iter_mut().zip(by) {
+        row.pos.x += d;
+        mesh = mesh.union(row.row.visuals.mesh_bounds.translate(row.pos.to_vec2()));
+    }
+    g.mesh_bounds = mesh;
+    Arc::new(g)
+}
+
+/// `g`'s rows aligned among themselves as `align` says, as new text's lines are written
+/// ([`limarepdf_core::Pdf::add_text_lines`]): the widest where it is, the others starting
+/// where it starts, centred under it or ending where it ends, each as wide as its letters
+/// reach (the spaces it ends with aren't written), measured from the pen as [`band_rects`]
+/// measures. Justified is left: each line ends where Enter ended it.
+fn aligned_rows(g: Arc<Galley>, align: TextAlign) -> Arc<Galley> {
+    let share = match align {
+        TextAlign::Centre => 0.5,
+        TextAlign::Right => 1.0,
+        TextAlign::Left | TextAlign::Justified => return g,
+    };
+    let reach = |row: &egui::epaint::text::PlacedRow| {
+        let glyphs = &row.row.glyphs;
+        let last = glyphs.iter().rposition(|c| !c.chr.is_whitespace());
+        last.map_or(0.0, |l| glyphs[..=l].iter().map(|c| c.advance_width).sum())
+    };
+    let widths: Vec<f32> = g.rows.iter().map(reach).collect();
+    let widest = widths.iter().copied().fold(0.0, f32::max);
+    let by: Vec<f32> = widths.iter().map(|w| (widest - w) * share).collect();
+    moved_rows(g, &by)
 }
 
 /// `text` laid out as [`job`] lays it out in `runs`, its lines [`LEADING`] times their size
@@ -1758,7 +1811,10 @@ pub fn field(
     let color = first.map_or(Color32::BLACK, |r| r.color);
     let px = runs.iter().map(|r| r.font.size).fold(1.0, f32::max);
     let line = LEADING * px;
-    let laid = |text: &str| galley(ctx, text, &(style.runs)(text));
+    let laid = |text: &str| {
+        let (g, ascent) = galley(ctx, text, &(style.runs)(text));
+        (aligned_rows(g, style.align), ascent)
+    };
     // The first row's baseline sits on the origin.
     let (galley, ascent) = laid(text);
     let size = galley.size();
@@ -1843,15 +1899,16 @@ pub fn field(
 
 impl PageText {
     /// New text starting at `at` (the baseline's left end, page points) on `page`, typed
-    /// in `look`.
-    pub fn new(scope: egui::Id, page: usize, at: (f32, f32), look: Look) -> Self {
+    /// in `look`, its lines aligned as `align` says.
+    pub fn new(scope: egui::Id, page: usize, at: (f32, f32), look: Look, align: TextAlign) -> Self {
         let text = Styled::plain("", look.style());
         Self {
             scope,
             page,
             at,
-            history: History::new(&text),
+            history: History::aligned(&text, align),
             text,
+            align,
             fresh: true,
             refocus: false,
             refused: Refused::default(),
@@ -1915,6 +1972,9 @@ impl PageText {
             let font = self.text.typing_font(sel);
             let t = take_typing(ui, false, true, font);
             undo_redo(&ctx, id, &t, &mut self.history, &mut self.text);
+            if t.undo || t.redo {
+                self.align = self.history.align().unwrap_or(self.align);
+            }
             switch_styles(&ctx, &t, &mut self.text, sel, font, &mut self.refused);
             if let Some(c) = t.refused {
                 self.refused.mark(&ctx, note(&c).to_string());
@@ -1940,6 +2000,7 @@ impl PageText {
             accent,
             warn: &|rows| overflow(r, rows, others),
             bands: &bands,
+            align: self.align,
         };
         let origin = Pos2::new(r.min.x + self.at.0 * k, r.min.y + self.at.1 * k);
         let mut typed = text.text().to_string();
@@ -1965,6 +2026,7 @@ impl PageText {
         };
         let now = ctx.input(|i| i.time);
         self.history.observe(&self.text, sel, now, settled);
+        self.history.observe_align(self.align);
         dialogs::set_name(edit, NAME);
         let mut on_grip = false;
         let (esc, tab) = ui.input(|i| {
@@ -2111,6 +2173,53 @@ mod tests {
         assert!(!g.rows[0].ends_with_newline);
     }
 
+    /// New text's rows are aligned among themselves as its lines are written (NEW-15's stage
+    /// 3, [`aligned_rows`]): centred under the widest, or ending where it ends, each as wide
+    /// as its letters, the space a row ends with left out; left and justified as laid out.
+    /// The galley's box stays as it was.
+    #[test]
+    fn new_text_s_rows_are_aligned_among_themselves() {
+        let ctx = egui::Context::default();
+        (ctx.run_ui(Default::default(), |_| {}).textures_delta).clear();
+        let text = "The walrus and the carpenter\nwere walking \nclose";
+        let run = Run {
+            chars: text.chars().count(),
+            font: egui::FontId::proportional(24.0),
+            coords: VariationCoords::default(),
+            color: Color32::BLACK,
+            rise: 0.0,
+            place: Place::Own(FontLines::STANDARD),
+        };
+        let (g, _) = galley(&ctx, text, &[run]);
+        // Each row's letters, from and to, from its pen.
+        let reaches = |g: &Galley| -> Vec<(f32, f32)> {
+            (g.rows.iter())
+                .map(|row| {
+                    let glyphs = &row.row.glyphs;
+                    let last = glyphs.iter().rposition(|c| !c.chr.is_whitespace()).unwrap();
+                    let w: f32 = glyphs[..=last].iter().map(|c| c.advance_width).sum();
+                    (row.pos.x, row.pos.x + w)
+                })
+                .collect()
+        };
+        let was = reaches(&g);
+        assert_eq!(was.len(), 3);
+        assert!(was.iter().all(|&(a, _)| a == 0.0), "{was:?}");
+        let widest = was.iter().map(|&(_, b)| b).fold(0.0, f32::max);
+        for how in [TextAlign::Left, TextAlign::Justified] {
+            assert_eq!(reaches(&aligned_rows(g.clone(), how)), was, "{how:?}");
+        }
+        let centred = aligned_rows(g.clone(), TextAlign::Centre);
+        for (a, b) in reaches(&centred) {
+            assert!(((a + b) / 2.0 - widest / 2.0).abs() < 0.01, "{a} {b}");
+        }
+        let right = aligned_rows(g.clone(), TextAlign::Right);
+        for (_, b) in reaches(&right) {
+            assert!((b - widest).abs() < 0.01, "{b}");
+        }
+        assert_eq!((centred.rect, right.rect), (g.rect, g.rect));
+    }
+
     /// ENH-22: the outline of text being typed is two lines, the accent and inside it one
     /// that contrasts with it, so it shows on paper of the accent's colour too. Text that
     /// runs over (as its editor's check says) has the outline in the caution colour and a
@@ -2146,6 +2255,7 @@ mod tests {
                         accent,
                         warn: &|_| warn,
                         bands: &|_, _| Vec::new(),
+                        align: TextAlign::Left,
                     };
                     let (mut text, id) = ("Walrus".to_string(), ui.scope_id().with("typing"));
                     let at = Pos2::new(100.0, 100.0);
@@ -2328,6 +2438,7 @@ mod tests {
                     accent: Color32::BLUE,
                     warn: &|_| None,
                     bands: &|_, _| Vec::new(),
+                    align: TextAlign::Left,
                 };
                 let at = Pos2::new(100.0, 100.0);
                 field(ui.ctx(), id, text, at, &style, true, None, false);

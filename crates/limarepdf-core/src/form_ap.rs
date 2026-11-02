@@ -4,7 +4,7 @@
 
 use crate::fonts::{winansi_byte, winansi_bytes};
 use crate::layout::{break_lines, break_ranges, shown, Setter};
-use crate::FontChoice;
+use crate::{Align, FontChoice};
 use lopdf::content::{Content, Operation};
 use lopdf::{Object, StringFormat};
 use std::ops::Range;
@@ -112,6 +112,13 @@ impl BoxSetting {
         }
     }
 
+    /// The box with its lines aligned as `align` says (its `/Q`; justified is left, as a box
+    /// can't keep it).
+    pub fn aligned(mut self, align: Align) -> Self {
+        self.look.q = align.q();
+        self
+    }
+
     /// A field's widget that looks as `look` says, its text written in `own` when that takes
     /// it, else set in `font`.
     pub(crate) fn field(look: Look, own: Option<OwnFont>, font: FontChoice) -> Self {
@@ -123,11 +130,32 @@ impl BoxSetting {
     /// its box gets the size that fits) and each line's bytes in `text`, the spaces it ends
     /// with among them, a line break between lines not.
     pub fn lines(&self, text: &str, lang: Option<&str>) -> (f32, Vec<Range<usize>>) {
-        let m = match &self.own {
+        wrapped(&self.look, text, &self.metrics(text, lang))
+    }
+
+    /// [`Self::lines`], each line with where it starts, in points in from the left of the
+    /// box's text (the box's side less [`Self::margin`]): as the box's alignment places the
+    /// line as it is written, without the spaces it ends with.
+    pub fn placed(&self, text: &str, lang: Option<&str>) -> (f32, Vec<(Range<usize>, f32)>) {
+        let m = self.metrics(text, lang);
+        let (size, lines) = wrapped(&self.look, text, &m);
+        let avail = self.look.w - 2.0 * self.margin();
+        let placed = (lines.into_iter())
+            .map(|r| {
+                let w = m.text_width(&shown(&text[r.clone()]), size);
+                (r, align(self.look.q, 0.0, avail, w))
+            })
+            .collect();
+        (size, placed)
+    }
+
+    /// How `text` is measured in the box: in the field's own font when that takes it, else
+    /// set by the text pipeline.
+    fn metrics(&self, text: &str, lang: Option<&str>) -> Metrics {
+        match &self.own {
             Some(own) if own.takes(text) => Metrics::Bytes(own.widths.clone()),
             _ => Metrics::Set(Setter::new(self.font, text, lang)),
-        };
-        wrapped(&self.look, text, &m)
+        }
     }
 
     /// How far in from the box's sides and top its text is, in points: its border and the

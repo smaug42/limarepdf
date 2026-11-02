@@ -485,13 +485,7 @@ impl Pdf {
         look.font = font.clone();
         look.size = size;
         look.color = color;
-        look.q = self
-            .doc
-            .get_dictionary(widget)?
-            .get(b"Q")
-            .ok()
-            .and_then(|o| self.int_value(o))
-            .unwrap_or(node.q);
+        look.q = self.widget_q(widget, node.q);
         let drawn = form_ap::draw(&look, &body, &metrics);
         let (content, mut fonts) = match &metrics {
             Metrics::Bytes(_) => (drawn.bytes_content(), Dictionary::new()),
@@ -662,6 +656,7 @@ impl Pdf {
         let (font, size, _) = parse_da(&self.widget_da(widget, &node));
         let (mut look, _) = self.widget_look(widget).ok()?;
         look.size = size;
+        look.q = self.widget_q(widget, node.q);
         let found = font.and_then(|n| self.dr_font(&n));
         let (own, base) = match found.as_ref().and_then(|o| self.dict_of(o)) {
             Some(dict) => {
@@ -682,6 +677,14 @@ impl Pdf {
             .and_then(|o| self.string_bytes(o))
             .or_else(|| node.da.clone())
             .unwrap_or_default()
+    }
+
+    /// The widget's own `/Q` (0 left, 1 centred, 2 right), else its field's, `field`.
+    pub(crate) fn widget_q(&self, widget: ObjectId, field: i64) -> i64 {
+        (self.doc.get_dictionary(widget).ok())
+            .and_then(|d| d.get(b"Q").ok())
+            .and_then(|o| self.int_value(o))
+            .unwrap_or(field)
     }
 
     /// The font to draw `text` with: the one `/DA` names when LimarePDF can write with it,

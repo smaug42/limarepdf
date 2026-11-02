@@ -1177,14 +1177,9 @@ impl Tab {
                         self.after_insert(p, from);
                     }
                 }
-                Action::AddText(p, pos, text) => {
+                Action::AddText(p, pos, text, align) => {
                     // Every line in one change, so Undo takes them back together.
-                    let add = |pdf: &mut Pdf| {
-                        for (dy, parts, decos) in text.lines() {
-                            pdf.add_text_decorated(p, (pos.0, pos.1 + dy), &parts, &decos)?;
-                        }
-                        Ok(())
-                    };
+                    let add = |pdf: &mut Pdf| pdf.add_text_lines(p, pos, &text.lines(), align);
                     // Finished by choosing another tool: that tool stays.
                     let placing = matches!(self.ed.tool, Tool::Text | Tool::Read);
                     let from = self.ed.objects(&self.pdf, p).len();
@@ -2918,7 +2913,7 @@ impl Tab {
         c.line_edit = self.ed.editing_line();
         c.paragraph = self.ed.paragraphs;
         c.hyphen = self.ed.hyphen_here();
-        c.aligns_text = self.ed.aligns_text();
+        c.aligns = self.ed.aligns_text();
         c.text_align = self.ed.text_align();
     }
 
@@ -4323,6 +4318,7 @@ mod tests {
             0,
             (72.0, 72.0),
             look,
+            crate::editor::TextAlign::Left,
         ));
         if let Some(a) = t.ed.adding.as_mut() {
             a.text.sync("Walrus", None);

@@ -1051,8 +1051,9 @@ const STEPS: usize = 100;
 /// the step before it as text editors join it, and each style change is a step of its own,
 /// changes made while a list or colour picker is open joining into one. For a paragraph, it
 /// watches its frame's edges too ([`Self::observe_edges`]): a drag of an edge is a step, as
-/// Word undoes a resize, and moves by the arrow keys close together one; and its alignment
-/// ([`Self::observe_align`]), each change a step, as Word undoes one.
+/// Word undoes a resize, and moves by the arrow keys close together one; and for a paragraph
+/// or new text its alignment ([`Self::observe_align`]), each change a step, as Word undoes
+/// one.
 #[derive(Clone, Debug, Default)]
 pub struct History {
     undo: Vec<Step>,
@@ -1062,7 +1063,7 @@ pub struct History {
     sel: (usize, usize),
     /// A paragraph's frame's left and right edges when last watched; `None` for other text.
     edges: Option<(f32, f32)>,
-    /// A paragraph's alignment when last watched; `None` for other text.
+    /// A paragraph's or new text's alignment when last watched; `None` for other text.
     align: Option<TextAlign>,
     /// The last change was typing, at this time, leaving the caret here.
     typing: Option<(f64, usize)>,
@@ -1088,6 +1089,15 @@ impl History {
         Self {
             last: text.clone(),
             ..Default::default()
+        }
+    }
+
+    /// Nothing to undo yet in new text's `text`, its lines aligned among themselves as `align`
+    /// says, which changes as a step of its own ([`Self::observe_align`]).
+    pub fn aligned(text: &Styled, align: TextAlign) -> Self {
+        Self {
+            align: Some(align),
+            ..Self::new(text)
         }
     }
 

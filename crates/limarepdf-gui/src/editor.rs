@@ -34,7 +34,7 @@ pub use arrange::{Align, Axis};
 /// How a paragraph's text is aligned (NEW-15), as core reads and sets it; [`Align`] lines
 /// objects up.
 pub use limarepdf_core::Align as TextAlign;
-pub use paragraph::{align_paragraphs, Aligned, NotAligned};
+pub use paragraph::{align_paragraphs, Aligned, Aligns, NotAligned};
 pub use replace::NotReplaced;
 pub use replace_all::{replace_all, AllJob, Pass, Prepared};
 
@@ -283,9 +283,12 @@ pub struct Writing {
     size: f32,
     /// A text box's border's width in points.
     border: f32,
+    /// How a text box's lines are aligned (its `/Q`).
+    align: TextAlign,
     /// Takes the keyboard on the next frame.
     fresh: bool,
-    /// Takes the keyboard back once a change in the inspector is finished.
+    /// Takes the keyboard back once a change in the inspector, or an alignment, is
+    /// finished.
     refocus: bool,
     /// A list or colour picker was open last frame: the click that closes it is not one
     /// outside a new note.
@@ -320,6 +323,7 @@ impl Writing {
             original: String::new(),
             size,
             border: 0.0,
+            align: TextAlign::Left,
             fresh: true,
             refocus: false,
             picking: false,
@@ -368,8 +372,9 @@ pub enum Action {
     Delete(usize, Vec<usize>),
     AddShape(usize, Shape, [f32; 4]),
     /// New text, its lines separated by `\n`, from the first line's baseline at the point
-    /// given, in the styles it was typed in.
-    AddText(usize, (f32, f32), Box<Styled>),
+    /// given, in the styles it was typed in, its lines aligned among themselves as given
+    /// ([`limarepdf_core::Pdf::add_text_lines`]).
+    AddText(usize, (f32, f32), Box<Styled>, TextAlign),
     AddImage(usize, [f32; 4]),
     ReplaceImage(usize, usize, Vec<u8>),
     /// A line's change, with its underlines and strike-throughs over its new text; true when
@@ -439,7 +444,7 @@ pub struct AnnotEdit {
     pub color: Option<[f32; 3]>,
     pub opacity: f32,
     pub contents: String,
-    /// A text box's text size, colour, fill and border.
+    /// A text box's text size, colour, fill, border and alignment.
     pub text: Option<TextStyle>,
     /// A shape's, line's or drawing's fill, width and arrowhead.
     pub shape: Option<ShapeLook>,
@@ -467,7 +472,7 @@ impl AnnotEdit {
             (Some(a), Some(b)) => {
                 same_color(a.color, b.color)
                     && col(a.fill, b.fill)
-                    && (a.size, a.border) == (b.size, b.border)
+                    && (a.size, a.border, a.align) == (b.size, b.border, b.align)
             }
             (a, b) => a.is_none() && b.is_none(),
         };
@@ -1598,6 +1603,8 @@ pub struct Editor {
     pub tcolor: [f32; 3],
     /// Underline and Strikethrough for the next new text.
     pub tlines: crate::font_list::Lines,
+    /// How the next new text's lines are aligned: as the last new text's were left.
+    pub talign: TextAlign,
     pub fill_on: bool,
     pub fill: [f32; 3],
     pub stroke_on: bool,
@@ -1783,6 +1790,7 @@ impl Default for Editor {
             tsize: 14.0,
             tcolor: [0.0; 3],
             tlines: crate::font_list::Lines::default(),
+            talign: TextAlign::Left,
             fill_on: false,
             fill: [0.95, 0.75, 0.2],
             stroke_on: true,
@@ -2189,6 +2197,7 @@ impl Editor {
             text: a.contents.clone(),
             original: a.contents,
             border: a.text_style.map_or(0.0, |s| s.border),
+            align: a.text_style.map_or(TextAlign::Left, |s| s.align),
             ..Writing::new(
                 a.page,
                 a.kind == AnnotKind::Note,
@@ -2235,7 +2244,7 @@ impl Editor {
         let (action, held) = match piece {
             Typed::Text => {
                 let a = self.adding.take().filter(PageText::has_text)?;
-                let add = Action::AddText(a.page, a.at, Box::new(a.text.clone()));
+                let add = Action::AddText(a.page, a.at, Box::new(a.text.clone()), a.align);
                 (add, Kept::Text(Box::new(a)))
             }
             Typed::Writing => {
@@ -2320,7 +2329,8 @@ impl Editor {
         self.carry_on(&held);
     }
 
-    /// The next new text carries on in the style this one ended in, as typing would.
+    /// The next new text carries on in the style this one ended in, as typing would, aligned
+    /// as it was.
     fn carry_on(&mut self, held: &Held) {
         if let Kept::Text(a) = &held.0 {
             let end = page_text::Look::of(a.text.end_style());
@@ -2329,6 +2339,7 @@ impl Editor {
                 underline: end.underline,
                 strike: end.strike,
             };
+            self.talign = a.align;
         }
     }
 
@@ -2832,6 +2843,7 @@ impl Editor {
                 accent: ui.visuals().selection.stroke.color,
                 warn: &warn,
                 bands: &bands,
+                align: TextAlign::Left,
             };
             let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
             let c = cover_box(&o);
@@ -3064,6 +3076,7 @@ impl Editor {
         if let Some(s) = style.filter(|_| !w.note) {
             w.size = s.size;
             w.border = s.border;
+            w.align = s.align;
         }
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let b = shown_box(w.note, w.rect, k);
@@ -3125,6 +3138,7 @@ impl Editor {
             // writes them in, not the interface's font; on the lines core breaks it into,
             // where it writes them in the box.
             let set = BoxSetting::text_box(w.rect[2] - w.rect[0], w.border, w.size);
+            let set = set.aligned(w.align);
             let lang = self.lang.as_deref();
             let (helvetica, color) = (FontChoice::default(), egui::Visuals::light().text_color());
             let now = page_text::set_in_box(ui.ctx(), &set, &w.text, helvetica, k, color, lang);
@@ -4465,7 +4479,8 @@ impl Editor {
                     } else {
                         // New text there; with nothing typed yet, it moves there.
                         let look = self.new_look();
-                        self.adding = Some(PageText::new(self.scope, page, (p.x, p.y), look));
+                        let (at, align) = ((p.x, p.y), self.talign);
+                        self.adding = Some(PageText::new(self.scope, page, at, look, align));
                     }
                 }
             }
@@ -6975,7 +6990,7 @@ mod tests {
             let typed = |ed: &mut Editor, text: &str| match piece {
                 Typed::Text => {
                     let a = ed.adding.get_or_insert_with(|| {
-                        PageText::new(egui::Id::NULL, 0, (100.0, 100.0), look)
+                        PageText::new(egui::Id::NULL, 0, (100.0, 100.0), look, TextAlign::Left)
                     });
                     a.text.sync(text, None);
                 }
