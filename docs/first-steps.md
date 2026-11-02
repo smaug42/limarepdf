@@ -25,7 +25,8 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 1. **The commands**, under the document's tab. At the left, the File menu ☰, which holds every command, then
    Open, Save, Undo and Redo; at the right, Print. In between are the names **Edit**, **Insert**, **Review**,
    **Pages**, **Forms and sign**, **Protect** and **View**: click one to show its buttons below. Edit has copying,
-   the font and finding text; Insert adds text, pictures, headers and watermarks; Review has comments and markup;
+   the font, alignment, editing text, finding and replacing, and lining up objects; Insert adds text, pictures,
+   headers and watermarks; Review has comments and markup;
    Pages rotates, removes, adds and splits pages, and Organise shows them all as cards to put in order; Forms and
    sign fills forms and signs; Protect redacts and sets
    passwords; View has zoom, page layout and how the app looks. Hover over a button to see what it does; a greyed
