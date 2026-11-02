@@ -20,25 +20,31 @@ Printing runs in the background. A page range LimarePDF can't read is reported u
 **Print as image** is under Advanced (see below). To print only some text, select it and right-click > Print
 selected text… (see [Reading and finding](reading-and-finding.md#print-or-save-just-the-selection)).
 
-Not yet available: paper size, scaling, colour and printer-specific options. The printer's defaults apply.
+LimarePDF lays out what is printed itself, the same way on every system. Each page goes on a sheet of the
+printer's default paper at its own size, centred, and is shrunk to the printable area when it is larger (as
+Acrobat's Shrink oversized pages does). A page wider than it is tall is turned a quarter turn anticlockwise onto
+the sheet, its top at the sheet's left, as printers turn landscape pages. When the printer doesn't say how near
+the edges it can print, a quarter of an inch is kept clear. Comments and form fields meant for printing are drawn
+in and the others left out; pop-up notes aren't printed. The open document isn't changed.
 
-**Linux and macOS** print through CUPS. The chosen pages go to `lp` as an unencrypted PDF, which CUPS draws with its
-own engine, so a printout can differ from LimarePDF's screen. "Print as image" (`--as-image`) sends pages drawn by
-LimarePDF at 300 dpi instead. Each job names the printer's default paper size (read with `lpoptions`), as other apps'
-jobs do: some printer setups print every page blurred when a job leaves it out. Form fields are drawn into the pages
-sent (those meant for printing), since some CUPS setups drop fields without drawing them; the open document keeps
-its form. A job that CUPS doesn't take within 2 minutes, or doesn't confirm within 2 minutes after taking it, is
-stopped, with a message saying it may have been sent: check the printer's queue before printing again.
+Not yet available in the app: choosing the paper size, orientation and scale (the command line has them,
+[below](#paper-orientation-and-scale-on-the-command-line)), a preview, pages per sheet, colour and printer-specific
+options.
 
-**Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi
-and at most 268 million pixels (A0 is drawn at about 415 dpi, which the printer scales up). A page prints at actual
-size, shrunk to the printable area when it is larger, centred, and turned when a landscape page meets portrait
-paper or the reverse. When the spooler takes no step for 2 minutes (a printer that doesn't answer, say), LimarePDF
-stops waiting and says so, and other background work (Append PDFs, OCR, exports) can go ahead. The job itself
-can't be stopped on Windows and may still print once the printer is ready: check the printer's queue before
-printing again.
+**Linux and macOS** print through CUPS. LimarePDF asks CUPS for the printer's paper sizes and margins, and sends
+the laid-out pages to `lp` as an unencrypted PDF that names its paper, with CUPS's own scaling turned off so the
+pages aren't shrunk a second time. CUPS draws them with its own engine, so a printout can differ from LimarePDF's
+screen; "Print as image" (`--as-image`) sends them drawn by LimarePDF at 300 dpi instead. When LimarePDF can't find
+out which paper the printer takes, it sends nothing and says why. A job that CUPS doesn't take within 2 minutes, or
+doesn't confirm within 2 minutes after taking it, is stopped, with a message saying it may have been sent: check
+the printer's queue before printing again.
 
-When LimarePDF draws the pages, annotations not flagged for printing are left out.
+**Windows** prints through the print spooler, on the paper set in the printer's settings for the job. LimarePDF
+draws each sheet at the printer's resolution, at most 600 dpi and at most 268 million pixels (an A0 sheet is drawn
+at about 415 dpi, which the printer scales up), and sends the part the printer can print on. When the spooler
+takes no step for 2 minutes (a printer that doesn't answer, say), LimarePDF stops waiting and says so, and other
+background work (Append PDFs, OCR, exports) can go ahead. The job itself can't be stopped on Windows and may still
+print once the printer is ready: check the printer's queue before printing again.
 
 A filled form field with no drawing of its own is drawn by LimarePDF when printed, however the pages are sent (as a
 PDF, as images, or on Windows). On every system, a filled field meant for printing that has no drawing of its own,
@@ -48,6 +54,23 @@ app that left the drawing to the reader), would come out empty. Print names thos
 that).
 
 On the command line: `limarepdf-cli printers` (with `--paper`, each printer's paper sizes) and `limarepdf-cli print`.
+
+### Paper, orientation and scale on the command line
+
+```
+limarepdf-cli print report.pdf --paper A4 --orientation landscape --scale fit
+```
+
+- `--paper`: one of the printer's sizes as `limarepdf-cli printers --paper` lists them, by name with or without
+  its size ("A4", "Letter (8.5 × 11 in)"), in capitals or not; sizes sharing a name, such as index cards, are told
+  apart by their size. Without it, the printer's default. When CUPS can't list the printer's sizes, a standard
+  size by name (A4, Letter, Legal and so on) is sent as it is.
+- `--orientation`: `auto` (the default) turns each page wider than it is tall; `portrait` prints every page
+  upright; `landscape` turns every page.
+- `--scale`: `shrink` (the default) shrinks pages larger than the printable area; `fit` enlarges or shrinks each
+  page to fill it; `actual` prints each page at its own size; or a percentage from 1 to 400 (`--scale 150` or
+  `150%`). A page reaching past the printable area at `actual` or a percentage is printed centred and loses its
+  edges, and the command warns first, naming the pages.
 
 ## Pages as images
 
@@ -81,9 +104,10 @@ Word, Excel and CSV export are not available.
 
 ## How this was tested
 
-Export and printing have automated tests. On paper, printing has been tried on Linux, with an HP laser printer
-through CUPS: pages, mixed A4 and Letter pages, a turned page, comments and filled form fields print correctly. On
-Windows only the print dialog has been tried, and nothing has been printed on macOS. The full record is in
+Export and printing have automated tests. On paper, printing was tried on Linux, with an HP laser printer through
+CUPS, before LimarePDF laid out the pages itself: pages, mixed A4 and Letter pages, a turned page, comments and
+filled form fields printed correctly. The pages as LimarePDF now lays them out haven't been printed on paper yet.
+On Windows only the print dialog has been tried, and nothing has been printed on macOS. The full record is in
 [Testing](developer/testing.md#export-and-printing).
 
 ---

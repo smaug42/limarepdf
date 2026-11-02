@@ -1,11 +1,13 @@
 //! Printing on Windows, through the print spooler and GDI.
 //!
-//! LimarePDF renders each page itself and draws it on the printer as a bitmap, placed by
-//! [`crate::print::place`]: at actual size when it fits the printable area, shrunk to fit
-//! when not, turned to match the paper's orientation.
+//! LimarePDF renders each sheet ([`crate::Pdf::print_sheets`]) itself and draws the part of
+//! it on the printable area on the printer as a bitmap, the sheet's paper and portrait set
+//! in the printer's settings.
 
 use crate::paper::{dims, listed, Paper, PaperList};
-use crate::print::{place, to_bgra, PrintOptions, Printer, Sheet, Sides};
+use crate::print::{
+    printable_part, sheet_scale, to_bgra, Part, PrintOptions, Printer, Sheet, Sides,
+};
 use crate::render::{self, Renderer};
 use crate::Result;
 use anyhow::anyhow;
@@ -120,18 +122,25 @@ fn default_printer() -> Option<String> {
     Some(unsafe { from_wide(buf.as_ptr()) })
 }
 
-/// The printer's default settings (a DEVMODEW plus driver data) with the copies and
-/// two-sided options applied and checked by the driver.
-fn settings(name: &[u16], o: &PrintOptions) -> Result<Vec<u64>> {
+/// The printer's default settings (a DEVMODEW plus driver data) with the copies, two-sided
+/// options and paper applied, held portrait (the sheets are laid out upright), and checked
+/// by the driver.
+fn settings(name: &[u16], o: &PrintOptions, paper: &Paper) -> Result<Vec<u64>> {
     settings_with(name, |dm| {
         dm.Anonymous1.Anonymous1.dmCopies = o.copies.clamp(1, 999) as i16;
+        dm.Anonymous1.Anonymous1.dmOrientation = DMORIENT_PORTRAIT as i16;
+        dm.dmFields |= DM_COPIES | DM_ORIENTATION;
+        if let Ok(id) = paper.id.parse::<u16>() {
+            dm.Anonymous1.Anonymous1.dmPaperSize = id as i16;
+            dm.dmFields |= DM_PAPERSIZE;
+        }
         dm.dmCollate = DMCOLLATE_TRUE;
         dm.dmDuplex = match o.sides {
             Sides::One => DMDUP_SIMPLEX,
             Sides::LongEdge => DMDUP_VERTICAL,
             Sides::ShortEdge => DMDUP_HORIZONTAL,
         };
-        dm.dmFields |= DM_COPIES | DM_COLLATE | DM_DUPLEX;
+        dm.dmFields |= DM_COLLATE | DM_DUPLEX;
     })
 }
 
@@ -279,12 +288,13 @@ impl Drop for Dc {
     }
 }
 
-/// Prints `pages` of the document `snapshot` ([`crate::Pdf::print_snapshot`]), calling `beat`
-/// after each step the spooler takes, so the wait for it can tell a job getting on from a
-/// stuck one ([`crate::print::while_beating`]).
+/// Prints the `count` sheets of `sheets` ([`crate::Pdf::print_sheets`], written out), laid
+/// out on `paper`, calling `beat` after each step the spooler takes, so the wait for it can
+/// tell a job getting on from a stuck one ([`crate::print::while_beating`]).
 pub(crate) fn print(
-    snapshot: Vec<u8>,
-    pages: &[usize],
+    sheets: Vec<u8>,
+    count: usize,
+    paper: &Paper,
     o: &PrintOptions,
     beat: &dyn Fn(),
 ) -> Result<String> {
@@ -293,11 +303,11 @@ pub(crate) fn print(
         None => default_printer().ok_or_else(|| anyhow!("no default printer is set"))?,
     };
     let wname = wide(&name);
-    let dm = settings(&wname, o)?;
+    let dm = settings(&wname, o, paper)?;
     beat();
-    let hp = render::load(snapshot, None)?;
+    let hp = render::load(sheets, None)?;
     let r = Renderer::new(&hp);
-    for &i in pages {
+    for i in 0..count {
         r.page_size(i)?;
     }
     let driver = wide("WINSPOOL");
@@ -324,11 +334,11 @@ pub(crate) fn print(
         return Err(os_error("starting the print job"));
     }
     beat();
-    for &i in pages {
+    for i in 0..count {
         if let Err(e) = page(&dc, &r, i) {
             // SAFETY: a document was started on this DC.
             unsafe { AbortDoc(dc.0) };
-            return Err(e.context(format!("page {}", i + 1)));
+            return Err(e.context(format!("sheet {}", i + 1)));
         }
         beat();
     }
@@ -339,19 +349,37 @@ pub(crate) fn print(
     Ok(format!("Print job {job}."))
 }
 
-/// Render page `i` and draw it on a new sheet.
+/// Render sheet `i` and draw its part on the printable area on a new page of the printer.
 fn page(dc: &Dc, r: &Renderer, i: usize) -> Result<()> {
     // SAFETY: GetDeviceCaps only reads from a valid DC.
     let caps = |c: u32| unsafe { GetDeviceCaps(dc.0, c as i32) };
     let sheet = Sheet {
         area: (caps(HORZRES), caps(VERTRES)),
-        paper: (caps(PHYSICALWIDTH), caps(PHYSICALHEIGHT)),
         offset: (caps(PHYSICALOFFSETX), caps(PHYSICALOFFSETY)),
         dpi: (caps(LOGPIXELSX), caps(LOGPIXELSY)),
     };
-    let at = place(r.page_size(i)?, &sheet);
-    let b = r.render(i, at.scale)?;
-    let (bgra, w, h) = to_bgra(&b.rgba, b.width, b.height, at.rotate);
+    let size = r.page_size(i)?;
+    let b = r.render(i, sheet_scale(size, &sheet))?;
+    let part = printable_part(size, (b.width, b.height), &sheet);
+    // SAFETY: a document is open on this DC.
+    if unsafe { StartPage(dc.0) } <= 0 {
+        return Err(os_error("starting a page"));
+    }
+    if let Some(part) = part {
+        draw(dc, &b, part)?;
+    }
+    // SAFETY: a page was started on this DC.
+    if unsafe { EndPage(dc.0) } <= 0 {
+        return Err(os_error("finishing a page"));
+    }
+    Ok(())
+}
+
+/// Draw `part` of the sheet's picture `b` where it goes on the printable area.
+fn draw(dc: &Dc, b: &render::Bitmap, part: Part) -> Result<()> {
+    let [_, _, w, h] = part.from;
+    let bgra = to_bgra(&b.rgba, b.width, part.from);
+    let [x, y, dw, dh] = part.to;
     let bmi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -365,20 +393,16 @@ fn page(dc: &Dc, r: &Renderer, i: usize) -> Result<()> {
         },
         ..Default::default()
     };
-    // SAFETY: a document is open on this DC.
-    if unsafe { StartPage(dc.0) } <= 0 {
-        return Err(os_error("starting a page"));
-    }
     // SAFETY: `bgra` holds w x h 32-bit pixels as `bmi` describes, and outlives the call.
     let drawn = unsafe {
         SetStretchBltMode(dc.0, HALFTONE);
         SetBrushOrgEx(dc.0, 0, 0, null_mut());
         StretchDIBits(
             dc.0,
-            at.x,
-            at.y,
-            at.w,
-            at.h,
+            x,
+            y,
+            dw,
+            dh,
             0,
             0,
             w as i32,
@@ -391,10 +415,6 @@ fn page(dc: &Dc, r: &Renderer, i: usize) -> Result<()> {
     };
     if drawn == 0 {
         return Err(os_error("drawing the page"));
-    }
-    // SAFETY: a page was started on this DC.
-    if unsafe { EndPage(dc.0) } <= 0 {
-        return Err(os_error("finishing a page"));
     }
     Ok(())
 }

@@ -554,8 +554,19 @@ enum Cmd {
         copies: u32,
         #[arg(long, value_enum, default_value_t = SidesArg::One)]
         sides: SidesArg,
-        /// Send pages rendered by LimarePDF (300 dpi images) instead of the PDF itself. Windows
-        /// always prints pages rendered by LimarePDF
+        /// Paper size from `limarepdf-cli printers --paper`, such as A4 or Letter; default: the
+        /// printer's
+        #[arg(long)]
+        paper: Option<String>,
+        /// Which way the pages go on the paper: auto turns pages wider than they are tall
+        #[arg(long, value_enum, default_value_t = OrientationArg::Auto)]
+        orientation: OrientationArg,
+        /// How big the pages are printed: shrink (pages larger than the printable area only),
+        /// fit (to the printable area), actual, or a percentage from 1 to 400
+        #[arg(long, default_value = "shrink", value_parser = parse_scale)]
+        scale: print::Scale,
+        /// Send sheets rendered by LimarePDF (300 dpi images) instead of a PDF of them. Windows
+        /// always prints sheets rendered by LimarePDF
         #[arg(long)]
         as_image: bool,
         #[arg(long)]
@@ -763,6 +774,29 @@ enum SidesArg {
     LongEdge,
     /// Two-sided, flipped on the short edge
     ShortEdge,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum OrientationArg {
+    Auto,
+    Portrait,
+    Landscape,
+}
+
+fn parse_scale(s: &str) -> std::result::Result<print::Scale, String> {
+    let s = s.trim();
+    match s {
+        "shrink" => Ok(print::Scale::ShrinkOversized),
+        "fit" => Ok(print::Scale::Fit),
+        "actual" => Ok(print::Scale::ActualSize),
+        _ => match s.strip_suffix('%').unwrap_or(s).trim().parse::<u16>() {
+            Ok(p) if (1..=print::MAX_PERCENT).contains(&p) => Ok(print::Scale::Custom(p)),
+            _ => Err(format!(
+                "expected shrink, fit, actual, or a percentage from 1 to {}",
+                print::MAX_PERCENT
+            )),
+        },
+    }
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -3900,6 +3934,9 @@ fn run(cmd: Cmd) -> Result<()> {
             pages,
             copies,
             sides,
+            paper,
+            orientation,
+            scale,
             as_image,
             password,
         } => {
@@ -3918,6 +3955,38 @@ fn run(cmd: Cmd) -> Result<()> {
                     limarepdf_core::quoted_list(&blank)
                 );
             }
+            let paper = match &paper {
+                Some(name) => print::paper_named(printer.as_deref(), name)?,
+                None => print::printer_paper(printer.as_deref()).context(
+                    "couldn't find out which paper the printer takes; name one with --paper",
+                )?,
+            };
+            let setup = print::PageSetup {
+                paper,
+                orientation: match orientation {
+                    OrientationArg::Auto => print::Orientation::Automatic,
+                    OrientationArg::Portrait => print::Orientation::Portrait,
+                    OrientationArg::Landscape => print::Orientation::Landscape,
+                },
+                scale,
+            };
+            let cut: Vec<usize> = idx
+                .iter()
+                .copied()
+                .filter(|&i| p.page_size(i).is_ok_and(|s| print::place(s, &setup).cut))
+                .collect();
+            if !cut.is_empty() {
+                let (pages, reach, its) = match cut.len() {
+                    1 => ("page", "reaches", "its"),
+                    _ => ("pages", "reach", "their"),
+                };
+                eprintln!(
+                    "warning: at this scale {pages} {} {reach} past the printable area of {}, \
+                     so {its} edges won't print",
+                    format_page_range(&cut),
+                    setup.paper.label
+                );
+            }
             let opts = print::PrintOptions {
                 printer,
                 copies,
@@ -3931,6 +4000,9 @@ fn run(cmd: Cmd) -> Result<()> {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default(),
+                paper: Some(setup.paper),
+                orientation: setup.orientation,
+                scale: setup.scale,
             };
             out!("{}", p.print(&idx, &opts)?);
         }

@@ -921,8 +921,24 @@ blocks fewer, the run sharing the machine with the test suite. Its timings aren'
 
 - Export: `crates/limarepdf-core/tests/export.rs` (sizes, content, re-import, names) and by running the CLI.
 - Printing: `crates/limarepdf-core/tests/print.rs`, with a stand-in for `lp` (its arguments, the document it receives, and
-  errors), and against a real CUPS with no printers (error messages). The Windows page placement and rotation are
-  unit-tested. The time limits (`print.rs`'s unit tests): a command that never answers is stopped at the limit
+  errors), and against a real CUPS with no printers (error messages). Since ENH-14's stage 2 every printout is laid
+  out on sheets of the paper: `sheets.rs`'s unit tests check the placement model (a small page at its own size, a
+  page the paper's size shrunk, Fit, Actual size cut, Custom 1 and 400 %, every orientation on upright and sideways
+  paper, unknown and uneven margins, A0 on Letter, the matrix turning the top to the left);
+  `each_page_is_on_its_sheet_where_the_model_places_it` draws six pages (upright, wide, turned by `/Rotate` 90 and
+  270, cropped and turned 180, A0 away from the origin; grey where shown, blue where cropped away, a red bar along
+  the top as shown) on Letter under eight setups (each scale, each orientation, margins unknown) and finds each
+  page's box and top where `print::place` says, nothing cropped away showing; other tests cover a page that
+  leaves its drawing turned, several content streams, fields and comments drawn in or left out by their Print
+  flag, both as a PDF and as images, pop-ups never, and the document left unchanged. Windows's drawing scale and
+  printable part are unit-tested in `print.rs`. The opt-in `cross_check_sheets_with_poppler` (Poppler draws the
+  same sheets the same way) and `cross_check_sheets_pass_cupsfilter_unscaled` (a Letter sheet covered corner to
+  corner stays so through `cupsfilter` with the default queue's description file and `lp_args`'s options) passed
+  on 2026-11-02 (Linux, the HP queue): `cargo test -p limarepdf-core --test print -- --ignored cross_check`. The
+  command line's `print_lays_the_pages_out_on_the_paper` (the default paper, `--paper` by name, the orientation,
+  50 %, the warning at actual size, a paper the printer doesn't take refused, a scale out of range) and the app's
+  `print_right_after_typing_prints_the_typed_value` (the job on the default paper) use stand-ins for `lpstat`,
+  `lpoptions` and `lp`, with `CUPS_SERVER` naming a socket nothing listens on. The time limits (`print.rs`'s unit tests): a command that never answers is stopped at the limit
   with the commands it started (a shell's `sleep` holding its output, which kept the test waiting the full 30 s
   without the process group being stopped), `lp` taking neither the document nor answering is stopped with the
   "may have been sent" message, and the limit starts again once the document is taken.
@@ -942,7 +958,8 @@ blocks fewer, the run sharing the machine with the test suite. Its timings aren'
   size, or every page prints blurred; comments are added after the page's content without resetting the drawing
   state, so they came out upside down on pages that leave it turned; and form fields are removed without being
   drawn. The last two were reproduced without a printer through CUPS's own `cupsfilter`
-  ([Acceptance checks](#acceptance-checks)).
+  ([Acceptance checks](#acceptance-checks)). Since ENH-14's stage 2 the sheets carry the comments and fields drawn
+  in, and still name their paper; the sheets as laid out now haven't been printed on paper yet (the RC cycle).
 - On Windows only the print dialog has been tried; nothing has been printed on paper. Nothing has been printed on
   macOS.
 
@@ -1197,7 +1214,8 @@ before this table had a Status column, and wasn't run again on the date given.
 | Windows printing that the spooler doesn't take (PB-17) | The core's `a_job_is_waited_for_while_it_gets_on` (the waiter on Linux: a job beating is waited for, one that stops is let go within the wait and runs on, one that panics is said); Windows clippy and PR CI | On Windows, print to a paused printer or one whose network is unplugged: after two minutes the message saying it may still print; Append PDFs runs meanwhile | Not run: deferred to the RC cycle |
 | Pages: merge, split, reorder, rotate, crop, export | `integration.rs`, `export.rs`, the command line | Merge two files, split one, drag pages into a new order, turn and crop one; save and reopen; export pages as images and text | Pass, 2026-10-18, Linux |
 | Printing | `print.rs`, with a stand-in for `lp` | Print a file with mixed page sizes and a turned page: size, orientation and placement on paper; comments and form values printed | Pass, 2026-10-18, Linux, HP LaserJet P1606dn through CUPS, after three fixes: pages printed blurred until jobs named the paper size; comments printed upside down on a page whose content leaves the drawing state flipped (glm manual, page 1); filled form fields printed empty because CUPS's `pdftopdf` drops fields. Now A4 pages fit whole on Letter paper, a turned (landscape) page prints upright filling the portrait sheet, and comments and form values print where they belong. |
-| Printers' paper sizes (ENH-14, stage 1) | `ipp.rs` and `paper.rs`'s unit tests, the CLI's `printers --paper` with a stand-in service; the opt-in `cross_check_paper_sizes_with_ipptool` (run 2026-11-02 on Linux, the HP queue: 19 sizes, the default and the PPD's margins as CUPS reports them, passed) | `limarepdf-cli printers --paper` on Windows (a printer's driver: its sizes, default and margins) and on macOS | Not run: deferred to the RC cycle |
+| Printers' paper sizes (ENH-14, stage 1) | `ipp.rs` and `paper.rs`'s unit tests, the CLI's `printers --paper` with a stand-in service (which failed on PR #79's macOS CI, BUG-48; `an_answer_the_service_closes_after_is_read_whole` reads an answer the service closes after at once, sent in pieces); the opt-in `cross_check_paper_sizes_with_ipptool` (run 2026-11-02 on Linux, the HP queue: 19 sizes, the default and the PPD's margins as CUPS reports them, passed) | `limarepdf-cli printers --paper` on Windows (a printer's driver: its sizes, default and margins) and on macOS | Not run: deferred to the RC cycle |
+| Every printout laid out on the paper (ENH-14, stage 2) | `sheets.rs`'s unit tests, core's `print.rs` (the sheets against the model's placements), the CLI's `print_lays_the_pages_out_on_the_paper`, the app's stand-in CUPS print; the opt-in `cross_check_sheets_with_poppler` and `cross_check_sheets_pass_cupsfilter_unscaled` (run 2026-11-02 on Linux, the HP queue: passed); Windows and macOS by cross-compiled clippy and PR CI | On Linux (CUPS), Windows and macOS, print a file with Letter and A4 pages, a small page, a landscape page, a page turned by its own rotation, a cropped page, comments (one not meant for print) and filled fields: each on the printer's default paper, the small page at its own size and centred, the landscape page turned with its top to the left, nothing cut off, only the printable comments and the field values printed. Then `limarepdf-cli print --paper A4 --scale fit`, `--orientation portrait` and `--scale actual` (the warning, and edges lost evenly); and the same file with Print as image | Not run: deferred to the RC cycle |
 | Digital signatures | `signatures.rs`, `signing.rs`, `signature_changes.rs`, pdfsig and OpenSSL | Check a signed sample; sign, certify, add a comment and save; reopen and check; then the Acrobat round trips below | Pass (earlier run), Linux |
 | Redaction, removing hidden information | `redact.rs`, `sanitise.rs`, the after-check | Redact a phrase and part of a picture, save, then search the output with `pdftotext` and another reader's search; remove hidden information and check `pdfinfo -meta` | Pass (earlier run), Linux |
 | Damaged files | `repair.rs`, the corpus | Open a damaged file: the notice shows; Save asks; Save as writes a new file; the original's checksum is unchanged | Pass (earlier run), Linux |

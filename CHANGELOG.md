@@ -92,9 +92,21 @@
   "A4 (210 × 297 mm)"), the printer's default marked. On Linux and macOS LimarePDF asks the printing service
   (CUPS) for them directly, with how near each edge the printer can print, and when it can't, reads their names
   from `lpoptions` and says the margins aren't known; on Windows it asks the printer's driver.
+- `limarepdf-cli print` takes `--paper` (one of the printer's sizes, such as A4 or Letter; by default the
+  printer's), `--orientation auto|portrait|landscape` (auto, the default, turns a page wider than it is tall) and
+  `--scale shrink|fit|actual` or a percentage from 1 to 400 (`--scale 150%`). At a scale where pages reach past
+  the printable area, it warns, naming them, since their edges won't print.
 
 ### Changed
 
+- LimarePDF lays out every printout itself, the same way on every system: each page goes on a sheet of the
+  printer's paper (its default, in the app for now) at its own size, centred, and is shrunk to the printable area
+  when it is larger, as Acrobat does by default. On Linux and macOS a page smaller than the paper now prints at
+  its own size, where it was enlarged to fill the sheet, and a page wider than it is tall is turned anticlockwise
+  onto the sheet, its top at the sheet's left, where it was turned clockwise; Windows printed them this way
+  already. Comments and form fields meant for printing are drawn into what is printed and the others left out;
+  pop-up notes aren't printed. When the printer doesn't say how near the edges it can print, a quarter of an inch
+  is kept clear. Print as image (`--as-image`) sends pictures of the laid-out sheets.
 - Underlines and strike-throughs that other apps drew under or through a line's words (Word, LibreOffice, web
   browsers, macOS and others draw them as thin lines on the page) now go with their words: editing the line
   moves and stretches them to where the words are, in their own colour, place and thickness; deleting the words

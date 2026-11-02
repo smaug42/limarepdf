@@ -289,7 +289,8 @@ See [Password protection](security.md).
 | --- | --- |
 | `limarepdf-cli printers` | List the printers; the default is marked |
 | `limarepdf-cli printers --paper` | Also list each printer's paper sizes, its default marked, and say when the printer doesn't report how near the edges it can print |
-| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw); to print such a file without them, open it in the app and choose Print anyway |
+| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print on the printer's default paper, each page at its own size, centred, shrunk when larger than the printable area and turned when wider than it is tall; `--as-image` sends the pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw); to print such a file without them, open it in the app and choose Print anyway |
+| `limarepdf-cli print in.pdf --paper A4 --orientation landscape --scale fit` | Print on A4 (one of the printer's sizes from `printers --paper`, by name), every page turned (`auto`, the default, turns only pages wider than they are tall; `portrait` turns none), each page filling the printable area (`shrink`, the default, shrinks only pages larger than it; `actual`; or a percentage from 1 to 400, such as `150%`). Warns, naming them, when pages reach past the printable area at the scale chosen ([details](export-and-printing.md#paper-orientation-and-scale-on-the-command-line)) |
 
 See [Export and printing](export-and-printing.md).
 

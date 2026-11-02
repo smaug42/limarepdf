@@ -357,14 +357,6 @@ impl Pdf {
         bytes
     }
 
-    /// Like [`Pdf::render_snapshot`], for printing: annotations without the Print flag
-    /// (bit 3) are marked Hidden instead, and form fields are drawn as
-    /// [`Pdf::refresh_appearances`] would draw them in every document, since the command
-    /// line, unlike the app, doesn't draw them when opening a file.
-    pub fn print_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, _| flags & 4 == 0, true)
-    }
-
     /// A snapshot in which annotations whose flags and subtype match `hide` are marked
     /// Hidden, and annotations without a drawing get LimarePDF's (the document itself keeps
     /// none). In a signed document, or in any with `all_fields`, form fields are drawn this

@@ -864,8 +864,8 @@ character no installed font has; since batch 45 its Chinese, say, falls back to 
 does): `Pdf::check_box_drawable` refuses whatever would draw it again
 into the file (a new look in `set_annotation`, `set_text_style`, a resize in `move_annotation`; BUG-39), and
 `flatten_annotations` refuses when such a box has no drawing, naming its page (`embed::box_refusal` words the
-reason). `annot_ap.rs`'s `typeset` draws such characters as `?` only in drawings in a copy: the app's view,
-printing and page images (`snapshot_hiding`).
+reason). `annot_ap.rs`'s `typeset` draws such characters as `?` only in drawings in a copy: the app's view and
+page images (`snapshot_hiding`), and printing (`Pdf::print_sheets`).
 
 Installed fonts for writing text are listed by `crates/limarepdf-core/src/typefaces.rs`: the families in
 `InstalledFonts::system()`'s `fontdb` database whose fonts allow embedding, each with
@@ -1159,10 +1159,10 @@ dialog already open fills it in place, matched by a number, or is dropped: Print
 dialog open or waiting, BUG-11); core's `print::run_within` bounds every CUPS command (`print::ASK_WITHIN` 10 s,
 `SEND_WITHIN` 2 minutes for `lp`, the whole process group killed). A Windows job makes synchronous spooler and GDI
 calls that can't be stopped, so `Pdf::print` runs it through `print::while_beating` (PB-17): `print_win::print`
-beats after each step (the printer's settings, opening it, starting the document, each page), and the wait gives
+beats after each step (the printer's settings, opening it, starting the document, each sheet), and the wait gives
 up when no beat comes for `SEND_WITHIN`, leaving the thread to finish on its own, so `App::busy` clears and other
-background jobs run. The snapshot is taken before the thread starts, so the document isn't copied again. A page
-takes seconds to draw, so a long job isn't given up on.
+background jobs run. The sheets are made and written out before the thread starts, so the document isn't copied
+again. A sheet takes seconds to draw, so a long job isn't given up on.
 
 A printer's paper sizes (ENH-14's stage 1) come from `print::papers` as a `PaperList` of `Paper`s (an id to send,
 a label such as "Letter (8.5 × 11 in)", the size in points, the margins when known) and the default. On Linux and
@@ -1176,10 +1176,51 @@ left out, but for the default. When IPP fails, `lpoptions -l`'s PPD names are re
 margins unknown; when CUPS doesn't know the queue yet (one it found on the network, made on first use by its own
 commands), IPP is asked again after `lpoptions` has run. Each question is bounded: the request by
 `print::ASK_WITHIN` and its thread by `print::within`, which leaves a call that can't be stopped to finish on its
-own (Windows' `printers` uses it too). On Windows `print_win::papers` reads the driver's lists
+own (Windows' `printers` uses it too). `ipp::post` sets the socket's waits to the time left before each read; macOS
+refuses that (EINVAL, `InvalidInput`) once CUPS has closed its end after answering, so that refusal is passed over,
+the wait set before still ending by the deadline (BUG-48: the answer was given up on, and every Mac fell back to
+`lpoptions`). On Windows `print_win::papers` reads the driver's lists
 (`DeviceCapabilitiesW`: numbers, names, sizes in tenths of a millimetre), the default from its settings, and each
 paper's printable area held portrait from an information context (`CreateICW`, `GetDeviceCaps`), measuring for
 at most 3 seconds in all. `paper::listed` keeps each label once, the default's over others of its label.
+
+Every printout is laid out by LimarePDF itself (ENH-14's stage 2), on every platform, so what reaches the printer is
+what the placements say, and the preview to come draws the same sheets. The design pass found the platforms
+printing differently: CUPS enlarged a page smaller than the paper to fill the printable area and turned landscape
+pages clockwise, where Windows (the old `print::place`, now gone) printed them at their size and anticlockwise; and
+CUPS shrinks a sheet exactly the paper's size into the printable area unless sent `print-scaling=none`. The
+placement model is `sheets.rs`'s `print::place(size, &PageSetup)`: a page's size as shown (after its `/Rotate`)
+and a `PageSetup` (a `Paper`, an `Orientation` Automatic, Portrait or Landscape, a `Scale` ShrinkOversized, Fit,
+ActualSize or Custom from 1 to `MAX_PERCENT`, 400) give a `Placed`: the sheet's size (the paper's as reported, never
+swapped), whether the page is turned a quarter turn anticlockwise (Automatic: when its shape is the other way round
+from the sheet's, a square page never; Portrait and Landscape: as the sheet is held), its scale against the
+printable area (the paper less its margins, or `ASSUMED_MARGIN`, a quarter of an inch a side as GTK assumes, when
+the printer doesn't say: `Paper::margins_or_assumed`), its box on the sheet (centred on the sheet and clamped into
+the printable area; one larger than the area centred on it, losing as much on each side) and `cut` when part of it
+falls outside the area. `Pdf::print_sheets(pages, &setup)` makes the sheets on a copy: `extract`, unencrypted;
+`flatten_form_for_print` (Print-flagged widgets drawn, the others and the form removed); the annotations without a
+drawing given LimarePDF's (`missing_appearances`, `draw_annotations`); then for each page `flatten_page` with
+`print_annot` (an annotation with the Print flag drawn into the content, pop-ups and the rest dropped) and
+`make_sheet`. That makes the page's content and resources a form XObject, `LimarePage`, whose `BBox` is the
+visible box (`page_box`), with the page's `/Group` copied: a page with one content stream keeps it as stored, with
+its filter; several are joined (`get_page_content_with_limit`, within `MAX_CONTENT`) and compressed at flate2's
+fast level. The sheet draws it with `q M cm /LimarePage Do Q`, M being the inverse of `visual_matrix` (the page's
+user space to the page as shown) followed by `Placed::matrix` (the turn, the scale, the move to the box), so text
+stays text. The sheet's own `MediaBox`, `CropBox`, `Rotate` 0 and `Resources` are set so nothing comes from the
+page tree, and its annotations, other page boxes, `UserUnit`, `VP`, `Thumb`, beads, actions,
+`StructParents` and `Tabs` are removed.
+`Pdf::print` takes the paper from `PrintOptions::paper`, else `print::printer_paper` (the printer's default from
+`print::papers`, else the first listed; the default printer from `printers`), and when that fails sends nothing
+and says why. `print::paper_named` finds the command line's `--paper` by id, label, or label without its size
+(`paper::named`, refusing a name several sizes share and naming them), and when the printer's list can't be read,
+on CUPS only, a standard size by its PPD name or its name for people (`paper::standard`). CUPS gets
+`Pdf::print_data`'s sheets (with `as_image` their pictures at `IMAGE_DPI`, through `Pdf::from_images`), `lp_args`
+naming `media=` the paper's id and `print-scaling=none`. Windows (`print_win::print`) gets the sheets written out
+and their count, sets the paper's number and portrait in the printer's settings (`settings`, a DEVMODE), draws
+each sheet at `print::sheet_scale` (the printer's resolution, at most 600 dpi and `render::MAX_PIXELS`), and
+`print::printable_part` finds the part of the picture on the printable area, the sheet's top-left on the paper's,
+pixels straddling its edges kept whole, and where it goes there; `print::to_bgra` turns that part into BGRA for
+`StretchDIBits`. The command line warns of the pages `place` says are `cut` at the scale chosen.
 
 Closing and quitting (ENH-01) ask `Dialog::ConfirmClose(asked, quitting)`, Save (Save as… for a tab with no file) /
 Discard / Cancel; quitting with several unsaved documents asks `Dialog::ConfirmQuit` first, Review… / Discard all /
@@ -1267,9 +1308,10 @@ kept for the Digital signatures view as the base, and fall back to a full rewrit
 set, damaged, a read-back failure, or `Tab::scrubbed`: redactions applied or hidden information removed since the
 last save, tracked through undo and redo, since the signed version would keep what was removed). A signed
 document's fields are not drawn into it when it opens (`Tab::new`); the snapshots for display and printing draw
-them on a copy instead (`snapshot_hiding`), so a save adds only real edits. The command line never draws fields
-when opening a file, so `render_snapshot` (`limarepdf-cli render`) and `print_snapshot` draw every document's fields
-on their copy; `app_snapshot` draws them only for signed documents, the app having drawn the others when opening.
+them on a copy instead (`snapshot_hiding`, and for printing `Pdf::print_sheets`), so a save adds only real edits.
+The command line never draws fields when opening a file, so `render_snapshot` (`limarepdf-cli render`) and
+`print_sheets` (through `flatten_form_for_print`) draw every document's fields on their copy; `app_snapshot`
+draws them only for signed documents, the app having drawn the others when opening.
 `Pdf::unshown_fields` and `unprintable_fields` name the values neither can draw (BUG-23).
 
 In the app, `crates/limarepdf-gui/src/digital.rs` holds the Digital IDs window and the signing window; making, importing

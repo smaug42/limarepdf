@@ -64,6 +64,7 @@ mod rewrap;
 mod sanitise;
 mod scan;
 mod security;
+mod sheets;
 mod sig_changes;
 mod sig_save;
 mod sig_sign;

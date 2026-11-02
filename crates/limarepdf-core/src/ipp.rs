@@ -456,7 +456,13 @@ fn post(server: &Server, path: &str, body: &[u8], limit: Duration) -> Result<Vec
         if left().is_zero() {
             return Err(too_slow());
         }
-        conn.wait_at_most(left()).map_err(lost)?;
+        // macOS refuses to change the waits of a socket whose other end has closed, as CUPS
+        // closes it after answering (BUG-48): the wait set before still ends by the deadline,
+        // so what is left of the answer is read on.
+        match conn.wait_at_most(left()) {
+            Err(e) if e.kind() != std::io::ErrorKind::InvalidInput => return Err(lost(e)),
+            _ => {}
+        }
         let n = match conn.read(&mut buf) {
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -751,33 +757,76 @@ pub(crate) mod tests {
         let done = path.clone();
         let serve = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
-            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let mut got = Vec::new();
-            let mut buf = [0u8; 4096];
-            // The head, then as much body as it says.
-            while let Ok(n) = s.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                got.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&got).to_string();
-                if let Some(at) = text.find("\r\n\r\n") {
-                    let len = text
-                        .lines()
-                        .find_map(|l| l.strip_prefix("Content-Length: "))
-                        .and_then(|n| n.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if got.len() >= at + 4 + len {
-                        break;
-                    }
-                }
-            }
+            let got = take_request(&mut s);
             std::thread::sleep(delay);
             let _ = s.write_all(&reply);
             let _ = std::fs::remove_file(&done);
             got
         });
         (Server::Socket(path), serve)
+    }
+
+    /// A request read from `s`: the head, then as much body as it says.
+    #[cfg(unix)]
+    fn take_request(s: &mut std::os::unix::net::UnixStream) -> Vec<u8> {
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = s.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&got).to_string();
+            if let Some(at) = text.find("\r\n\r\n") {
+                let len = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Content-Length: "))
+                    .and_then(|n| n.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if got.len() >= at + 4 + len {
+                    break;
+                }
+            }
+        }
+        got
+    }
+
+    /// An answer longer than a socket holds, sent a piece at a time, the service closing its
+    /// end the moment the last piece is sent, as CUPS does after answering: read whole. macOS
+    /// refuses to change the waits of a socket whose other end has closed, so the client gave
+    /// up on CUPS's answers there part way (BUG-48, found by PR #79's macOS CI).
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_the_service_closes_after_is_read_whole() {
+        use std::os::unix::net::UnixListener;
+        let sizes: Vec<V> = (0..5000).map(|_| V::Kw("iso_a4_210x297mm")).collect();
+        let reply = http(&answer(0, &[("media-supported", sizes)]));
+        let path =
+            std::env::temp_dir().join(format!("limarepdf-ipp-close-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let serve = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            take_request(&mut s);
+            for piece in reply.chunks(1000) {
+                if s.write_all(piece).is_err() {
+                    break;
+                }
+            }
+            // Closed at once.
+            drop(s);
+        });
+        let got = printer_attributes(
+            &Server::Socket(path.clone()),
+            "Office",
+            &["media-supported"],
+            Duration::from_secs(5),
+        );
+        serve.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let attrs = got.unwrap().unwrap();
+        assert_eq!(values(&attrs, "media-supported").len(), 5000);
     }
 
     #[cfg(unix)]

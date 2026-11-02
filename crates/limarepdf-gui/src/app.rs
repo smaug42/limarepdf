@@ -4521,6 +4521,8 @@ impl App {
                         sides: s.sides,
                         as_image: s.as_image,
                         title: t.stem("Untitled"),
+                        // The printer's paper, each page turned and shrunk as it needs.
+                        ..Default::default()
                     };
                     if let Some(layout) = s.selection {
                         let ex = Excerpt::new(t, layout);
@@ -12735,6 +12737,7 @@ mod tests {
                         sides: print::Sides::One,
                         as_image: false,
                         title: "test".into(),
+                        ..Default::default()
                     },
                 })),
             ),
@@ -15240,7 +15243,8 @@ mod tests {
 
     /// Runs the ignored test `test` in a copy of the tests with the stand-ins in `dir` first
     /// on its PATH, so no job reaches a real printer and the rest of the tests keep their
-    /// PATH.
+    /// PATH. The printing service it would ask over IPP is a socket nothing listens on, so
+    /// the paper sizes come from the stand-in `lpoptions`.
     #[cfg(not(windows))]
     fn rerun_with_cups(dir: &Path, test: &str) {
         let path = std::env::var("PATH").unwrap_or_default();
@@ -15248,6 +15252,7 @@ mod tests {
             .args(["--exact", test])
             .args(["--ignored", "--test-threads=1", "--nocapture"])
             .env("PATH", format!("{}:{path}", dir.display()))
+            .env("CUPS_SERVER", dir.join("nothing.sock"))
             .env(STAND_IN_CUPS, dir)
             .output()
             .unwrap();
@@ -15267,15 +15272,19 @@ mod tests {
                       -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
         let lp = "#!/bin/sh\ncat > \"$(dirname \"$0\")/job.pdf\"\n\
                   echo 'request id is limarepdf-test-1 (1 file(s))'\n";
+        let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *A4 Letter'\n";
         let dir = stand_in_cups(
             "print",
-            &[("lpstat", lpstat), ("lp", lp), ("lpoptions", "#!/bin/sh\n")],
+            &[("lpstat", lpstat), ("lp", lp), ("lpoptions", lpoptions)],
         );
         let job = dir.join("job.pdf");
         rerun_with_cups(&dir, "app::tests::print_with_stand_in_cups");
         let printed = Pdf::open(&job, None).expect("the job sent to lp");
         let text = printed.page_text(0);
         assert!(text.contains("Walrus"), "the job holds {text:?}");
+        // On a sheet of the printer's default paper.
+        let (w, h) = printed.page_size(0).unwrap();
+        assert_eq!((w.round(), h.round()), (595.0, 842.0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

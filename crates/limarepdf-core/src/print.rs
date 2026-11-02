@@ -1,23 +1,29 @@
 //! Printing.
 //!
-//! Linux and macOS print through CUPS (`lp`, `lpstat` and `lpoptions`). The selected pages
-//! go to CUPS as a PDF on the printer's default paper, which CUPS renders with its own
-//! engine. With
-//! [`PrintOptions::as_image`], LimarePDF renders the pages itself and sends a PDF of page
+//! LimarePDF lays out every printout itself: each page goes on a sheet of the chosen paper
+//! as the page setup says (`sheets.rs`), so what is printed is the same on every platform.
+//!
+//! Linux and macOS print through CUPS (`lp`, `lpstat`, `lpoptions`, and IPP for the paper
+//! sizes). The sheets go to CUPS as a PDF, named with their paper and with CUPS's own
+//! scaling turned off, and CUPS renders them with its own engine. With
+//! [`PrintOptions::as_image`], LimarePDF renders the sheets itself and sends a PDF of their
 //! images instead, so the output matches the screen.
 //!
-//! Windows prints through the print spooler and GDI: LimarePDF always renders the pages
+//! Windows prints through the print spooler and GDI: LimarePDF always renders the sheets
 //! itself and draws them on the printer (see `print_win.rs`).
 
 use crate::render::{self, ImageFormat};
 use crate::{ImageImport, Pdf, Result};
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Context};
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub use crate::paper::{Paper, PaperList};
+pub use crate::sheets::{
+    place, Orientation, PageSetup, Placed, Scale, ASSUMED_MARGIN, MAX_PERCENT,
+};
 
 /// Resolution of pages printed as images.
 pub const IMAGE_DPI: f32 = 300.0;
@@ -52,16 +58,21 @@ impl Sides {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PrintOptions {
     /// Queue name; `None` prints to the default destination.
     pub printer: Option<String>,
     pub copies: u32,
     pub sides: Sides,
-    /// Render the pages in LimarePDF and send images of them. Windows always does.
+    /// Render the sheets in LimarePDF and send images of them. Windows always does.
     pub as_image: bool,
     /// Job name shown in the print queue.
     pub title: String,
+    /// The paper to print on, one of [`papers`]; `None` for the printer's default
+    /// ([`printer_paper`]).
+    pub paper: Option<Paper>,
+    pub orientation: Orientation,
+    pub scale: Scale,
 }
 
 impl Default for PrintOptions {
@@ -72,6 +83,9 @@ impl Default for PrintOptions {
             sides: Sides::One,
             as_image: false,
             title: String::new(),
+            paper: None,
+            orientation: Orientation::Automatic,
+            scale: Scale::ShrinkOversized,
         }
     }
 }
@@ -287,40 +301,57 @@ fn cups_printers() -> Result<Vec<Printer>> {
     Ok(v)
 }
 
-/// The printer's default paper size, as `lpoptions -l` marks it (`Letter`, `A4`), or
-/// `None` when it can't be found. Some printer setups print every page blurred when a
-/// job doesn't name its paper, even though the printer has a default (other apps name it).
-#[cfg(not(windows))]
-pub fn default_paper(printer: Option<&str>) -> Option<String> {
-    let out = match printer {
-        Some(p) => cups("lpoptions", &["-p", p, "-l"]),
-        None => cups("lpoptions", &["-l"]),
+/// The default printer's name.
+fn default_printer() -> Result<String> {
+    printers()?
+        .into_iter()
+        .find(|p| p.default)
+        .map(|p| p.name)
+        .ok_or_else(|| anyhow!("no default printer is set"))
+}
+
+/// The paper `printer` (the default printer for `None`) prints on when none is chosen: its
+/// default size, else the first it lists ([`papers`]).
+pub fn printer_paper(printer: Option<&str>) -> Result<Paper> {
+    let name = match printer {
+        Some(p) => p.to_string(),
+        None => default_printer()?,
     };
-    paper_in_lpoptions(&out.ok()?)
+    let list = papers(&name)?;
+    let i = list.default.unwrap_or(0);
+    let paper = list.papers.into_iter().nth(i);
+    paper.ok_or_else(|| anyhow!("the printing service doesn't list the printer's paper sizes"))
 }
 
-/// The marked choice of the `PageSize` line in `lpoptions -l` output, such as
-/// "PageSize/Media Size: A5 *Letter A4". A custom size is left to the printer.
-pub fn paper_in_lpoptions(text: &str) -> Option<String> {
-    let line = text.lines().find(|l| l.starts_with("PageSize/"))?;
-    let (_, choices) = line.split_once(':')?;
-    let paper = choices
-        .split_whitespace()
-        .find_map(|c| c.strip_prefix('*'))?;
-    (!paper.starts_with("Custom")).then(|| paper.to_string())
+/// The paper called `name` that `printer` (the default printer for `None`) takes, matched
+/// in any case with its id, its name for people ("Letter (8.5 × 11 in)") or that name
+/// without its size ("Letter"). When the printing service can't list the printer's sizes,
+/// CUPS is sent a standard size by its own name ("A4", "Letter"), margins unknown.
+pub fn paper_named(printer: Option<&str>, name: &str) -> Result<Paper> {
+    let listed = match printer {
+        Some(p) => papers(p),
+        None => default_printer().and_then(|p| papers(&p)),
+    };
+    match listed {
+        Ok(list) => crate::paper::named(&list, name),
+        #[cfg(not(windows))]
+        Err(e) => crate::paper::standard(name).ok_or(e),
+        #[cfg(windows)]
+        Err(e) => Err(e),
+    }
 }
 
-/// Arguments for `lp`, with `paper` (from [`default_paper`]) named when known; the
-/// document is read from standard input.
-pub fn lp_args(o: &PrintOptions, paper: Option<&str>) -> Vec<String> {
+/// Arguments for `lp` sending sheets laid out on the paper with id `paper`: the paper
+/// named, and CUPS's own scaling turned off, as CUPS would otherwise shrink a sheet the
+/// paper's size into the printable area again. The document is read from standard input.
+pub fn lp_args(o: &PrintOptions, paper: &str) -> Vec<String> {
     let mut a = Vec::new();
     if let Some(p) = &o.printer {
         a.extend(["-d".into(), p.clone()]);
     }
     a.extend(["-n".into(), o.copies.max(1).to_string()]);
-    if let Some(paper) = paper {
-        a.extend(["-o".into(), format!("media={paper}")]);
-    }
+    a.extend(["-o".into(), format!("media={paper}")]);
+    a.extend(["-o".into(), "print-scaling=none".into()]);
     if o.copies > 1 {
         a.extend(["-o".into(), "collate=true".into()]);
     }
@@ -404,73 +435,64 @@ fn send_within(
 }
 
 impl Pdf {
-    /// The document CUPS receives for `pages` (0-based, in order): those pages as an
-    /// unencrypted PDF, or with `as_image` a PDF of page images at [`IMAGE_DPI`], rendered
-    /// as for printing (annotations without the Print flag are left out).
-    pub fn print_data(&mut self, pages: &[usize], as_image: bool) -> Result<Vec<u8>> {
-        if pages.is_empty() {
-            bail!("no pages selected");
+    /// The document CUPS receives for `pages` (0-based, in order) laid out as `setup` says:
+    /// the sheets ([`Pdf::print_sheets`]) as an unencrypted PDF, or with `as_image` a PDF
+    /// of their images at [`IMAGE_DPI`].
+    pub fn print_data(
+        &self,
+        pages: &[usize],
+        setup: &PageSetup,
+        as_image: bool,
+    ) -> Result<Vec<u8>> {
+        let mut sheets = self.print_sheets(pages, setup)?;
+        if !as_image {
+            return sheets.to_bytes();
         }
-        if as_image {
-            let hp = render::load(self.print_snapshot()?, None)?;
-            let images = render::encode_pages(&hp, pages, IMAGE_DPI, ImageFormat::Jpeg(92))?;
-            let opts = ImageImport {
-                dpi: Some(IMAGE_DPI),
-                ..Default::default()
-            };
-            return Pdf::from_images(&images, &opts)?.to_bytes();
-        }
-        let mut out = self.extract(pages)?;
-        out.encryption = None;
-        // Form fields go in as drawings: some CUPS setups drop fields without drawing them,
-        // so filled values would print empty.
-        out.flatten_form_for_print()?;
-        // Each page's content leaves the graphics state as it found it, so annotations that
-        // CUPS draws into the page after it aren't turned by a transformation the page set
-        // and never undid (some CUPS versions add them without restoring the state).
-        for page in out.page_ids() {
-            out.wrap_contents(page, None, None)?;
-        }
-        out.to_bytes()
+        let all: Vec<usize> = (0..sheets.page_count()).collect();
+        let hp = render::load(sheets.to_bytes()?, None)?;
+        let images = render::encode_pages(&hp, &all, IMAGE_DPI, ImageFormat::Jpeg(92))?;
+        let opts = ImageImport {
+            dpi: Some(IMAGE_DPI),
+            ..Default::default()
+        };
+        Pdf::from_images(&images, &opts)?.to_bytes()
     }
 
-    /// Print `pages` (0-based): with CUPS, returning `lp`'s reply, or on Windows through
-    /// the print spooler, returning the job number. Gives up waiting, as `lp` is given up
-    /// on, when the spooler takes no step for [`SEND_WITHIN`] ([`while_beating`]).
+    /// Print `pages` (0-based) laid out as `opts` says, on the printer's default paper when
+    /// it names none: with CUPS, returning `lp`'s reply, or on Windows through the print
+    /// spooler, returning the job number. Gives up waiting, as `lp` is given up on, when the
+    /// spooler takes no step for [`SEND_WITHIN`] ([`while_beating`]).
     pub fn print(&mut self, pages: &[usize], opts: &PrintOptions) -> Result<String> {
         if pages.is_empty() {
             bail!("no pages selected");
         }
+        let paper = match &opts.paper {
+            Some(p) => p.clone(),
+            None => printer_paper(opts.printer.as_deref()).context(
+                "LimarePDF couldn't find out which paper the printer takes, so nothing was \
+                 sent to it",
+            )?,
+        };
+        let setup = PageSetup {
+            paper,
+            orientation: opts.orientation,
+            scale: opts.scale,
+        };
         #[cfg(windows)]
         {
-            let (data, pages, opts) = (self.print_snapshot()?, pages.to_vec(), opts.clone());
+            let mut sheets = self.print_sheets(pages, &setup)?;
+            let (count, data) = (sheets.page_count(), sheets.to_bytes()?);
+            let opts = opts.clone();
             while_beating(SEND_WITHIN, move |beat| {
-                crate::print_win::print(data, &pages, &opts, beat)
+                crate::print_win::print(data, count, &setup.paper, &opts, beat)
             })
         }
         #[cfg(not(windows))]
         {
-            let data = self.print_data(pages, opts.as_image)?;
-            let paper = default_paper(opts.printer.as_deref());
-            send("lp", &lp_args(opts, paper.as_deref()), &data)
+            let data = self.print_data(pages, &setup, opts.as_image)?;
+            send("lp", &lp_args(opts, &setup.paper.id), &data)
         }
     }
-}
-
-/// Where a page goes on a sheet when LimarePDF draws it on the printer itself (Windows).
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) struct Placement {
-    /// Turn the page a quarter turn anticlockwise, so its top is at the sheet's left.
-    pub rotate: bool,
-    /// Box in device pixels, relative to the printable area.
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-    /// Scale to render the page at: device pixels per point, at most 600 dpi and at most
-    /// [`crate::render::MAX_PIXELS`] in all (the printer scales a smaller bitmap up).
-    pub scale: f32,
 }
 
 /// Device measurements of a printer's sheet, from GDI's GetDeviceCaps.
@@ -479,63 +501,80 @@ pub(crate) struct Placement {
 pub(crate) struct Sheet {
     /// Printable area, in device pixels.
     pub area: (i32, i32),
-    /// Whole sheet, in device pixels.
-    pub paper: (i32, i32),
     /// Top-left of the printable area on the sheet.
     pub offset: (i32, i32),
     /// Device pixels per inch.
     pub dpi: (i32, i32),
 }
 
-/// Place a page of `size` points on `sheet`: turned to match the sheet's orientation,
-/// at actual size when it fits in the printable area and shrunk to fit when not, centred
-/// on the sheet as far as the printable area allows.
+/// The scale to draw a sheet `size` points large at for printer sheet `dev`: device pixels
+/// per point, at most 600 dpi and at most [`crate::render::MAX_PIXELS`] in all (the printer
+/// scales a smaller picture up).
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn place(size: (f32, f32), sheet: &Sheet) -> Placement {
-    let (aw, ah) = (sheet.area.0.max(1) as f32, sheet.area.1.max(1) as f32);
-    let rotate = (size.0 > size.1 && aw < ah) || (size.0 < size.1 && aw > ah);
-    let (pw, ph) = if rotate { (size.1, size.0) } else { size };
-    let (pw, ph) = (pw.max(1.0), ph.max(1.0));
-    let (dx, dy) = (sheet.dpi.0.max(1) as f32, sheet.dpi.1.max(1) as f32);
-    // Device pixels at actual size.
-    let (fw, fh) = (pw / 72.0 * dx, ph / 72.0 * dy);
-    let fit = (aw / fw).min(ah / fh).min(1.0);
-    let (w, h) = ((fw * fit).round(), (fh * fit).round());
-    let centre = |paper: i32, offset: i32, area: f32, len: f32| {
-        let x = (paper as f32 - len) / 2.0 - offset as f32;
-        x.clamp(0.0, (area - len).max(0.0)).round() as i32
-    };
-    Placement {
-        rotate,
-        x: centre(sheet.paper.0, sheet.offset.0, aw, w),
-        y: centre(sheet.paper.1, sheet.offset.1, ah, h),
-        w: w as i32,
-        h: h as i32,
-        // Just under the pixel limit, so rounding in f32 can't take it over.
-        scale: (w / pw)
-            .min(600.0 / 72.0)
-            .min((crate::render::MAX_PIXELS as f32 / (pw * ph)).sqrt() * 0.999),
-    }
+pub(crate) fn sheet_scale(size: (f32, f32), dev: &Sheet) -> f32 {
+    let dpi = dev.dpi.0.max(dev.dpi.1).max(1) as f32;
+    let (w, h) = (size.0.max(1.0), size.1.max(1.0));
+    // Just under the pixel limit, so rounding in f32 can't take it over.
+    (dpi / 72.0)
+        .min(600.0 / 72.0)
+        .min((crate::render::MAX_PIXELS as f32 / (w * h)).sqrt() * 0.999)
 }
 
-/// `rgba` (width `w`) as top-down BGRA for GDI, turned a quarter turn anticlockwise when
-/// `rotate`. Returns the pixels and their width and height.
+/// Part of a picture of a sheet, and where it goes on the printer's sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn to_bgra(rgba: &[u8], w: usize, h: usize, rotate: bool) -> (Vec<u8>, usize, usize) {
-    let (px, _) = rgba.as_chunks::<4>();
-    let bgra = |p: &[u8; 4]| [p[2], p[1], p[0], 255];
-    if !rotate {
-        return (px.iter().flat_map(bgra).collect(), w, h);
+pub(crate) struct Part {
+    /// Where it is in the picture: left, top, width and height in pixels.
+    pub from: [usize; 4],
+    /// Where it goes: left, top, width and height in device pixels from the printable
+    /// area's top-left corner.
+    pub to: [i32; 4],
+}
+
+/// The part of a picture of a sheet `size` points large, `px` pixels wide and high, that
+/// falls on the printable area of printer sheet `dev`, the sheet's top-left corner on the
+/// paper's. `None` when none of it does.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn printable_part(size: (f32, f32), px: (usize, usize), dev: &Sheet) -> Option<Part> {
+    // Device pixels a pixel of the picture.
+    let (kx, ky) = (
+        size.0 / 72.0 * dev.dpi.0 as f32 / px.0.max(1) as f32,
+        size.1 / 72.0 * dev.dpi.1 as f32 / px.1.max(1) as f32,
+    );
+    if kx <= 0.0 || ky <= 0.0 {
+        return None;
     }
-    // Anticlockwise: source (x, y) goes to (y, w - 1 - x) in an h-wide image.
-    let mut out = vec![0u8; w * h * 4];
-    for y in 0..h {
-        for x in 0..w {
-            let d = ((w - 1 - x) * h + y) * 4;
-            out[d..d + 4].copy_from_slice(&bgra(&px[y * w + x]));
+    let span = |offset: i32, len: i32, k: f32, most: usize| {
+        let a = (offset as f32 / k).floor().clamp(0.0, most as f32) as usize;
+        let b = ((offset + len) as f32 / k).ceil().clamp(0.0, most as f32) as usize;
+        (b > a).then_some((a, b))
+    };
+    let (x0, x1) = span(dev.offset.0, dev.area.0, kx, px.0)?;
+    let (y0, y1) = span(dev.offset.1, dev.area.1, ky, px.1)?;
+    let to = |a: usize, b: usize, k: f32, offset: i32| {
+        let start = (a as f32 * k).round() as i32 - offset;
+        (start, (b as f32 * k).round() as i32 - offset - start)
+    };
+    let ((tx, tw), (ty, th)) = (to(x0, x1, kx, dev.offset.0), to(y0, y1, ky, dev.offset.1));
+    Some(Part {
+        from: [x0, y0, x1 - x0, y1 - y0],
+        to: [tx, ty, tw, th],
+    })
+}
+
+/// The part `from` (left, top, width, height) of the picture `rgba`, `w` pixels wide, as
+/// top-down BGRA for GDI.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn to_bgra(rgba: &[u8], w: usize, from: [usize; 4]) -> Vec<u8> {
+    let (px, _) = rgba.as_chunks::<4>();
+    let [x, y, pw, ph] = from;
+    let mut out = Vec::with_capacity(pw * ph * 4);
+    for row in y..y + ph {
+        for p in &px[row * w + x..row * w + x + pw] {
+            out.extend_from_slice(&[p[2], p[1], p[0], 255]);
         }
     }
-    (out, h, w)
+    out
 }
 
 #[cfg(test)]
@@ -545,7 +584,6 @@ mod tests {
     /// US Letter at 600 dpi with quarter-inch margins.
     const LETTER: Sheet = Sheet {
         area: (4800, 6300),
-        paper: (5100, 6600),
         offset: (150, 150),
         dpi: (600, 600),
     };
@@ -589,66 +627,81 @@ mod tests {
     }
 
     #[test]
-    fn small_page_prints_at_actual_size_centred() {
-        // 4 x 3 inch page: 2400 x 1800 px, landscape, so turned to 1800 x 2400.
-        let p = place((288.0, 216.0), &LETTER);
-        assert!(p.rotate);
-        assert_eq!((p.w, p.h), (1800, 2400));
-        // Centred on the sheet: (5100 - 1800) / 2 - 150 = 1500.
-        assert_eq!((p.x, p.y), (1500, 1950));
-        assert!((p.scale - 600.0 / 72.0).abs() < 1e-3);
+    fn a_sheet_drawn_at_the_printers_resolution_gives_its_printable_area() {
+        // A Letter sheet drawn at 600 dpi: a picture pixel a device pixel.
+        assert!((sheet_scale((612.0, 792.0), &LETTER) - 600.0 / 72.0).abs() < 1e-4);
+        let part = printable_part((612.0, 792.0), (5100, 6600), &LETTER).unwrap();
+        assert_eq!(part.from, [150, 150, 4800, 6300]);
+        assert_eq!(part.to, [0, 0, 4800, 6300]);
     }
 
     #[test]
-    fn full_page_shrinks_to_the_printable_area() {
-        let p = place((612.0, 792.0), &LETTER);
-        assert!(!p.rotate);
-        // 5100 x 6600 px at actual size; the width limits: 4800 / 5100 of it.
-        assert_eq!((p.w, p.h), (4800, 6212));
-        // Across: the whole printable width. Down: (6600 - 6212) / 2 - 150 = 44.
-        assert_eq!((p.x, p.y), (0, 44));
+    fn a_sheet_drawn_at_half_the_resolution_is_stretched_over_the_printable_area() {
+        let part = printable_part((612.0, 792.0), (2550, 3300), &LETTER).unwrap();
+        assert_eq!(part.from, [75, 75, 2400, 3150]);
+        assert_eq!(part.to, [0, 0, 4800, 6300]);
+        // An odd offset: the picture's pixels straddling the edges are kept whole, a device
+        // pixel over each side (the printer leaves out what is off its area).
+        let odd = Sheet {
+            offset: (151, 150),
+            ..LETTER
+        };
+        let part = printable_part((612.0, 792.0), (2550, 3300), &odd).unwrap();
+        assert_eq!(part.from[0], 75);
+        assert_eq!(part.from[2], 2476 - 75);
+        assert_eq!((part.to[0], part.to[2]), (-1, 4802));
     }
 
     #[test]
-    fn render_scale_is_capped_at_600_dpi() {
+    fn a_sheet_off_the_printable_area_draws_nothing() {
+        // A sheet an inch square, where the printable area starts two inches in.
+        let far = Sheet {
+            offset: (1200, 1200),
+            ..LETTER
+        };
+        assert_eq!(printable_part((72.0, 72.0), (600, 600), &far), None);
+    }
+
+    #[test]
+    fn the_drawing_scale_is_capped_at_600_dpi() {
         let sheet = Sheet {
             dpi: (1200, 1200),
             area: (9600, 12600),
-            paper: (10200, 13200),
             offset: (300, 300),
         };
-        let p = place((288.0, 216.0), &sheet);
-        assert!((p.scale - 600.0 / 72.0).abs() < 1e-3, "{p:?}");
+        let s = sheet_scale((612.0, 792.0), &sheet);
+        assert!((s - 600.0 / 72.0).abs() < 1e-3, "{s}");
     }
 
     #[test]
-    fn render_scale_keeps_a_poster_within_the_pixel_limit() {
+    fn the_drawing_scale_keeps_a_poster_within_the_pixel_limit() {
         // A0 on an A0 plotter at 600 dpi: 19,866 x 28,087 px, more than the limit.
         let sheet = Sheet {
             dpi: (600, 600),
             area: (19866, 28087),
-            paper: (19866, 28087),
             offset: (0, 0),
         };
         let (pw, ph) = (2384.0, 3370.0);
-        let p = place((pw, ph), &sheet);
-        assert!(p.scale < 600.0 / 72.0, "{p:?}");
-        let pixels = (pw * p.scale) as u64 * (ph * p.scale) as u64;
+        let s = sheet_scale((pw, ph), &sheet);
+        assert!(s < 600.0 / 72.0, "{s}");
+        let pixels = (pw * s) as u64 * (ph * s) as u64;
         assert!(pixels <= crate::render::MAX_PIXELS, "{pixels}");
         assert!(pixels > crate::render::MAX_PIXELS * 99 / 100, "{pixels}");
     }
 
     #[test]
-    fn quarter_turn_puts_the_top_on_the_left() {
-        // 2 x 1 image: red, green.
-        let rgba = [255, 0, 0, 255, 0, 255, 0, 255];
-        let (out, w, h) = to_bgra(&rgba, 2, 1, true);
-        assert_eq!((w, h), (1, 2));
-        // Green (the right end) goes to the top, red to the bottom; bytes are BGRA.
-        assert_eq!(out, [0, 255, 0, 255, 0, 0, 255, 255]);
-        let (out, w, h) = to_bgra(&rgba, 2, 1, false);
-        assert_eq!((w, h), (2, 1));
-        assert_eq!(out, [0, 0, 255, 255, 0, 255, 0, 255]);
+    fn bgra_takes_the_part_asked_for() {
+        // 3 x 2 picture: red, green, blue over white, black, grey.
+        let rgba = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, //
+            255, 255, 255, 255, 0, 0, 0, 255, 9, 9, 9, 255,
+        ];
+        // The right two columns of both rows; bytes are BGRA.
+        let out = to_bgra(&rgba, 3, [1, 0, 2, 2]);
+        assert_eq!(
+            out,
+            [0, 255, 0, 255, 255, 0, 0, 255, 0, 0, 0, 255, 9, 9, 9, 255]
+        );
     }
 
     #[cfg(unix)]

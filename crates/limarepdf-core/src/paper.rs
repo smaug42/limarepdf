@@ -311,6 +311,52 @@ fn ppd_paper(name: &str) -> Option<(String, (f32, f32))> {
     (w > 0.0 && h > 0.0).then(|| (dims(w, h), (w, h)))
 }
 
+/// A standard paper size by its PPD name or its name for people, in any case ("A4",
+/// "letter", "Foolscap"), named to CUPS by its PPD name, margins unknown.
+pub(crate) fn standard(name: &str) -> Option<Paper> {
+    let name = name.trim();
+    let &(id, ..) = PPD_NAMES
+        .iter()
+        .find(|e| e.0.eq_ignore_ascii_case(name) || e.1.eq_ignore_ascii_case(name))?;
+    let (label, size) = ppd_paper(id)?;
+    Some(Paper {
+        id: id.to_string(),
+        label,
+        size,
+        margins: None,
+    })
+}
+
+/// The paper of `list` called `name`, in any case: by its id, its label ("Letter (8.5 × 11
+/// in)") or its label without the size ("Letter"). A name several papers share, or none,
+/// is refused, naming the papers to choose from.
+pub(crate) fn named(list: &PaperList, name: &str) -> crate::Result<Paper> {
+    let name = name.trim();
+    let is = |s: &str| s.eq_ignore_ascii_case(name);
+    let whole = list.papers.iter().find(|p| is(&p.id) || is(&p.label));
+    if let Some(p) = whole {
+        return Ok(p.clone());
+    }
+    let short = |p: &Paper| p.label.split(" (").next().unwrap_or(&p.label).to_string();
+    let found: Vec<&Paper> = list.papers.iter().filter(|p| is(&short(p))).collect();
+    let labels = |ps: &mut dyn Iterator<Item = &Paper>| {
+        ps.map(|p| p.label.as_str()).collect::<Vec<_>>().join(", ")
+    };
+    match found[..] {
+        [one] => Ok(one.clone()),
+        [] => anyhow::bail!(
+            "the printer has no paper size called \"{name}\"; it takes {}",
+            labels(&mut list.papers.iter())
+        ),
+        _ => anyhow::bail!(
+            "several of the printer's paper sizes are called \"{name}\": {}. Name one with its \
+             size, such as \"{}\"",
+            labels(&mut found.iter().copied()),
+            found[0].label
+        ),
+    }
+}
+
 /// The papers on the `PageSize` line of `lpoptions -l` ("PageSize/Media Size: A5 *Letter
 /// A4 Letter.Duplex Custom.WIDTHxHEIGHT"), margins unknown. Variants of a size
 /// (`Letter.Duplex`) and names LimarePDF doesn't know the size of are left out, but for
@@ -583,5 +629,55 @@ mod tests {
         // No PageSize line, or a default LimarePDF doesn't know.
         assert_eq!(from_lpoptions("Duplex/Two: *None\n"), PaperList::default());
         assert_eq!(from_lpoptions("PageSize/Size: A4 *Odd\n").default, None);
+    }
+
+    #[test]
+    fn a_paper_is_found_by_any_of_its_names() {
+        let list =
+            from_lpoptions("PageSize/Media Size: *Letter A4 Env10 w288h432 Custom.WIDTHxHEIGHT\n");
+        let id = |name: &str| named(&list, name).map(|p| p.id);
+        assert_eq!(id("A4").unwrap(), "A4");
+        assert_eq!(id("letter").unwrap(), "Letter");
+        assert_eq!(id(" Letter (8.5 × 11 in) ").unwrap(), "Letter");
+        assert_eq!(id("envelope #10").unwrap(), "Env10");
+        assert_eq!(id("env10").unwrap(), "Env10");
+        assert_eq!(id("4 × 6 in").unwrap(), "w288h432");
+        let e = id("A3").unwrap_err().to_string();
+        assert!(e.contains("no paper size called \"A3\""), "{e}");
+        assert!(e.contains("Letter (8.5 × 11 in), A4 (210 × 297 mm)"), "{e}");
+        // Index cards share a name: their sizes tell them apart.
+        let cards = PaperList {
+            papers: ["3x5", "4x6"]
+                .iter()
+                .map(|d| Paper {
+                    id: format!("na_index-{d}_{d}in"),
+                    label: format!("Index card ({} in)", d.replace('x', " × ")),
+                    size: (216.0, 360.0),
+                    margins: None,
+                })
+                .collect(),
+            default: None,
+        };
+        let e = named(&cards, "index card").unwrap_err().to_string();
+        assert!(
+            e.contains("several") && e.contains("\"Index card (3 × 5 in)\""),
+            "{e}"
+        );
+        let p = named(&cards, "Index card (4 × 6 in)").unwrap();
+        assert_eq!(p.id, "na_index-4x6_4x6in");
+    }
+
+    #[test]
+    fn standard_sizes_are_known_by_name() {
+        let a4 = standard("a4").unwrap();
+        assert_eq!(
+            (a4.id.as_str(), a4.label.as_str()),
+            ("A4", "A4 (210 × 297 mm)")
+        );
+        assert!(close(a4.size, (595.28, 841.89)));
+        assert_eq!(a4.margins, None);
+        assert_eq!(standard("Foolscap").unwrap().id, "FLSA");
+        assert_eq!(standard("Letter").unwrap().size, (612.0, 792.0));
+        assert_eq!(standard("Brochure"), None);
     }
 }
