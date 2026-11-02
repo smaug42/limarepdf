@@ -2,9 +2,10 @@
 //! and the look every dialog shares ([`Shell`], [`content`], [`footer`]). Document and
 //! page settings live in the inspector (see `inspector.rs`).
 
+use crate::print_preview::{self, Preview, What};
 use crate::theme;
 use eframe::egui::{self, Align, Context, Key, Margin, RichText, Ui};
-use limarepdf_core::print::{Printer, Sides};
+use limarepdf_core::print::{Orientation, PageSetup, PaperList, Printer, Scale, Sides};
 use std::hash::Hash;
 use std::path::PathBuf;
 
@@ -239,8 +240,14 @@ pub fn any_open(ctx: &Context) -> bool {
 /// A dialog's content, padded, and scrolling when the window is too short for it: drawn
 /// under the dialog's title, with a [`footer`] to come.
 pub fn content<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
+    let top = ui.max_rect().min.y;
+    content_below(ui, top, body)
+}
+
+/// [`content`] in a column of a dialog whose window's inside starts at `top`.
+fn content_below<R>(ui: &mut Ui, top: f32, body: impl FnOnce(&mut Ui) -> R) -> R {
     let at = insets(ui.ctx());
-    let above = ui.cursor().min.y - ui.max_rect().min.y;
+    let above = ui.cursor().min.y - top;
     let footer = 2.0 * f32::from(at.footer) + theme::DIALOG_CONTROL + 1.0;
     // And some of the screen left above and below the window.
     let around = 2.0 * f32::from(at.content) + 16.0;
@@ -656,8 +663,9 @@ pub fn footer(ui: &mut Ui, note: Option<RichText>, buttons: &[Btn]) -> Option<us
                     for i in ordered(buttons) {
                         let b = &buttons[i];
                         let mut r = ui.add_enabled(b.enabled, b.widget());
+                        // Shown greyed too: egui's hover text is for enabled widgets only.
                         if let Some(tip) = b.tip {
-                            r = r.on_hover_text(tip);
+                            r = r.on_hover_text(tip).on_disabled_hover_text(tip);
                         }
                         if r.clicked() {
                             hit = Some(i);
@@ -736,7 +744,7 @@ pub fn pages_box(ui: &mut Ui, text: &mut String, width: Option<f32>) -> egui::Re
 // ------------------------------------------------------------------ print
 
 /// How selected text is printed or saved.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Layout {
     /// The pages cropped to the selection, as they look.
     Original,
@@ -789,12 +797,28 @@ pub enum Search {
     Failed(String),
 }
 
+/// The paper sizes of the printer chosen, which the Print dialog asks for once it knows the
+/// printer, off the window's thread as the printers are (ENH-14).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Papers {
+    /// Not asked for yet.
+    Unasked,
+    /// Search number `.0` is asking for printer `.1`'s.
+    Asking(u64, String),
+    /// Printer `.0`'s.
+    Found(String, PaperList),
+    /// Printer `.0`'s couldn't be found: why.
+    Failed(String, String),
+}
+
 pub struct Print {
     pub printers: Vec<Printer>,
     pub search: Search,
     pub printer: usize,
     /// The document printed, shown under the title.
     pub file: String,
+    /// How many pages it has, for the preview to read the page range.
+    pub page_count: usize,
     /// Print every page, rather than [`Print::pages`].
     pub all: bool,
     pub pages: String,
@@ -805,6 +829,14 @@ pub struct Print {
     pub as_image: bool,
     /// Printing the selected text, in this layout, instead of pages.
     pub selection: Option<Layout>,
+    pub papers: Papers,
+    /// The paper chosen, of the printer's.
+    pub paper: usize,
+    pub orientation: Orientation,
+    pub scale: Scale,
+    /// The percentage a custom scale is, kept while another scale is chosen.
+    pub percent: u16,
+    pub preview: Preview,
 }
 impl Print {
     /// `printers` has the default first.
@@ -814,6 +846,7 @@ impl Print {
             search: Search::Done,
             printer: 0,
             file,
+            page_count: 1,
             all: true,
             pages: String::new(),
             error: None,
@@ -821,6 +854,12 @@ impl Print {
             sides: Sides::One,
             as_image: false,
             selection: None,
+            papers: Papers::Unasked,
+            paper: 0,
+            orientation: Orientation::Automatic,
+            scale: Scale::ShrinkOversized,
+            percent: 100,
+            preview: Preview::default(),
         }
     }
     /// Looking for the printers, by search number `search`.
@@ -839,9 +878,112 @@ impl Print {
         };
         self.printer = 0;
     }
-    /// Whether Print can print: the printers are found, and there is one.
+    /// Whether the printers are found, and there is one.
     pub fn ready(&self) -> bool {
         self.search == Search::Done && !self.printers.is_empty()
+    }
+    /// The printer chosen, once the printers are found.
+    fn chosen(&self) -> Option<&str> {
+        let p = self.printers.get(self.printer).filter(|_| self.ready())?;
+        Some(&p.name)
+    }
+    /// The printer whose paper sizes are to be asked for: the one chosen, when they aren't
+    /// asked for, found or failed for it.
+    pub fn papers_wanted(&self) -> Option<String> {
+        let name = self.chosen()?;
+        let asked = match &self.papers {
+            Papers::Unasked => None,
+            Papers::Asking(_, p) | Papers::Found(p, _) | Papers::Failed(p, _) => Some(p),
+        };
+        (asked.map(String::as_str) != Some(name)).then(|| name.to_string())
+    }
+    /// The paper sizes asked for by `search`, or why they couldn't be found: shown, with
+    /// the paper last used with the printer chosen (by its id, `last`), else its default.
+    pub fn papers_found(
+        &mut self,
+        search: u64,
+        found: Result<PaperList, String>,
+        last: Option<&str>,
+    ) {
+        let Papers::Asking(n, printer) = &self.papers else {
+            return;
+        };
+        if *n != search {
+            return;
+        }
+        let printer = printer.clone();
+        self.papers = match found {
+            Ok(list) => {
+                let last = last.and_then(|id| list.papers.iter().position(|p| p.id == id));
+                self.paper = last.or(list.default).unwrap_or(0);
+                Papers::Found(printer, list)
+            }
+            Err(why) => Papers::Failed(printer, why),
+        };
+    }
+    /// Why the printer's paper sizes couldn't be found, if they couldn't.
+    pub fn papers_failed(&self) -> Option<&str> {
+        match &self.papers {
+            Papers::Failed(p, why) if Some(p.as_str()) == self.chosen() => Some(why),
+            _ => None,
+        }
+    }
+    /// The paper and how the pages go on it, once the printer's paper sizes are found.
+    pub fn setup(&self) -> Option<PageSetup> {
+        let Papers::Found(p, list) = &self.papers else {
+            return None;
+        };
+        let paper = list.papers.get(self.paper)?.clone();
+        (Some(p.as_str()) == self.chosen()).then_some(PageSetup {
+            paper,
+            orientation: self.orientation,
+            scale: self.scale,
+        })
+    }
+    /// For tests: Print with `printers`, the first one's paper sizes found: Letter, its
+    /// default, and A4, each with the margins the user's HP reports.
+    #[cfg(test)]
+    pub fn with_papers(printers: Vec<Printer>, file: String) -> Self {
+        use limarepdf_core::print::Paper;
+        let paper = |id: &str, label: &str, size| Paper {
+            id: id.into(),
+            label: label.into(),
+            size,
+            margins: Some([12.0; 4]),
+        };
+        let list = PaperList {
+            papers: vec![
+                paper("na_letter_8.5x11in", "Letter (8.5 × 11 in)", (612.0, 792.0)),
+                paper("iso_a4_210x297mm", "A4 (210 × 297 mm)", (595.28, 841.89)),
+            ],
+            default: Some(0),
+        };
+        let name = printers.first().map(|p| p.name.clone()).unwrap_or_default();
+        Self {
+            papers: Papers::Found(name, list),
+            ..Self::new(printers, file)
+        }
+    }
+    /// The names of the printer's paper sizes, once found.
+    fn paper_labels(&self) -> Option<Vec<String>> {
+        self.setup()?;
+        match &self.papers {
+            Papers::Found(_, list) => Some(list.papers.iter().map(|p| p.label.clone()).collect()),
+            _ => None,
+        }
+    }
+    /// What the preview shows: the pages asked for, or those last asked for while the page
+    /// range can't be read, as the page setup lays them out.
+    fn preview_ask(&self) -> Option<print_preview::Ask> {
+        let setup = self.setup()?;
+        let what = match self.selection {
+            Some(layout) => What::Selection(layout),
+            None => match limarepdf_core::parse_page_range(self.range(), self.page_count) {
+                Ok(pages) => What::Pages(pages),
+                Err(_) => self.preview.ask()?.what.clone(),
+            },
+        };
+        Some(print_preview::Ask { what, setup })
     }
     /// The pages asked for, as a page range.
     pub fn range(&self) -> &str {
@@ -852,15 +994,30 @@ impl Print {
         }
     }
 }
-/// The Print dialog. [`Outcome::Apply`] is Print once [`Print::ready`], and Try again
-/// before.
+/// The width of the Print dialog's settings, and of the preview beside them.
+const PRINT_SETTINGS: f32 = 470.0;
+const PREVIEW_WIDTH: f32 = 330.0;
+
+/// The height of the preview under the settings, in a window too narrow for it beside them.
+const PREVIEW_UNDER: f32 = 300.0;
+
+/// The Print dialog. [`Outcome::Apply`] is Print once [`Print::ready`] and the printer's
+/// paper sizes are found ([`Print::setup`]), and Try again when the printers or the paper
+/// sizes couldn't be found. In a window wide enough the preview is beside the settings,
+/// otherwise under them.
 pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
     let title = match s.selection {
         Some(_) => "Print selected text",
         None => "Print",
     };
     let file = s.file.clone();
-    let (out, esc) = Shell::new(title).file(Some(&file)).show(ctx, |ui| {
+    let beside = ctx.content_rect().width() - 32.0 >= PRINT_SETTINGS + PREVIEW_WIDTH;
+    let width = match beside {
+        true => PRINT_SETTINGS + PREVIEW_WIDTH,
+        false => PRINT_SETTINGS,
+    };
+    let shell = Shell::new(title).file(Some(&file)).width(width);
+    let (out, esc) = shell.show(ctx, |ui| {
         let why = match &s.search {
             Search::Running(_) => {
                 content(ui, |ui| {
@@ -890,11 +1047,54 @@ pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
                 None => Outcome::Open,
             };
         }
-        let enter = content(ui, |ui| print_body(ui, s));
-        match footer(ui, None, &[Btn::primary("Print"), Btn::cancel()]) {
+        let ask = s.preview_ask();
+        s.preview.set(ask);
+        let waiting = s.setup().is_none() && s.papers_failed().is_none();
+        let enter = if beside {
+            let top = ui.max_rect().min.y;
+            let spacing = ui.spacing().item_spacing;
+            let row = ui.horizontal_top(|ui| {
+                // The columns side by side, each spaced as usual inside.
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let settings = ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = spacing;
+                    ui.set_width(PRINT_SETTINGS);
+                    content_below(ui, top, |ui| print_body(ui, s))
+                });
+                // As tall as the settings, below the title and above the buttons.
+                let height = settings.response.rect.height();
+                let at = insets(ui.ctx());
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = spacing;
+                    ui.add_space(f32::from(at.content));
+                    let size = egui::vec2(PREVIEW_WIDTH - f32::from(at.side), height);
+                    let size = size - egui::vec2(0.0, 2.0 * f32::from(at.content));
+                    s.preview.show(ui, size.max(egui::Vec2::ZERO), waiting);
+                });
+                settings.inner
+            });
+            row.inner
+        } else {
+            content(ui, |ui| {
+                let enter = print_body(ui, s);
+                ui.add_space(GAP);
+                let size = egui::vec2(ui.available_width(), PREVIEW_UNDER);
+                s.preview.show(ui, size, waiting);
+                enter
+            })
+        };
+        let can = s.setup().is_some();
+        let print = match s.papers_failed() {
+            Some(_) => Btn::primary("Try again"),
+            None if can => Btn::primary("Print"),
+            None => Btn::primary("Print")
+                .enabled(false)
+                .tip("Finding the printer's paper sizes…"),
+        };
+        match footer(ui, None, &[print, Btn::cancel()]) {
             Some(0) => Outcome::Apply,
             Some(_) => Outcome::Cancel,
-            None if enter => Outcome::Apply,
+            None if enter && can => Outcome::Apply,
             None => Outcome::Open,
         }
     });
@@ -973,6 +1173,7 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
         });
     }
     group(ui, "Copies and sides", |ui| copies_and_sides(ui, s));
+    group(ui, "Page setup", |ui| page_setup(ui, s));
     if let Some(layout) = &mut s.selection {
         layout_choice(ui, layout, &[Layout::Original, Layout::Plain]);
     }
@@ -1036,6 +1237,135 @@ fn copies_and_sides(ui: &mut Ui, s: &mut Print) {
         });
     };
     columns(ui, s, copies_width, need, copies, sides);
+}
+
+/// The ways the pages can go on the paper.
+const ORIENTATIONS: [(Orientation, &str); 3] = [
+    (Orientation::Automatic, "Automatic"),
+    (Orientation::Portrait, "Portrait"),
+    (Orientation::Landscape, "Landscape"),
+];
+
+/// A scale's name in the list.
+fn scale_name(s: Scale) -> &'static str {
+    match s {
+        Scale::ShrinkOversized => "Shrink oversized pages",
+        Scale::Fit => "Fit to printable area",
+        Scale::ActualSize => "Actual size",
+        Scale::Custom(_) => "Custom",
+    }
+}
+
+/// The width of the percentage beside Custom.
+const PERCENT: f32 = 76.0;
+
+/// The widest of `labels` in a list, with the list's padding and arrow.
+fn list_width(ui: &Ui, labels: impl IntoIterator<Item = &'static str>) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let widest = labels
+        .into_iter()
+        .map(|l| {
+            let g = ui.painter().layout_no_wrap(
+                l.to_string(),
+                font.clone(),
+                egui::Color32::PLACEHOLDER,
+            );
+            g.size().x
+        })
+        .fold(0.0, f32::max);
+    let sp = ui.spacing();
+    widest + 2.0 * sp.button_padding.x + sp.icon_width + sp.icon_spacing
+}
+
+/// Page setup: the paper, of the sizes the printer takes once they are found; Orientation
+/// beside Scale, as two columns when they fit, the percentage beside Custom.
+fn page_setup(ui: &mut Ui, s: &mut Print) {
+    let wide = ui.available_width();
+    if let Some(why) = s.papers_failed() {
+        ui.label("Paper size");
+        ui.add_space(2.0);
+        let why = format!("LimarePDF couldn't find the paper sizes this printer takes: {why}.");
+        ui.colored_label(ui.visuals().error_fg_color, why);
+    } else if let Some(labels) = s.paper_labels() {
+        let chosen = labels.get(s.paper).cloned().unwrap_or_default();
+        field(ui, "Paper size", |ui| {
+            egui::ComboBox::from_id_salt("paper")
+                .width(wide)
+                .truncate()
+                .selected_text(&chosen)
+                .show_ui(ui, |ui| {
+                    ui.set_max_width(wide);
+                    for (i, label) in labels.iter().enumerate() {
+                        ui.selectable_value(&mut s.paper, i, label);
+                    }
+                })
+                .response
+                .on_hover_text(chosen)
+        });
+    } else {
+        ui.label("Paper size");
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Finding the printer's paper sizes…");
+        });
+    }
+    ui.add_space(FIELD_GAP);
+    let orientation_width = list_width(ui, ORIENTATIONS.map(|(_, l)| l));
+    let scales = [
+        Scale::ShrinkOversized,
+        Scale::Fit,
+        Scale::ActualSize,
+        Scale::Custom(s.percent),
+    ];
+    let custom = matches!(s.scale, Scale::Custom(_));
+    let beside = match custom {
+        true => PERCENT + ui.spacing().item_spacing.x,
+        false => 0.0,
+    };
+    let need = list_width(ui, scales.map(scale_name)) + beside;
+    let orientation = |ui: &mut Ui, s: &mut Print, width: f32| {
+        let shown = ORIENTATIONS.iter().find(|(o, _)| *o == s.orientation);
+        field(ui, "Orientation", |ui| {
+            egui::ComboBox::from_id_salt("orientation")
+                .width(width)
+                .selected_text(shown.map(|(_, l)| *l).unwrap_or_default())
+                .show_ui(ui, |ui| {
+                    for (o, label) in ORIENTATIONS {
+                        ui.selectable_value(&mut s.orientation, o, label);
+                    }
+                })
+                .response
+        });
+    };
+    let scale = |ui: &mut Ui, s: &mut Print, width: f32| {
+        ui.label("Scale");
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            let list = egui::ComboBox::from_id_salt("scale")
+                .width(width - beside)
+                .selected_text(scale_name(s.scale))
+                .show_ui(ui, |ui| {
+                    for x in scales {
+                        ui.selectable_value(&mut s.scale, x, scale_name(x));
+                    }
+                })
+                .response;
+            set_name(&list, "Scale");
+            if let Scale::Custom(_) = s.scale {
+                ui.spacing_mut().interact_size.x = PERCENT;
+                let max = limarepdf_core::print::MAX_PERCENT;
+                let n = egui::DragValue::new(&mut s.percent)
+                    .range(1..=max)
+                    .suffix("%");
+                let tip = format!("1 to {max}% of each page's own size");
+                let n = ui.add(n).on_hover_text(tip);
+                set_name(&n, "Scale percentage");
+                s.scale = Scale::Custom(s.percent);
+            }
+        });
+    };
+    columns(ui, s, orientation_width, need, orientation, scale);
 }
 
 /// Save the selected text: choose the layout; the file dialog follows.
@@ -1573,7 +1903,7 @@ mod tests {
             ];
             PrintWin {
                 ctx,
-                s: Print::new(printers, "walrus.pdf".into()),
+                s: Print::with_papers(printers, "walrus.pdf".into()),
                 size: size.into(),
                 scale,
                 out: Outcome::Open,
@@ -1754,6 +2084,147 @@ mod tests {
         assert_eq!(w.s.sides, Sides::LongEdge);
         let tree = w.settled();
         assert!(named(&tree, "Both sides, flip on short edge").is_none());
+    }
+
+    /// ENH-14: Page setup under Copies and sides, its fields labelled above them: the
+    /// printer's paper sizes, then Orientation beside Scale where they fit; picking from
+    /// the lists sets them, and Custom shows its percentage beside Scale. The preview is
+    /// beside the settings in a wide window and under them in a narrow one, the sheet's
+    /// number under it.
+    #[test]
+    fn page_setup_and_the_preview_follow_the_mockup() {
+        for size in [(1200.0, 800.0), (400.0, 800.0)] {
+            let at = format!("{size:?}");
+            let mut w = PrintWin::new(size, 1.0);
+            let tree = w.settled();
+            let get = |label: &str| named(&tree, label).expect(label);
+            for f in ["Paper size", "Orientation", "Scale"] {
+                label_above(&tree, f).unwrap();
+            }
+            assert!(get("Paper size").top() > get("Print on").bottom(), "{at}");
+            let (o, scale) = (get("Orientation"), get("Scale"));
+            let beside = (o.top() - scale.top()).abs() < 1.0 && scale.left() > o.right();
+            if size.0 >= 800.0 {
+                assert!(beside, "{at}: {o:?} {scale:?}");
+            } else {
+                assert!(scale.top() > o.bottom(), "{at}: {o:?} {scale:?}");
+            }
+            assert!(named(&tree, "Scale percentage").is_none(), "{at}");
+            let prev = get("Previous sheet");
+            assert!(text(&tree, "1 of 1").is_some(), "{at}: the sheet's number");
+            if size.0 >= 800.0 {
+                let window = w.window();
+                assert!(window.contains_rect(prev), "{at}: {prev:?} in {window:?}");
+                assert!(prev.left() > get("Printer").right(), "{at}: not beside");
+            } else {
+                // Under the settings, scrolled to.
+                assert!(prev.top() > get("Scale").bottom(), "{at}: not under");
+            }
+            w.click("Paper size");
+            w.click("A4 (210 × 297 mm)");
+            assert_eq!(w.s.paper, 1, "{at}");
+            assert_eq!(w.s.setup().unwrap().paper.id, "iso_a4_210x297mm");
+            w.click("Orientation");
+            w.click("Landscape");
+            assert_eq!(w.s.orientation, Orientation::Landscape, "{at}");
+            w.click("Scale");
+            let tree = w.click("Custom");
+            assert_eq!(w.s.scale, Scale::Custom(100), "{at}");
+            let scale = named(&tree, "Scale").unwrap();
+            let n = named(&tree, "Scale percentage").expect("the percentage");
+            let window = w.window();
+            assert!((scale.center().y - n.center().y).abs() < 1.0, "{at}");
+            let fits = n.left() > scale.right() && window.contains_rect(n);
+            assert!(fits, "{at}: {scale:?} {n:?} in {window:?}");
+            w.s.percent = 40;
+            w.settled();
+            assert_eq!(w.s.scale, Scale::Custom(40), "{at}");
+        }
+    }
+
+    /// ENH-14: Print waits for the printer's paper sizes, greyed and saying so, Enter in the
+    /// page range doing nothing meanwhile; sizes that can't be found are said, with Try
+    /// again.
+    #[test]
+    fn print_waits_for_the_paper_sizes() {
+        let mut w = PrintWin::new((1200.0, 800.0), 1.0);
+        w.s.papers = Papers::Asking(7, "Office laser".into());
+        let tree = w.settled();
+        assert!(text(&tree, "Finding the printer's paper sizes…").is_some());
+        let greyed = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let (_, n) = (tree.nodes.iter())
+                .find(|(_, n)| n.label() == Some(name))
+                .expect(name);
+            n.is_disabled()
+        };
+        assert!(greyed(&tree, "Print"), "Print isn't greyed");
+        assert!(named(&tree, "Paper size").is_none());
+        w.click("Page range");
+        let enter = egui::Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        w.frame(vec![egui::Event::Text("1".into())]);
+        w.frame(vec![enter]);
+        assert!(w.out == Outcome::Open, "Enter printed without a paper");
+        let why = "the printing service didn't answer within 10 seconds";
+        w.s.papers_found(7, Err(why.into()), None);
+        let tree = w.settled();
+        let said = format!("LimarePDF couldn't find the paper sizes this printer takes: {why}.");
+        assert!(text(&tree, &said).is_some(), "the reason isn't said");
+        assert!(!greyed(&tree, "Try again"));
+        let p = named(&tree, "Try again").unwrap().center();
+        let press = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        w.frame(vec![egui::Event::PointerMoved(p), press(true)]);
+        w.frame(vec![press(false)]);
+        assert!(w.out == Outcome::Apply, "Try again did nothing");
+    }
+
+    /// ENH-14: the paper sizes asked for are the chosen printer's; an earlier search's come
+    /// too late and are left out; the paper last used with the printer is chosen, else its
+    /// default.
+    #[test]
+    fn the_paper_sizes_are_the_chosen_printers() {
+        let printers = vec![
+            Printer {
+                name: "Office laser".into(),
+                default: true,
+            },
+            Printer {
+                name: "Hall inkjet".into(),
+                default: false,
+            },
+        ];
+        let mut s = Print::with_papers(printers, "walrus.pdf".into());
+        let list = match &s.papers {
+            Papers::Found(_, list) => list.clone(),
+            p => panic!("{p:?}"),
+        };
+        assert_eq!(s.papers_wanted(), None);
+        s.printer = 1;
+        assert_eq!(s.papers_wanted().as_deref(), Some("Hall inkjet"));
+        assert!(s.setup().is_none(), "the other printer's paper");
+        s.papers = Papers::Asking(3, "Hall inkjet".into());
+        assert_eq!(s.papers_wanted(), None);
+        s.papers_found(2, Ok(PaperList::default()), None);
+        assert_eq!(s.papers, Papers::Asking(3, "Hall inkjet".into()));
+        s.papers_found(3, Ok(list.clone()), Some("iso_a4_210x297mm"));
+        assert_eq!(s.setup().unwrap().paper.id, "iso_a4_210x297mm");
+        // A paper the printer no longer takes: its default.
+        s.papers = Papers::Asking(4, "Hall inkjet".into());
+        s.papers_found(4, Ok(list), Some("na_legal_8.5x14in"));
+        assert_eq!(s.setup().unwrap().paper.id, "na_letter_8.5x11in");
+        // Not ready while the printers are looked for.
+        let s = Print::looking(9, "walrus.pdf".into());
+        assert_eq!(s.papers_wanted(), None);
     }
 
     /// A long printer name keeps Print inside a narrow screen, chosen and in the open list.

@@ -106,7 +106,9 @@ pub fn place(size: (f32, f32), setup: &PageSetup) -> Placed {
     let (sw, sh) = (w * scale, h * scale);
     let along = |paper: f32, low: f32, area: f32, len: f32| {
         if len <= area {
-            ((paper - len) / 2.0).clamp(low, low + area - len)
+            // Not `clamp`: rounding can put the highest start a hair below the lowest, for
+            // a page scaled to the area's own width or height.
+            ((paper - len) / 2.0).min(low + area - len).max(low)
         } else {
             low + (area - len) / 2.0
         }
@@ -391,6 +393,39 @@ mod tests {
         let p = place((500.0, 600.0), &s);
         assert!(!p.cut);
         assert!(close(p.rect, [56.0, 92.0, 556.0, 692.0]), "{p:?}");
+    }
+
+    /// A page scaled to the printable area can come out a hair larger or smaller than it
+    /// in floating point: placed all the same, inside the area. The margins the user's HP
+    /// reports over IPP, 423 hundredths of a millimetre, made clamping its start panic.
+    #[test]
+    fn a_page_filling_the_printable_area_is_placed_whatever_the_rounding() {
+        let hp = Some([423.0 / 2540.0 * 72.0; 4]);
+        let sizes = [
+            (612.0, 792.0),
+            (792.0, 612.0),
+            (595.28, 841.89),
+            (842.0, 1191.0),
+            (100.0, 100.0),
+            (588.02, 768.02),
+        ];
+        let m = 423.0 / 2540.0 * 72.0;
+        let orientations = [
+            Orientation::Automatic,
+            Orientation::Portrait,
+            Orientation::Landscape,
+        ];
+        for orientation in orientations {
+            for scale in [Scale::ShrinkOversized, Scale::Fit, Scale::ActualSize] {
+                for size in sizes {
+                    let p = place(size, &setup(letter(hp), orientation, scale));
+                    let [x0, y0, x1, y1] = p.rect;
+                    let inside = x0 >= m - 0.01 && y0 >= m - 0.01;
+                    let inside = inside && x1 <= 612.0 - m + 0.01 && y1 <= 792.0 - m + 0.01;
+                    assert!(inside || p.cut, "{size:?} {orientation:?} {scale:?}: {p:?}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -22,6 +22,7 @@ mod markup;
 mod page_text;
 mod panels;
 mod present;
+mod print_preview;
 mod recent;
 mod recovery;
 mod regions;

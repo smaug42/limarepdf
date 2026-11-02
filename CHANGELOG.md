@@ -96,15 +96,28 @@
   printer's), `--orientation auto|portrait|landscape` (auto, the default, turns a page wider than it is tall) and
   `--scale shrink|fit|actual` or a percentage from 1 to 400 (`--scale 150%`). At a scale where pages reach past
   the printable area, it warns, naming them, since their edges won't print.
+- **Page setup** and a **preview** in Print. Under Copies and sides, **Paper size** lists the sizes the printer
+  takes, asked of the printing service when the printer is chosen (Print is greyed until they come, and if they
+  can't be found the dialog says why, with Try again); **Orientation** is Automatic, Portrait or Landscape; and
+  **Scale** is Shrink oversized pages (the usual choice), Fit to printable area, Actual size or Custom, with a
+  percentage from 1 to 400% beside it. Beside the settings (under them in a narrow window) the preview shows each
+  sheet as it will print, drawn by the same code that lays out the printout, a sheet with its page turned onto it
+  held sideways so the page reads upright, with ‹ and › and "1 of 12" under it; it follows the page range, the
+  page setup and, for selected text, the layout. A line under it says when the printer doesn't say how near the
+  edges it can print, and which pages reach past the printable area at the scale chosen. The paper for each
+  printer, the orientation and the scale are remembered when you print, as Acrobat keeps the last scaling.
+- **Print preview** in the ☰ menu (no longer marked Planned) and the command search opens Print with its
+  preview, as in Word: Ctrl+F2 (⌘F2 on a Mac), and on Linux also Ctrl+Shift+O, as in LibreOffice, since KDE
+  keeps Ctrl+F2 for its second desktop.
 
 ### Changed
 
-- LimarePDF lays out every printout itself, the same way on every system: each page goes on a sheet of the
-  printer's paper (its default, in the app for now) at its own size, centred, and is shrunk to the printable area
-  when it is larger, as Acrobat does by default. On Linux and macOS a page smaller than the paper now prints at
-  its own size, where it was enlarged to fill the sheet, and a page wider than it is tall is turned anticlockwise
-  onto the sheet, its top at the sheet's left, where it was turned clockwise; Windows printed them this way
-  already. Comments and form fields meant for printing are drawn into what is printed and the others left out;
+- LimarePDF lays out every printout itself, the same way on every system: each page goes on a sheet of the paper
+  chosen (the printer's default unless you choose another) at its own size, centred, and is shrunk to the
+  printable area when it is larger, as Acrobat does by default. On Linux and macOS a page smaller than the paper
+  now prints at its own size, where it was enlarged to fill the sheet, and a page wider than it is tall is turned
+  anticlockwise onto the sheet, its top at the sheet's left, where it was turned clockwise; Windows printed them
+  this way already. Comments and form fields meant for printing are drawn into what is printed and the others left out;
   pop-up notes aren't printed. When the printer doesn't say how near the edges it can print, a quarter of an inch
   is kept clear. Print as image (`--as-image`) sends pictures of the laid-out sheets.
 - Underlines and strike-throughs that other apps drew under or through a line's words (Word, LibreOffice, web
@@ -167,6 +180,8 @@
 - A form field or text box whose text is centred or right-aligned showed it from the left while you typed in it,
   and it jumped across when kept. Its lines now show where they are written as you type: a multi-line field's and
   a text box's each placed as the PDF places it, a single-line field's text centred or at the right.
+- A dialog button's tooltip didn't show while the button was greyed (Trusted certificates' Add certificate file…,
+  say). It shows now, greyed or not.
 
 ## [0.12.0] - 2026-10-31
 

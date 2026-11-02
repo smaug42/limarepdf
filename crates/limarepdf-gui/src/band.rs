@@ -260,20 +260,12 @@ const YOUR_AI: Planned = Planned {
     what: "Connect an AI of your own to ask about the document. Off unless you connect it.",
 };
 /// The planned features in the File menu.
-pub const FILE_PLANNED: [&Planned; 2] = [
-    &Planned {
-        label: "Print preview",
-        icon: icon::PRINTER,
-        item: "ENH-14",
-        what: "See the pages as they will print, with paper size, orientation and scaling.",
-    },
-    &Planned {
-        label: "Reduce file size",
-        icon: icon::FILE_ARROW_UP,
-        item: "ENH-19",
-        what: "Make the file smaller, with a preview of the result.",
-    },
-];
+pub const FILE_PLANNED: [&Planned; 1] = [&Planned {
+    label: "Reduce file size",
+    icon: icon::FILE_ARROW_UP,
+    item: "ENH-19",
+    what: "Make the file smaller, with a preview of the result.",
+}];
 
 static EDIT: &[Group] = &[
     group(
@@ -1185,9 +1177,11 @@ mod tests {
     #[test]
     fn planned_features_name_their_plan_items() {
         let all = all_planned();
-        assert!(all.len() >= 8);
-        // Built: Underline (NEW-07, batch 46's 4b) and Align (NEW-08, its stage 5).
-        assert!(!all.iter().any(|p| p.item == "NEW-07" || p.item == "NEW-08"));
+        assert!(all.len() >= 7);
+        // Built: Underline (NEW-07, batch 46's 4b), Align (NEW-08, its stage 5) and Print
+        // preview (ENH-14, batch 30's stage 3).
+        let built = ["NEW-07", "NEW-08", "ENH-14"];
+        assert!(!all.iter().any(|p| built.contains(&p.item)));
         for p in &all {
             let id = p.item;
             let known = ["NEW-", "ENH-", "PF-"].iter().any(|k| id.starts_with(k));

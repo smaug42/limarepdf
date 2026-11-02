@@ -31,6 +31,8 @@ pub enum Act {
     ExportImages,
     ExportText,
     Print,
+    /// Print, opened as Word's Print preview opens it: the same dialog, with its preview.
+    PrintPreview,
     CloseTab,
     /// Bring the open document after the one in front to the front (the first after the
     /// last), or the one before it, as Ctrl+Tab goes through a web browser's tabs.
@@ -272,6 +274,7 @@ impl Act {
             | Act::Reload
             | Act::ExportText
             | Act::Print
+            | Act::PrintPreview
             | Act::PrintSelection
             | Act::SaveSelection
             | Act::Bold
@@ -726,6 +729,14 @@ const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
 /// Word.
 pub const STRIKE_KEY: KeyboardShortcut = k(MAC_CS, Key::X);
 
+/// Print preview's keys: Word's Ctrl+F2 (⌘F2 on a Mac), and on Linux LibreOffice's
+/// Ctrl+Shift+O first, as KDE takes Ctrl+F2 for its second desktop.
+const PREVIEW_KEYS: &[KeyboardShortcut] = if cfg!(target_os = "linux") {
+    &[k(CS, Key::O), k(C, Key::F2)]
+} else {
+    &[k(C, Key::F2)]
+};
+
 /// A command with the usual settings: listed in the menu and the palette, no
 /// shortcut, icon, hint or separator. Fields are overridden with struct update syntax.
 const BASE: Action = Action {
@@ -811,6 +822,16 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::PRINTER,
         keys: &[k(C, Key::P)],
         enabled: idle,
+        ..BASE
+    },
+    Action {
+        act: Act::PrintPreview,
+        group: Group::File,
+        label: "Print preview",
+        icon: icon::PRINTER,
+        keys: PREVIEW_KEYS,
+        enabled: idle,
+        hint: "See each sheet as it will print, with the paper size, orientation and scale.",
         ..BASE
     },
     Action {

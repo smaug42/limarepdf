@@ -1185,7 +1185,7 @@ paper's printable area held portrait from an information context (`CreateICW`, `
 at most 3 seconds in all. `paper::listed` keeps each label once, the default's over others of its label.
 
 Every printout is laid out by LimarePDF itself (ENH-14's stage 2), on every platform, so what reaches the printer is
-what the placements say, and the preview to come draws the same sheets. The design pass found the platforms
+what the placements say, and Print's preview draws the same sheets. The design pass found the platforms
 printing differently: CUPS enlarged a page smaller than the paper to fill the printable area and turned landscape
 pages clockwise, where Windows (the old `print::place`, now gone) printed them at their size and anticlockwise; and
 CUPS shrinks a sheet exactly the paper's size into the printable area unless sent `print-scaling=none`. The
@@ -1195,9 +1195,10 @@ ActualSize or Custom from 1 to `MAX_PERCENT`, 400) give a `Placed`: the sheet's 
 swapped), whether the page is turned a quarter turn anticlockwise (Automatic: when its shape is the other way round
 from the sheet's, a square page never; Portrait and Landscape: as the sheet is held), its scale against the
 printable area (the paper less its margins, or `ASSUMED_MARGIN`, a quarter of an inch a side as GTK assumes, when
-the printer doesn't say: `Paper::margins_or_assumed`), its box on the sheet (centred on the sheet and clamped into
-the printable area; one larger than the area centred on it, losing as much on each side) and `cut` when part of it
-falls outside the area. `Pdf::print_sheets(pages, &setup)` makes the sheets on a copy: `extract`, unencrypted;
+the printer doesn't say: `Paper::margins_or_assumed`), its box on the sheet (centred on the sheet and kept within
+the printable area by `min` then `max`, not `f32::clamp`, whose bounds rounding can cross for a page scaled to the
+area's width or height, BUG-49; one larger than the area centred on it, losing as much on each side) and `cut`
+when part of it falls outside the area. `Pdf::print_sheets(pages, &setup)` makes the sheets on a copy: `extract`, unencrypted;
 `flatten_form_for_print` (Print-flagged widgets drawn, the others and the form removed); the annotations without a
 drawing given LimarePDF's (`missing_appearances`, `draw_annotations`); then for each page `flatten_page` with
 `print_annot` (an annotation with the Print flag drawn into the content, pop-ups and the rest dropped) and
@@ -1221,6 +1222,52 @@ each sheet at `print::sheet_scale` (the printer's resolution, at most 600 dpi an
 `print::printable_part` finds the part of the picture on the printable area, the sheet's top-left on the paper's,
 pixels straddling its edges kept whole, and where it goes there; `print::to_bgra` turns that part into BGRA for
 `StretchDIBits`. The command line warns of the pages `place` says are `cut` at the scale chosen.
+
+Print's page setup and preview (ENH-14's stage 3). `dialogs.rs`'s `Print` holds `papers: Papers` for the printer
+chosen (`Unasked`, `Asking(search, printer)`, `Found(printer, PaperList)`, `Failed(printer, why)`), the paper
+(an index into the list), `orientation`, `scale` and `percent` (Custom's, kept while another scale is chosen; the
+list's Custom is `Scale::Custom(percent)`, set back each frame from the percentage box). `Print::papers_wanted`
+names the printer chosen once the printers are found whose papers aren't asked for, found or failed;
+`App::find_papers` (`ask_papers`, a free function so it can run while the dialog is borrowed) asks `print::papers`
+on a thread, as soon as `Loaded::Printers` fills the dialog in, and from `App::dialogs`, before the dialogs are
+drawn, when the printer changes or Try again sets `Unasked`; `Loaded::Papers` fills in the Print dialog open or
+waiting whose search number it is, and `Print::papers_found` chooses the paper last printed on with that printer
+(`Settings::print_papers`, by id) when it is listed, else the printer's default, else the first. `Print::setup`
+gives the `PageSetup` only for papers found for the printer chosen: until then Print is greyed with its tooltip
+("Finding the printer's paper sizes…"; `footer` shows a `Btn`'s tip with `on_disabled_hover_text` too, which egui's
+`on_hover_text` doesn't on a disabled widget), Enter in the page range doesn't print, and a failure says why with
+Try again in Print's place. On Print, `PrintOptions` carries `paper`, `orientation` and `scale` from the setup,
+and the paper (for that printer), orientation and scale are kept in `Settings` and saved (`print_paper = <id>
+<printer>`, the id having no spaces and the printer's name the rest of the line; `print_orientation =
+automatic|portrait|landscape`; `print_scale = shrink|fit|actual|<percent>`, clamped to 1 to `MAX_PERCENT`), as
+Acrobat keeps the last scaling. Print opens with the orientation and scale kept. `Act::PrintPreview` (File,
+`uses_document`) opens the same dialog; its keys are `actions::PREVIEW_KEYS`, Word's Ctrl+F2 (⌘F2), with
+LibreOffice's Ctrl+Shift+O first on Linux, as KDE takes Ctrl+F2 for its second desktop. With room for both
+(`PRINT_SETTINGS` 470 and `PREVIEW_WIDTH` 330 within the window less 32 points), the settings and the preview are
+columns under the title, the settings' content measured from the window's top (`content_below`, so a short
+window still scrolls them with the buttons in view) and the preview as tall as the settings; the row's item
+spacing is set to nothing and put back inside each column, as the columns' own controls need it. Otherwise the
+preview is under the settings in the scrolling content, `PREVIEW_UNDER` (300) tall.
+
+The preview is `print_preview.rs`. Opening Print spawns a `Preview` with a `Source`: a copy of the document
+(`Source::Pages(Box<Pdf>)`, cloned on the window's thread as a print job's copy is), or for selected text a
+`Make` closure holding the copy and both layouts' `Excerpt`s, which makes the selection's document on the
+preview's thread the first time a layout is wanted. Each frame `Print::preview_ask` gives an `Ask`: what is
+printed (`What::Pages` from the page range, the last pages kept while the range can't be read; `What::Selection`
+in its layout) and the `PageSetup`. A different `Ask` starts a new generation: the drawings and the queued jobs are
+dropped, and the thread skips jobs of earlier generations; a selection whose document isn't made yet sets
+`Queue::make`, so it is made and its sheets counted before any is asked for. The thread sends each document's
+page sizes first (`Came::Sizes`), which give the sheet count for a selection, whether each page is turned
+(`place(..).turned`, so the sheet is shown held sideways, the paper's sides swapped) and the notes: the margins
+unknown, and the pages `place` says are `cut`, named with `format_page_range` (sheets for a selection). A sheet is
+drawn by `print_sheets(&[page], &setup)`, `to_bytes`, `render::load` and `Renderer::render` at a step of a
+twentieth of a pixel a point (rounded up from what the space shown needs), the picture turned a quarter turn
+clockwise when the page is turned onto it, so it reads upright. Jobs are taken newest first: the neighbours are
+asked for, then the sheet shown, so it is drawn first; sheets more than two from the one shown, and drawings at
+another step once the step shown has come, are dropped (a drawing at another step stands in meanwhile). Drawing
+failures show on the sheet. ‹ and › ("Previous sheet", "Next sheet") page through; one greyed as it is clicked
+hands the keyboard to the other. Dropping the `Preview` (the dialog closed) stops its thread after the sheet it is
+drawing.
 
 Closing and quitting (ENH-01) ask `Dialog::ConfirmClose(asked, quitting)`, Save (Save as… for a tab with no file) /
 Discard / Cancel; quitting with several unsaved documents asks `Dialog::ConfirmQuit` first, Review… / Discard all /

@@ -628,6 +628,21 @@ What they show:
   the colour around the text stands in. It isn't done again as the text is typed, only after a zoom or a change
   of page colours.
 
+## Print's preview
+
+Measured on 2 November 2026 for ENH-14's stage 3: the release build under Xvfb at 1000 × 660 points with the
+timing log (`LIMAREPDF_TIMING`), and stand-ins for the printing service (`lpstat`, and an IPP answer listing three
+paper sizes with their margins; nothing sent). Opening Print now also copies the document for the preview on the
+window's thread, as a print job's copy is made there. Ctrl+P to the dialog's frame, twice each:
+
+| Document | Ctrl+P, first and second time |
+| --- | --- |
+| The three-page report | 3.0 / 1.3 ms |
+| Batch 41's made-up 10,000-page `big.pdf` | 26.7 / 16.6 ms |
+
+Both are within REL-07's accepted 200 ms for the Print dialog (the build plan's 6.3). The sheets are made and
+drawn on the preview's own thread, a sheet at a time.
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted

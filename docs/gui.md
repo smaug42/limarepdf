@@ -18,9 +18,9 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
   **Forms and sign**, **Protect** and **View**; at the right **Print**, and a small arrow that makes the commands
-  compact. The File menu has File's commands (Open, Open recent, Save, Save As, Reload, Export, Print, Close tab,
-  recovery copies, Quit) and then one submenu for each kind of command: Edit, View, Tools, Pages, Document and
-  Help, so every command is in it.
+  compact. The File menu has File's commands (Open, Open recent, Save, Save As, Reload, Export, Print, Print
+  preview, Close tab, recovery copies, Quit) and then one submenu for each kind of command: Edit, View, Tools,
+  Pages, Document and Help, so every command is in it.
 - **The command band**, under the names: the buttons of the name you chose, in groups (see
   [The command band](#the-command-band)).
 - **Bottom:** what is selected or the tool in use (**Editing one line** while you edit a line on the page,
@@ -101,7 +101,7 @@ Click in a form field first.", then what it does.
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
 Link and Blank document in Insert; Spelling and Export comments in Review; Create fields in Forms and sign; Your
-AI in View; Print preview and Reduce file size in the File menu. They do nothing, and Tab passes them by. Turn
+AI in View; Reduce file size in the File menu. They do nothing, and Tab passes them by. Turn
 off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is remembered.
 
 **Compact commands.** The small arrow at the right of the commands row (or View > Show > Compact commands) puts the
@@ -278,7 +278,8 @@ wide, and in a short one its content scrolls while its buttons stay in view. Ver
 file's under the title, and a printer's in Print (shown whole on hover and in the list of printers). Every dialog
 has the same look: text at 14 points, settings in headed groups, labels above the fields, fields, lists and buttons
 outlined, and radio buttons and checkboxes outlined on the dialog's background. Two short fields share a row when
-there is room (Copies and Print on, a signature's Reason and Location) and go one under the other when not. Lists
+there is room (Copies and Print on, Orientation and Scale, a signature's Reason and Location) and go one under the
+other when not; Print's preview is beside its settings when there is room and under them when not. Lists
 of documents or certificates are an outlined box with each row's buttons on its right (under it in a narrow
 window); facts to read, such as a certificate's, have their names in a column on the left.
 
@@ -491,6 +492,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+W | Close the tab |
 | Ctrl+Tab, Ctrl+Shift+Tab (or Ctrl+F6, Ctrl+Shift+F6) | Next, previous open document, from the last round to the first (Ctrl on a Mac too) |
 | Ctrl+P | Print |
+| Ctrl+F2 (on Linux also Ctrl+Shift+O, as in LibreOffice) | Print preview: Print, with its preview ([Printing](export-and-printing.md#the-preview)) |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) | Undo, redo |
 | Ctrl+F | Find: Search results opens with the keyboard in its box; type, and the matches come once you pause |
 | Ctrl+H | Replace: Search results opens with Replace with, Replace and Replace all under its search box (Ctrl on a Mac too) |

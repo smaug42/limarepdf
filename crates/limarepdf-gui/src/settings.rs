@@ -13,6 +13,7 @@ use crate::signing::SignKit;
 use anyhow::Context as _;
 use eframe::egui::ThemePreference;
 use limarepdf_core::page_colours::PageColours;
+use limarepdf_core::print::{Orientation, Scale, MAX_PERCENT};
 pub use limarepdf_core::settings_dir;
 use limarepdf_core::{OpenLayout, StampColor};
 use std::collections::BTreeMap;
@@ -236,6 +237,12 @@ pub struct Settings {
     pub snap: bool,
     /// The zoom Organise shows the pages at, as cards (NEW-14).
     pub organise_zoom: f32,
+    /// The paper last printed on with each printer, by the printer's name: the paper's id
+    /// (ENH-14).
+    pub print_papers: BTreeMap<String, String>,
+    /// The orientation and scale last printed with.
+    pub print_orientation: Orientation,
+    pub print_scale: Scale,
     pub accent: Accent,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
@@ -308,6 +315,9 @@ impl Settings {
             paragraphs: false,
             snap: true,
             organise_zoom: ORGANISE_ZOOM,
+            print_papers: BTreeMap::new(),
+            print_orientation: Orientation::Automatic,
+            print_scale: Scale::ShrinkOversized,
             accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
             window_maximized: false,
@@ -389,6 +399,31 @@ impl Settings {
                         let zoom = percent / 100.0;
                         s.organise_zoom = zoom.clamp(ORGANISE_MIN, ORGANISE_MAX);
                     }
+                }
+                "print_paper" => {
+                    if let Some((paper, printer)) = value.split_once(' ') {
+                        let printer = printer.trim();
+                        if !paper.is_empty() && !printer.is_empty() {
+                            s.print_papers.insert(printer.into(), paper.into());
+                        }
+                    }
+                }
+                "print_orientation" => {
+                    s.print_orientation = match value {
+                        "portrait" => Orientation::Portrait,
+                        "landscape" => Orientation::Landscape,
+                        _ => Orientation::Automatic,
+                    };
+                }
+                "print_scale" => {
+                    s.print_scale = match value {
+                        "fit" => Scale::Fit,
+                        "actual" => Scale::ActualSize,
+                        v => match v.parse::<u16>() {
+                            Ok(p) => Scale::Custom(p.clamp(1, MAX_PERCENT)),
+                            Err(_) => Scale::ShrinkOversized,
+                        },
+                    };
                 }
                 "accent_colour" => {
                     s.accent = match value {
@@ -542,6 +577,25 @@ impl Settings {
         text += &format!("text_editing = {editing}\n");
         text += &format!("snap_to_objects = {}\n", self.snap);
         text += &format!("organise_size = {:.0}\n", self.organise_zoom * 100.0);
+        let orientation = match self.print_orientation {
+            Orientation::Automatic => "automatic",
+            Orientation::Portrait => "portrait",
+            Orientation::Landscape => "landscape",
+        };
+        let scale = match self.print_scale {
+            Scale::ShrinkOversized => "shrink".to_string(),
+            Scale::Fit => "fit".to_string(),
+            Scale::ActualSize => "actual".to_string(),
+            Scale::Custom(p) => p.to_string(),
+        };
+        text += &format!("print_orientation = {orientation}\nprint_scale = {scale}\n");
+        for (printer, paper) in &self.print_papers {
+            // One line: the paper's id has no spaces, the printer's name may.
+            let printer = printer.lines().next().unwrap_or("").trim();
+            if !paper.contains(char::is_whitespace) && !printer.is_empty() {
+                text += &format!("print_paper = {paper} {printer}\n");
+            }
+        }
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
             self.window[0], self.window[1], self.window_maximized
@@ -790,6 +844,45 @@ mod tests {
         std::fs::write(&f, "organise_size = walrus\n").unwrap();
         let s = Settings::from_file(Some(f));
         assert_eq!(s.organise_zoom, ORGANISE_ZOOM);
+    }
+
+    /// ENH-14: the paper last printed on with each printer, a name with spaces too, the
+    /// orientation and the scale are remembered; a custom scale out of range is brought into
+    /// it, and anything unreadable is the default.
+    #[test]
+    fn print_choices_are_remembered() {
+        let f = file("print");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.print_papers.is_empty());
+        assert_eq!(s.print_orientation, Orientation::Automatic);
+        assert_eq!(s.print_scale, Scale::ShrinkOversized);
+        let papers = &mut s.print_papers;
+        papers.insert("Office laser".into(), "iso_a4_210x297mm".into());
+        papers.insert("Hall".into(), "na_legal_8.5x14in".into());
+        s.print_orientation = Orientation::Landscape;
+        s.print_scale = Scale::Custom(65);
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.print_papers["Office laser"], "iso_a4_210x297mm");
+        assert_eq!(s.print_papers["Hall"], "na_legal_8.5x14in");
+        assert_eq!(s.print_orientation, Orientation::Landscape);
+        assert_eq!(s.print_scale, Scale::Custom(65));
+        for (value, scale) in [
+            ("fit", Scale::Fit),
+            ("actual", Scale::ActualSize),
+            ("shrink", Scale::ShrinkOversized),
+            ("900", Scale::Custom(MAX_PERCENT)),
+            ("0", Scale::Custom(1)),
+            ("walrus", Scale::ShrinkOversized),
+        ] {
+            std::fs::write(&f, format!("print_scale = {value}\n")).unwrap();
+            let s = Settings::from_file(Some(f.clone()));
+            assert_eq!(s.print_scale, scale, "{value}");
+        }
+        std::fs::write(&f, "print_orientation = sideways\nprint_paper = A4\n").unwrap();
+        let s = Settings::from_file(Some(f));
+        assert_eq!(s.print_orientation, Orientation::Automatic);
+        assert!(s.print_papers.is_empty());
     }
 
     #[test]
