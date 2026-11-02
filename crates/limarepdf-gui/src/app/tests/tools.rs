@@ -149,10 +149,18 @@ fn line_at(tree: &egui::accesskit::TreeUpdate, s: &str) -> Option<(String, f64)>
 
 /// A greyed command's tooltip says why on a line of its own, marked as not available now,
 /// between its name and what it does, so the reason isn't lost among them: Justify, hovered
-/// while new text is typed.
+/// while new text is typed. Its key is named as the system names it (CI's finding on macOS:
+/// "⌘J" there).
 #[test]
 fn a_greyed_commands_tooltip_says_why_on_its_own_line() {
+    for os in KEY_STYLES {
+        greyed_tooltip_on(os);
+    }
+}
+
+fn greyed_tooltip_on(os: egui::os::OperatingSystem) {
     let (ctx, _) = new_app();
+    ctx.set_os(os);
     let ty = Typist::new(&ctx);
     let mut app = app_with(&ctx, 1);
     app.act(&ctx, Act::Tool(Tool::Text));
@@ -170,7 +178,9 @@ fn a_greyed_commands_tooltip_says_why_on_its_own_line() {
     let tree = ty.pause(&mut app);
     let why = "Not available now. New text's lines end at Enter: there's nothing to justify.";
     let (name, top) = line_at(&tree, "Justify (").expect("no tooltip");
-    assert_eq!(name, "Justify (Ctrl+J)");
+    let justify = actions::get(Act::AlignText(editor::TextAlign::Justified));
+    let key = ctx.format_shortcut(&justify.keys[0]);
+    assert_eq!(name, format!("Justify ({key})"), "{os:?}");
     let (reason, middle) = line_at(&tree, "Not available now.").expect("no reason");
     assert_eq!(reason, why);
     let (_, bottom) = line_at(&tree, "Spread the paragraph's lines").expect("no hint");

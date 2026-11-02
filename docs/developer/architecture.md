@@ -1727,19 +1727,27 @@ form XObject, and per inline image.
   user's finding in batch 49's stage 1): a PDF keeps no paragraph's edges, so a centred paragraph read again took
   its widest line's extent as its frame, and each realignment, kept and read again, moved it on (a justified
   72–512 frame went 87–500 centred, then 87–504, 95–504...); a widened one narrowed back. After a write whose
-  edges or alignment differ from the frame read, or whose frame was itself kept (`Paragraph::kept`, so the record
-  follows its lines), `keep_set_frame` records `[top bottom left right indent]` (first and last baselines, the
-  frame's edges, `frame_in`'s indent) in the page's `/PieceInfo /LimarePDF /Private /Frames` (ISO 32000's
-  page-piece dictionary; other apps' entries kept; its `/LastModified` and the page's, as the standard asks),
-  replacing records of lines overlapping it before or now, at most 500 a page; nothing is written for an edit in
-  the frame read, so plain typing adds nothing. `Pdf::paragraph` takes a record's edges and indent
+  edges or alignment differ from the frame read, whose frame was itself kept (`Paragraph::kept`, so the record
+  follows its lines), or that writes more than one paragraph (BUG-47: Enter typed, U+2029 before a set line's
+  first character), `keep_set_frame` records `[top bottom left right indent spacing]` for each paragraph written
+  (its first and last baselines, the frame's edges, `frame_in`'s indent, which Enter's paragraphs take too, and
+  `ParagraphSetting::leading`, the spacing the lines were set at) in the page's `/PieceInfo /LimarePDF /Private
+  /Frames` (ISO 32000's page-piece dictionary; other apps' entries kept; its `/LastModified` and the page's, as
+  the standard asks), replacing records of lines overlapping the edit's before or now (`keep_frames`, all of one
+  edit's together), at most 500 a page; nothing is written for an edit of one paragraph in the frame read, so
+  plain typing and Shift+Enter add nothing. A record of five numbers (none written since BUG-47) reads with no
+  spacing. `Pdf::paragraph` takes a record's edges and indent, and its spacing where the paragraph has one line
   (`kept_for`: first and last baselines within 0.5 points, every line within its edges to its size, a hanging
   first line its indent further) and marks it kept, and `frame_in` then keeps the indent whatever the alignment
   read. `Pdf::page_blocks_by` reads the paragraphs recorded on its page as one block each (`regroup`): where
-  detection splits their lines (a centred paragraph's shorter lines read as paragraph ends) or joins a
-  neighbour's line to them, the lines between a record's first and last baselines within its edges become a
-  confident block in its frame, aligned as they sit there (`frame_of`: justified, left, right or centred within
-  0.15 of a size or a point, else the alignment read), the blocks they came from keeping the rest, in doubt.
+  detection splits their lines (a centred paragraph's shorter lines read as paragraph ends), joins a
+  neighbour's line to them, or joins the one-line paragraphs Enter made into one narrow block, the lines between
+  a record's first and last baselines within its edges become a confident block in its frame, aligned as they
+  sit there (`frame_of`: justified, left, right or centred within 0.15 of a size or a point, else the alignment
+  read; spacing the lines' median gap, the record's for one line), the blocks they came from keeping the rest,
+  in doubt; a block that is a record's lines already gets that frame and is confident too, so a line LimarePDF
+  wrote as a paragraph of its own isn't "on its own" (the app's `paragraph::refused` refuses a one-line block
+  only when it isn't confident).
   Lines moved by other means stop matching and the frame is read from them again. Undo restores the page's
   dictionary with the content; Remove hidden data's private data drops `PieceInfo` and `LastModified`
   everywhere; redaction drops a redacted page's `PieceInfo`. The finding's other causes, found by realigning 406

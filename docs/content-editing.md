@@ -102,12 +102,14 @@ While you type:
 - To align the paragraph, use **Edit > Alignment** in the band or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J, as in
   Word ([Align text](#align-text)): the lines move across between the paragraph's edges at once, keeping their
   words, and the editing stays open. Ctrl+Z inside takes the change back.
-- Once you move a paragraph's edges or change its alignment, LimarePDF keeps a small note of its edges and indent
-  in the file (in the page's private data, which other apps don't show), so the paragraph opens again with the
-  same edges, after saving too. Without it, a centred paragraph would open narrower, as its lines no longer
-  reach its edges. If another app moves the paragraph's lines, its edges are worked out from the lines again.
+- Once you move a paragraph's edges, change its alignment or split it with Enter, LimarePDF keeps a small note of
+  its edges, indent and line spacing in the file (in the page's private data, which other apps don't show), so
+  the paragraph opens again with the same edges, after saving too. Without it, a centred paragraph would open
+  narrower, as its lines no longer reach its edges. If another app moves the paragraph's lines, its edges are
+  worked out from the lines again.
 - **Enter** starts a new paragraph within the frame, with the first line's indent if it has one; **Shift+Enter**
-  starts a new line.
+  starts a new line. As in Word, each new paragraph keeps the frame: opened again, even with a single line, it
+  is a paragraph between the same edges, with the same line spacing, and can be aligned there.
 - Each word keeps its own style, and letters keep their font, as in a line (see
   [Edit a line of text](#edit-a-line-of-text)). Ctrl+B, Ctrl+I, Ctrl+U, **Edit > Font**, the floating toolbar and
   the right-click menu act on what is selected in the paragraph. The inspector shows its font and size, the PDF's

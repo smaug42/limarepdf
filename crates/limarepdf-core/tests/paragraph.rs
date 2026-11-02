@@ -1558,10 +1558,15 @@ fn a_paragraph_on_a_turned_page_is_written_where_it_shows() {
 /// `TEXT` and `MORE` justified to 440 points by word spacing, every line but the last, the
 /// first indented 18 points.
 fn indented_justified() -> Pdf {
+    indented_justified_at(13.2)
+}
+
+/// [`indented_justified`] with its lines `leading` points apart.
+fn indented_justified_at(leading: f32) -> Pdf {
     let lines = wrap(&format!("{TEXT} {MORE}"), 422.0, 11.0);
     let mut content = String::new();
     for (k, l) in lines.iter().enumerate() {
-        let y = 700.0 - 13.2 * k as f32;
+        let y = 700.0 - leading * k as f32;
         let x = if k == 0 { 90.0 } else { 72.0 };
         let gaps = l.matches(' ').count() as f32;
         let tw = match k + 1 < lines.len() {
@@ -2274,6 +2279,68 @@ fn a_kept_frame_is_written_only_when_set_and_left_unused_once_the_lines_move() {
     let mut p = realigned(indented_justified(), Align::Centre).0;
     p.remove_hidden(&[Hidden::PrivateData]).unwrap();
     assert_eq!(frames_kept(&p), (false, false));
+}
+
+/// [`indented_justified`] with its lines 16 points apart: wider than single spacing (13.2).
+fn spaced_out_page() -> Pdf {
+    indented_justified_at(16.0)
+}
+
+/// Page 0's block that reads from `start`, read as a paragraph.
+fn paragraph_from(p: &Pdf, start: &str) -> Paragraph {
+    let blocks = p.page_blocks(0).unwrap();
+    let b = block_from(p, &blocks, start);
+    p.paragraph(0, b, &p.document_words()).unwrap()
+}
+
+/// BUG-47, the user's finding on NEW-15's stage 3: lines typed after Enter in a paragraph,
+/// kept, were each read again as a line on its own, outside the paragraph's frame, and
+/// couldn't be aligned. Each paragraph an edit writes keeps the frame: read again, each is a
+/// paragraph of its own, confident, between the frame's edges, with its first line's indent
+/// and its line spacing; a one-line one typed into wraps at that spacing, and centred sits
+/// between the frame's edges, still a paragraph of its own. A line broken with Shift+Enter
+/// is typed within one paragraph, and adds nothing to the page.
+#[test]
+fn paragraphs_split_with_enter_each_keep_the_frame() {
+    let f0 = only_paragraph(&spaced_out_page()).frame;
+    let read = (f0.indent - 18.0).abs() < 0.05 && (f0.spacing - 16.0).abs() < 0.05;
+    assert!(read, "{f0:?}");
+    let split =
+        |para: &Paragraph| format!("{}\u{2029}Gulls cried.\u{2029}Boats came in.", para.text);
+    let (mut p, _) = edited_to(spaced_out_page(), split);
+    let blocks = p.page_blocks(0).unwrap();
+    assert_eq!(blocks.len(), 3, "{blocks:?}");
+    for start in ["The harbour", "Gulls", "Boats"] {
+        let sure = block_from(&p, &blocks, start).confident();
+        assert!(sure, "{start}: {blocks:?}");
+        let f = paragraph_from(&p, start).frame;
+        let same = (f.left - f0.left).abs() < 0.05 && (f.right - f0.right).abs() < 0.05;
+        assert!(same, "{start}: {f:?}, was {f0:?}");
+        let kept = (f.indent - 18.0).abs() < 0.05 && (f.spacing - 16.0).abs() < 0.05;
+        assert!(kept, "{start}: {f:?}");
+    }
+    let para = paragraph_from(&p, "Gulls");
+    let setting = p.paragraph_setting(&para).unwrap();
+    let longer = format!("{} {MORE}", para.text);
+    let set = setting.set(&typed(&para, &longer));
+    assert!(set.lines.len() > 2, "{set:?}");
+    for w in set.lines.windows(2) {
+        let gap = w[1].baseline - w[0].baseline;
+        assert!((gap - 16.0).abs() < 0.05, "{gap}: {set:?}");
+    }
+    let edges = (para.frame.left, para.frame.right);
+    p.edit_paragraph_in(&setting, &para.parts(), edges, Align::Centre)
+        .unwrap();
+    let middle = (f0.left + f0.right) / 2.0;
+    let gulls = (lines_of(&p).into_iter())
+        .find(|o| o.text.as_deref() == Some("Gulls cried."))
+        .unwrap();
+    let at = (gulls.bbox[0] + gulls.bbox[2]) / 2.0;
+    assert!((at - middle).abs() < 0.6, "{gulls:?} off {middle}");
+    assert_eq!(p.page_blocks(0).unwrap().len(), 3);
+    assert_eq!(paragraph_from(&p, "Gulls").frame.align, Align::Centre);
+    let (p, _) = edited_to(spaced_out_page(), |para| with_break(para, '\n'));
+    assert_eq!(frames_kept(&p), (false, false), "a line break kept a frame");
 }
 
 /// Page 0's only paragraph written with its frame `room` points wide from 72 points in, and

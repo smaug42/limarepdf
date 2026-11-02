@@ -11,9 +11,7 @@ use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::{Obj, Parsed, Show};
 use crate::para_frames::KeptFrame;
 use crate::paragraph::Align;
-use crate::rewrap::{
-    away_pieces, decorations_of, ParagraphSetting, Planned, SetLine, SetParagraph,
-};
+use crate::rewrap::{away_pieces, decorations_of, ParagraphSetting, Planned, SetLine};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::Operation;
@@ -145,7 +143,7 @@ impl Pdf {
                 let (ops, depth) =
                     self.paragraph_decorated(page, &parsed, setting, &lines, &want, ops)?;
                 self.commit(page, ops, depth, &parsed.inline)?;
-                self.keep_set_frame(page, setting, &set, edges, align)?;
+                self.keep_set_frame(page, setting, &lines, edges, align)?;
                 return Ok(lost);
             }
             for n in misread {
@@ -160,23 +158,28 @@ impl Pdf {
 
     /// Record on page `page` the frame paragraph `setting` was written in as `set`, between
     /// `edges` and aligned as `align` says ([`crate::para_frames`]), where it isn't the one
-    /// its lines give: its edges or alignment set, or its frame read from the record, which
-    /// follows its lines as they are written.
+    /// its lines give: its edges or alignment set, its frame read from the record, which
+    /// follows its lines as they are written, or Enter typed in it (BUG-47), each paragraph
+    /// it starts taking the frame, as a word processor's new paragraph keeps the one's it
+    /// was typed in.
     fn keep_set_frame(
         &mut self,
         page: ObjectId,
         setting: &ParagraphSetting,
-        set: &SetParagraph,
+        set: &Set,
         edges: (f32, f32),
         align: Align,
     ) -> Result<()> {
         let para = setting.paragraph();
         let f = &para.frame;
         let moved = (edges.0 - f.left).abs() > 1e-3 || (edges.1 - f.right).abs() > 1e-3;
+        let opens =
+            |l: &SetLine| l.chars.0 == 0 || set.chars.get(l.chars.0 - 1) == Some(&'\u{2029}');
+        let paragraphs: Vec<&[SetLine]> = set.lines.chunk_by(|_, l| !opens(l)).collect();
         let (Some(first), Some(last)) = (set.lines.first(), set.lines.last()) else {
             return Ok(());
         };
-        if !(para.kept || moved || align != f.align) {
+        if !(para.kept || moved || align != f.align || paragraphs.len() > 1) {
             return Ok(());
         }
         let frame = setting.frame_in(edges, align);
@@ -185,14 +188,20 @@ impl Pdf {
             (Some(a), Some(b)) => (a.baseline, b.baseline),
             _ => (first.baseline, last.baseline),
         };
-        let kept = KeptFrame {
-            top: first.baseline,
-            bottom: last.baseline,
-            left: frame.left,
-            right: frame.right,
-            indent: frame.indent,
-        };
-        self.keep_frame(page, kept, was)
+        let spacing = setting.leading();
+        let kept: Vec<KeptFrame> = (paragraphs.iter())
+            .filter_map(|p| {
+                Some(KeptFrame {
+                    top: p.first()?.baseline,
+                    bottom: p.last()?.baseline,
+                    left: frame.left,
+                    right: frame.right,
+                    indent: frame.indent,
+                    spacing,
+                })
+            })
+            .collect();
+        self.keep_frames(page, &kept, was)
     }
 
     /// The edited paragraph's operators `ops`, with decorations `want` (over its new text)

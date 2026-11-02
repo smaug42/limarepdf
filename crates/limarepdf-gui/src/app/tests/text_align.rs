@@ -596,6 +596,51 @@ fn a_field_s_alignment_is_its_form_s() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+// ---- BUG-47: paragraphs split with Enter.
+
+/// BUG-47, the user's finding on stage 3: lines typed after Enter in a paragraph being
+/// edited, kept, were lines on their own: a double-click edited one as a line, and Ctrl+E
+/// there said "Not aligned: 1 line on its own". Each new paragraph keeps the frame: with
+/// paragraph editing on, a double-click opens one as a paragraph between the frame's edges;
+/// with it off, Ctrl+E in one edited alone opens its paragraph centred, and Esc keeps it
+/// centred between the frame's edges.
+#[test]
+fn paragraphs_split_with_enter_reopen_in_the_frame_and_align() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    double_click_word(&mut app, &ctx, "allowed.");
+    app.act(&ctx, Act::EditParagraph);
+    settled_at(&mut app, &ctx, 1400.0);
+    let (left, right) = app.tabs[0].ed.para_edges().expect("editing a paragraph");
+    let none = egui::Modifiers::NONE;
+    window(&mut app, &ctx, 1400.0, vec![key_with(Key::End, none)]);
+    for line in ["Gulls cried.", "Boats came in."] {
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Enter, none)]);
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text(line.into())]);
+    }
+    esc(&mut app, &ctx);
+    assert!(!open(&app), "Esc keeps it");
+    double_click_word(&mut app, &ctx, "Boats");
+    assert!(open(&app), "a new paragraph opened as a line");
+    let edges = app.tabs[0].ed.para_edges().expect("editing a paragraph");
+    let same = (edges.0 - left).abs() < 0.05 && (edges.1 - right).abs() < 0.05;
+    assert!(same, "{edges:?}, was {:?}", (left, right));
+    esc(&mut app, &ctx);
+    click_band(&mut app, &ctx, "Paragraph");
+    assert!(!app.settings.paragraphs, "paragraph editing still on");
+    double_click_word(&mut app, &ctx, "Gulls");
+    assert!(app.tabs[0].ed.editing_line() && !open(&app), "not a line");
+    ctrl(&mut app, &ctx, Key::E);
+    assert!(open(&app), "its paragraph didn't open: {:?}", toast(&app));
+    assert_eq!(aligned(&app), Some(TextAlign::Centre));
+    esc(&mut app, &ctx);
+    let gulls = (paragraph_lines(&app.tabs[0].pdf).into_iter())
+        .find(|o| o.text.as_deref() == Some("Gulls cried."))
+        .expect("the line");
+    let (at, middle) = ((gulls.bbox[0] + gulls.bbox[2]) / 2.0, (left + right) / 2.0);
+    assert!((at - middle).abs() < 0.6, "{gulls:?} off {middle}");
+}
+
 /// How long aligning takes on the window's thread, for performance.md: every paragraph of
 /// a made-up document of 300 Letter pages, each one paragraph of ten 12-point Helvetica
 /// lines, selected as words and justified, as one step: the command, of it finding the

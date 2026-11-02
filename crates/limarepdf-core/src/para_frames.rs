@@ -30,8 +30,9 @@ const NEAR: f32 = 0.5;
 const PLACED: f32 = 0.15;
 
 /// A paragraph's frame as LimarePDF wrote it: its first and last lines' baselines, its left
-/// and right edges, and its first line's indent (the paragraph's own, kept while it is
-/// centred or right-aligned).
+/// and right edges, its first line's indent (the paragraph's own, kept while it is centred
+/// or right-aligned), and the spacing of its lines (BUG-47: a paragraph of one line, as
+/// Enter makes, shows none; 0 where a record doesn't say).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct KeptFrame {
     pub top: f32,
@@ -39,26 +40,40 @@ pub(crate) struct KeptFrame {
     pub left: f32,
     pub right: f32,
     pub indent: f32,
+    pub spacing: f32,
 }
 
 impl KeptFrame {
     fn of(nums: &[Object]) -> Option<Self> {
         let n: Vec<f32> = nums.iter().filter_map(|o| o.as_float().ok()).collect();
-        let [top, bottom, left, right, indent] = n[..] else {
-            return None;
+        let (top, bottom, left, right, indent, spacing) = match n[..] {
+            [top, bottom, left, right, indent] => (top, bottom, left, right, indent, 0.0),
+            [top, bottom, left, right, indent, spacing] => {
+                (top, bottom, left, right, indent, spacing)
+            }
+            _ => return None,
         };
-        let all = [top, bottom, left, right, indent];
-        (all.iter().all(|v| v.is_finite()) && left < right && top <= bottom).then_some(Self {
+        let all = [top, bottom, left, right, indent, spacing];
+        let sound = left < right && top <= bottom && spacing >= 0.0;
+        (all.iter().all(|v| v.is_finite()) && sound).then_some(Self {
             top,
             bottom,
             left,
             right,
             indent,
+            spacing,
         })
     }
 
     fn object(&self) -> Object {
-        let nums = [self.top, self.bottom, self.left, self.right, self.indent];
+        let nums = [
+            self.top,
+            self.bottom,
+            self.left,
+            self.right,
+            self.indent,
+            self.spacing,
+        ];
         Object::Array(nums.iter().map(|&v| Object::Real(round(v))).collect())
     }
 }
@@ -109,10 +124,12 @@ pub(crate) fn kept_for(block: &Block, kept: &[KeptFrame]) -> Option<KeptFrame> {
 /// Page blocks `blocks` with the lines of each paragraph LimarePDF wrote, by its frame in
 /// `kept`, one block again where the page's lines are read otherwise: centred or
 /// right-aligned, a paragraph's lines can read as several paragraphs (a short line looks
-/// like a paragraph's last), or with a line of its neighbours'. Lines are taken only where
-/// the paragraph is still there, its first and last lines where they were written; the
-/// blocks they are taken from keep the rest, now in doubt. A block of them is confident,
-/// LimarePDF having written it as one, aligned as its lines are in its frame.
+/// like a paragraph's last), or with a line of its neighbours'; the paragraphs Enter made
+/// as one narrow block. Lines are taken only where the paragraph is still there, its first
+/// and last lines where they were written; the blocks they are taken from keep the rest,
+/// now in doubt. A block of them, or one read as them already, is confident, LimarePDF
+/// having written it as one (a line on its own too, BUG-47), in its frame and aligned as
+/// its lines are there.
 pub(crate) fn regroup(blocks: Vec<Block>, kept: &[KeptFrame]) -> Vec<Block> {
     let mut blocks = blocks;
     for k in kept {
@@ -128,7 +145,9 @@ pub(crate) fn regroup(blocks: Vec<Block>, kept: &[KeptFrame]) -> Vec<Block> {
             continue;
         }
         let whole = |b: &Block| b.lines.len() == lines.len() && b.lines.iter().all(|l| of(l, k));
-        if blocks.iter().any(whole) {
+        if let Some(b) = blocks.iter_mut().find(|b| whole(b)) {
+            b.frame = frame_of(k, &b.lines, b.frame.align);
+            b.doubt = None;
             continue;
         }
         let Some(at) = blocks.iter().position(|b| b.lines.iter().any(|l| of(l, k))) else {
@@ -179,9 +198,9 @@ fn rest_of(mut b: Block) -> Option<Block> {
 }
 
 /// The frame of a paragraph LimarePDF wrote in `k`, its lines `lines` (top to bottom):
-/// `k`'s edges and indent, and the alignment its lines have there (justified when every
-/// line but the last reaches both edges; else left, right or centred where every line
-/// is), `read` where none fits.
+/// `k`'s edges and indent, the alignment its lines have there (justified when every line
+/// but the last reaches both edges; else left, right or centred where every line is),
+/// `read` where none fits, and their spacing, `k`'s for a line on its own.
 fn frame_of(k: &KeptFrame, lines: &[VisualLine], read: Align) -> Frame {
     let near = |a: f32, b: f32, l: &VisualLine| (a - b).abs() <= (PLACED * l.size).max(1.0);
     let starts = |j: usize, l: &VisualLine| {
@@ -207,7 +226,7 @@ fn frame_of(k: &KeptFrame, lines: &[VisualLine], read: Align) -> Frame {
     let gap = |w: &[VisualLine]| w[1].baseline - w[0].baseline;
     let mut gaps: Vec<f32> = lines.windows(2).map(gap).collect();
     gaps.sort_by(f32::total_cmp);
-    let spacing = gaps.get(gaps.len() / 2).copied().unwrap_or(0.0);
+    let spacing = gaps.get(gaps.len() / 2).copied().unwrap_or(k.spacing);
     Frame {
         left: k.left,
         right: k.right,
@@ -235,25 +254,27 @@ impl Pdf {
             .collect()
     }
 
-    /// Record `frame` on page `page` for a paragraph written there, in place of those of
-    /// the lines it overlaps, there now or before (from `was`'s first baseline to its last),
-    /// and date the page's change, as the standard asks beside private data. Other apps'
-    /// private data on the page stays.
-    pub(crate) fn keep_frame(
+    /// Record `written` on page `page`, the frames of the paragraphs an edit wrote there (one
+    /// for each that Enter started), in place of those of the lines they overlap, there now
+    /// or before (from `was`'s first baseline to its last), and date the page's change, as
+    /// the standard asks beside private data. Other apps' private data on the page stays.
+    pub(crate) fn keep_frames(
         &mut self,
         page: ObjectId,
-        frame: KeptFrame,
+        written: &[KeptFrame],
         was: (f32, f32),
     ) -> Result<()> {
         let mut frames = self.kept_frames(page);
-        let (top, bottom) = (frame.top.min(was.0), frame.bottom.max(was.1));
+        let (mut top, mut bottom) = was;
+        let (mut left, mut right) = (f32::MAX, f32::MIN);
+        for f in written {
+            (top, bottom) = (top.min(f.top), bottom.max(f.bottom));
+            (left, right) = (left.min(f.left), right.max(f.right));
+        }
         frames.retain(|k| {
-            k.bottom < top - NEAR
-                || k.top > bottom + NEAR
-                || k.right < frame.left
-                || k.left > frame.right
+            k.bottom < top - NEAR || k.top > bottom + NEAR || k.right < left || k.left > right
         });
-        frames.push(frame);
+        frames.extend_from_slice(written);
         let extra = frames.len().saturating_sub(MOST);
         frames.drain(..extra);
         let now = Object::String(
@@ -331,6 +352,7 @@ mod tests {
             left: 72.0,
             right: 512.0,
             indent: 0.0,
+            spacing: 12.0,
         };
         let c = |y: f32, w: f32| line(y, 292.0 - w / 2.0, 292.0 + w / 2.0);
         let top = block(vec![c(100.0, 400.0), c(112.0, 380.0)], Align::Centre, None);
@@ -352,17 +374,46 @@ mod tests {
         assert_eq!(regroup(vec![top, below], &[moved]).len(), 2);
     }
 
+    /// BUG-47: a paragraph Enter made, a line on its own read as one block already, is
+    /// confident in its kept frame, its spacing the frame's; a line the frame doesn't hold
+    /// stays a line on its own.
+    #[test]
+    fn a_line_written_as_a_paragraph_reads_as_one_in_its_frame() {
+        let k = KeptFrame {
+            top: 160.0,
+            bottom: 160.0,
+            left: 72.0,
+            right: 512.0,
+            indent: 18.0,
+            spacing: 16.0,
+        };
+        let one = Some(Doubt::OneLine);
+        let alone = |y: f32| block(vec![line(y, 90.0, 160.0)], Align::Left, one);
+        let out = regroup(vec![alone(160.0), alone(200.0)], &[k]);
+        assert_eq!(out.len(), 2, "{out:?}");
+        let f = out[0].frame;
+        let framed = (f.left, f.right, f.indent, f.spacing);
+        assert_eq!(framed, (72.0, 512.0, 18.0, 16.0));
+        assert_eq!((f.align, out[0].doubt), (Align::Left, None));
+        assert_eq!(out[1], alone(200.0));
+    }
+
     #[test]
     fn a_frame_is_read_only_as_written() {
         let r = |v: f32| Object::Real(v);
-        let good = [r(100.0), r(160.0), r(72.0), r(512.0), r(18.0)];
+        let good = [r(100.0), r(160.0), r(72.0), r(512.0), r(18.0), r(13.2)];
         let k = KeptFrame::of(&good).expect("a frame");
-        assert_eq!((k.left, k.right, k.indent), (72.0, 512.0, 18.0));
+        let framed = (k.left, k.right, k.indent, k.spacing);
+        assert_eq!(framed, (72.0, 512.0, 18.0, 13.2));
+        let k = KeptFrame::of(&good[..5]).expect("a frame without its spacing");
+        assert_eq!((k.indent, k.spacing), (18.0, 0.0));
         assert!(KeptFrame::of(&good[..4]).is_none(), "four numbers");
         let backwards = [r(100.0), r(160.0), r(512.0), r(72.0), r(0.0)];
         assert!(KeptFrame::of(&backwards).is_none(), "edges backwards");
         let name = Object::Name(b"x".to_vec());
         let named = [r(100.0), r(160.0), r(72.0), name, r(0.0)];
         assert!(KeptFrame::of(&named).is_none(), "not a number");
+        let less = [r(100.0), r(160.0), r(72.0), r(512.0), r(0.0), r(-1.0)];
+        assert!(KeptFrame::of(&less).is_none(), "spacing below none");
     }
 }

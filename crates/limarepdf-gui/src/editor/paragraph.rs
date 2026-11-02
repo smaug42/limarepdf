@@ -260,10 +260,11 @@ pub(super) fn covers(block: &Block) -> Vec<[f32; 4]> {
 }
 
 /// Why a block can't be edited as a paragraph, if it can't: it is one line, in a table, or
-/// a turned line (the switch stays greyed and says so).
+/// a turned line (the switch stays greyed and says so). A line LimarePDF wrote as a
+/// paragraph of its own, as Enter makes one, is read as one, confident (BUG-47).
 pub(super) fn refused(b: &Block) -> Option<&'static str> {
     match b.doubt {
-        _ if b.lines.len() < 2 => Some(ON_ITS_OWN),
+        _ if b.lines.len() < 2 && !b.confident() => Some(ON_ITS_OWN),
         Some(Doubt::OneLine) => Some(ON_ITS_OWN),
         Some(Doubt::Table) => Some("Text in a table edits a line at a time."),
         Some(Doubt::Turned) => Some(TURNED),

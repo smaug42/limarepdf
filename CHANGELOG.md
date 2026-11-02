@@ -123,12 +123,16 @@
   Text tool is on after being chosen with Edit text.
 - With Insert > Text on, a click on a form field put new text over the field, and the field couldn't be typed in
   until the tool was left. The click now fills the field in, as with the read tool, keeping new text being typed.
+- Lines typed after Enter in a paragraph came apart from it once kept: each new paragraph read as a line on its
+  own, outside the paragraph's edges, so a double-click edited it as a line and an alignment said "Not aligned: 1
+  line on its own". As in Word, each paragraph Enter starts now keeps the paragraph's edges, first-line indent and
+  line spacing: opened again it is a paragraph between those edges, and can be aligned there.
 
 - A paragraph made wider by dragging its edge opened narrower the next time, its edges worked out again from its
-  lines, which didn't reach them. LimarePDF now keeps a small note of the edges and first-line indent of a
-  paragraph whose edges or alignment you set, in the page's private data (which other apps don't show, and Remove
-  hidden data's private data takes away), and opens the paragraph with them while its lines are where it wrote
-  them, after saving too. This also keeps a centred or right-aligned paragraph from moving each time it was
+  lines, which didn't reach them. LimarePDF now keeps a small note of the edges, first-line indent and line spacing
+  of a paragraph whose edges or alignment you set, in the page's private data (which other apps don't show, and
+  Remove hidden data's private data takes away), and opens the paragraph with them while its lines are where it
+  wrote them, after saving too. This also keeps a centred or right-aligned paragraph from moving each time it was
   realigned, kept and opened again. Such a paragraph is also read as one paragraph again, where its lines would
   otherwise read as several, or with a line of the text beside it.
 - In some documents a paragraph's lines written anew came out a letter wider than LimarePDF set them, as the page

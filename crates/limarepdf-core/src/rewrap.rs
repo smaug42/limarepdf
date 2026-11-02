@@ -366,7 +366,8 @@ impl Pdf {
     /// when the page has changed since the block was found, or a line of it is turned,
     /// hidden, in vertical writing or in a text mode that clips. Its frame is the one
     /// LimarePDF wrote it in while its lines are where they were written (the page's record,
-    /// [`crate::para_frames`]), else the block's.
+    /// [`crate::para_frames`], its line spacing too where one line shows none), else the
+    /// block's.
     pub fn paragraph(
         &self,
         page_index: usize,
@@ -381,6 +382,9 @@ impl Pdf {
         let mut para = read(page_index, &parsed, &objs, to_vis, block, words)?;
         if let Some(k) = kept_for(block, &self.kept_frames(page)) {
             (para.frame.left, para.frame.right, para.frame.indent) = (k.left, k.right, k.indent);
+            if para.frame.spacing <= 0.0 {
+                para.frame.spacing = k.spacing;
+            }
             para.kept = true;
         }
         Ok(para)
@@ -988,11 +992,7 @@ impl ParagraphSetting {
         let mut push = 0.0f32;
         // The largest text the paragraph's spacing holds as it is.
         let holds = old.sizes.iter().copied().fold(0.0, f32::max);
-        let size = para.spans.first().map_or(12.0, |s| s.font_size);
-        let spacing = match para.frame.spacing {
-            s if s > 0.0 => s,
-            _ => 1.2 * size,
-        };
+        let spacing = self.leading();
         let baseline = |n: usize| match para.rows.get(n) {
             Some(r) => r.baseline,
             None => para.rows[rows - 1].baseline + spacing * (n + 1 - rows) as f32,
@@ -1098,6 +1098,15 @@ impl ParagraphSetting {
             }
         }
         SetParagraph { lines, marked }
+    }
+
+    /// How far apart its lines' baselines are set: its frame's spacing, else (a line on its
+    /// own, its spacing unknown) 1.2 times its first size.
+    pub(crate) fn leading(&self) -> f32 {
+        match self.para.frame.spacing {
+            s if s > 0.0 => s,
+            _ => 1.2 * self.para.spans.first().map_or(12.0, |s| s.font_size),
+        }
     }
 
     /// The narrowest the frame can be made with `parts` in it, from its left edge to its
