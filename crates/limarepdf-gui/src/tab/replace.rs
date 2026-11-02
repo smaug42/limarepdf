@@ -282,7 +282,7 @@ impl Tab {
                     enabled,
                     key,
                     clicked: b
-                        .on_disabled_hover_text(actions::greyed_tip(&ctx, a, c))
+                        .on_disabled_hover_ui(|ui| actions::greyed_tip(ui, a, c))
                         .clicked(),
                     focused,
                 }

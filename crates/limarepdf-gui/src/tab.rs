@@ -2911,6 +2911,7 @@ impl Tab {
         c.search_running = self.search_running();
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
+        c.edit_text = self.ed.edit_text_on();
         c.paragraph = self.ed.paragraphs;
         c.hyphen = self.ed.hyphen_here();
         c.aligns = self.ed.aligns_text();

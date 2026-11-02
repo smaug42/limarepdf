@@ -541,15 +541,26 @@ saving, a file, undo, redo, words, typing, a line, a picture, an object, a movab
 and sign, redaction marks, a form, a field, the Select
 tool, the Read tool, facing pages), and returns the reason of the first that alone enables the command, else of
 the one that does with all those before it, else `NOT_NOW` ("Not available just now."); without a document, "Open
-a document first." `actions::greyed_tip` (the tooltip, then the reason) is the disabled hover text of the band's
-buttons, its menu buttons (their first item's reason), the commands row and `menu_item`. `font_list::styles` names
+a document first." `actions::greyed_tip` is the disabled hover UI of the band's buttons, the commands row, the
+command search and Search results' Replace buttons; `greyed_ui` draws it (since the user's findings on NEW-15's
+stage 3, whose reason was lost as the tooltip's third line): the name and shortcut (`titled`), then the reason after
+`icon::INFO`, both in `theme::Tone::Caution`'s colour, as `unavailable` says it ("Not available now. " and the
+reason, its capitals kept for a font's name; `NOT_NOW` alone), then the hint. The band's menu buttons give their
+label and first item's reason, `menu_item` the reason and hint (the label is the item), `font_list::styles` the
+reason through `greyed_why`. `font_list::styles` names
 B and I with their keys, and greyed says the family has no such face while the group is enabled, else the group's
 reason. Ctrl+B and Ctrl+I in new text and in a line go through `page_text::switch_styles`: `Styled::switches` says
 whether the switch would change anything, and if not `Refused` marks "<family> has no bold." at the caret.
 `page_text::note` gives `SCRIPT` for a character core's `unwritten_script` (right to left, or shaped) marks,
 outside an emoji sequence. `App::type_over` with a paste and no box to type in sets `Tab::info`, saying where to
-click. Tool commands in menus are `egui::RadioButton`s (`menu_item`), so the tool in use is marked; `band::is_on`
-presses Edit text while the Text tool is on; `inspector::title` is "Form field" while a field has the keyboard
+click. Tool commands in menus are `egui::RadioButton`s (`menu_item`), so the tool in use is marked. A tool's
+command chosen again (`App::act`'s `Act::Tool` with that tool on, not the read tool) is `set_tool(Tool::Read)`, as
+Edit text and Crop already were, so a pressed tool button turns off; `set_tool` lets go of `pending_image` for any
+tool but Image. `band::is_on` presses Edit text by `Ctx::edit_text` (`Editor::edit_text_on`): a line or
+paragraph being edited, or the Text tool chosen with Edit text (`Editor::edit_text`, its `by_edit_text`, which
+every `set_tool` clears), so Insert > Text's tool alone doesn't press it. `Editor::page_ui` gives form fields the
+Text tool's plain click as the read tool's (`typing_tool` beside `filling`; links still take Ctrl+click), keeping
+new text being typed first (`finish_adding`). `inspector::title` is "Form field" while a field has the keyboard
 (`form.focused_field()`), and the app clears the selected words then, after `settle_look`.
 
 Selected objects (ENH-06, batch 25; design `limarepdf-multiselect-design.md`) are one `Selection::Objects`: a page

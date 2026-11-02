@@ -70,7 +70,7 @@ Right-click anything for a short menu of what you can do with it.
 The other tools put something new on the page: pick one in the commands (Insert > Text or Image, Review > Note,
 Text box or Draw, Protect > Mark redaction, Forms and sign > Fill and sign), then click or drag on the page. After
 putting one thing down, a tool goes back to the read tool (the pin in the inspector's heading, beside the tool's
-name, keeps it on). Esc always returns to the read tool.
+name, keeps it on). A tool's button clicked again turns it off, and Esc always returns to the read tool.
 
 ## Find any command
 

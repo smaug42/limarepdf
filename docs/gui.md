@@ -82,10 +82,12 @@ own, such as "Theme › Dark" and "Page colours › Dark", and typing the submen
 
 Click a name in the commands row to show its buttons. Edit is shown when LimarePDF starts. A small ▾ beside a
 button opens related commands; a button with ▾ in it opens a menu. A tool's button stays pressed while the tool is
-on (Edit text while the Text tool is, or while text is edited on the page; clicked again, it goes back to reading,
-what you typed kept), and in the menus the tool in use is marked. Every button names itself on
-hover, with its shortcut. A greyed button or menu item says why it can't be used just now, such as "Nothing to
-undo.", "Select some text first." or "Click in a form field first."
+on, and clicked again turns it off, back to reading, what you typed kept (Insert > Text: click Text to start adding
+text, and Text again to stop). Edit text is pressed while text is edited on the page, or while the Text tool is on
+after you chose it with Edit text; Insert > Text alone doesn't press it. In the menus the tool in use is marked.
+Every button names itself on hover, with its shortcut. A greyed button or menu item says why it can't be used just
+now on a line of its own, marked ⓘ in amber, such as "Not available now. Nothing to undo." or "Not available now.
+Click in a form field first.", then what it does.
 
 | Name | Groups and buttons |
 | --- | --- |
@@ -123,19 +125,21 @@ other tools:
 | Note, text box, rectangle, ellipse, line, pen (Review) | Annotations other readers list as comments | [Comments and markup](comments-and-markup.md) |
 | Stamp (Review > Stamp) | Approved, Draft, your own wording or a picture | [Stamps](headers-footers-watermarks.md#stamps) |
 
-Esc always returns to the read tool, and LimarePDF always starts with it. Pressed while something is being dragged
+Esc always returns to the read tool, and LimarePDF always starts with it; so does a tool's button clicked again.
+Pressed while something is being dragged
 (a move, a resize, a shape, a pen stroke or a word selection), Esc first cancels that, changing nothing, and the
 tool stays; Esc again leaves it. With a tool other than the read tool on,
-hold Ctrl and click to follow a link, fill in a field or select a comment.
+hold Ctrl and click to follow a link, fill in a field or select a comment. With Add text on, a plain click on a form
+field fills it in, as with the read tool, rather than putting new text over it.
 
 ### Keep tool active
 
 The tools that put something down (Add text, Add image, the note, text box, rectangle, ellipse and line, stamps,
 Redact and Fill and sign) go back to the read tool once they have put one thing down, with the new item selected
 so you can adjust it. The pin in the inspector's heading, beside the tool's name and its ×, is Keep tool active: it
-keeps that tool on instead, so you can put down several in a row; Esc or another tool leaves it. Each tool's pin is
+keeps that tool on instead, so you can put down several in a row; Esc, its button again or another tool leaves it. Each tool's pin is
 its own (pinning Redact doesn't pin Fill and sign) and is remembered between runs. The Note tool has no pin: kept on, every click would put
-down a note, so existing notes couldn't be opened or deleted. The pen always stays on until Esc or another tool,
+down a note, so existing notes couldn't be opened or deleted. The pen always stays on until Esc, Draw again or another tool,
 since a drawing takes several strokes.
 
 ## Opening files

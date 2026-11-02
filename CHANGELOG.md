@@ -109,8 +109,20 @@
   example in Insert pages ▾, Fill fields ▾, Digital signature ▾, Facing pages ▾ and Page colours ▾.
 - **Paragraph** (Edit > Text flow) and **Edit as paragraph** show the ¶ icon, so they aren't mistaken for the new
   Align left.
+- A greyed button's or menu item's tooltip gives its reason on a line of its own, marked ⓘ in amber, as "Not
+  available now." and the reason, between its name and what it does, so it isn't lost in the description.
 
 ### Fixed
+
+- A tool's button clicked again didn't turn the tool off: Insert > Text, Note, Text box, Draw and its shapes,
+  Stamp, Image, Mark redaction, Fill and sign and the arrow stayed on, and only Esc or Edit > Edit text left them.
+  Clicked again, each now goes back to reading, as in Word and Acrobat, what was typed kept; a picture waiting to
+  be put down is let go.
+- Edit > Edit text showed pressed whenever Insert > Text was on, so it looked as if text was being edited while
+  every click on the page started new text. It is now pressed only while text is edited on the page, or while the
+  Text tool is on after being chosen with Edit text.
+- With Insert > Text on, a click on a form field put new text over the field, and the field couldn't be typed in
+  until the tool was left. The click now fills the field in, as with the read tool, keeping new text being typed.
 
 - A paragraph made wider by dragging its edge opened narrower the next time, its edges worked out again from its
   lines, which didn't reach them. LimarePDF now keeps a small note of the edges and first-line indent of a

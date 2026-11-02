@@ -63,6 +63,7 @@ pub const IDENTIFICATION_CARD: &str = "\u{E2C8}";
 pub const IMAGE: &str = "\u{E2CA}";
 pub const IMAGE_BROKEN: &str = "\u{E7A8}";
 pub const IMAGES: &str = "\u{E836}";
+pub const INFO: &str = "\u{E2CE}";
 pub const KEY: &str = "\u{E2D6}";
 pub const LIFEBUOY: &str = "\u{E63A}";
 pub const LINE_SEGMENT: &str = "\u{E6D2}";

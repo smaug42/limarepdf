@@ -8,6 +8,7 @@ use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection, Toward};
 use crate::settings::{Accent, Layout, PageLook};
 use crate::signing::SignPick;
+use crate::theme;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::SignRole;
@@ -511,6 +512,8 @@ pub struct Ctx {
     pub typing: bool,
     /// A line or paragraph of page text is being edited on the page.
     pub line_edit: bool,
+    /// Edit text shows pressed ([`crate::editor::Editor::edit_text_on`]).
+    pub edit_text: bool,
     /// Paragraph editing is on: page text opens as paragraphs where it can be one.
     pub paragraph: bool,
     /// The paragraph being edited has a marked line-end hyphen at the right-click or the
@@ -2648,9 +2651,47 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     NOT_NOW
 }
 
-/// Tooltip for a greyed command: its [`tooltip`], then why it can't be used in `c`.
-pub fn greyed_tip(ctx: &egui::Context, a: &Action, c: &Ctx) -> String {
-    format!("{}\n{}", tooltip(ctx, a), why_not(c, a))
+/// Tooltip for a greyed command in `c` ([`greyed_ui`]): its name and shortcut, why it can't
+/// be used, then what it does.
+pub fn greyed_tip(ui: &mut egui::Ui, a: &Action, c: &Ctx) {
+    greyed_why(ui, a, why_not(c, a));
+}
+
+/// [`greyed_tip`] for command `a` greyed for the reason `why`.
+pub fn greyed_why(ui: &mut egui::Ui, a: &Action, why: &str) {
+    let title = titled(ui.ctx(), a);
+    greyed_ui(ui, Some(&title), why, a.hint);
+}
+
+/// How a greyed command's reason `why` is said in its tooltip: as not available now, then
+/// why, so it reads apart from what the command does; "Not available just now." alone.
+pub fn unavailable(why: &str) -> String {
+    match why {
+        NOT_NOW => NOT_NOW.into(),
+        _ => format!("Not available now. {why}"),
+    }
+}
+
+/// A greyed control's tooltip: `title` (its name, and shortcut) where given, then its reason
+/// `why` on a line of its own ([`unavailable`]) after the info icon, both in the caution
+/// colour, then `hint`, what it does, as the tooltip of the control in use says it.
+pub fn greyed_ui(ui: &mut egui::Ui, title: Option<&str>, why: &str, hint: &str) {
+    if let Some(title) = title {
+        ui.label(title);
+    }
+    let caution = theme::tone(ui.visuals().dark_mode, theme::Tone::Caution);
+    let paint = |t: egui::RichText| match caution {
+        Some(c) => t.color(c),
+        None => t,
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(paint(theme::icon(icon::INFO)));
+        ui.label(paint(egui::RichText::new(unavailable(why))));
+    });
+    if !hint.is_empty() {
+        ui.label(hint);
+    }
 }
 
 /// The shortcut a command's menus and tooltips show: its first, but on a Mac one with Cmd
@@ -2672,13 +2713,18 @@ pub fn shown_key(ctx: &egui::Context, a: &Action) -> Option<KeyboardShortcut> {
     }
 }
 
+/// A command's label and the shortcut it shows ([`shown_key`]): its tooltip's first line.
+fn titled(ctx: &egui::Context, a: &Action) -> String {
+    match shown_key(ctx, a) {
+        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(&k)),
+        None => a.label.to_string(),
+    }
+}
+
 /// Tooltip for a command: its label and the shortcut it shows ([`shown_key`]), then its
 /// hint on a line of its own.
 pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
-    let name = match shown_key(ctx, a) {
-        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(&k)),
-        None => a.label.to_string(),
-    };
+    let name = titled(ctx, a);
     if a.hint.is_empty() {
         name
     } else {
@@ -2824,7 +2870,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     } else {
         r.on_hover_text(a.hint)
     };
-    let r = r.on_disabled_hover_text(why_not(c, a));
+    let r = r.on_disabled_hover_ui(|ui| greyed_ui(ui, None, why_not(c, a), a.hint));
     if r.clicked() {
         acts.push(a.act);
         if a.checked.is_none() || one_of {
@@ -2930,6 +2976,17 @@ mod tests {
                 assert!(!why.is_empty() && why != NOT_NOW, "{:?}: {why:?}", a.act);
             }
         }
+    }
+
+    /// A greyed command's reason is said as not available now, as its own sentence (a
+    /// font's name keeps its capitals); the reason that says so alone isn't said twice.
+    #[test]
+    fn a_greyed_reason_is_said_as_not_available_now() {
+        let pages = unavailable("Select pages first.");
+        assert_eq!(pages, "Not available now. Select pages first.");
+        let font = unavailable("Times New Roman has no bold.");
+        assert_eq!(font, "Not available now. Times New Roman has no bold.");
+        assert_eq!(unavailable(NOT_NOW), "Not available just now.");
     }
 
     #[test]

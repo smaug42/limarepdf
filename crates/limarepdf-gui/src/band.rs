@@ -949,9 +949,9 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
 pub fn is_on(act: Act, c: &Ctx) -> bool {
     match act {
         Act::Tool(t) => c.tool == Some(t) && t != Tool::Read,
-        // Edit text is the Text tool, or text being edited on the page; clicked when on, it
-        // goes back to the read tool.
-        Act::EditObjectText => c.tool == Some(Tool::Text) || c.line_edit,
+        // Edit text is text being edited on the page, or the Text tool chosen with it (not
+        // Insert > Text's alone); clicked when on, it goes back to the read tool.
+        Act::EditObjectText => c.edit_text,
         // Crop while the crop is being set; a click on it again ends that, as in Word.
         Act::Crop => c.cropping,
         _ => actions::get(act).checked.is_some_and(|on| on(c)),
@@ -983,7 +983,7 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
             let r = if compact { r.on_hover_text(b.label) } else { r };
             if let Some(&first) = b.menu.first() {
                 let why = actions::why_not(c, actions::get(first));
-                r.on_disabled_hover_text(format!("{}\n{why}", b.label));
+                r.on_disabled_hover_ui(|ui| actions::greyed_ui(ui, Some(b.label), why, ""));
             }
         });
         return;
@@ -999,9 +999,8 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
     let r = ui.add_enabled(enabled, button);
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, b.label));
     let tip = actions::tooltip(ui.ctx(), a);
-    let greyed = actions::greyed_tip(ui.ctx(), a, c);
     if r.on_hover_text(&tip)
-        .on_disabled_hover_text(&greyed)
+        .on_disabled_hover_ui(|ui| actions::greyed_tip(ui, a, c))
         .clicked()
     {
         acts.push(act);

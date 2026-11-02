@@ -2738,6 +2738,11 @@ impl App {
                     self.dialog = Dialog::ConfirmFlattenAnnots(self.asked());
                 }
             }
+            // A tool chosen again (its button clicked while pressed) gives way to the read
+            // tool, what was typed kept, as Word's and Acrobat's tool buttons turn off.
+            Act::Tool(tool) if tool != Tool::Read && self.tabs[self.active].ed.tool == tool => {
+                self.tabs[self.active].ed.set_tool(Tool::Read)
+            }
             Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
             Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
             Act::SelectAllText => {
@@ -3117,7 +3122,7 @@ impl App {
                     let t = &mut self.tabs[self.active];
                     t.ed.edit_selected_text(&t.pdf);
                 } else {
-                    t.ed.set_tool(Tool::Text);
+                    t.ed.edit_text();
                 }
             }
             Act::MoveText => self.tabs[self.active].ed.move_text(),
@@ -6395,7 +6400,7 @@ impl eframe::App for App {
                 let tip = tooltip(ui.ctx(), a);
                 let at = r.rect;
                 if r.on_hover_text(tip.as_str())
-                    .on_disabled_hover_text(actions::greyed_tip(ui.ctx(), a, &c))
+                    .on_disabled_hover_ui(|ui| actions::greyed_tip(ui, a, &c))
                     .clicked()
                 {
                     acts.push(act);
@@ -7055,6 +7060,7 @@ mod tests {
     mod sign;
     mod tabs;
     mod text_align;
+    mod tools;
     mod typing_box;
     mod typing_menus;
     mod underline;
@@ -11883,6 +11889,14 @@ mod tests {
         }
     }
 
+    /// Tool `t` chosen as one would: its command, unless it is on already (chosen again, it
+    /// would turn off).
+    fn choose(app: &mut App, ctx: &egui::Context, t: Tool) {
+        if app.tabs[app.active].ed.tool != t {
+            app.act(ctx, Act::Tool(t));
+        }
+    }
+
     /// The comments of the document's annotations.
     fn comments(app: &App) -> Vec<String> {
         let annots = app.tabs[0].pdf.annotations();
@@ -11905,7 +11919,7 @@ mod tests {
         };
         // Put a note down at (x, y) with the Note tool and type `text` into it.
         let note = |app: &mut App, x: f32, y: f32, text: &str| {
-            app.act(&ctx, Act::Tool(Tool::Note));
+            choose(app, &ctx, Tool::Note);
             window(app, &ctx, 1400.0, click_at(at(x, y)));
             let tree = window(app, &ctx, 1400.0, vec![]);
             assert!(typing(app), "the note doesn't have the keyboard");
@@ -12086,7 +12100,7 @@ mod tests {
         // Put a text box down at (x, y) (a click gives the default size) and type `text`
         // into it.
         let text_box = |app: &mut App, x: f32, y: f32, text: &str| {
-            app.act(&ctx, Act::Tool(Tool::TextBox));
+            choose(app, &ctx, Tool::TextBox);
             window(app, &ctx, 1400.0, click_at(at(x, y)));
             window(app, &ctx, 1400.0, vec![]);
             let id = app.tabs[0].ed.writing_id().expect("the box");
@@ -12339,8 +12353,9 @@ mod tests {
             ty.frame(&mut app, vec![egui::Event::PointerMoved(p)]);
             let tree = ty.pause(&mut app);
             let key = ctx.format_shortcut(&actions::get(act).keys[0]);
-            let tip = format!("{name} ({key})\nSource Serif 4 has no {face}.");
-            assert!(noted(&tree, &tip), "{name} on hover, {os:?}");
+            let why = format!("Not available now. Source Serif 4 has no {face}.");
+            assert!(noted(&tree, &format!("{name} ({key})")), "{name}, {os:?}");
+            assert!(noted(&tree, &why), "{name} on hover, {os:?}");
         }
         assert!(
             app.tabs[0].ed.adding.is_some(),
@@ -12349,7 +12364,8 @@ mod tests {
     }
 
     /// The commands say what is in use: the Edit band's Select menu ticks the tool, and Edit
-    /// text is pressed while the Text tool is on. A form field with the keyboard heads the
+    /// text is pressed while the Text tool chosen with it is on (not Insert > Text's alone,
+    /// the user's finding on NEW-15's stage 3). A form field with the keyboard heads the
     /// inspector, and the words selected before it are let go, so the band and Ctrl+B act
     /// on one thing.
     #[test]
@@ -12379,10 +12395,12 @@ mod tests {
         }
         app.act(&ctx, Act::Tool(Tool::Text));
         let tree = ty.pause(&mut app);
-        assert!(
-            toggled(&tree, "Edit text", Role::Button),
-            "Edit text isn't pressed"
-        );
+        let edit_text = toggled(&tree, "Edit text", Role::Button);
+        assert!(!edit_text, "Edit text pressed for Insert > Text");
+        app.act(&ctx, Act::EditObjectText);
+        let tree = ty.pause(&mut app);
+        let edit_text = toggled(&tree, "Edit text", Role::Button);
+        assert!(edit_text, "Edit text isn't pressed");
         // Words selected, then a form field clicked.
         app.act(&ctx, Act::Tool(Tool::Read));
         app.tabs[0].ed.selection = Selection::word((0, 0));
@@ -14432,7 +14450,7 @@ mod tests {
             ty.pause(app);
         };
         for (x, text) in [(100.0, "Walrus"), (300.0, "")] {
-            app.act(&ctx, Act::Tool(Tool::Note));
+            choose(&mut app, &ctx, Tool::Note);
             ty.click(&mut app, at(x, 100.0));
             ty.text(&mut app, text);
             ty.key(&mut app, Key::Z, CTRL);
@@ -14444,7 +14462,7 @@ mod tests {
         }
         assert_eq!(comments(&app), ["Walrus"]);
         // Existing notes opened for typing: one changed, then the other.
-        app.act(&ctx, Act::Tool(Tool::Note));
+        choose(&mut app, &ctx, Tool::Note);
         ty.click(&mut app, at(300.0, 100.0));
         ty.text(&mut app, "Seal");
         esc(&mut app);

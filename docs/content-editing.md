@@ -265,7 +265,10 @@ copies it.
 
 1. Pick **Insert > Text** (the Add text tool), or **Edit > Edit text** with nothing selected.
 2. Click where the text starts, and type. The line sits on the point you clicked; Enter starts a new line.
-3. Press Esc, click elsewhere on the page, or choose another tool, to finish.
+3. Press Esc, click elsewhere on the page, or choose another tool, to finish. To stop adding text, click
+   **Text** again (or **Edit text**, if you chose it there) or press Esc again.
+
+With the tool on, a click on a form field fills the field in rather than adding text over it.
 
 The text appears as you type, in the font, size and colour it will have, with an outline around it that turns the
 caution colour if the text runs off the page or into text, a picture or a shape, with a tag just below the line

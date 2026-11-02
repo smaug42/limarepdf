@@ -1562,6 +1562,9 @@ pub type Match = (usize, Vec<[f32; 4]>);
 
 pub struct Editor {
     pub tool: Tool,
+    /// The Text tool was chosen with Edit text ([`Editor::edit_text`]), not Insert > Text:
+    /// Edit text shows pressed for it.
+    by_edit_text: bool,
     /// Pages, an object or words; see [`Selection`].
     pub selection: Selection,
     objs: HashMap<usize, Vec<PageObject>>,
@@ -1771,6 +1774,7 @@ impl Default for Editor {
     fn default() -> Self {
         Self {
             tool: Tool::Read,
+            by_edit_text: false,
             selection: Selection::None,
             objs: HashMap::new(),
             unavailable: HashMap::new(),
@@ -3257,6 +3261,10 @@ impl Editor {
             self.annot_tool = t;
         }
         self.tool = t;
+        self.by_edit_text = false;
+        if t != Tool::Image {
+            self.pending_image = None;
+        }
         self.drag = None;
         self.draw = None;
         self.marquee = None;
@@ -3307,6 +3315,19 @@ impl Editor {
         self.later.clear();
         self.not_kept = None;
         self.apply_redactions = false;
+    }
+
+    /// The Text tool, chosen with Edit text: Edit text shows pressed while it is in use
+    /// ([`Editor::edit_text_on`]).
+    pub fn edit_text(&mut self) {
+        self.set_tool(Tool::Text);
+        self.by_edit_text = true;
+    }
+
+    /// Edit text shows pressed: page text is being edited, or the Text tool was chosen with
+    /// it. Insert > Text's tool alone doesn't press it.
+    pub fn edit_text_on(&self) -> bool {
+        self.editing_line() || (self.tool == Tool::Text && self.by_edit_text)
     }
 
     pub fn set_tool_keep_sel(&mut self, t: Tool) {
@@ -4000,12 +4021,25 @@ impl Editor {
         let selecting = self.tool == Tool::Read;
         let mut over_link = false;
         let ctrl = ui.input(|i| i.modifiers.command);
-        // Form fields are filled in the same way, and sit above links.
+        // Form fields are filled in the same way, and sit above links; the Text tool fills
+        // them with a plain click too, typing in a field being what a click there means.
         let filling = (selecting || ctrl) && !self.dragging();
-        let over_field = self
-            .form
-            .page_ui(ui, pdf, page, r, k, &resp, filling, &mut self.actions);
+        let typing_tool = self.tool == Tool::Text && !self.dragging();
+        let over_field = (self.form).page_ui(
+            ui,
+            pdf,
+            page,
+            r,
+            k,
+            &resp,
+            filling || typing_tool,
+            &mut self.actions,
+        );
         if over_field {
+            // New text being typed is kept, as a click elsewhere keeps it.
+            if typing_tool && resp.clicked() {
+                self.finish_adding();
+            }
             if !selecting || resp.clicked() {
                 return resp;
             }
