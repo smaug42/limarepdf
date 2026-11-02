@@ -17,6 +17,8 @@ use std::io::{Read, Write};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+pub use crate::paper::{Paper, PaperList};
+
 /// Resolution of pages printed as images.
 pub const IMAGE_DPI: f32 = 300.0;
 
@@ -167,6 +169,7 @@ fn stop(child: &mut std::process::Child) {
 }
 
 /// Why a command was stopped by [`run_within`] after `limit`.
+#[cfg(not(windows))]
 fn too_slow(program: &str, limit: Duration) -> anyhow::Error {
     anyhow!(
         "the printing service didn't answer within {} seconds ({program})",
@@ -174,10 +177,32 @@ fn too_slow(program: &str, limit: Duration) -> anyhow::Error {
     )
 }
 
+/// Runs `job` on a thread of its own and waits for it for `limit`. One that takes longer is
+/// left to finish on its own (a call into the print spooler can't be stopped) and gives an
+/// error saying the printing service didn't answer when asked for `what`.
+pub(crate) fn within<T: Send + 'static>(
+    what: &str,
+    limit: Duration,
+    job: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(job());
+    });
+    rx.recv_timeout(limit).unwrap_or_else(|e| match e {
+        RecvTimeoutError::Timeout => bail!(
+            "the printing service didn't answer within {} seconds when asked for {what}",
+            limit.as_secs()
+        ),
+        RecvTimeoutError::Disconnected => bail!("asking the printing service for {what} failed"),
+    })
+}
+
 /// Run a CUPS command with untranslated output, explaining a missing command, stopping it
 /// after [`ASK_WITHIN`].
 #[cfg(not(windows))]
-fn cups(program: &str, args: &[&str]) -> Result<String> {
+pub(crate) fn cups(program: &str, args: &[&str]) -> Result<String> {
     let ran = run_within(
         Command::new(program).args(args).env("LC_ALL", "C"),
         &[],
@@ -215,22 +240,29 @@ fn not_found(program: &str, e: std::io::Error) -> anyhow::Error {
 /// The printers the system knows, default first, if the printing service lists them within
 /// [`ASK_WITHIN`] (for each `lpstat` it is asked with).
 pub fn printers() -> Result<Vec<Printer>> {
+    // The spooler's call can't be stopped: it is left to finish on its own thread.
     #[cfg(windows)]
     {
-        // The spooler's call can't be stopped: it is left to finish on its own thread.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(crate::print_win::printers());
-        });
-        rx.recv_timeout(ASK_WITHIN).unwrap_or_else(|e| match e {
-            std::sync::mpsc::RecvTimeoutError::Timeout => {
-                Err(too_slow("the print spooler", ASK_WITHIN))
-            }
-            std::sync::mpsc::RecvTimeoutError::Disconnected => bail!("listing the printers failed"),
-        })
+        within("the printers", ASK_WITHIN, crate::print_win::printers)
     }
     #[cfg(not(windows))]
     cups_printers()
+}
+
+/// The paper sizes `printer` takes and its default, as the printing service reports them,
+/// each with the margins the printer can't print in when it says, within [`ASK_WITHIN`] for
+/// each question asked. On Linux and macOS CUPS is asked over IPP, and failing that its
+/// `lpoptions` names the sizes without margins; on Windows the printer's driver is asked.
+pub fn papers(printer: &str) -> Result<PaperList> {
+    #[cfg(windows)]
+    {
+        let name = printer.to_string();
+        within("the printer's paper sizes", ASK_WITHIN, move || {
+            crate::print_win::papers(&name)
+        })
+    }
+    #[cfg(not(windows))]
+    crate::paper::cups_papers(printer)
 }
 
 #[cfg(not(windows))]

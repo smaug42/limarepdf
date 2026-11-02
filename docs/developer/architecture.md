@@ -1164,6 +1164,23 @@ up when no beat comes for `SEND_WITHIN`, leaving the thread to finish on its own
 background jobs run. The snapshot is taken before the thread starts, so the document isn't copied again. A page
 takes seconds to draw, so a long job isn't given up on.
 
+A printer's paper sizes (ENH-14's stage 1) come from `print::papers` as a `PaperList` of `Paper`s (an id to send,
+a label such as "Letter (8.5 × 11 in)", the size in points, the margins when known) and the default. On Linux and
+macOS `paper::cups_papers` asks CUPS over IPP with LimarePDF's own client (`ipp.rs`: one Get-Printer-Attributes
+request, IPP/1.1, over HTTP to the server `CUPS_SERVER` or `client.conf` names, else CUPS's local socket, else
+`localhost:631`; the answer read whole, collections nested at most 8 deep, at most 16 MiB). `media-supported`'s
+PWG names give the sizes and labels (`paper::pwg_label`), each taking the size and margins of the nearest
+`media-col-database` entry within a millimetre, the bordered one where a size is borderless too (a PPD queue's
+sizes are the PPD's own, A4 210.06 × 296.93 mm); custom sizes and the duplex variants CUPS lists as custom are
+left out, but for the default. When IPP fails, `lpoptions -l`'s PPD names are read with a table of standard sizes,
+margins unknown; when CUPS doesn't know the queue yet (one it found on the network, made on first use by its own
+commands), IPP is asked again after `lpoptions` has run. Each question is bounded: the request by
+`print::ASK_WITHIN` and its thread by `print::within`, which leaves a call that can't be stopped to finish on its
+own (Windows' `printers` uses it too). On Windows `print_win::papers` reads the driver's lists
+(`DeviceCapabilitiesW`: numbers, names, sizes in tenths of a millimetre), the default from its settings, and each
+paper's printable area held portrait from an information context (`CreateICW`, `GetDeviceCaps`), measuring for
+at most 3 seconds in all. `paper::listed` keeps each label once, the default's over others of its label.
+
 Closing and quitting (ENH-01) ask `Dialog::ConfirmClose(asked, quitting)`, Save (Save as… for a tab with no file) /
 Discard / Cancel; quitting with several unsaved documents asks `Dialog::ConfirmQuit` first, Review… / Discard all /
 Cancel. Save runs the ordinary `App::save`, so every save question still comes, and `App::closing` holds what

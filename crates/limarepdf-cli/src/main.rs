@@ -537,7 +537,11 @@ enum Cmd {
         cmd: ViewPrefsCmd,
     },
     /// List the printers; the default is marked
-    Printers,
+    Printers {
+        /// Also list each printer's paper sizes, its default marked
+        #[arg(long)]
+        paper: bool,
+    },
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
     Print {
         input: PathBuf,
@@ -3857,13 +3861,37 @@ fn run(cmd: Cmd) -> Result<()> {
                 out!("flattened {n} annotation(s); wrote {}", io.output.display());
             }
         },
-        Cmd::Printers => {
+        Cmd::Printers { paper } => {
             let list = print::printers()?;
             if list.is_empty() {
                 out!("no printers are set up");
             }
             for p in list {
                 out!("{}{}", p.name, if p.default { " (default)" } else { "" });
+                if !paper {
+                    continue;
+                }
+                let sizes = match print::papers(&p.name) {
+                    Ok(sizes) => sizes,
+                    Err(e) => {
+                        eprintln!(
+                            "warning: couldn't read the paper sizes of {}: {e:#}",
+                            p.name
+                        );
+                        continue;
+                    }
+                };
+                for (i, s) in sizes.papers.iter().enumerate() {
+                    let default = if sizes.default == Some(i) {
+                        ", default"
+                    } else {
+                        ""
+                    };
+                    out!("  {}{default}", s.label);
+                }
+                if sizes.papers.iter().all(|s| s.margins.is_none()) {
+                    out!("  (the printer doesn't say how near the edges it can print)");
+                }
             }
         }
         Cmd::Print {

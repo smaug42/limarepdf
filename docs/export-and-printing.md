@@ -47,7 +47,7 @@ app that left the drawing to the reader), would come out empty. Print names thos
 `limarepdf-cli print` names them and sends nothing (it has no way to print anyway: open the file in the app for
 that).
 
-On the command line: `limarepdf-cli printers` and `limarepdf-cli print`.
+On the command line: `limarepdf-cli printers` (with `--paper`, each printer's paper sizes) and `limarepdf-cli print`.
 
 ## Pages as images
 

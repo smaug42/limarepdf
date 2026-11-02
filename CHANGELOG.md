@@ -88,6 +88,10 @@
   text's lines end at Enter; a PDF text box can't keep it), so Justify is greyed and says why; a form field's
   alignment is its form's, and the alignments are greyed while you type in one ("A field's alignment is set by
   its form.").
+- `limarepdf-cli printers --paper` lists each printer's paper sizes as people name them ("Letter (8.5 × 11 in)",
+  "A4 (210 × 297 mm)"), the printer's default marked. On Linux and macOS LimarePDF asks the printing service
+  (CUPS) for them directly, with how near each edge the printer can print, and when it can't, reads their names
+  from `lpoptions` and says the margins aren't known; on Windows it asks the printer's driver.
 
 ### Changed
 

@@ -288,6 +288,7 @@ See [Password protection](security.md).
 | Command | What it does |
 | --- | --- |
 | `limarepdf-cli printers` | List the printers; the default is marked |
+| `limarepdf-cli printers --paper` | Also list each printer's paper sizes, its default marked, and say when the printer doesn't report how near the edges it can print |
 | `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw); to print such a file without them, open it in the app and choose Print anyway |
 
 See [Export and printing](export-and-printing.md).

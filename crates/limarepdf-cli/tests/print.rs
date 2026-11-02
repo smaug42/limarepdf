@@ -50,6 +50,127 @@ fn fake_cups(dir: &Path) {
     }
 }
 
+/// Stand-ins for `lpstat`, listing one printer, the default, and `lpoptions`, naming its
+/// paper sizes as a PPD does.
+fn fake_lpstat(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                  -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+    let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *A4 Letter Custom.WIDTHxHEIGHT'\n";
+    for (name, script) in [("lpstat", lpstat), ("lpoptions", lpoptions)] {
+        let path = dir.join(name);
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// An IPP answer describing a printer with Letter (the default, with margins) and A4.
+fn ipp_answer() -> Vec<u8> {
+    fn put(b: &mut Vec<u8>, tag: u8, name: &str, value: &[u8]) {
+        b.push(tag);
+        b.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        b.extend_from_slice(name.as_bytes());
+        b.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        b.extend_from_slice(value);
+    }
+    let mut b = vec![1, 1, 0, 0, 0, 0, 0, 1, 0x01];
+    put(&mut b, 0x47, "attributes-charset", b"utf-8");
+    put(&mut b, 0x48, "attributes-natural-language", b"en");
+    b.push(0x04);
+    put(&mut b, 0x44, "media-supported", b"na_letter_8.5x11in");
+    put(&mut b, 0x44, "", b"iso_a4_210x297mm");
+    put(&mut b, 0x44, "media-default", b"na_letter_8.5x11in");
+    // media-col-database: Letter with 4.23 mm margins.
+    put(&mut b, 0x34, "media-col-database", b"");
+    put(&mut b, 0x4A, "", b"media-size");
+    put(&mut b, 0x34, "", b"");
+    put(&mut b, 0x4A, "", b"x-dimension");
+    put(&mut b, 0x21, "", &21590i32.to_be_bytes());
+    put(&mut b, 0x4A, "", b"y-dimension");
+    put(&mut b, 0x21, "", &27940i32.to_be_bytes());
+    put(&mut b, 0x37, "", b"");
+    for side in ["top", "right", "bottom", "left"] {
+        put(&mut b, 0x4A, "", format!("media-{side}-margin").as_bytes());
+        put(&mut b, 0x21, "", &423i32.to_be_bytes());
+    }
+    put(&mut b, 0x37, "", b"");
+    b.push(0x03);
+    b
+}
+
+/// A stand-in printing service on the socket `path`, answering one request with
+/// [`ipp_answer`].
+fn fake_ipp(path: &Path) -> std::thread::JoinHandle<()> {
+    use std::io::{Read, Write};
+    let _ = std::fs::remove_file(path);
+    let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+    std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        // The request's head and body: the body ends with the end-of-attributes tag.
+        while let Ok(n) = s.read(&mut buf) {
+            got.extend_from_slice(&buf[..n]);
+            if n == 0 || (got.windows(4).any(|w| w == b"\r\n\r\n") && got.last() == Some(&3)) {
+                break;
+            }
+        }
+        let body = ipp_answer();
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+        let _ = s.write_all(head.as_bytes());
+        let _ = s.write_all(&body);
+    })
+}
+
+/// `printers --paper` lists the printer's paper sizes as the printing service describes
+/// them over IPP, and from `lpoptions`'s names when it can't be asked.
+#[test]
+fn printers_list_their_paper_sizes() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("printers-paper");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    fake_lpstat(&dir);
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let socket = dir.join("ipp.sock");
+    let run = |socket: &Path| {
+        let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .args(["printers", "--paper"])
+            .env("PATH", &path)
+            .env("CUPS_SERVER", socket)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            out.status.success(),
+            "{said}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        said
+    };
+
+    let serve = fake_ipp(&socket);
+    let said = run(&socket);
+    serve.join().unwrap();
+    assert_eq!(
+        said,
+        "limarepdf-test (default)\n  Letter (8.5 × 11 in), default\n  A4 (210 × 297 mm)\n"
+    );
+
+    // No service on the socket: `lpoptions`'s names, without margins.
+    let said = run(&dir.join("nothing.sock"));
+    assert_eq!(
+        said,
+        "limarepdf-test (default)\n  A4 (210 × 297 mm), default\n  Letter (8.5 × 11 in)\n  \
+         (the printer doesn't say how near the edges it can print)\n"
+    );
+}
+
 #[test]
 fn fields_that_would_print_empty_stop_printing() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-fields");
