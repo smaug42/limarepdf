@@ -23,6 +23,7 @@ use crate::fields::{self, FormUi};
 use crate::page_text;
 use crate::selection::Selection;
 use crate::signatures::Check;
+use crate::spin::Spin;
 use crate::tab::{Side, Stamp, StampForm, Tab};
 use crate::theme;
 use eframe::egui::{self, Ui};
@@ -284,8 +285,6 @@ pub struct Crop {
     pub pages: String,
     /// Points trimmed from the full page: top, right, bottom, left as displayed.
     pub margins: [f32; 4],
-    /// A margin is being dragged in the form: the pages show the margins as they are now.
-    pub dragged: bool,
 }
 
 pub struct Export {
@@ -860,19 +859,13 @@ fn tool_ui(ui: &mut Ui, s: Section, f: &mut Forms, p: &Parts) -> Option<Apply> {
 fn split_ui(ui: &mut Ui, f: &mut Forms) -> bool {
     ui.horizontal(|ui| {
         ui.radio_value(&mut f.split_at_marks, false, "Pages per file");
-        let r = ui.add_enabled(
-            !f.split_at_marks,
-            egui::DragValue::new(&mut f.split).range(1..=100_000),
-        );
-        set_name(&r, "Pages per file");
+        let pages = Spin::new(&mut f.split, 1..=100_000).name("Pages per file");
+        ui.add_enabled(!f.split_at_marks, pages);
     });
     ui.horizontal(|ui| {
         ui.radio_value(&mut f.split_at_marks, true, "At bookmarks, levels");
-        let r = ui.add_enabled(
-            f.split_at_marks,
-            egui::DragValue::new(&mut f.split_level).range(1..=9),
-        );
-        set_name(&r, "Bookmark levels");
+        let levels = Spin::new(&mut f.split_level, 1..=9).name("Bookmark levels");
+        ui.add_enabled(f.split_at_marks, levels);
     });
     ui.button("Choose folder…").clicked()
 }
@@ -1156,9 +1149,9 @@ fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> egui::Response) ->
     r
 }
 
-/// A page dimension in points.
-fn points(v: &mut f32) -> egui::DragValue<'_> {
-    egui::DragValue::new(v).range(36.0..=14400.0).suffix(" pt")
+/// A page dimension in points, called `name`.
+fn points<'a>(v: &'a mut f32, name: &'a str) -> Spin<'a, f32> {
+    Spin::new(v, 36.0..=14400.0).suffix(" pt").name(name)
 }
 
 fn blank_ui(ui: &mut Ui, size: &mut (f32, f32), after: usize) -> bool {
@@ -1174,19 +1167,12 @@ fn blank_ui(ui: &mut Ui, size: &mut (f32, f32), after: usize) -> bool {
         }
     });
     ui.horizontal(|ui| {
-        set_name(&ui.add(points(&mut size.0)), "Width");
+        ui.add(points(&mut size.0, "Width"));
         ui.label("×");
-        set_name(&ui.add(points(&mut size.1)), "Height");
+        ui.add(points(&mut size.1, "Height"));
     });
     ui.button(format!("Insert after page {}", after + 1))
         .clicked()
-}
-
-/// Whether a number field's change is to be kept now: once it is let go, not while it is
-/// dragged. A number typed in arrives when the field is left or Enter pressed (the
-/// fields don't `update_while_editing`).
-fn let_go(r: &egui::Response) -> bool {
-    (r.changed() && !r.dragged()) || r.drag_stopped()
 }
 
 /// The numbering from page `first` on, until the next numbering the document has after it,
@@ -1226,12 +1212,9 @@ fn label_ui(
             apply = Some(Apply::Label(None));
         }
         ui.label("Start at");
-        let start = egui::DragValue::new(&mut s.start)
-            .range(1..=999_999_999)
-            .update_while_editing(false);
-        let r = ui.add_enabled(s.style.is_some(), start);
-        set_name(&r, "Start at");
-        if let_go(&r) {
+        // A number box's change comes typed (Enter, or leaving it) or stepped.
+        let start = Spin::new(&mut s.start, 1..=999_999_999).name("Start at");
+        if ui.add_enabled(s.style.is_some(), start).changed() {
             apply = Some(Apply::Label(Some("label-start")));
         }
     });
@@ -1252,7 +1235,6 @@ fn label_ui(
 fn crop_ui(ui: &mut Ui, s: &mut Crop) -> Option<Option<&'static str>> {
     range_row(ui, &mut s.pages);
     let mut apply = None;
-    s.dragged = false;
     grid(ui, "crop", |ui| {
         for (name, i, key) in [
             ("Top", 0, "crop-top"),
@@ -1261,13 +1243,8 @@ fn crop_ui(ui: &mut Ui, s: &mut Crop) -> Option<Option<&'static str>> {
             ("Right", 1, "crop-right"),
         ] {
             let v = &mut s.margins[i];
-            let field = egui::DragValue::new(v)
-                .range(0.0..=14400.0)
-                .suffix(" pt")
-                .update_while_editing(false);
-            let r = row(ui, name, |ui| ui.add(field));
-            s.dragged |= r.dragged();
-            if let_go(&r) {
+            let field = Spin::new(v, 0.0..=14400.0).suffix(" pt").name(name);
+            if row(ui, name, |ui| ui.add(field)).changed() {
                 apply = Some(Some(key));
             }
         }
@@ -1357,11 +1334,8 @@ fn view_ui(
             let mut set = v.page.is_some();
             ui.checkbox(&mut set, "Open at");
             let mut n = *page + 1;
-            let field = egui::DragValue::new(&mut n)
-                .range(1..=here.pages.max(1))
-                .update_while_editing(false);
+            let field = Spin::new(&mut n, 1..=here.pages.max(1)).name("Page to open at");
             let r = ui.add_enabled(set, field);
-            set_name(&r, "Page to open at");
             *page = n - 1;
             v.page = set.then_some(*page);
             number = Some(r);
@@ -1382,8 +1356,7 @@ fn view_ui(
         return Some(None);
     }
     match number {
-        Some(r) if r.dragged() => None,
-        Some(r) if let_go(&r) => Some(Some("view-page")),
+        Some(r) if r.changed() => Some(Some("view-page")),
         _ => (*v != before).then_some(None),
     }
 }
@@ -1573,14 +1546,11 @@ fn header_footer_ui(ui: &mut Ui, scope: egui::Id, s: &mut Hf, linked: bool) -> P
             }
         }
         row(ui, "Font size", |ui| {
-            ui.add(egui::DragValue::new(&mut s.size).range(5.0..=48.0))
+            ui.add(Spin::new(&mut s.size, 5.0..=48.0).name("Font size"))
         });
         row(ui, "Margin", |ui| {
-            ui.add(
-                egui::DragValue::new(&mut s.margin)
-                    .range(10.0..=144.0)
-                    .suffix(" pt"),
-            )
+            let margin = Spin::new(&mut s.margin, 10.0..=144.0).suffix(" pt");
+            ui.add(margin.name("Margin"))
         });
     });
     ui.checkbox(&mut s.bates, "Bates numbering")
@@ -1590,10 +1560,10 @@ fn header_footer_ui(ui: &mut Ui, scope: egui::Id, s: &mut Hf, linked: bool) -> P
             stamp_text(ui, scope, "Prefix", &mut s.prefix, &mut p);
             stamp_text(ui, scope, "Suffix", &mut s.suffix, &mut p);
             row(ui, "Digits", |ui| {
-                ui.add(egui::DragValue::new(&mut s.digits).range(1..=12))
+                ui.add(Spin::new(&mut s.digits, 1..=12).name("Digits"))
             });
             row(ui, "Start", |ui| {
-                ui.add(egui::DragValue::new(&mut s.start).range(0..=999_999_999))
+                ui.add(Spin::new(&mut s.start, 0..=999_999_999).name("Start"))
             });
         });
     });
@@ -1629,12 +1599,8 @@ fn scan_ui(ui: &mut Ui, pages: &mut String, o: &mut ScanOptions, busy: bool) -> 
         });
         ui.label("Image resolution")
             .on_hover_text("Greyscale and colour images above this are downsampled");
-        let r = ui.add(
-            egui::DragValue::new(&mut o.max_dpi)
-                .range(72.0..=600.0)
-                .suffix(" dpi"),
-        );
-        set_name(&r, "Image resolution");
+        let dpi = Spin::new(&mut o.max_dpi, 72.0..=600.0).suffix(" dpi");
+        ui.add(dpi.name("Image resolution"));
         ui.end_row();
         slider_row(ui, "JPEG quality", &mut o.jpeg_quality, 10..=100, "");
     });
@@ -1658,11 +1624,8 @@ fn export_ui(ui: &mut Ui, s: &mut Export, busy: bool) -> bool {
         });
         ui.end_row();
         row(ui, "Resolution", |ui| {
-            ui.add(
-                egui::DragValue::new(&mut s.dpi)
-                    .range(36.0..=MAX_DPI)
-                    .suffix(" dpi"),
-            )
+            let dpi = Spin::new(&mut s.dpi, 36.0..=MAX_DPI).suffix(" dpi");
+            ui.add(dpi.name("Resolution"))
         });
         ui.label("JPEG quality");
         ui.add_enabled_ui(s.jpeg, |ui| {

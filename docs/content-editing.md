@@ -456,8 +456,9 @@ will be written, and changes as you type:
 (See [How it works](#how-it-works).) For shapes it shows the fill, outline and width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
 stays open or closed as you left it. Changes in the band and the inspector are kept as you make them, without an
-Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or leave its
-box, a colour when its picker closes. Each is one undo step.
+Apply button: typed text when you press Enter or leave the box, a number when you press Enter, leave its box or
+step it with its ▲ and ▼ ([number boxes](gui.md#number-boxes)), a colour when its picker closes. Each is one undo
+step.
 
 The font size box shows the exact size, which isn't rounded to a listed one (10.126 shows as 10.126). Type any
 size, or pick one from the list beside it. Going into the box and out again without typing changes nothing, and

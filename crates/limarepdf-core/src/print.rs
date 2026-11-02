@@ -263,6 +263,41 @@ pub fn printers() -> Result<Vec<Printer>> {
     cups_printers()
 }
 
+/// The printers the system knows, default first, given to `found` as they become known, its
+/// second argument true for the last. On Linux and macOS those CUPS has queues for come
+/// first, asked over IPP in milliseconds (not when there are none), then the whole list as
+/// [`printers`] gives it, which waits about a second for printers the network announces. On
+/// Windows the print spooler's list, once.
+pub fn printers_in_steps(mut found: impl FnMut(Result<Vec<Printer>>, bool)) {
+    #[cfg(not(windows))]
+    if let Ok(now) = cups_printers_now() {
+        if !now.is_empty() {
+            found(Ok(now), false);
+        }
+    }
+    found(printers(), true);
+}
+
+/// The printers CUPS has queues for, default first, asked over IPP.
+#[cfg(not(windows))]
+fn cups_printers_now() -> Result<Vec<Printer>> {
+    let server = crate::ipp::server();
+    // The thread's limit a little over the requests' own, so that their message is said.
+    let limit = ASK_WITHIN + Duration::from_secs(2);
+    let (names, default) = within("the printers", limit, move || {
+        crate::ipp::cups_printers(&server, ASK_WITHIN)
+    })?;
+    let mut v: Vec<Printer> = names
+        .into_iter()
+        .map(|name| Printer {
+            default: default.as_deref() == Some(name.as_str()),
+            name,
+        })
+        .collect();
+    v.sort_by_key(|p| !p.default);
+    Ok(v)
+}
+
 /// The paper sizes `printer` takes and its default, as the printing service reports them,
 /// each with the margins the printer can't print in when it says, within [`ASK_WITHIN`] for
 /// each question asked. On Linux and macOS CUPS is asked over IPP, and failing that its

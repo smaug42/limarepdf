@@ -73,7 +73,12 @@ through `theme::field`), `columns` (two fields side by side, one under the other
 smaller in windows under 600 points wide. A button on a list's row is named with what the row is (`set_name`), and
 `list_rows` gives each row its own id for what it remembers. Tests draw a dialog with `dialogs::drawn_window` and
 check it with `fits` (inside the screen, its buttons inside it) and `unclear_names`. The command palette (`palette_ui` in `app.rs`) uses the same look
-without `Shell`, as a launcher with no title or buttons. Tab goes round a dialog (PB-15): at Tab on the last
+without `Shell`, as a launcher with no title or buttons. egui's `Modal` centres its window each frame, so a dialog
+whose content grew moved up by half of what was added (BUG-50): `Shell::show` keeps the window's top from the
+first frame it was seen (in egui's data under the dialog's id, with the screen's rect) and anchors it there
+(`Modal::area`, `CENTER_TOP`), so it grows downward; the top moves up only as far as keeps the bottom `EDGE`
+(8 points) above the screen's, and a dialog newly shown, or a screen of another size, is centred again. Tab goes
+round a dialog (PB-15): at Tab on the last
 control egui gives up the keyboard (and marks it for the next control that asks), so `Shell::show`, finding no
 focus after a Tab, offers it to the first enabled focusable widget on the dialog's layer
 (`Memory::interested_in_focus`, which also clears egui's mark), or gives it outright when that is the only control
@@ -1228,11 +1233,25 @@ chosen (`Unasked`, `Asking(search, printer)`, `Found(printer, PaperList)`, `Fail
 (an index into the list), `orientation`, `scale` and `percent` (Custom's, kept while another scale is chosen; the
 list's Custom is `Scale::Custom(percent)`, set back each frame from the percentage box). `Print::papers_wanted`
 names the printer chosen once the printers are found whose papers aren't asked for, found or failed;
-`App::find_papers` (`ask_papers`, a free function so it can run while the dialog is borrowed) asks `print::papers`
-on a thread, as soon as `Loaded::Printers` fills the dialog in, and from `App::dialogs`, before the dialogs are
-drawn, when the printer changes or Try again sets `Unasked`; `Loaded::Papers` fills in the Print dialog open or
-waiting whose search number it is, and `Print::papers_found` chooses the paper last printed on with that printer
-(`Settings::print_papers`, by id) when it is listed, else the printer's default, else the first. `Print::setup`
+`want_papers` (a free function, as are `ask_papers`, so they run while the dialog is borrowed) gives the papers
+found earlier in the session (`App::papers_known`, by printer) at once, else asks `print::papers` on a thread, as
+soon as `Loaded::Printers` fills the dialog in, and from `App::dialogs`, before the dialogs are drawn, when the
+printer changes or Try again sets `Unasked`; `Loaded::Papers(search, printer, found)` keeps what was found in
+`papers_known` and fills in the Print dialog open or waiting whose search number it is, and
+`Print::papers_found` (`Print::use_papers`) chooses the paper last printed on with that printer
+(`Settings::print_papers`, by id) when it is listed, else the printer's default, else the first.
+
+The printers (ENH-47): `App::find_printers` runs `print::printers_in_steps` on a thread, which on Linux and macOS
+first asks CUPS over IPP for its queues and default (`ipp::cups_printers`: CUPS-Get-Printers and CUPS-Get-Default,
+posted to `/`, each printer's `printer-name` in a group of its own; 4.7 ms here) and gives them unless there are
+none, then `print::printers` (`lpstat -e`, which waits about a second for printers the network announces), each
+as `Loaded::Printers(search, found, last)`. The dialog is matched by `Search::Running(search)` or
+`Print::listing == Some(search)`, the search whose fuller list is still to come. `Print::found` keeps the printer
+chosen when it is still listed, else the one last printed to (`Settings::print_printer`, saved on Print), else the
+default; it leaves a failure unsaid while this search has listed printers, not while those shown came from earlier
+in the session (`Print::earlier`), when the service no longer answering is said with Try again. Each list found is
+kept in `App::printers_known` with its search number (not replaced by an earlier search's, coming late); Print
+opens with it (`Print::found_earlier`) and the papers known, ready, while its search looks again. `Print::setup`
 gives the `PageSetup` only for papers found for the printer chosen: until then Print is greyed with its tooltip
 ("Finding the printer's paper sizes…"; `footer` shows a `Btn`'s tip with `on_disabled_hover_text` too, which egui's
 `on_hover_text` doesn't on a disabled widget), Enter in the page range doesn't print, and a failure says why with
@@ -1464,15 +1483,26 @@ matched in `App::shortcuts` as a page-only key like Copy. A plain key's command 
 command took in the same frame (`shifted`), since egui's `matches_logically` ignores Shift: with words selected,
 Shift+Home extends them and doesn't also go to the first page.
 
-The inspector's number fields (egui's `DragValue`) that show a document's value are built with
-`clamp_existing_to_range(false)`: one shape's outline width, several shapes' width, Position and size, several
-objects' X and Y, an annotation's line width and a text box's border. egui 0.37 clamps a value already outside a
-field's range by default and marks the field changed, so showing a hairline outline (under 0.25 pt) raised it to
-0.25: `insp_change` saw a change, `Editor::pending` made the tab unsaved, and `commit_insp` made it as soon as the
-inspector settled, an undo step nobody asked for; for a filled shape, whose width isn't written, it was made again
-every settled frame, so the revision moved under a quit question ("The document changed while the question was
-open"). A rule under 1 pt tall was likewise made 1 pt tall (moving it down) with the next X typed. A value set by
-dragging or typing is still kept in range. Any new field showing a document value needs the same.
+Every number box is `spin.rs`'s `Spin` (ENH-48), a spin box as in word processors, added with `ui.add` (or
+`ui.add_enabled`): a single-line `TextEdit` with ▲ and ▼ painted in its right margin and sensed with
+`Sense::CLICK` (not Tab stops; named "Increase …" and "Decrease …"). Its value changes only when typed (Enter, or
+leaving the box; Esc leaves it unchanged) or stepped (the arrows, Up and Down, Page Up and Page Down ten steps,
+read with `count_and_consume_key` before the `TextEdit` sees them and kept from moving the keyboard by a focus
+lock filter set after it), and the response is then marked changed: callers keep a change on `changed()`, never on
+a drag or `lost_focus`. What is typed is kept in egui's data under the box's id while it has the keyboard, all of
+it selected as it gains it so typing replaces it. A unit after the number may be typed or not; commas between
+thousands are thousands', otherwise a decimal point. A number out of range is replaced by the nearest allowed (a
+fraction where whole numbers are wanted, the nearest whole number), and a note under the box, in an `Area` of
+tooltip order with its label a polite live region, says so for six seconds, as for something that isn't a
+number, which leaves the value. A value already outside the range is shown as it is and never changed by being
+shown (one shape's outline width, several shapes' width, Position and size, several objects' X and Y, an
+annotation's line width, a text box's border): egui's `DragValue`, which did that only with
+`clamp_existing_to_range(false)`, raised a hairline outline (under 0.25 pt) to 0.25, and `insp_change`,
+`Editor::pending` and `commit_insp` made an undo step nobody asked for, again every settled frame for a filled
+shape, so the revision moved under a quit question; a rule under 1 pt tall was made 1 pt tall with the next X
+typed. `Spin::mixed` shows nothing for objects whose values differ. Its width is that of the range's ends shown,
+so it doesn't change with the value. `spin.rs`'s `every_number_box_is_a_spin_box` fails when egui's `DragValue`
+appears anywhere else in the app's source, so a new box is a spin box too.
 
 A note or text box open for typing on the page (`Editor::writing`, drawn by `Editor::writing_ui`) closes on Esc,
 Ctrl+Enter or a click on the page outside it (a click on the page's own layer, outside the note's comment box). A

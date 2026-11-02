@@ -982,6 +982,34 @@ blocks fewer, the run sharing the machine with the test suite. Its timings aren'
   controls test covers Print with its Page setup. Not run: deferred to the RC cycle: the preview against paper
   printouts of the same sheets (each scale and orientation, on Letter and A4); the dialog and its preview on
   Windows and macOS; a screen reader on Page setup and the preview's arrows.
+- Print opening ready (ENH-47). Core's `ipp.rs` `the_printers_are_listed_with_their_default` (a stand-in service
+  answering CUPS-Get-Printers with a group for each of two printers, one name with a space, and CUPS-Get-Default;
+  each request posted to `/` with its operation and no printer named; no printers and no default said so). The
+  app's `print_opens_ready_with_the_printers_found_before` (a copy of the tests with the slow stand-in `lpstat`,
+  `lpoptions` and `lp`): the first Print waits for the printers; the second opens ready at once with the printers
+  and paper sizes found, while `lpstat` (3 s) is asked again, and the printer added meanwhile joins the list with
+  the choice kept; the other printer chosen and printed to is remembered, and a new session's Print chooses it, not
+  the default. `printers_listed_at_once_are_joined_by_the_rest` (no CUPS: the lists sent to the app as the search
+  would) and `dialogs.rs`'s `the_printer_chosen_is_kept_as_more_are_found` (the choice kept, the last printer
+  chosen in a new list, a fuller list's failure unsaid while this search shows printers, said when they came from
+  earlier in the session). BUG-11's `print_discovery_with_stand_in_cups` now waits for each dialog's own search to
+  end, as Print opens with the printers found before. Opt-in: core's `tests/papers.rs`
+  `cross_check_printers_listed_at_once_with_lpstat` (the local CUPS, never a printer: the list over IPP is among
+  `lpstat -e`'s with the same default; 2026-11-02, the HP queue, 4.7 ms against 1.08 s).
+- Number boxes (ENH-48): `spin.rs`'s tests type into a box (Enter keeps it, typing replacing what was shown;
+  dragging across it changes nothing), type numbers out of range (5000 and 0 for Copies, 1 to 999: the nearest,
+  999 and 1, with the note "Copies can be 1 to 999, so 999 was used."), a fraction where whole numbers are wanted
+  (3, with its note) and a word (left at 5, with its note), click ▲ and ▼ (stopping at the ends, ▲ greyed there) and
+  press Up, Page Down and Esc with the keyboard in a box of quarter points; a value outside the range (0.1 pt) is
+  shown as it is, and a box for differing widths shows nothing until typed in. `numbers_are_read_as_typed` (units
+  typed or not, thousands' commas, a decimal comma). `every_number_box_is_a_spin_box` reads the app's source and
+  fails when egui's own number box is used anywhere. Dialogs keeping their top (BUG-50): `dialogs.rs`'s
+  `print_keeps_its_top_as_it_grows` (Print on a 1000-point screen: Page range's field, then Advanced opened, each
+  growing it downward with its top where it was; failed before the fix, the top 33 points up), with G02's
+  `a_dialog_fits_again_when_the_screen_gets_shorter` still passing. `dialogs.rs`'s `copies_out_of_range_uses_the_nearest_and_says_so`
+  (Copies 0 in Print: 1, the note under Copies inside the dialog, ▲ to 2). The opacity test now presses the slider
+  by its role, as the number box beside it shares its name. Not run: deferred to the RC cycle: a screen reader
+  saying a box's note when it comes.
 - On paper on Linux, with an HP LaserJet P1606dn through CUPS (October 2026): pages, mixed A4 and Letter pages, a
   turned page, comments and filled form fields print correctly. Getting there took three fixes, each for a way
   CUPS handles PDFs on that setup that other PDFs sent with `lp` suffer from too: the job must name the paper

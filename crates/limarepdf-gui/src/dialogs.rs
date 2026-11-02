@@ -3,6 +3,7 @@
 //! page settings live in the inspector (see `inspector.rs`).
 
 use crate::print_preview::{self, Preview, What};
+use crate::spin::Spin;
 use crate::theme;
 use eframe::egui::{self, Align, Context, Key, Margin, RichText, Ui};
 use limarepdf_core::print::{Orientation, PageSetup, PaperList, Printer, Scale, Sides};
@@ -129,6 +130,9 @@ fn insets(ctx: &Context) -> Insets {
     }
 }
 
+/// The least room kept between a dialog grown downward and the screen's bottom.
+const EDGE: f32 = 8.0;
+
 /// A dialog: a window over a dimmed app, which takes no input while it is open, with the
 /// task as its title and, when that needs saying, the file it acts on. What goes in it is
 /// drawn with [`content`] and [`footer`], in the dialogs' look ([`theme::dialog_style`]).
@@ -179,10 +183,24 @@ impl<'a> Shell<'a> {
         // A menu still open as the dialog opens (its shortcut pressed with a menu open)
         // would show over the dimmed window: closed. The dialog's own lists open later.
         let layer = egui::LayerId::new(egui::Order::Foreground, self.id);
-        if !ctx.memory(|m| m.areas().visible_last_frame(&layer)) {
+        let shown = ctx.memory(|m| m.areas().visible_last_frame(&layer));
+        if !shown {
             egui::Popup::close_all(ctx);
         }
-        let r = egui::Modal::new(self.id).frame(frame).show(ctx, |ui| {
+        // It opens centred, then keeps its top, so what is added to it (a field shown, a
+        // section opened) extends it downward, as desktop dialogs do (BUG-50); egui centres
+        // it again each frame. On a screen of another size it is centred again.
+        let screen = ctx.content_rect();
+        let kept_id = self.id.with("top");
+        let kept: Option<(f32, egui::Rect)> = ctx.data(|d| d.get_temp(kept_id));
+        let kept = kept.filter(|(_, on)| shown && *on == screen);
+        let mut modal = egui::Modal::new(self.id).frame(frame);
+        if let Some((top, _)) = kept {
+            let at = egui::vec2(0.0, top - screen.top());
+            let area = egui::Modal::default_area(self.id).anchor(egui::Align2::CENTER_TOP, at);
+            modal = modal.area(area);
+        }
+        let r = modal.show(ctx, |ui| {
             ui.set_width(width);
             theme::dialog_style(ui.style_mut());
             egui::Frame::NONE
@@ -204,6 +222,16 @@ impl<'a> Shell<'a> {
                 });
             body(ui)
         });
+        // The top kept from the first frame it was seen at, moved up only as far as keeps its
+        // bottom on the screen.
+        match ctx.memory(|m| m.area_rect(self.id)).filter(|_| shown) {
+            Some(rect) => {
+                let lowest = screen.bottom() - EDGE - rect.height();
+                let top = rect.top().min(lowest).max(screen.top());
+                ctx.data_mut(|d| d.insert_temp(kept_id, (top, screen)));
+            }
+            None => ctx.data_mut(|d| d.remove::<(f32, egui::Rect)>(kept_id)),
+        }
         // At Tab on the last control egui gives up the keyboard, and finds the first control
         // only at the next Tab: it goes straight round instead (PB-15). Being offered first,
         // the first control takes the keyboard egui means to give on; the only one, which
@@ -460,9 +488,9 @@ pub fn set_name(r: &egui::Response, name: &str) {
     r.ctx.accesskit_node_builder(r.id, |n| n.set_label(name));
 }
 
-/// A slider with the number it is set to beside it, to type in, both named `name` for
-/// screen readers. egui's own number box beside a slider can't be named, so the slider is
-/// drawn without it and this one added.
+/// A slider with the number it is set to beside it in a spin box, to type in or step, both
+/// named `name` for screen readers. egui's own number box beside a slider can't be named
+/// and is dragged, so the slider is drawn without it and the spin box added.
 pub fn slider<N: egui::emath::Numeric>(
     ui: &mut Ui,
     value: &mut N,
@@ -470,15 +498,9 @@ pub fn slider<N: egui::emath::Numeric>(
     suffix: &str,
     name: &str,
 ) -> egui::Response {
-    let span = range.end().to_f64() - range.start().to_f64();
     let r = ui.add(egui::Slider::new(value, range.clone()).show_value(false));
     set_name(&r, name);
-    let number = egui::DragValue::new(value)
-        .range(range)
-        .suffix(suffix)
-        .speed(span / 200.0);
-    let n = ui.add(number);
-    set_name(&n, name);
+    let n = ui.add(Spin::new(value, range).suffix(suffix).name(name));
     r | n
 }
 
@@ -814,6 +836,11 @@ pub enum Papers {
 pub struct Print {
     pub printers: Vec<Printer>,
     pub search: Search,
+    /// A search whose fuller list is still to come: shown printers listed at once, or found
+    /// earlier in the session (ENH-47).
+    pub listing: Option<u64>,
+    /// The printers shown were found earlier in the session, not by this dialog's search.
+    pub earlier: bool,
     pub printer: usize,
     /// The document printed, shown under the title.
     pub file: String,
@@ -844,6 +871,8 @@ impl Print {
         Self {
             printers,
             search: Search::Done,
+            listing: None,
+            earlier: false,
             printer: 0,
             file,
             page_count: 1,
@@ -869,14 +898,31 @@ impl Print {
             ..Self::new(Vec::new(), file)
         }
     }
-    /// The printers found by `search`, or why they couldn't be listed: shown, with the
-    /// default chosen.
-    pub fn found(&mut self, found: Result<Vec<Printer>, String>) {
-        (self.printers, self.search) = match found {
-            Ok(list) => (list, Search::Done),
-            Err(why) => (Vec::new(), Search::Failed(why)),
-        };
-        self.printer = 0;
+    /// The printers found, or why they couldn't be listed: shown, the printer chosen kept
+    /// when it is still listed, else the one last printed to (`last`, its name) when listed,
+    /// else the default. Why a fuller list couldn't be had is left unsaid when this search
+    /// has listed printers already (ENH-47), not when those shown were found earlier in the
+    /// session: the printing service has stopped answering.
+    pub fn found(&mut self, found: Result<Vec<Printer>, String>, last: Option<&str>) {
+        let chosen = self.chosen().map(str::to_string);
+        match found {
+            Ok(list) => {
+                let keep = |name: Option<&str>| list.iter().position(|p| Some(&*p.name) == name);
+                self.printer = keep(chosen.as_deref()).or(keep(last)).unwrap_or(0);
+                self.printers = list;
+                self.search = Search::Done;
+                self.earlier = false;
+            }
+            Err(_) if chosen.is_some() && !self.earlier => {}
+            Err(why) => (self.printers, self.search) = (Vec::new(), Search::Failed(why)),
+        }
+    }
+    /// Shows the printers found earlier in the session, `known`, while search `search`
+    /// looks again: as [`Print::found`] would.
+    pub fn found_earlier(&mut self, known: Vec<Printer>, last: Option<&str>, search: u64) {
+        self.found(Ok(known), last);
+        self.earlier = true;
+        self.listing = Some(search);
     }
     /// Whether the printers are found, and there is one.
     pub fn ready(&self) -> bool {
@@ -912,14 +958,17 @@ impl Print {
             return;
         }
         let printer = printer.clone();
-        self.papers = match found {
-            Ok(list) => {
-                let last = last.and_then(|id| list.papers.iter().position(|p| p.id == id));
-                self.paper = last.or(list.default).unwrap_or(0);
-                Papers::Found(printer, list)
-            }
-            Err(why) => Papers::Failed(printer, why),
-        };
+        match found {
+            Ok(list) => self.use_papers(printer, list, last),
+            Err(why) => self.papers = Papers::Failed(printer, why),
+        }
+    }
+    /// `printer`'s paper sizes `list`, found now or earlier in the session: shown, with the
+    /// paper last used with the printer chosen (by its id, `last`), else its default.
+    pub fn use_papers(&mut self, printer: String, list: PaperList, last: Option<&str>) {
+        let last = last.and_then(|id| list.papers.iter().position(|p| p.id == id));
+        self.paper = last.or(list.default).unwrap_or(0);
+        self.papers = Papers::Found(printer, list);
     }
     /// Why the printer's paper sizes couldn't be found, if they couldn't.
     pub fn papers_failed(&self) -> Option<&str> {
@@ -1218,8 +1267,8 @@ fn copies_and_sides(ui: &mut Ui, s: &mut Print) {
     let need = longest + 2.0 * sp.button_padding.x + sp.icon_width + sp.icon_spacing;
     let copies = |ui: &mut Ui, s: &mut Print, _| {
         field(ui, "Copies", |ui| {
-            ui.spacing_mut().interact_size.x = copies_width;
-            ui.add(egui::DragValue::new(&mut s.copies).range(1..=999))
+            let spin = Spin::new(&mut s.copies, 1..=999).name("Copies");
+            ui.add(spin.width(copies_width))
         });
     };
     let sides = |ui: &mut Ui, s: &mut Print, width: f32| {
@@ -1353,14 +1402,13 @@ fn page_setup(ui: &mut Ui, s: &mut Print) {
                 .response;
             set_name(&list, "Scale");
             if let Scale::Custom(_) = s.scale {
-                ui.spacing_mut().interact_size.x = PERCENT;
                 let max = limarepdf_core::print::MAX_PERCENT;
-                let n = egui::DragValue::new(&mut s.percent)
-                    .range(1..=max)
-                    .suffix("%");
+                let n = Spin::new(&mut s.percent, 1..=max)
+                    .suffix("%")
+                    .name("Scale percentage")
+                    .width(PERCENT);
                 let tip = format!("1 to {max}% of each page's own size");
-                let n = ui.add(n).on_hover_text(tip);
-                set_name(&n, "Scale percentage");
+                ui.add(n).on_hover_text(tip);
                 s.scale = Scale::Custom(s.percent);
             }
         });
@@ -2225,6 +2273,95 @@ mod tests {
         // Not ready while the printers are looked for.
         let s = Print::looking(9, "walrus.pdf".into());
         assert_eq!(s.papers_wanted(), None);
+    }
+
+    /// BUG-50: a dialog keeps its top as its content grows (Page range's field shown,
+    /// Advanced opened), extending downward as desktop dialogs do; it moved up by half of
+    /// what was added, kept centred.
+    #[test]
+    fn print_keeps_its_top_as_it_grows() {
+        let mut w = PrintWin::new((1200.0, 1000.0), 1.0);
+        w.settled();
+        let before = w.window();
+        w.click("Page range");
+        let ranged = w.window();
+        assert!(ranged.height() > before.height() + 10.0, "{ranged:?}");
+        let kept = |r: egui::Rect| (r.top() - before.top()).abs() < 0.5;
+        assert!(kept(ranged), "{before:?} to {ranged:?}");
+        // Advanced isn't on Windows, which always prints pages drawn by LimarePDF.
+        if !cfg!(windows) {
+            w.click("Advanced");
+            for _ in 0..10 {
+                w.frame(vec![]);
+            }
+            let open = w.window();
+            assert!(open.height() > ranged.height() + 10.0, "{open:?}");
+            assert!(kept(open), "{before:?} to {open:?}");
+        }
+    }
+
+    /// ENH-48: Copies is a spin box: a number out of range typed in becomes the nearest
+    /// allowed, and a note under it, in the dialog, says so; ▲ steps it.
+    #[test]
+    fn copies_out_of_range_uses_the_nearest_and_says_so() {
+        let mut w = PrintWin::new((1200.0, 800.0), 1.0);
+        w.click("Copies");
+        w.frame(vec![egui::Event::Text("0".into())]);
+        let enter = egui::Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        w.frame(vec![enter]);
+        let tree = w.settled();
+        assert_eq!(w.s.copies, 1);
+        let said = "Copies can be 1 to 999, so 1 was used.";
+        let note = text(&tree, said).expect("the note");
+        let copies = named(&tree, "Copies").unwrap();
+        assert!(note.top() >= copies.bottom(), "{note:?} under {copies:?}");
+        let window = w.window();
+        assert!(window.contains_rect(note), "{note:?} outside {window:?}");
+        let tree = w.click("Increase Copies");
+        assert_eq!(w.s.copies, 2);
+        assert!(named(&tree, "Decrease Copies").is_some());
+    }
+
+    /// ENH-47: printers found choose the one last printed to when it is listed, else the
+    /// default; a fuller list keeps the printer chosen; a list that can't be had is said only
+    /// when no printers are shown.
+    #[test]
+    fn the_printer_chosen_is_kept_as_more_are_found() {
+        let p = |name: &str, default| Printer {
+            name: name.into(),
+            default,
+        };
+        let mut s = Print::looking(3, "walrus.pdf".into());
+        s.found(Ok(vec![p("Office", true)]), Some("Hall"));
+        assert!(s.ready());
+        assert_eq!(s.printers[s.printer].name, "Office");
+        let more = vec![p("Office", true), p("Attic", false), p("Hall", false)];
+        s.found(Ok(more.clone()), Some("Hall"));
+        assert_eq!(s.printers[s.printer].name, "Office", "the choice changed");
+        s.printer = 1;
+        s.found(Ok(more.clone()), Some("Hall"));
+        assert_eq!(s.printers[s.printer].name, "Attic");
+        s.found(Err("lpstat: scheduler is not running".into()), None);
+        assert!(s.ready() && s.printers.len() == 3, "{:?}", s.search);
+        // A new search: the printer last printed to.
+        let mut s = Print::looking(4, "walrus.pdf".into());
+        s.found(Ok(more), Some("Hall"));
+        assert_eq!(s.printers[s.printer].name, "Hall");
+        let mut s = Print::looking(5, "walrus.pdf".into());
+        s.found(Err("lpstat: scheduler is not running".into()), None);
+        assert!(matches!(s.search, Search::Failed(_)));
+        // Printers found earlier in the session: a service that no longer answers is said.
+        let mut s = Print::looking(6, "walrus.pdf".into());
+        s.found_earlier(vec![p("Office", true)], None, 6);
+        assert!(s.ready() && s.listing == Some(6) && s.earlier);
+        s.found(Err("lpstat: scheduler is not running".into()), None);
+        assert!(matches!(s.search, Search::Failed(_)), "{:?}", s.search);
     }
 
     /// A long printer name keeps Print inside a narrow screen, chosen and in the open list.

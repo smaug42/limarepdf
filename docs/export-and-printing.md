@@ -17,10 +17,13 @@ Print a document, save its pages as pictures, or save its text.
 **Print preview** in the ☰ menu opens the same dialog, as in Word: Ctrl+F2 (⌘F2 on a Mac). On Linux it is also
 Ctrl+Shift+O, as in LibreOffice, since some desktops (KDE's) keep Ctrl+F2 for themselves.
 
-The dialog opens at once and fills in the printers when the system has listed them; until then it says it is
-looking for printers, and Cancel closes it. If the printing service doesn't answer within 10 seconds or can't
-list the printers, the dialog says why; with no printers set up, it says so. Either way, **Try again** looks once
-more (after adding a printer in the system's settings, say).
+The dialog opens at once. The first time, it says it is looking for printers until the system has listed them:
+on Linux and macOS the printers set up on this computer come at once, and printers found on the network are added
+about a second later. After that it opens with the printers and paper sizes already found, ready to print, while
+it looks again in the background and adds any printer that has appeared since. The printer you last printed to
+is chosen, when it is there; otherwise the system's default. If the printing service doesn't answer within 10
+seconds or can't list the printers, the dialog says why; with no printers set up, it says so. Either way, **Try
+again** looks once more (after adding a printer in the system's settings, say).
 
 ### Page setup
 
@@ -37,8 +40,9 @@ more (after adding a printer in the system's settings, say).
   fill it; **Actual size** prints each page at its own size; **Custom** prints at a percentage from 1 to 400%,
   set beside it.
 
-The paper for each printer, the orientation and the scale are remembered for next time when you print, as Acrobat
-keeps the last scaling.
+The printer, the paper for each printer, the orientation and the scale are remembered for next time when you
+print, as Acrobat keeps the last scaling. Copies and the scale's percentage are [number
+boxes](gui.md#number-boxes): type a number, or step it with ▲ and ▼.
 
 ### The preview
 

@@ -109,8 +109,20 @@
 - **Print preview** in the ☰ menu (no longer marked Planned) and the command search opens Print with its
   preview, as in Word: Ctrl+F2 (⌘F2 on a Mac), and on Linux also Ctrl+Shift+O, as in LibreOffice, since KDE
   keeps Ctrl+F2 for its second desktop.
+- Print opens ready after the first time: the printers and their paper sizes found are kept while LimarePDF is
+  open, and the dialog opens with them while it looks again in the background, adding any printer that has
+  appeared. The first time, on Linux and macOS, the printers set up on the computer come at once (asked of CUPS
+  directly, in milliseconds), and printers announced on the network about a second later, where the whole list
+  waited for them before. The printer last printed to is remembered and chosen next time, when it is there.
 
 ### Changed
+
+- Every number box (Copies, the scale's percentage, line widths, X and Y, width and height, margins, the
+  resolution, Bates digits and the like) is a spin box, as in word processors: type a number and press Enter or
+  leave the box, or step it with the ▲ and ▼ at its right or with Up and Down (Page Up and Page Down, ten steps).
+  Dragging across a box no longer changes its number. A number out of range is replaced by the nearest allowed,
+  and a note under the box says so ("Copies can be 1 to 999, so 1 was used."); something that isn't a number
+  leaves the box as it was, with a note saying what it takes.
 
 - LimarePDF lays out every printout itself, the same way on every system: each page goes on a sheet of the paper
   chosen (the printer's default unless you choose another) at its own size, centred, and is shrunk to the
@@ -182,6 +194,9 @@
   a text box's each placed as the PDF places it, a single-line field's text centred or at the right.
 - A dialog button's tooltip didn't show while the button was greyed (Trusted certificates' Add certificate file…,
   say). It shows now, greyed or not.
+- A dialog that grew while open (Print's Page range chosen, Advanced opened) moved up by half of what was added,
+  as it was kept centred. It now stays where it opened and grows downward, moving up only as far as keeps its
+  buttons on the screen.
 
 ## [0.12.0] - 2026-10-31
 

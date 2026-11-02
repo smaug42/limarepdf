@@ -237,6 +237,8 @@ pub struct Settings {
     pub snap: bool,
     /// The zoom Organise shows the pages at, as cards (NEW-14).
     pub organise_zoom: f32,
+    /// The printer last printed to, chosen in Print when it is listed (ENH-47).
+    pub print_printer: Option<String>,
     /// The paper last printed on with each printer, by the printer's name: the paper's id
     /// (ENH-14).
     pub print_papers: BTreeMap<String, String>,
@@ -315,6 +317,7 @@ impl Settings {
             paragraphs: false,
             snap: true,
             organise_zoom: ORGANISE_ZOOM,
+            print_printer: None,
             print_papers: BTreeMap::new(),
             print_orientation: Orientation::Automatic,
             print_scale: Scale::ShrinkOversized,
@@ -400,6 +403,7 @@ impl Settings {
                         s.organise_zoom = zoom.clamp(ORGANISE_MIN, ORGANISE_MAX);
                     }
                 }
+                "print_printer" if !value.is_empty() => s.print_printer = Some(value.into()),
                 "print_paper" => {
                     if let Some((paper, printer)) = value.split_once(' ') {
                         let printer = printer.trim();
@@ -589,6 +593,12 @@ impl Settings {
             Scale::Custom(p) => p.to_string(),
         };
         text += &format!("print_orientation = {orientation}\nprint_scale = {scale}\n");
+        if let Some(printer) = &self.print_printer {
+            let printer = printer.lines().next().unwrap_or("").trim();
+            if !printer.is_empty() {
+                text += &format!("print_printer = {printer}\n");
+            }
+        }
         for (printer, paper) in &self.print_papers {
             // One line: the paper's id has no spaces, the printer's name may.
             let printer = printer.lines().next().unwrap_or("").trim();
@@ -846,14 +856,15 @@ mod tests {
         assert_eq!(s.organise_zoom, ORGANISE_ZOOM);
     }
 
-    /// ENH-14: the paper last printed on with each printer, a name with spaces too, the
-    /// orientation and the scale are remembered; a custom scale out of range is brought into
-    /// it, and anything unreadable is the default.
+    /// ENH-14 and ENH-47: the printer last printed to, the paper last printed on with each
+    /// printer, a name with spaces too, the orientation and the scale are remembered; a
+    /// custom scale out of range is brought into it, and anything unreadable is the default.
     #[test]
     fn print_choices_are_remembered() {
         let f = file("print");
         let mut s = Settings::from_file(Some(f.clone()));
-        assert!(s.print_papers.is_empty());
+        assert!(s.print_papers.is_empty() && s.print_printer.is_none());
+        s.print_printer = Some("Office laser".into());
         assert_eq!(s.print_orientation, Orientation::Automatic);
         assert_eq!(s.print_scale, Scale::ShrinkOversized);
         let papers = &mut s.print_papers;
@@ -863,6 +874,7 @@ mod tests {
         s.print_scale = Scale::Custom(65);
         s.save();
         let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.print_printer.as_deref(), Some("Office laser"));
         assert_eq!(s.print_papers["Office laser"], "iso_a4_210x297mm");
         assert_eq!(s.print_papers["Hall"], "na_legal_8.5x14in");
         assert_eq!(s.print_orientation, Orientation::Landscape);

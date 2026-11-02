@@ -274,7 +274,9 @@ typed), where only Cancel closes it. A message's Copy button copies what it says
 technical lists in a question are under Details.
 
 A dialog fits the window, also as it is resized: narrower in a narrow one, with smaller margins under 600 points
-wide, and in a short one its content scrolls while its buttons stay in view. Very long names are cut short: a
+wide, and in a short one its content scrolls while its buttons stay in view. A dialog opens centred and then stays
+where it is: what is added to it (a field shown, a section opened) makes it grow downward, and it moves up only as
+far as keeps its buttons on the screen. Very long names are cut short: a
 file's under the title, and a printer's in Print (shown whole on hover and in the list of printers). Every dialog
 has the same look: text at 14 points, settings in headed groups, labels above the fields, fields, lists and buttons
 outlined, and radio buttons and checkboxes outlined on the dialog's background. Two short fields share a row when
@@ -460,6 +462,16 @@ and the command palette (Ctrl+K).
 
 ☰ > Document > Properties… isn't a tool: it lets go of the selection and opens the
 [Properties](#document-properties) section of the document's inspector.
+
+### Number boxes
+
+Boxes that take a number (Copies, a line's width, X and Y, a margin, a resolution) work as they do in word
+processors. Type a number and press Enter or leave the box; or step it with the **▲** and **▼** at its right, or
+with Up and Down while you are in it (Page Up and Page Down go ten steps). Dragging across a box selects its text
+and doesn't change the number. A unit after the number (`pt`, `%`) can be typed or left out. A number outside what
+the box allows is replaced by the nearest it does allow, and a note under the box says so for a few seconds, as
+when Copies is given 0: "Copies can be 1 to 999, so 1 was used." Something that isn't a number leaves the box as
+it was, with a note saying what it takes. Esc leaves the box without changing it.
 
 ### Pages boxes
 

@@ -166,12 +166,13 @@ enum Loaded {
     Err(PathBuf, String),
     /// Files to append were read: all of them, or as far as one that stopped the reading.
     Append(Box<Appending>, Option<AppendStop>),
-    /// Search number `.0` for the printers finished: the printers, default first, or why
-    /// they couldn't be listed.
-    Printers(u64, Result<Vec<print::Printer>, String>),
-    /// Search number `.0` for a printer's paper sizes finished: the sizes, or why they
+    /// Search number `.0` for the printers found them: the printers, default first, or why
+    /// they couldn't be listed; `.2` is false for those listed at once, a fuller list to come
+    /// (ENH-47).
+    Printers(u64, Result<Vec<print::Printer>, String>, bool),
+    /// Search number `.0` for printer `.1`'s paper sizes finished: the sizes, or why they
     /// couldn't be found.
-    Papers(u64, Result<print::PaperList, String>),
+    Papers(u64, String, Result<print::PaperList, String>),
     /// A background job on a copy of tab `tab` at `revision` finished. On success: the
     /// changed document, whether anything changed, and a summary for the user.
     Job {
@@ -193,8 +194,10 @@ enum Loaded {
     Saved(Box<save::Saved>),
 }
 
-/// [`App::find_papers`], for when the dialog asking is borrowed: search number `searches`
-/// counts on, the result sent on `tx`.
+/// Asks for `printer`'s paper sizes on a background thread, as [`App::find_printers`] looks
+/// for the printers, returning the search's number (`searches` counted on). Its result, sent
+/// on `tx`, fills in the Print dialog asking for it, open or waiting, and is kept for the
+/// session. A free function, as the dialog asking is borrowed from the app.
 fn ask_papers(
     searches: &mut u64,
     tx: &Sender<Loaded>,
@@ -205,10 +208,36 @@ fn ask_papers(
     let (search, tx, ctx) = (*searches, tx.clone(), ctx.clone());
     std::thread::spawn(move || {
         let found = crate::guard(|| print::papers(&printer)).map_err(|e| format!("{e:#}"));
-        let _ = tx.send(Loaded::Papers(search, found));
+        let _ = tx.send(Loaded::Papers(search, printer, found));
         ctx.request_repaint();
     });
     search
+}
+
+/// The paper sizes of the printer chosen in Print `s`, when they are wanted: those found
+/// earlier in the session (`known`) at once, else asked for ([`ask_papers`]). The paper
+/// last used with the printer (`kept`, by printer) is chosen.
+fn want_papers(
+    searches: &mut u64,
+    tx: &Sender<Loaded>,
+    ctx: &egui::Context,
+    known: &std::collections::HashMap<String, print::PaperList>,
+    kept: &std::collections::BTreeMap<String, String>,
+    s: &mut dlg::Print,
+) {
+    let Some(printer) = s.papers_wanted() else {
+        return;
+    };
+    match known.get(&printer) {
+        Some(list) => {
+            let last = kept.get(&printer).map(String::as_str);
+            s.use_papers(printer, list.clone(), last);
+        }
+        None => {
+            let search = ask_papers(searches, tx, ctx, printer.clone());
+            s.papers = dlg::Papers::Asking(search, printer);
+        }
+    }
 }
 
 /// Summary of an OCR run for the user, and whether any page changed.
@@ -806,6 +835,11 @@ pub struct App {
     retrying: Option<PathBuf>,
     /// The number of the last search for printers started (see [`dlg::Search`]).
     searches: u64,
+    /// The printers last found, with the number of the search that found them, and each
+    /// printer's paper sizes, kept for the session: Print opens with them while it looks
+    /// again (ENH-47).
+    printers_known: Option<(u64, Vec<print::Printer>)>,
+    papers_known: std::collections::HashMap<String, print::PaperList>,
     /// Closing a tab or quitting, once a document is saved (ENH-01).
     closing: Option<Closing>,
     /// Files the system asks to open, from Finder on macOS (BUG-28).
@@ -910,6 +944,8 @@ impl App {
             waiting: VecDeque::new(),
             retrying: None,
             searches: 0,
+            printers_known: None,
+            papers_known: std::collections::HashMap::new(),
             closing: None,
             incoming: Incoming::default(),
             saves: Vec::new(),
@@ -1809,27 +1845,44 @@ impl App {
                     self.opened(&path);
                     self.show(Dialog::Message(CANNOT_OPEN.into(), e));
                 }
-                Loaded::Printers(search, found) => {
-                    let mut dialogs = std::iter::once(&mut self.dialog).chain(&mut self.waiting);
-                    let looking = dialogs.find_map(|d| match d {
-                        Dialog::Print(_, s) if s.search == dlg::Search::Running(search) => Some(s),
-                        _ => None,
-                    });
+                Loaded::Printers(search, found, last) => {
                     timing::mark("printers found", || match &found {
-                        Ok(list) => list.len().to_string(),
+                        Ok(list) => format!("{}{}", list.len(), if last { "" } else { " at once" }),
                         Err(_) => "failed".into(),
                     });
-                    if let Some(s) = looking {
-                        s.found(found);
-                        // The chosen printer's paper sizes, asked for at once.
-                        if let Some(printer) = s.papers_wanted() {
-                            let tx = &self.tx;
-                            let search = ask_papers(&mut self.searches, tx, ctx, printer.clone());
-                            s.papers = dlg::Papers::Asking(search, printer);
+                    // Kept for the session, so Print opens with them next time (ENH-47); not
+                    // an earlier search's, coming late.
+                    if let Ok(list) = &found {
+                        if self.printers_known.as_ref().is_none_or(|k| k.0 <= search) {
+                            self.printers_known = Some((search, list.clone()));
                         }
                     }
+                    let mut dialogs = std::iter::once(&mut self.dialog).chain(&mut self.waiting);
+                    let looking = dialogs.find_map(|d| match d {
+                        Dialog::Print(_, s)
+                            if s.search == dlg::Search::Running(search)
+                                || s.listing == Some(search) =>
+                        {
+                            Some(s)
+                        }
+                        _ => None,
+                    });
+                    if let Some(s) = looking {
+                        s.found(found, self.settings.print_printer.as_deref());
+                        s.listing = (!last).then_some(search);
+                        // The chosen printer's paper sizes, asked for at once.
+                        let (known, kept) = (&self.papers_known, &self.settings.print_papers);
+                        want_papers(&mut self.searches, &self.tx, ctx, known, kept, s);
+                    }
                 }
-                Loaded::Papers(search, found) => {
+                Loaded::Papers(search, printer, found) => {
+                    timing::mark("paper sizes found", || match &found {
+                        Ok(list) => list.papers.len().to_string(),
+                        Err(_) => "failed".into(),
+                    });
+                    if let Ok(list) = &found {
+                        self.papers_known.insert(printer.clone(), list.clone());
+                    }
                     let mut dialogs = std::iter::once(&mut self.dialog).chain(&mut self.waiting);
                     let asking = dialogs.find_map(|d| match d {
                         Dialog::Print(_, s) if matches!(&s.papers, dlg::Papers::Asking(n, _) if *n == search) => {
@@ -1837,15 +1890,7 @@ impl App {
                         }
                         _ => None,
                     });
-                    timing::mark("paper sizes found", || match &found {
-                        Ok(list) => list.papers.len().to_string(),
-                        Err(_) => "failed".into(),
-                    });
                     if let Some(s) = asking {
-                        let printer = match &s.papers {
-                            dlg::Papers::Asking(_, p) => p.clone(),
-                            _ => String::new(),
-                        };
                         let last = self.settings.print_papers.get(&printer);
                         s.papers_found(search, found, last.map(String::as_str));
                     }
@@ -2056,25 +2101,30 @@ impl App {
         self.status = "Preparing the replacements…".into();
     }
 
-    /// Looks for the printers on a background thread, returning the search's number. Its
-    /// result fills in the Print dialog looking for it, open or waiting, or is dropped:
-    /// one closed meanwhile isn't opened again (BUG-11).
+    /// Looks for the printers on a background thread, returning the search's number: those
+    /// the printing service lists at once, then all of them ([`print::printers_in_steps`]).
+    /// Each list fills in the Print dialog looking for it, open or waiting, or is dropped:
+    /// one closed meanwhile isn't opened again (BUG-11). Either way it is kept for the
+    /// session (ENH-47).
     fn find_printers(&mut self, ctx: &egui::Context) -> u64 {
         self.searches += 1;
         let (search, tx, ctx) = (self.searches, self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let found = crate::guard(print::printers).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Loaded::Printers(search, found));
-            ctx.request_repaint();
+            let send = |found: limarepdf_core::Result<Vec<print::Printer>>, last| {
+                let found = found.map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Loaded::Printers(search, found, last));
+                ctx.request_repaint();
+            };
+            let steps = crate::guard(|| {
+                print::printers_in_steps(&send);
+                Ok(())
+            });
+            // A panic part way is said as the last answer.
+            if let Err(e) = steps {
+                send(Err(e), true);
+            }
         });
         search
-    }
-
-    /// Asks for `printer`'s paper sizes on a background thread, as [`App::find_printers`]
-    /// looks for the printers, returning the search's number. Its result fills in the Print
-    /// dialog asking for it, open or waiting, or is dropped.
-    fn find_papers(&mut self, ctx: &egui::Context, printer: String) -> u64 {
-        ask_papers(&mut self.searches, &self.tx, ctx, printer)
     }
 
     /// Send `pages` (zero-based) of the active tab to the printer on a background thread.
@@ -2581,20 +2631,26 @@ impl App {
                     _ => 100,
                 };
                 timing::mark("print dialog", String::new);
-                self.dialog = Dialog::Print(
-                    self.asked(),
-                    Box::new(dlg::Print {
-                        page_count: t.page_count(),
-                        all: selected.is_none(),
-                        pages: selected.map(inspector::range_text).unwrap_or_default(),
-                        selection,
-                        orientation: self.settings.print_orientation,
-                        scale,
-                        percent,
-                        preview: print_preview::Preview::spawn(ctx, source),
-                        ..dlg::Print::looking(search, file)
-                    }),
-                );
+                let mut print = Box::new(dlg::Print {
+                    page_count: t.page_count(),
+                    all: selected.is_none(),
+                    pages: selected.map(inspector::range_text).unwrap_or_default(),
+                    selection,
+                    orientation: self.settings.print_orientation,
+                    scale,
+                    percent,
+                    preview: print_preview::Preview::spawn(ctx, source),
+                    ..dlg::Print::looking(search, file)
+                });
+                // The printers and paper sizes found earlier in the session at once, while
+                // the search runs again for any change (ENH-47).
+                if let Some((_, known)) = &self.printers_known {
+                    let last = self.settings.print_printer.as_deref();
+                    print.found_earlier(known.clone(), last, search);
+                    let (known, kept) = (&self.papers_known, &self.settings.print_papers);
+                    want_papers(&mut self.searches, &self.tx, ctx, known, kept, &mut print);
+                }
+                self.dialog = Dialog::Print(self.asked(), print);
             }
             Act::SaveSelection if has => {
                 self.dialog = Dialog::SaveSelection(self.asked(), dlg::Layout::Original);
@@ -4071,12 +4127,11 @@ impl App {
             .and_then(|a| self.tabs.iter().find(|t| t.id == a.tab))
             .map(Tab::title);
         let file = file.as_deref();
-        // The paper sizes of the printer chosen in Print, asked for once it is known.
+        // The paper sizes of the printer chosen in Print, once it is known: those found
+        // earlier in the session, else asked for.
         if let Dialog::Print(_, s) = &mut dialog {
-            if let Some(printer) = s.papers_wanted() {
-                let search = self.find_papers(ctx, printer.clone());
-                s.papers = dlg::Papers::Asking(search, printer);
-            }
+            let (known, kept) = (&self.papers_known, &self.settings.print_papers);
+            want_papers(&mut self.searches, &self.tx, ctx, known, kept, s);
         }
         match &mut dialog {
             Dialog::None => done = true,
@@ -4606,8 +4661,9 @@ impl App {
                     };
                     let printer = s.printers[s.printer].name.clone();
                     // Remembered for next time, as Acrobat keeps the last scaling: the
-                    // paper for each printer.
+                    // printer, and the paper for each printer.
                     let paper = setup.paper.id.clone();
+                    self.settings.print_printer = Some(printer.clone());
                     self.settings.print_papers.insert(printer.clone(), paper);
                     self.settings.print_orientation = s.orientation;
                     self.settings.print_scale = s.scale;
@@ -12949,7 +13005,7 @@ mod tests {
             ),
             27 => {
                 let mut print = dlg::Print::looking(1, "test.pdf".into());
-                print.found(Err(format!("lpstat: {long}")));
+                print.found(Err(format!("lpstat: {long}")), None);
                 let print = Dialog::Print(app.asked(), Box::new(print));
                 ("Print".into(), two("Try again"), print)
             }
@@ -14631,8 +14687,16 @@ mod tests {
             !says.iter().any(|s| s == "Comment"),
             "a second editor: {says:?}"
         );
-        // The slider's middle, pressed and let go as people do, a frame apart.
-        let p = middle(&tree, "Opacity");
+        // The slider's middle, pressed and let go as people do, a frame apart. (Its number
+        // box has the same name.)
+        let slider = (tree.nodes.iter())
+            .find(|(_, n)| n.label() == Some("Opacity") && n.role() == egui::Role::Slider)
+            .and_then(|(_, n)| n.bounds())
+            .expect("the slider");
+        let p = egui::pos2(
+            ((slider.x0 + slider.x1) / 2.0) as f32,
+            ((slider.y0 + slider.y1) / 2.0) as f32,
+        );
         ty.frame(&mut app, vec![egui::Event::PointerMoved(p), press(p, true)]);
         ty.frame(&mut app, vec![press(p, false)]);
         ty.pause(&mut app);
@@ -15526,8 +15590,12 @@ mod tests {
             Dialog::Print(_, s) => s.search.clone(),
             _ => panic!("Print isn't open"),
         };
+        // This dialog's search done: Print opens with the printers found earlier in the
+        // session while it looks again (ENH-47).
         let done = |a: &App| match &a.dialog {
-            Dialog::Print(_, s) => !matches!(s.search, dlg::Search::Running(_)),
+            Dialog::Print(_, s) => {
+                !matches!(s.search, dlg::Search::Running(_)) && s.listing.is_none()
+            }
             _ => false,
         };
         let found = |app: &App| -> Vec<String> {
@@ -15746,6 +15814,162 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    /// ENH-47: Print opens ready with the printers and paper sizes found earlier in the
+    /// session while it looks again: a printer added meanwhile joins the list, the printer
+    /// chosen kept. The printer last printed to is chosen in a new session. Run with stand-ins
+    /// for `lpstat` (slow), `lpoptions` and `lp`.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_opens_ready_with_the_printers_found_before() {
+        let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *A4 Letter'\n";
+        let lp = "#!/bin/sh\ncat > /dev/null\necho 'request id is limarepdf-test-3 (1 file(s))'\n";
+        let scripts = [
+            ("lpstat", SLOW_LPSTAT),
+            ("lpoptions", lpoptions),
+            ("lp", lp),
+        ];
+        let dir = stand_in_cups("session", &scripts);
+        std::fs::write(dir.join("printers"), "limarepdf-test\n").unwrap();
+        rerun_with_cups(&dir, "app::tests::printers_kept_with_stand_in_cups");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ENH-47: printers listed at once fill Print in, ready, the fuller list after them
+    /// joining it with the choice kept; the session keeps the latest search's list, not an
+    /// earlier search's coming late.
+    #[test]
+    fn printers_listed_at_once_are_joined_by_the_rest() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let p = |name: &str, default| print::Printer {
+            name: name.into(),
+            default,
+        };
+        // Their paper sizes known, so the system isn't asked.
+        let letter = print::Paper {
+            id: "na_letter_8.5x11in".into(),
+            label: "Letter (8.5 × 11 in)".into(),
+            size: (612.0, 792.0),
+            margins: None,
+        };
+        for name in ["Office", "Hall"] {
+            let list = print::PaperList {
+                papers: vec![letter.clone()],
+                default: Some(0),
+            };
+            app.papers_known.insert(name.into(), list);
+        }
+        let print = dlg::Print::looking(41, "test.pdf".into());
+        app.dialog = Dialog::Print(app.asked(), Box::new(print));
+        let send = |app: &mut App, search, list: Vec<print::Printer>, last| {
+            let found = Loaded::Printers(search, Ok(list), last);
+            app.tx.send(found).unwrap();
+            app.poll_loads(&ctx);
+        };
+        fn print_of(app: &App) -> &dlg::Print {
+            match &app.dialog {
+                Dialog::Print(_, s) => s,
+                _ => panic!("Print isn't open"),
+            }
+        }
+        send(&mut app, 41, vec![p("Office", true)], false);
+        let s = print_of(&app);
+        assert!(s.ready() && s.listing == Some(41) && s.setup().is_some());
+        let both = vec![p("Office", true), p("Hall", false)];
+        send(&mut app, 41, both, true);
+        let s = print_of(&app);
+        assert_eq!((s.printers.len(), s.printer, s.listing), (2, 0, None));
+        assert_eq!(app.printers_known.as_ref().map(|k| k.1.len()), Some(2));
+        // An earlier search's list, coming late, leaves the dialog and the session's alone.
+        send(&mut app, 40, vec![p("Stale", true)], true);
+        assert_eq!(print_of(&app).printers.len(), 2);
+        assert_eq!(app.printers_known.as_ref().map(|k| k.0), Some(41));
+    }
+
+    /// The part of [`print_opens_ready_with_the_printers_found_before`] run with the
+    /// stand-ins first on PATH; without them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_opens_ready_with_the_printers_found_before"]
+    fn printers_kept_with_stand_in_cups() {
+        use std::time::{Duration, Instant};
+        let Some(dir) = std::env::var_os(STAND_IN_CUPS).map(PathBuf::from) else {
+            return;
+        };
+        fn print_of(app: &App) -> &dlg::Print {
+            match &app.dialog {
+                Dialog::Print(_, s) => s,
+                _ => panic!("Print isn't open"),
+            }
+        }
+        let names = |app: &App| -> Vec<String> {
+            let printers = &print_of(app).printers;
+            printers.iter().map(|p| p.name.clone()).collect()
+        };
+        let chosen = |app: &App| print_of(app).printers[print_of(app).printer].name.clone();
+        let set = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let settings = dir.join("settings.txt");
+        let new_app = || {
+            let kept = Settings::from_file(Some(settings.clone()));
+            let mut app = App::with(kept, Recent::from_file(None));
+            let mut pdf = Pdf::new();
+            pdf.insert_blank(0, 612.0, 792.0).unwrap();
+            assert!(app.add_tab(&ctx, pdf, None, None, false));
+            app
+        };
+
+        // The first time, Print waits for the printers (a second here).
+        let mut app = new_app();
+        set("delay", "1");
+        app.act(&ctx, Act::Print);
+        assert!(!print_ready(&app), "printers before lpstat answered");
+        wait_for(&mut app, &ctx, papers_found);
+        click(&mut app, &ctx, "Cancel");
+
+        // Opened again: ready at once with the printers and paper sizes found, while lpstat
+        // is asked again; a printer added meanwhile joins the list, the choice kept.
+        set("delay", "3");
+        set("printers", "limarepdf-test\nsecond\n");
+        let start = Instant::now();
+        app.act(&ctx, Act::Print);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(papers_found(&app), "Print isn't ready at once");
+        assert_eq!(names(&app), ["limarepdf-test"]);
+        let refreshed = |a: &App| matches!(&a.dialog, Dialog::Print(_, s) if s.listing.is_none());
+        wait_for(&mut app, &ctx, refreshed);
+        assert_eq!(names(&app), ["limarepdf-test", "second"]);
+        assert_eq!(chosen(&app), "limarepdf-test");
+
+        // The other printer chosen and printed to: remembered.
+        set("delay", "0");
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.printer = 1;
+        }
+        dialogs_until(&mut app, &ctx, papers_found);
+        click(&mut app, &ctx, "Print");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_loads(&ctx);
+        }
+        let said = match &app.dialog {
+            Dialog::Message(_, m) => m.clone(),
+            _ => "no message".into(),
+        };
+        assert!(said.starts_with("Sent 1 page(s) to second."), "{said}");
+        assert_eq!(app.settings.print_printer.as_deref(), Some("second"));
+
+        // A new session: the printer last printed to, not the default.
+        let mut app = new_app();
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, papers_found);
+        assert_eq!(chosen(&app), "second");
     }
 
     /// Draws the dialogs, taking in background results, until `done`, for a few seconds at

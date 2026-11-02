@@ -1,7 +1,9 @@
-//! A small IPP client of LimarePDF's own, which asks the printing service (CUPS) about a
-//! printer as the system's print dialogs do: one request, Get-Printer-Attributes, sent over
-//! HTTP to CUPS's own socket or its port, encoded and read here (RFC 8010). Used on Linux
-//! and macOS for the printer's paper sizes and margins, which `lpoptions` doesn't give.
+//! A small IPP client of LimarePDF's own, which asks the printing service (CUPS) about its
+//! printers as the system's print dialogs do: Get-Printer-Attributes, and CUPS's own
+//! CUPS-Get-Printers and CUPS-Get-Default, sent over HTTP to CUPS's own socket or its port,
+//! encoded and read here (RFC 8010). Used on Linux and macOS for the printer's paper sizes
+//! and margins, which `lpoptions` doesn't give, and to list the printers at once, where
+//! `lpstat` waits for those the network announces.
 #![cfg_attr(windows, allow(dead_code))]
 
 use crate::Result;
@@ -86,10 +88,23 @@ const MAX_DEPTH: usize = 8;
 /// The most of an answer read: a printer's whole description is tens of kilobytes.
 const MAX_ANSWER: usize = 16 << 20;
 
+// Operations: IPP's own (RFC 8011) and CUPS's.
+const GET_PRINTER_ATTRIBUTES: u16 = 0x000B;
+const CUPS_GET_DEFAULT: u16 = 0x4001;
+const CUPS_GET_PRINTERS: u16 = 0x4002;
+
 /// A Get-Printer-Attributes request for the printer at `uri`, asking for `wanted`.
 pub(crate) fn request(uri: &str, wanted: &[&str]) -> Vec<u8> {
-    // IPP/1.1, which every CUPS answers; operation 0x000B; request 1.
-    let mut b = vec![1, 1, 0x00, 0x0B, 0, 0, 0, 1, OPERATION_GROUP];
+    request_for(GET_PRINTER_ATTRIBUTES, Some(uri), wanted)
+}
+
+/// A request for `operation`, about the printer at `uri` when it names one, asking for
+/// `wanted`.
+fn request_for(operation: u16, uri: Option<&str>, wanted: &[&str]) -> Vec<u8> {
+    // IPP/1.1, which every CUPS answers; request 1.
+    let mut b = vec![1, 1];
+    b.extend_from_slice(&operation.to_be_bytes());
+    b.extend_from_slice(&[0, 0, 0, 1, OPERATION_GROUP]);
     let mut put = |tag: u8, name: &str, value: &str| {
         b.push(tag);
         for part in [name.as_bytes(), value.as_bytes()] {
@@ -99,7 +114,9 @@ pub(crate) fn request(uri: &str, wanted: &[&str]) -> Vec<u8> {
     };
     put(0x47, "attributes-charset", "utf-8");
     put(0x48, "attributes-natural-language", "en");
-    put(0x45, "printer-uri", uri);
+    if let Some(uri) = uri {
+        put(0x45, "printer-uri", uri);
+    }
     for (i, w) in wanted.iter().enumerate() {
         // The values after the first carry no name.
         put(0x44, if i == 0 { "requested-attributes" } else { "" }, w);
@@ -326,6 +343,43 @@ pub(crate) fn printer_attributes(
             }
         }),
     }
+}
+
+/// The printers `server` has queues for, by name, and its default if it has one, asked with
+/// CUPS's own CUPS-Get-Printers and CUPS-Get-Default, each given up on after `limit`. These
+/// are the printers set up on this computer and those CUPS has already made a queue for;
+/// others the network announces aren't among them (`lpstat -e` waits for those).
+pub(crate) fn cups_printers(
+    server: &Server,
+    limit: Duration,
+) -> Result<(Vec<String>, Option<String>)> {
+    let ask = |operation| -> Result<Answer> {
+        let body = request_for(operation, None, &["printer-name"]);
+        read_answer(&post(server, "/", &body, limit)?)
+    };
+    // Each printer is a group of its own; their names come one after another.
+    let names = |a: &Answer| -> Vec<String> {
+        let named = a.printer.iter().filter(|(n, _)| n == "printer-name");
+        named
+            .filter_map(|(_, v)| v.first()?.text().map(str::to_string))
+            .collect()
+    };
+    let all = ask(CUPS_GET_PRINTERS)?;
+    let listed = match all.status {
+        0..=0x00FF => names(&all),
+        // No printers.
+        NOT_FOUND => Vec::new(),
+        s => bail!(
+            "the printing service refused to list the printers: {}",
+            all.message.unwrap_or_else(|| format!("status {s:#06x}"))
+        ),
+    };
+    let default = ask(CUPS_GET_DEFAULT)?;
+    let default = match default.status {
+        0..=0x00FF => names(&default).into_iter().next(),
+        _ => None,
+    };
+    Ok((listed, default))
 }
 
 /// `h` as it goes in a URI or a Host header: an IPv6 address in brackets.
@@ -572,6 +626,11 @@ pub(crate) mod tests {
 
     /// A made-up answer with `status` and the printer's `attributes`, as CUPS writes them.
     pub(crate) fn answer(status: u16, attributes: &[(&str, Vec<V>)]) -> Vec<u8> {
+        answer_for(status, &[attributes])
+    }
+
+    /// A made-up answer with `status` and a group of attributes for each printer.
+    fn answer_for(status: u16, printers: &[&[(&str, Vec<V>)]]) -> Vec<u8> {
         let mut b = vec![1, 1];
         b.extend_from_slice(&status.to_be_bytes());
         b.extend_from_slice(&1u32.to_be_bytes());
@@ -579,10 +638,12 @@ pub(crate) mod tests {
         put(&mut b, 0x47, "attributes-charset", b"utf-8");
         put(&mut b, 0x48, "attributes-natural-language", b"en");
         put(&mut b, 0x41, "status-message", b"successful-ok");
-        b.push(PRINTER_GROUP);
-        for (name, vs) in attributes {
-            for (i, v) in vs.iter().enumerate() {
-                put_value(&mut b, if i == 0 { name } else { "" }, v);
+        for attributes in printers {
+            b.push(PRINTER_GROUP);
+            for (name, vs) in attributes.iter() {
+                for (i, v) in vs.iter().enumerate() {
+                    put_value(&mut b, if i == 0 { name } else { "" }, v);
+                }
             }
         }
         b.push(END_OF_ATTRIBUTES);
@@ -749,6 +810,19 @@ pub(crate) mod tests {
         reply: Vec<u8>,
         delay: Duration,
     ) -> (Server, std::thread::JoinHandle<Vec<u8>>) {
+        let (server, serve) = stand_in_for(name, vec![reply], delay);
+        let one = std::thread::spawn(move || serve.join().unwrap().remove(0));
+        (server, one)
+    }
+
+    /// A stand-in printing service answering a request with each of `replies` in turn, each
+    /// after `delay`; it gives back the requests it was sent.
+    #[cfg(unix)]
+    fn stand_in_for(
+        name: &str,
+        replies: Vec<Vec<u8>>,
+        delay: Duration,
+    ) -> (Server, std::thread::JoinHandle<Vec<Vec<u8>>>) {
         use std::os::unix::net::UnixListener;
         let path =
             std::env::temp_dir().join(format!("limarepdf-ipp-{name}-{}.sock", std::process::id()));
@@ -756,14 +830,47 @@ pub(crate) mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         let done = path.clone();
         let serve = std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            let got = take_request(&mut s);
-            std::thread::sleep(delay);
-            let _ = s.write_all(&reply);
+            let mut got = Vec::new();
+            for reply in replies {
+                let (mut s, _) = listener.accept().unwrap();
+                got.push(take_request(&mut s));
+                std::thread::sleep(delay);
+                let _ = s.write_all(&reply);
+            }
             let _ = std::fs::remove_file(&done);
             got
         });
         (Server::Socket(path), serve)
+    }
+
+    /// The printers are listed with CUPS-Get-Printers, a group for each, and the default
+    /// asked with CUPS-Get-Default, neither naming a printer; no printers, and no default,
+    /// are said so.
+    #[cfg(unix)]
+    #[test]
+    fn the_printers_are_listed_with_their_default() {
+        let name = |n: &'static str| [("printer-name", vec![V::Kw(n)])];
+        let (office, hall) = (name("Office_laser"), name("Hall inkjet"));
+        let listed = answer_for(0, &[&office, &hall]);
+        let default = answer(0, &[("printer-name", vec![V::Kw("Hall inkjet")])]);
+        let (server, serve) =
+            stand_in_for("list", vec![http(&listed), http(&default)], Duration::ZERO);
+        let got = cups_printers(&server, Duration::from_secs(5)).unwrap();
+        assert_eq!(got.0, ["Office_laser", "Hall inkjet"]);
+        assert_eq!(got.1.as_deref(), Some("Hall inkjet"));
+        let sent = serve.join().unwrap();
+        for (request, operation) in sent.iter().zip([CUPS_GET_PRINTERS, CUPS_GET_DEFAULT]) {
+            let text = String::from_utf8_lossy(request);
+            assert!(text.starts_with("POST / HTTP/1.1\r\n"), "{text}");
+            assert!(!text.contains("printer-uri"), "{text}");
+            let at = text.find("\r\n\r\n").unwrap() + 4;
+            assert_eq!(request[at + 2..at + 4], operation.to_be_bytes());
+        }
+        let none = http(&answer(NOT_FOUND, &[]));
+        let (server, serve) = stand_in_for("none", vec![none.clone(), none], Duration::ZERO);
+        let got = cups_printers(&server, Duration::from_secs(5)).unwrap();
+        assert_eq!(got, (vec![], None));
+        serve.join().unwrap();
     }
 
     /// A request read from `s`: the head, then as much body as it says.

@@ -9,6 +9,7 @@ use crate::inspector::{facts, note, section, section_name};
 use crate::page_text::{self, selection, PageText};
 use crate::selection::{ObjKind, Selected, Selection, Toward, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
+use crate::spin::Spin;
 use crate::styled::{History, InLine, Restyle, Styled, Switch};
 use crate::theme;
 use crate::typing_fonts::Wanted;
@@ -5716,10 +5717,9 @@ impl Editor {
                 egui::Grid::new("geom").num_columns(2).show(ui, |ui| {
                     for (label, v) in [("X", &mut x), ("Y", &mut y)] {
                         ui.label(label);
-                        let field = egui::DragValue::new(v).range(-5000.0..=20000.0);
-                        let r = ui.add(field.clamp_existing_to_range(false).speed(0.5));
-                        dialogs::set_name(&r, label);
-                        done |= r.drag_stopped() || r.lost_focus();
+                        let field = Spin::new(v, -5000.0..=20000.0).name(label);
+                        // Typed (Enter, or leaving it) or stepped.
+                        done |= ui.add(field).changed();
                         ui.end_row();
                     }
                 });
@@ -6119,14 +6119,7 @@ impl Editor {
                             color_button(ui, c, name);
                         }
                         if let Some(s) = e.shape.as_mut() {
-                            let r = ui.add(
-                                egui::DragValue::new(&mut s.width)
-                                    .range(0.0..=40.0)
-                                    .clamp_existing_to_range(false)
-                                    .speed(0.1)
-                                    .suffix(" pt"),
-                            );
-                            dialogs::set_name(&r, "Line width");
+                            ui.add(line_width(&mut s.width, 0.0..=40.0, "Line width"));
                         }
                     });
                 }
@@ -6508,13 +6501,7 @@ impl Editor {
                         "Outline colour"
                     };
                     color_button(ui, &mut self.stroke, name);
-                    let r = ui.add(
-                        egui::DragValue::new(&mut self.width)
-                            .range(0.25..=40.0)
-                            .speed(0.1)
-                            .suffix(" pt"),
-                    );
-                    dialogs::set_name(&r, "Line width");
+                    ui.add(line_width(&mut self.width, 0.25..=40.0, "Line width"));
                 });
                 if self.tool == Tool::Line && !self.draw_permanent {
                     ui.checkbox(&mut self.arrow, "Arrowhead");
@@ -6530,13 +6517,7 @@ impl Editor {
             Tool::Pen => {
                 ui.horizontal(|ui| {
                     color_button(ui, &mut self.pen_color, "Pen colour");
-                    let r = ui.add(
-                        egui::DragValue::new(&mut self.pen_width)
-                            .range(0.25..=40.0)
-                            .speed(0.1)
-                            .suffix(" pt"),
-                    );
-                    dialogs::set_name(&r, "Pen width");
+                    ui.add(line_width(&mut self.pen_width, 0.25..=40.0, "Pen width"));
                 });
                 return;
             }
@@ -6719,14 +6700,7 @@ impl Editor {
                     color_button(ui, &mut insp.stroke, "Outline colour");
                     // A width outside the range (a hairline) is shown as it is: raised to
                     // the range, it would be a change never made.
-                    let r = ui.add(
-                        egui::DragValue::new(&mut insp.width)
-                            .range(0.25..=100.0)
-                            .clamp_existing_to_range(false)
-                            .speed(0.1)
-                            .suffix(" pt"),
-                    );
-                    dialogs::set_name(&r, "Outline width");
+                    ui.add(line_width(&mut insp.width, 0.25..=100.0, "Outline width"));
                 });
             }
             ObjectKind::Image => {
@@ -6766,10 +6740,9 @@ impl Editor {
                         ui.label(label);
                         // A rule's height under 1 pt is shown as it is: raised, it would
                         // be made with the next change.
-                        let field = egui::DragValue::new(v).range(lo..=20000.0);
-                        let r = ui.add(field.clamp_existing_to_range(false).speed(0.5));
-                        dialogs::set_name(&r, label);
-                        done |= r.drag_stopped() || r.lost_focus();
+                        let field = Spin::new(v, lo..=20000.0).name(label);
+                        // Typed (Enter, or leaving it) or stepped.
+                        done |= ui.add(field).changed();
                         ui.end_row();
                     }
                 });
@@ -6873,17 +6846,9 @@ fn shapes_ui(ui: &mut egui::Ui, g: &mut Group) {
         // Widths compared to a hundredth of a point, as a change is.
         let widths = g.all(|l| (l.width * 100.0).round() as i64);
         let mut w = g.shapes.first().map_or(1.0, |(.., l)| l.width);
-        // A hairline is shown as it is, as for one shape.
-        let mut value = egui::DragValue::new(&mut w)
-            .range(0.25..=100.0)
-            .clamp_existing_to_range(false)
-            .speed(0.1);
-        value = match widths {
-            Some(_) => value.suffix(" pt"),
-            None => value.custom_formatter(|_, _| String::new()),
-        };
-        let r = ui.add(value);
-        dialogs::set_name(&r, "Outline width");
+        // A hairline is shown as it is, as for one shape; widths that differ, as nothing.
+        let value = line_width(&mut w, 0.25..=100.0, "Outline width");
+        let r = ui.add(value.mixed(widths.is_none()));
         if r.changed() {
             g.set(|l| l.width = w);
         }
@@ -6910,15 +6875,18 @@ fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
     });
     ui.horizontal(|ui| {
         ui.label("Border");
-        let r = ui.add(
-            egui::DragValue::new(&mut s.border)
-                .range(0.0..=20.0)
-                .clamp_existing_to_range(false)
-                .speed(0.1)
-                .suffix(" pt"),
-        );
-        dialogs::set_name(&r, "Border width");
+        ui.add(line_width(&mut s.border, 0.0..=20.0, "Border width"));
     });
+}
+
+/// A line's width in points, called `name`, stepped by a quarter point as Word's line
+/// weights are. A width outside `range` (a hairline) is shown as it is.
+fn line_width<'a>(
+    v: &'a mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    name: &'a str,
+) -> Spin<'a, f32> {
+    Spin::new(v, range).step(0.25).suffix(" pt").name(name)
 }
 
 /// Ask for an image file and return its bytes if it can be decoded.
