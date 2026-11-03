@@ -146,8 +146,10 @@ this list once it works. The feature table below has the details.
   and while typing as LimarePDF works the colour out, without the colour profiles a printer or Acrobat applies,
   so a shade can look a little different there; the page itself keeps the ink. A colour picked for such text is
   written in RGB.
-- Spelling (NEW-06): Review > Spelling goes through the comments, replies, text boxes and form fields, not the
-  pages' own text (PF-60); text being edited on the page is marked as it is typed. One language at a time, for
+- Spelling (NEW-06): words are marked only in the box being typed in: a line, paragraph, text box or note
+  edited on the page loses its marks once its editing ends, and text on the page isn't marked while reading, as
+  Word marks a whole document (PF-60). Review > Spelling goes through the comments, replies, text boxes and form
+  fields, not the pages' own text (PF-60). One language at a time, for
   every document: a document in two languages is checked in one. There is no grammar checking, and suggestions
   don't use how words sound (spellbook's, as Nuspell's), so a few are weaker than Hunspell's. Windows' and
   macOS's own spell checkers aren't used (PF-61): other languages come from dictionaries added. A Hunspell

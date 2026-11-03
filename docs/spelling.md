@@ -10,7 +10,8 @@ Australian English, or in French. It comes with those dictionaries, and you can 
 A word spelt wrongly gets a red wavy line under it once you finish it (type a space or a
 punctuation mark after it). This works everywhere you type the document's words: text you edit
 or add on the page, a paragraph being edited, a text box, a note, a comment or reply in the
-inspector, and a form field.
+inspector, and a form field. The marks show while you type there: once you finish editing a line,
+a paragraph, a text box or a note, they go, and words on the page aren't marked while you read.
 
 Right-click a marked word for:
 
