@@ -31,12 +31,13 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   the zoom level, such as "96%", which opens a menu of zoom and page layout (see
   [Reading and finding](reading-and-finding.md#move-around-the-pages)). In Organise, the zoom sizes the cards.
 - **Left:** a strip of icons for the side panel's views: Pages (the thumbnails), Search results, Bookmarks (the
-  document's outline), Comments and Digital signatures. Clicking a view opens it; clicking the open one folds the
+  document's outline), Comments, Spelling and Digital signatures. Clicking a view opens it; clicking the open one folds the
   panel away, and clicking it again brings it back. Documents open on Pages, unless the file asks to open on its
   bookmarks. While you organise pages the Pages view folds away, and its icon goes back to the page view. Pages are
   called by the document's page labels where it has them, unless View > Show > Use the document's page labels is
   off. See [Bookmarks](reading-and-finding.md#bookmarks), [Search](reading-and-finding.md#find-words),
-  [Comments](comments-and-markup.md#see-every-comment-and-reply) and [Digital signatures](signatures.md).
+  [Comments](comments-and-markup.md#see-every-comment-and-reply), [Spelling](spelling.md) and
+  [Digital signatures](signatures.md).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels; zooming
   turns that off. Continuous, facing or single pages: see [Page layout](reading-and-finding.md#page-layout). In
   Organise, every page as a card instead (see [Organising pages](organising-pages.md#see-every-page-at-once)).
@@ -58,8 +59,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 - **Panel widths:** drag the edge of the side panel or the inspector to make it wider or narrower. From the
   keyboard, Tab to the edge (a line shows along it), then press Left or Right to move it 10 points (50 with
   Shift), Home to make the panel as narrow as it goes, or End to make it half the window wide. Each of the side
-  panel's views keeps its own width: Pages starts narrow, and Search results, Bookmarks, Comments and Digital
-  signatures start wider, so their lines are easy to read. The widths you set are remembered for next time; a
+  panel's views keeps its own width: Pages starts narrow, and Search results, Bookmarks, Comments, Spelling and
+  Digital signatures start wider, so their lines are easy to read. The widths you set are remembered for next time; a
   panel widened to fit what it shows (some of the inspector's tools need more room) starts at your width again
   next time.
 
@@ -94,14 +95,14 @@ Click in a form field first.", then what it does.
 | --- | --- |
 | Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); the **Alignment** group: Align left, Centre, Align right and Justify for the paragraph or line being edited, or the paragraphs of the words or lines selected, and the first three for new text and text boxes, its own pressed ([Align text](content-editing.md#align-text)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
 | Insert | Text and Image; Header and footer, Watermark; Link ([add or change a link](reading-and-finding.md#add-a-link)); From images (a new PDF from pictures) |
-| Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
+| Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Spelling ▾ (the [spelling](spelling.md) language, Check spelling as you type, Add a dictionary…); Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
 | Forms and sign | Fill fields ▾ (next and previous field, highlight fields, clear, reset or flatten the form), Fill and sign ▾ (saved signatures and initials, Create signature…, the date, your name, text, marks); Digital signature ▾ (sign, certify, the signatures in this document, digital IDs, trusted certificates) |
 | Protect | Mark redaction ▾ (the area tool, the selected words, all search results), Apply redactions…; Passwords, Remove hidden data |
 | View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
-Blank document in Insert; Spelling and Export comments in Review; Create fields in Forms and sign; Your
+Blank document in Insert; Export comments in Review; Create fields in Forms and sign; Your
 AI in View; Reduce file size in the File menu. They do nothing, and Tab passes them by. Turn
 off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is remembered.
 
@@ -515,6 +516,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | F3, Shift+F3 (or Ctrl+G, Ctrl+Shift+G) | Next, previous match, wherever the keyboard is; with nothing searched, F3 opens Find |
 | Enter in Replace with, or Alt+R in Search results | Replace the current match and go on to the next (Alt+R as in Word; not on a Mac) |
 | Alt+A in Search results | Replace all, after saying what that changes (as in Word; not on a Mac) |
+| F7 (Option+Cmd+L on a Mac) | Spelling: the side panel's Spelling view, from text being typed too ([Checking spelling](spelling.md)) |
 | Ctrl+Shift+P | Command palette |
 | F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the tabs, the commands, notices, navigation, the page, the inspector, the status bar |
 | Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |

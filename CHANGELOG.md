@@ -165,6 +165,19 @@
   as it was. The places a file names for its links (named destinations) come with it too; one whose name the
   document already uses is renamed (`intro` becomes `intro-2`), with the links and bookmarks that go to it. Undo
   takes them away with the pages.
+- **Spelling is checked as you type**, as in word processors: a word spelt wrongly gets a red wavy line once
+  you finish it, in text edited or added on the page, paragraphs, text boxes, notes, comments and replies in the
+  inspector, and form fields. Right-click it for suggestions, **Ignore all** (until LimarePDF closes) and
+  **Add to dictionary** (kept for next time). Words in capitals, words with numbers and web, email and file
+  addresses are left out. **Review > Spelling** (no longer marked Planned; F7, Option+Cmd+L on a Mac, from text
+  being typed too) opens a Spelling view in the side panel that goes through the words spelt wrongly in the
+  comments, replies, text boxes and form fields one at a time, with **Change**, **Change all** (one undo step),
+  **Ignore**, **Ignore all** and **Add to dictionary**. LimarePDF comes with English (Canada, United States,
+  United Kingdom and Australia, SCOWL's) and French (Grammalecte's) dictionaries, about 1.1 MB; Spelling's menu
+  chooses the language (until one is chosen, the document's, then the computer's), turns the marks off, and
+  **Add a dictionary…** adds one for another language from a LibreOffice dictionary extension (`.oxt`) or a
+  Hunspell `.dic` and `.aff`. On Linux the system's Hunspell dictionaries are listed too. The pages' own text
+  isn't gone through by Review > Spelling.
 
 ### Changed
 

@@ -239,6 +239,12 @@ pub struct Settings {
     pub snap: bool,
     /// The zoom Organise shows the pages at, as cards (NEW-14).
     pub organise_zoom: f32,
+    /// Spelling is checked as one types (Review > Proofing > Language's Check spelling as
+    /// you type, NEW-06; on unless turned off).
+    pub spelling: bool,
+    /// The language chosen in Review > Proofing > Language, by its key (`spell::Language`);
+    /// `None` until one is chosen.
+    pub spelling_language: Option<String>,
     /// The printer last printed to, chosen in Print when it is listed (ENH-47).
     pub print_printer: Option<String>,
     /// The paper last printed on with each printer, by the printer's name: the paper's id
@@ -325,6 +331,8 @@ impl Settings {
             paragraphs: false,
             snap: true,
             organise_zoom: ORGANISE_ZOOM,
+            spelling: true,
+            spelling_language: None,
             print_printer: None,
             print_papers: BTreeMap::new(),
             print_orientation: Orientation::Automatic,
@@ -408,6 +416,10 @@ impl Settings {
                 "commands" => s.compact_commands = value == "compact",
                 "text_editing" => s.paragraphs = value == "paragraphs",
                 "snap_to_objects" => s.snap = value != "false",
+                "spelling_as_you_type" => s.spelling = value != "false",
+                "spelling_language" if !value.is_empty() => {
+                    s.spelling_language = Some(value.into());
+                }
                 "organise_size" => {
                     if let Ok(percent) = value.parse::<f32>() {
                         let zoom = percent / 100.0;
@@ -525,6 +537,32 @@ impl Settings {
         self.unsaved.take()
     }
 
+    /// The folder of spelling dictionaries added to LimarePDF, beside the settings; `None`
+    /// without a settings folder.
+    pub fn dictionaries_folder(&self) -> Option<PathBuf> {
+        Some(self.file.as_ref()?.parent()?.join("dictionaries"))
+    }
+
+    /// The words added to the dictionary in earlier runs (`words.txt` beside the settings, a
+    /// word a line); none without a settings folder.
+    pub fn spelling_words(&self) -> std::collections::HashSet<String> {
+        let file = self.file.as_ref().map(|f| f.with_file_name("words.txt"));
+        let text = file.and_then(|f| std::fs::read_to_string(f).ok());
+        limarepdf_core::spelling::read_word_list(&text.unwrap_or_default())
+    }
+
+    /// Saves the words added to the dictionary, for next time.
+    pub fn save_spelling_words(&mut self, words: &std::collections::HashSet<String>) {
+        let Some(file) = self.file.as_ref().map(|f| f.with_file_name("words.txt")) else {
+            return;
+        };
+        let text = limarepdf_core::spelling::word_list(words);
+        let written = write_own(&file, text.as_bytes());
+        if let Some(u) = unsaved("the words you added to the dictionary", written) {
+            self.unsaved = Some(u);
+        }
+    }
+
     /// A signature or initials saved for next time that couldn't be, said once taken.
     pub fn take_sign_unsaved(&mut self) -> Option<String> {
         self.sign_unsaved.take()
@@ -613,6 +651,13 @@ impl Settings {
         };
         text += &format!("text_editing = {editing}\n");
         text += &format!("snap_to_objects = {}\n", self.snap);
+        text += &format!("spelling_as_you_type = {}\n", self.spelling);
+        if let Some(lang) = &self.spelling_language {
+            let lang = lang.lines().next().unwrap_or("").trim();
+            if !lang.is_empty() {
+                text += &format!("spelling_language = {lang}\n");
+            }
+        }
         text += &format!("organise_size = {:.0}\n", self.organise_zoom * 100.0);
         let orientation = match self.print_orientation {
             Orientation::Automatic => "automatic",
@@ -815,6 +860,31 @@ mod tests {
         s.save();
         let s = Settings::from_file(Some(f));
         assert!(!s.navigation_panel && s.inspector_panel && s.controls_docked);
+    }
+
+    /// NEW-06: spelling is checked as one types unless turned off; the language chosen and
+    /// the words added are kept, the words in a file of their own.
+    #[test]
+    fn spelling_choices_and_added_words_are_remembered() {
+        let f = file("spelling");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.spelling && s.spelling_language.is_none() && s.spelling_words().is_empty());
+        (s.spelling, s.spelling_language) = (false, Some("fr".into()));
+        s.save();
+        let words = ["Limare".to_string(), "o'clocks".into()].into();
+        s.save_spelling_words(&words);
+        assert!(s.take_unsaved().is_none());
+        let back = Settings::from_file(Some(f.clone()));
+        assert!(!back.spelling);
+        assert_eq!(back.spelling_language.as_deref(), Some("fr"));
+        assert_eq!(back.spelling_words(), words);
+        let list = std::fs::read_to_string(f.with_file_name("words.txt")).unwrap();
+        assert_eq!(list, "Limare\no'clocks\n");
+        assert_eq!(
+            back.dictionaries_folder(),
+            Some(f.with_file_name("dictionaries"))
+        );
+        assert_eq!(Settings::from_file(None).dictionaries_folder(), None);
     }
 
     /// ENH-36: page labels are used unless turned off, and the choice is kept.

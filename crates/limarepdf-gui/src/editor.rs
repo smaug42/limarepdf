@@ -2926,6 +2926,7 @@ impl Editor {
         }
         let b = o.bbox;
         let mut typed = insp.text.text().to_string();
+        crate::spell::apply(&ctx, id, &mut typed);
         let mode = self.page_colours;
         // The text as egui has it this frame, in parts at `k` pixels per point, coloured
         // by `color`.
@@ -3008,7 +3009,9 @@ impl Editor {
                         .clip_text(false)
                         .margin(egui::Margin::same(2));
                     if o.hidden {
-                        return te.show(ui);
+                        let out = te.show(ui);
+                        crate::spell::marks(ui, id, &out, out.galley.text());
+                        return out;
                     }
                     let out = te.layouter(&mut layouter).show(ui);
                     let paper = |c| page_text::shown(PageColours::Normal, c);
@@ -3016,6 +3019,7 @@ impl Editor {
                     let decos = insp.text.preview(now).drawn_decos();
                     let bands = page_text::char_bands(&runs(now, scale, &paper), &decos, &paper);
                     page_text::paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands, &[]);
+                    crate::spell::marks(ui, id, &out, now);
                     out
                 })
                 .inner;
@@ -3167,6 +3171,7 @@ impl Editor {
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
         };
+        crate::spell::apply(ui.ctx(), id, &mut w.text);
         // A text box shows its size and border as the inspector changes them: a new one the
         // Text box tool's, which it is kept with; one on the page its own (ENH-13).
         let own = |id| {
@@ -3211,6 +3216,7 @@ impl Editor {
                                 .show(ui);
                             page_text::keep_on_right_click(ui.ctx(), id, &mut out, held);
                             page_text::snap_drawn(ui.ctx(), id, &mut out, &w.text, held);
+                            crate::spell::marks(ui, id, &out, &w.text);
                             out.response.response
                         })
                         .inner
@@ -3269,6 +3275,7 @@ impl Editor {
             let mut out = ui.scope_builder(at, |ui| te.show(ui)).inner;
             page_text::keep_on_right_click(ui.ctx(), id, &mut out, held);
             page_text::snap_drawn(ui.ctx(), id, &mut out, &w.text, held);
+            crate::spell::marks(ui, id, &out, &w.text);
             // What an input method composes shows unchecked; left without the keyboard, it
             // is taken as committed (PB-54).
             w.composing = page_text::composition(ui.ctx(), id, w.composing);
@@ -6542,6 +6549,7 @@ impl Editor {
                         self.text_refused.mark(ui.ctx(), note);
                     }
                 }
+                crate::spell::apply(ui.ctx(), id, &mut e.contents);
                 let held =
                     egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
                 let mut out = egui::TextEdit::multiline(&mut page_text::Clusters(&mut e.contents))
@@ -6550,6 +6558,8 @@ impl Editor {
                     .desired_width(f32::INFINITY)
                     .show(ui);
                 page_text::snap_drawn(ui.ctx(), id, &mut out, &e.contents, held);
+                crate::spell::marks(ui, id, &out, &e.contents);
+                crate::spell::menu_on(&out.response.response, id);
                 self.text_refused.show(ui.ctx(), &out, id);
                 dialogs::set_name(&out.response.response, label);
                 // Changes are kept as they are made, each finished one a step to undo; the
@@ -6618,13 +6628,16 @@ impl Editor {
             text: String::new(),
         });
         draft.page = Some(a.page);
-        let out = ui.add(
-            egui::TextEdit::multiline(&mut draft.text)
-                .id(id)
-                .hint_text("Reply")
-                .desired_rows(2)
-                .desired_width(f32::INFINITY),
-        );
+        crate::spell::apply(ui.ctx(), id, &mut draft.text);
+        let shown = egui::TextEdit::multiline(&mut draft.text)
+            .id(id)
+            .hint_text("Reply")
+            .desired_rows(2)
+            .desired_width(f32::INFINITY)
+            .show(ui);
+        crate::spell::marks(ui, id, &shown, &draft.text);
+        let out = shown.response.response;
+        crate::spell::menu_on(&out, id);
         dialogs::set_name(&out, "Reply");
         if self.reply_focus {
             out.request_focus();

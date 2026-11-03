@@ -522,6 +522,9 @@ impl FormUi {
                 crate::page_text::boxed_galley(ui.ctx(), t, font, size, color, None, lang).0
             }
         };
+        if !password {
+            crate::spell::apply(ui.ctx(), id, text);
+        }
         // A multi-line box would otherwise be four rows high, whatever the field's size.
         let held = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
         let mut buffer = crate::page_text::Clusters(text);
@@ -556,8 +559,16 @@ impl FormUi {
         // Light colours in either theme: the box sits on the paper.
         let theme = ui.visuals().clone();
         *ui.visuals_mut() = egui::Visuals::light();
-        let out = ui.put(rect, te);
+        // As `Ui::put` lays it out, keeping the output for the spelling marks.
+        let layout = egui::Layout::centered_and_justified(egui::Direction::TopDown);
+        let at = egui::UiBuilder::new().max_rect(rect).layout(layout);
+        let shown = ui.scope_builder(at, |ui| te.show(ui)).inner;
         crate::page_text::snap_to_clusters(ui.ctx(), id, text, held);
+        if !password {
+            crate::spell::marks(ui, id, &shown, text);
+        }
+        let out = shown.response.response;
+        crate::spell::menu_on(&out, id);
         *ui.visuals_mut() = theme;
         if *fresh {
             out.request_focus();

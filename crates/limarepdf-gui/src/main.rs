@@ -31,6 +31,7 @@ mod selection;
 mod settings;
 mod signatures;
 mod signing;
+mod spell;
 mod spin;
 mod styled;
 mod tab;

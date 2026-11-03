@@ -32,6 +32,16 @@ LimarePDF is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE
   what was changed are in `crates/limarepdf-core/src/std14.rs`; `crates/limarepdf-core/tools/gen_std14.py` makes the tables from
   the AFM files. Helvetica and Times are trademarks of Linotype-Hell AG and/or its subsidiaries; ITC Zapf Dingbats
   is a registered trademark of International Typeface Corporation.
+- **Spelling dictionaries:** SCOWL's English dictionaries 2020.12.07 (Canadian, US, British and
+  Australian) by Kevin Atkinson and others, under SCOWL's permissive licence, which asks that its
+  copyright and permission notices be kept; and Grammalecte's French dictionary 7.7 by Olivier R.
+  and its contributors, under the Mozilla Public License 2.0; all included unmodified, see
+  `crates/limarepdf-core/assets/dictionaries/`. They are read by the
+  [spellbook](https://github.com/helix-editor/spellbook) crate (MPL-2.0, used unmodified; its
+  source is at that address and on crates.io). The programs store the dictionaries compressed
+  (about 1.1 MB) and unpack one, unchanged byte for byte, when its language is first checked.
+  Release archives include the notices as `DICTIONARY-LICENSE-English.txt` and
+  `DICTIONARY-LICENSE-French.txt`, and the MPL-2.0 as `LICENSE-MPL-2.0.txt`.
 - **OCR model:** the text recognition model by Robert Knight, from the
   [ocrs](https://github.com/robertknight/ocrs) project, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/),
   included unmodified; see `crates/limarepdf-core/models/README.md`, shipped as `OCR-MODEL.md` in release archives. With

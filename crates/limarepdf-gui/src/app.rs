@@ -2027,6 +2027,158 @@ impl App {
         Some(files)
     }
 
+    /// Dictionary files to add: LibreOffice dictionary extensions, or Hunspell's `.dic` and
+    /// `.aff` files. Never the system's chooser in tests.
+    #[cfg(not(test))]
+    fn pick_dictionaries() -> Option<Vec<PathBuf>> {
+        rfd::FileDialog::new()
+            .add_filter(
+                "Spelling dictionaries (.oxt, .dic, .aff)",
+                &["oxt", "dic", "aff"],
+            )
+            .pick_files()
+    }
+
+    #[cfg(test)]
+    fn pick_dictionaries() -> Option<Vec<PathBuf>> {
+        None
+    }
+
+    /// What spelling follows this frame (the settings and the document in front), the words
+    /// added to the dictionary saved, and what went wrong reading a dictionary said.
+    fn spelling_frame(&mut self, ctx: &egui::Context) {
+        let s = &self.settings;
+        let config = crate::spell::Config {
+            on: s.spelling,
+            chosen: s.spelling_language.clone(),
+            folder: s.dictionaries_folder(),
+            document: self.tabs.get(self.active).and_then(|t| t.pdf.language()),
+        };
+        crate::spell::configure(ctx, config, || s.spelling_words());
+        if let Some(words) = crate::spell::take_added(ctx) {
+            self.settings.save_spelling_words(&words);
+        }
+        for text in crate::spell::take_failures(ctx) {
+            self.show(Dialog::Message("Can't check spelling".into(), text));
+        }
+    }
+
+    /// Adds the dictionaries in `files` to the dictionaries folder: each extension's, and
+    /// each `.dic` with its `.aff` (picked with it, or beside it). Says what was added, and
+    /// what couldn't be and why.
+    fn add_dictionaries(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
+        use limarepdf_core::spelling::{in_extension, Dictionary, Unpacked};
+        let Some(folder) = self.settings.dictionaries_folder() else {
+            let text = "LimarePDF has no settings folder to keep dictionaries in.".to_string();
+            self.show(Dialog::Message("Dictionary not added".into(), text));
+            return;
+        };
+        let ext = |p: &PathBuf, e: &str| p.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
+        let name = |p: &Path| {
+            p.file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into())
+        };
+        let mut found: Vec<Unpacked> = Vec::new();
+        let mut problems: Vec<String> = Vec::new();
+        for f in files.iter().filter(|f| ext(f, "oxt")) {
+            match std::fs::read(f)
+                .map_err(|e| e.to_string())
+                .and_then(|data| in_extension(&data, &name(f)).map_err(|e| e.to_string()))
+            {
+                Ok(list) => found.extend(list),
+                Err(e) => problems.push(e),
+            }
+        }
+        for dic in files.iter().filter(|f| ext(f, "dic")) {
+            let aff = (files.iter())
+                .find(|a| ext(a, "aff") && a.file_stem() == dic.file_stem())
+                .cloned()
+                .unwrap_or_else(|| dic.with_extension("aff"));
+            let read = std::fs::read(dic).and_then(|d| Ok((std::fs::read(&aff)?, d)));
+            match read {
+                Ok((aff, dic_data)) => {
+                    let stem = dic
+                        .file_stem()
+                        .map_or(String::new(), |s| s.to_string_lossy().into());
+                    found.push(Unpacked {
+                        stem,
+                        aff,
+                        dic: dic_data,
+                    });
+                }
+                Err(_) => problems.push(format!(
+                    "{} needs its .aff file beside it, of the same name",
+                    name(dic)
+                )),
+            }
+        }
+        if found.is_empty() && problems.is_empty() {
+            problems.push("No .dic file was chosen with its .aff file".into());
+        }
+        let mut added = Vec::new();
+        for u in found {
+            let file = format!("{}.dic", u.stem);
+            if let Err(e) = Dictionary::from_bytes(&file, &u.aff, &u.dic) {
+                problems.push(e.to_string());
+                continue;
+            }
+            let mut unconfirmed = None;
+            let mut written = Ok(());
+            for (kind, data) in [("aff", &u.aff), ("dic", &u.dic)] {
+                let path = folder.join(format!("{}.{kind}", u.stem));
+                match crate::settings::write_own(&path, data) {
+                    Ok(why) => unconfirmed = unconfirmed.or(why),
+                    Err(e) => {
+                        written = Err(e);
+                        break;
+                    }
+                }
+            }
+            match written {
+                Ok(()) => {
+                    if let Some(why) = unconfirmed {
+                        problems.push(format!(
+                            "{file} was added, but your system couldn't confirm it is safely \
+                             on disk ({why})"
+                        ));
+                    }
+                    added.push(u.stem);
+                }
+                Err(e) => problems.push(format!("{file} couldn't be saved ({e:#})")),
+            }
+        }
+        crate::spell::list_again(ctx);
+        let (langs, _) = crate::spell::languages(ctx);
+        let names: Vec<String> = (added.iter())
+            .map(|stem| {
+                let key = format!("file:{stem}");
+                langs
+                    .iter()
+                    .find(|l| l.key == key)
+                    .map_or(stem.clone(), |l| l.name.clone())
+            })
+            .collect();
+        if !names.is_empty() {
+            self.status = format!(
+                "Added {}. Choose it in Review > Spelling's menu.",
+                limarepdf_core::quoted_list(&names)
+            );
+        }
+        if !problems.is_empty() {
+            let title = if names.is_empty() {
+                "Dictionary not added"
+            } else {
+                "Some dictionaries not added"
+            };
+            let text = problems
+                .iter()
+                .map(|p| format!("{p}."))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.show(Dialog::Message(title.into(), text));
+        }
+    }
+
     /// Read image files, reporting the first that cannot be read.
     fn read_images(&mut self, files: &[PathBuf]) -> Option<Vec<(PathBuf, Vec<u8>)>> {
         let mut out = Vec::new();
@@ -2847,6 +2999,24 @@ impl App {
             Act::SearchView => self.show_view(Side::Search),
             Act::Bookmarks => self.show_view(Side::Bookmarks),
             Act::Comments => self.show_view(Side::Comments),
+            Act::Spelling => self.show_view(Side::Spelling),
+            // For every document, and remembered between runs.
+            Act::SpellAsYouType => {
+                self.settings.spelling = !self.settings.spelling;
+                self.settings.save();
+            }
+            Act::SpellingLanguage(i) => {
+                let (langs, _) = crate::spell::languages(ctx);
+                if let Some(l) = langs.get(i) {
+                    self.settings.spelling_language = Some(l.key.clone());
+                    self.settings.save();
+                }
+            }
+            Act::AddDictionary => {
+                if let Some(files) = Self::pick_dictionaries() {
+                    self.add_dictionaries(ctx, &files);
+                }
+            }
             Act::PrevComment | Act::NextComment => {
                 let t = &mut self.tabs[self.active];
                 if let Some(said) = t.step_comment(a == Act::NextComment) {
@@ -4921,6 +5091,7 @@ impl App {
             planned: self.settings.show_planned,
             compact: self.settings.compact_commands,
             snap: self.settings.snap,
+            spelling: self.settings.spelling,
             accent: self.settings.accent,
             layout: self.settings.layout,
             cover: self.settings.cover,
@@ -5170,7 +5341,8 @@ impl App {
                 // not an open list or menu, which Esc closes first; F3 goes to the next match
                 // from one, as from Search results' fields.
                 let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
-                let find = matches!(a.act, Act::FindNext | Act::FindPrevious);
+                // F7 opens Spelling from text being typed too, as in Word.
+                let find = matches!(a.act, Act::FindNext | Act::FindPrevious | Act::Spelling);
                 let skip = if region || find {
                     picking
                 } else {
@@ -5817,11 +5989,12 @@ fn inspector_head(ui: &mut egui::Ui, s: &mut Settings, t: &mut Tab, collapse: bo
 
 /// The side panel's views, top to bottom on the strip at the window's left edge: each with
 /// the command that shows it, for its icon, and its name.
-const SIDE_VIEWS: [(Side, Act, &str); 5] = [
+const SIDE_VIEWS: [(Side, Act, &str); 6] = [
     (Side::Pages, Act::PagesView, "Pages"),
     (Side::Search, Act::SearchView, "Search results"),
     (Side::Bookmarks, Act::Bookmarks, "Bookmarks"),
     (Side::Comments, Act::Comments, "Comments"),
+    (Side::Spelling, Act::Spelling, "Spelling"),
     (Side::Signatures, Act::Signatures, "Digital signatures"),
 ];
 
@@ -5858,6 +6031,7 @@ fn side_panel(side: Side) -> (&'static str, f32) {
         Side::Search => ("side-search", SIDE_TEXT_WIDTH),
         Side::Bookmarks => ("side-bookmarks", SIDE_TEXT_WIDTH),
         Side::Comments => ("side-comments", SIDE_TEXT_WIDTH),
+        Side::Spelling => ("side-spelling", SIDE_TEXT_WIDTH),
         Side::Signatures => ("side-signatures", SIDE_TEXT_WIDTH),
     }
 }
@@ -6388,6 +6562,7 @@ impl eframe::App for App {
         // Interface text the interface's own fonts can't draw (Chinese, Japanese, Korean,
         // emoji) in installed fonts, found on another thread at start (ENH-33).
         crate::typing_fonts::interface_fallback(&ctx);
+        self.spelling_frame(&ctx);
         // Back from another app, which may have changed the files open here.
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {
@@ -6895,6 +7070,7 @@ impl eframe::App for App {
                         Side::Pages => t.show_thumbs(ui, &c),
                         Side::Bookmarks => t.show_outline(ui),
                         Side::Comments => t.show_comments(ui),
+                        Side::Spelling => t.show_spelling(ui),
                         Side::Signatures => t.show_signatures(ui),
                         Side::Search => acts.extend(t.show_results(ui, &c)),
                     });
@@ -7272,6 +7448,7 @@ mod tests {
     mod replace;
     mod review;
     mod sign;
+    mod spelling;
     mod tabs;
     mod text_align;
     mod tools;
@@ -7832,6 +8009,7 @@ mod tests {
             "Search results",
             "Bookmarks",
             "Comments",
+            "Spelling",
             "Digital signatures",
             "Page thumbnails",
         ];
@@ -8780,15 +8958,19 @@ mod tests {
             assert!(node(&tree, group).is_none(), "{group} folded to its name");
             assert!(node(&tree, one).is_some(), "no {one} at 900");
         }
-        // Planned features alone go first: Review's Proofing (Spelling) before the Review
-        // group to its right.
-        app.band = Band::Review;
-        let spelling = "Spelling — Planned";
+        // Planned features alone go first: Forms and sign's Authoring (Create fields) before
+        // the groups of built commands. Review's Proofing went first while Spelling was
+        // planned; built (NEW-06), it folds as the others do.
+        app.band = Band::Forms;
+        let fields = "Create fields — Planned";
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        assert!(node(&tree, spelling).is_some());
-        let tree = settled_at(&mut app, &ctx, 1200.0);
-        assert!(node(&tree, spelling).is_none(), "shown at 1200");
-        assert!(node(&tree, "Flatten…").is_some(), "Review folded at 1200");
+        assert!(node(&tree, fields).is_some());
+        let tree = settled_at(&mut app, &ctx, 600.0);
+        assert!(node(&tree, fields).is_none(), "shown at 600");
+        assert!(node(&tree, "Digital signature").is_some(), "folded at 600");
+        app.band = Band::Review;
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(node(&tree, "Spelling").is_some(), "no Spelling at 1400");
         app.band = Band::Edit;
         let tree = settled_at(&mut app, &ctx, 700.0);
         let (at, _) = node(&tree, "Editing").expect("Editing folded");

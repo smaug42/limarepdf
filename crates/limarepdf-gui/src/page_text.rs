@@ -1348,6 +1348,7 @@ pub fn paragraph_field(
     covers: &[Rect],
     hide: Option<Cover>,
 ) -> Field {
+    crate::spell::apply(ctx, id, text);
     let (galley, origin) = (style.laid)(text);
     let inner = Rect::from_min_size(origin, galley.size());
     let rows: Vec<Rect> = (galley.rows.iter())
@@ -1407,6 +1408,7 @@ pub fn paragraph_field(
                 .inner;
             keep_on_right_click(ctx, id, &mut out, held);
             snap_drawn(ctx, id, &mut out, buffer.0, held);
+            crate::spell::marks(ui, id, &out, buffer.0);
             // Its underlines and strike-throughs where they are written.
             let (bands, stretch) = (style.bands)(out.galley.text());
             paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands, &stretch);
@@ -1803,6 +1805,7 @@ pub fn field(
     cover: Option<(Rect, Cover)>,
     movable: bool,
 ) -> Field {
+    crate::spell::apply(ctx, id, text);
     let runs = (style.runs)(text);
     let first = runs.first().cloned();
     let font = first
@@ -1880,6 +1883,7 @@ pub fn field(
                 .inner;
             keep_on_right_click(ctx, id, &mut out, held);
             snap_drawn(ctx, id, &mut out, buffer.0, held);
+            crate::spell::marks(ui, id, &out, buffer.0);
             // Its underlines and strike-throughs where they are written (egui's own sit at
             // the bottom and middle of each run's line box).
             let now = out.galley.text().to_string();

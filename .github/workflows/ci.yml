@@ -88,6 +88,12 @@ jobs:
           for f in OFL-Liberation OFL-Caveat OFL-CedarvilleCursive LICENSE-HomemadeApple OFL-Zeyada; do
             cp "crates/limarepdf-core/assets/fonts/$f.txt" "$dir/FONT-LICENSE-${f#*-}.txt"
           done
+          # Notices and licences for the spelling dictionaries built into limarepdf-core
+          # (SCOWL's English, Grammalecte's French) and the MPL-2.0, the French one's and the
+          # spellbook crate's.
+          cp crates/limarepdf-core/assets/dictionaries/README_en_CA.txt "$dir/DICTIONARY-LICENSE-English.txt"
+          cp crates/limarepdf-core/assets/dictionaries/README_dict_fr.txt "$dir/DICTIONARY-LICENSE-French.txt"
+          cp crates/limarepdf-core/assets/dictionaries/LICENSE-MPL-2.0.txt "$dir/LICENSE-MPL-2.0.txt"
           # Linux desktop entry and icon; docs/install.md says where they go.
           if [ "${{ runner.os }}" = "Linux" ]; then
             cp crates/limarepdf-gui/assets/io.github.smaug42.limarepdf.desktop "$dir/"

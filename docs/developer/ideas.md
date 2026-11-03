@@ -45,8 +45,9 @@ Small or medium additions that build on what LimarePDF already has:
 
 ## Content editing
 
-- Spell check (L, needs a dictionary); `replace` on the command line (S–M, on Replace all's preparation, which is
-  built: NEW-04b)
+- Spelling for the pages' own text in Review > Spelling (PF-60), and the system's spell checkers on Windows and
+  macOS (PF-61; spell checking itself is built, NEW-06); `spelling` on the command line (S); `replace` on the
+  command line (S–M, on Replace all's preparation, which is built: NEW-04b)
 - Layers: add, merge, reorder, flatten (L)
 - Right-to-left (Hebrew, Arabic) and shaped (Indic, Thai) text, beyond the Latin, Greek and Cyrillic written
   today, and Chinese, Japanese and Korean outside installed fonts that have them (L: text shaping and

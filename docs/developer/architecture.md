@@ -40,6 +40,9 @@ It uses:
 - [`image`](https://crates.io/crates/image) for images;
 - [`url`](https://crates.io/crates/url) 2.5.8 for the addresses new links are written with (ENH-17: IDNA and
   percent-encoding; already in the tree through `webbrowser`);
+- [`spellbook`](https://crates.io/crates/spellbook) 0.4.2 (MPL-2.0) for spelling, with Hunspell dictionaries, and
+  [`zip`](https://crates.io/crates/zip) 9.3 to read the dictionary extensions added (NEW-06; "Spelling" below);
+  the app asks the system's language of [`sys-locale`](https://crates.io/crates/sys-locale) 0.3;
 - [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scans and OCR](../scanning-and-ocr.md));
   the usual scanner and OCR libraries, SANE and Tesseract, are C/C++, so LimarePDF doesn't drive scanners;
 - [`serde_json`](https://crates.io/crates/serde_json) in the command line, for form values as JSON.
@@ -1142,6 +1145,45 @@ survives the row scrolling out of view): `Read::drop_place` takes the row under 
 rows `End`, and keeps a place only where `bookmark_moves` says it moves. `Tab::move_bookmark` makes the move one
 `edit_setting` step (bookmarks aren't drawn on the pages, so nothing is redrawn); a refused step or move says why
 through `Tab::info`. The right-click menu's Move up, Move down, Promote and Demote are greyed by `bookmark_step`.
+
+**Spelling** (NEW-06) is core's `spelling.rs` over [`spellbook`](https://crates.io/crates/spellbook) 0.4 (pure Rust,
+MPL-2.0, used unmodified), which reads Hunspell's dictionaries; Nuspell's suggestions, without the sounds-alike
+ones. The bundled dictionaries (`BUILT_IN`: SCOWL's English for Canada, the US, the UK with -ise and Australia,
+Grammalecte's French, `assets/dictionaries/README.md`) are packed with zlib by `build.rs` and unpacked by
+`BuiltIn::files` when first read; `Dictionary::from_bytes` decodes the files in the character set the `.aff`
+names (UTF-8, ISO 8859-1, its default, or 15; others refused with `SpellingError::Encoding`). `words` gives the
+words checked (UAX #29 word bounds through `unicode-segmentation`; words joined by a hyphen are one, checked whole
+then by part), leaving out, as Word does, words in capitals, words with digits and runs between spaces that read
+as web, email or file addresses. A `Speller` keeps each word's answer (`is_known`), so a box typed in looks up
+only new words; `Exceptions` are the words added (kept, a lower-case entry covering any capitals, curly
+apostrophes made straight) and ignored (the session). `Dictionary::suggest` gives at most five, and for a word
+with a capital first also its small-letter form's capitalised: spellbook alone gave "Eh" and no "The" for "Teh".
+`find` lists the `.dic` files with an `.aff` of the same name in folders (Linux's `system_folders`; none on
+Windows and macOS), naming them from their file names (`tag_of`, `language_name`); `in_extension` takes the pairs
+from a LibreOffice `.oxt` (a zip, read through [`zip`](https://crates.io/crates/zip) 9.3 with only the zlib-rs
+deflate; each file at most 64 MB); `best_match` matches a `/Lang` or locale to a dictionary by region, then
+language.
+
+In the app, `spell.rs` holds the state in the context's data (as `typing_fonts` holds its loads, so each test's
+context has its own): `App::spelling_frame` sets each frame what spelling follows (`Config`: Check spelling as you
+type, the language chosen, the dictionaries folder beside the settings, the front document's `/Lang`), saves the
+added words to `words.txt` when they change (`take_added`, through `settings::write_own`, a failure said once as
+other settings are) and says a dictionary that can't be read (`take_failures`). The language checked is the one
+chosen, else the document's, the system's (`sys-locale`) or US English. A dictionary is read on a thread of its
+own the first time it is needed, which bumps `revision` and asks for a frame; meanwhile nothing is marked. Each
+typing box calls `spell::apply` before it is drawn (a suggestion picked for it goes into its text, as typing
+would, so the box's own keeping, undo and `Styled::sync` treat it as typed) and `spell::marks` after, with its
+`TextEditOutput`: the box's text is checked only when it, the language or `revision` changed (`Checked`), and a
+wavy line is drawn under each word in the galley's rows (`rows_of`, `wave`, the theme's `Tone::Bad` red), except
+the word ending at the caret while the box has the keyboard. A right-click on a marked word keeps it with its
+suggestions (`Pick`, worked out then, never while typing) for `spell::menu`: the typing menu (`Tab::typing_menu`)
+puts it first, and the boxes with no menu of their own (the inspector's comment and reply boxes, form fields) open
+one with it alone (`menu_on`). The form field's box is shown as `Ui::put` lays it out but through `TextEdit::show`,
+for its output. The Spelling view (`tab/spelling.rs`, `Side::Spelling`) lists what was written (`written`:
+comments, replies and text boxes not locked, text fields not read-only or passwords, by page) and its words spelt
+wrongly for the document's and spelling's revisions; Change and Change all write through one `Tab::edit`
+(`set_annotation`, `set_field`), Change all every word alike in any capitals, each keeping its first letter's.
+F7 joins F3 among the keys that work from a text box (`App::shortcuts`).
 
 Digital signatures are checked in `crates/limarepdf-core/src/sig_verify.rs` (finding them, the byte-range rules, and
 tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS

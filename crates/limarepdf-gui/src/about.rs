@@ -227,6 +227,12 @@ fn credits(ui: &mut Ui) {
                  Homemade Apple (Apache License 2.0); all included unmodified",
             );
             row(ui, "Icons:", "Phosphor Icons (MIT)");
+            row(
+                ui,
+                "Spelling:",
+                "spellbook (MPL-2.0); SCOWL's English dictionaries; Grammalecte's French \
+                 dictionary (MPL-2.0); all included unmodified",
+            );
             ui.add_space(4.0);
             ui.weak("LimarePDF is licensed under MIT or Apache-2.0, at your option.");
         });

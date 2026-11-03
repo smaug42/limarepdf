@@ -122,6 +122,7 @@ impl Group {
             Item::Font => "Font".into(),
             Item::Sign => "Fill and sign".into(),
             Item::Marks => "Highlight".into(),
+            Item::Spelling => "Spelling".into(),
             Item::Planned(p) => p.name(),
         }
     }
@@ -139,6 +140,8 @@ pub enum Item {
     Sign,
     /// Highlight, its menu the other marks and their colours.
     Marks,
+    /// Spelling, its menu the languages, Check spelling as you type and Add a dictionary.
+    Spelling,
     Planned(&'static Planned),
 }
 
@@ -228,12 +231,6 @@ const BLANK_DOCUMENT: Planned = Planned {
     icon: icon::FILE_PLUS,
     item: "NEW-09",
     what: "Start a new, empty document.",
-};
-const SPELLING: Planned = Planned {
-    label: "Spelling",
-    icon: icon::TEXT_AA,
-    item: "NEW-06",
-    what: "Check the spelling of the text you type.",
 };
 const EXPORT_COMMENTS: Planned = Planned {
     label: "Export comments",
@@ -363,7 +360,7 @@ static REVIEW: &[Group] = &[
             b(Act::Tool(Tool::Stamp), "Stamp", icon::STAMP),
         ],
     ),
-    group("Proofing", &[Item::Planned(&SPELLING)]),
+    group("Proofing", &[Item::Spelling]),
     group(
         "Review",
         &[
@@ -927,6 +924,16 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
                 button(ui, &mark, acts);
                 caret(ui, "Highlight options", |ui| markup::menu(ui, c, acts));
             }
+            Item::Spelling => {
+                let spelling = Button {
+                    act: Some(Act::Spelling),
+                    label: "Spelling",
+                    icon: icon::TEXT_AA,
+                    menu: &[],
+                };
+                button(ui, &spelling, acts);
+                caret(ui, "Spelling options", |ui| spelling_menu(ui, c, acts));
+            }
         }
     }
 }
@@ -1011,6 +1018,23 @@ fn caret(ui: &mut egui::Ui, name: &str, menu: impl FnOnce(&mut egui::Ui)) {
     let (r, _) = egui::containers::menu::MenuButton::from_button(more).ui(ui, menu);
     r.on_hover_text(name)
         .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+}
+
+/// Spelling's menu: the language checked among those there are, as Word's Language menu
+/// lists them, then Check spelling as you type and Add a dictionary.
+fn spelling_menu(ui: &mut egui::Ui, c: &Ctx, acts: &mut Vec<Act>) {
+    let (langs, active) = crate::spell::languages(ui.ctx());
+    ui.label("Language");
+    for (i, l) in langs.iter().enumerate() {
+        if ui.radio(i == active, &l.name).clicked() {
+            acts.push(Act::SpellingLanguage(i));
+            ui.close();
+        }
+    }
+    ui.separator();
+    for a in [Act::SpellAsYouType, Act::AddDictionary] {
+        actions::menu_item(ui, actions::get(a), c, acts);
+    }
 }
 
 /// A planned feature's button: greyed, marked Planned, never run, and no Tab stop.
@@ -1174,10 +1198,10 @@ mod tests {
     #[test]
     fn planned_features_name_their_plan_items() {
         let all = all_planned();
-        assert!(all.len() >= 6);
+        assert!(all.len() >= 5);
         // Built: Underline (NEW-07, batch 46's 4b), Align (NEW-08, its stage 5), Print
-        // preview (ENH-14, batch 30's stage 3) and Link (ENH-17's stage 2).
-        let built = ["NEW-07", "NEW-08", "ENH-14", "ENH-17"];
+        // preview (ENH-14, batch 30's stage 3), Link (ENH-17's stage 2) and Spelling (NEW-06).
+        let built = ["NEW-07", "NEW-08", "ENH-14", "ENH-17", "NEW-06"];
         assert!(!all.iter().any(|p| built.contains(&p.item)));
         for p in &all {
             let id = p.item;
@@ -1266,6 +1290,9 @@ mod tests {
                         Item::Icons(acts) => reach.extend(acts.iter()),
                         Item::Sign => reach.push(Act::Tool(Tool::Sign)),
                         Item::Marks => reach.push(Act::Mark(Mark::Highlight)),
+                        Item::Spelling => {
+                            reach.extend([Act::Spelling, Act::SpellAsYouType, Act::AddDictionary])
+                        }
                         Item::Font | Item::Planned(_) => {}
                     }
                 }

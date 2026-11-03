@@ -180,6 +180,16 @@ pub enum Act {
     /// Show the side panel's Bookmarks view.
     Bookmarks,
     Comments,
+    /// Show the side panel's Spelling view, which goes through the comments' and form
+    /// fields' words spelt wrongly (NEW-06; Word's Review > Spelling, F7).
+    Spelling,
+    /// Check spelling as you type, or not (Review > Proofing > Language).
+    SpellAsYouType,
+    /// Check spelling in the nth language of Review > Proofing > Language. Built from the
+    /// dictionaries there are, so not in [`ACTIONS`].
+    SpellingLanguage(usize),
+    /// Add a spelling dictionary: a LibreOffice dictionary extension, or Hunspell's two files.
+    AddDictionary,
     /// Select the comment before or after the selected one, as the Comments view lists
     /// them, and show its mark (Word's Review > Previous and Next).
     PrevComment,
@@ -380,6 +390,10 @@ impl Act {
             | Act::SearchView
             | Act::Bookmarks
             | Act::Comments
+            | Act::Spelling
+            | Act::SpellAsYouType
+            | Act::SpellingLanguage(_)
+            | Act::AddDictionary
             | Act::PrevComment
             | Act::NextComment
             | Act::Signatures
@@ -512,6 +526,8 @@ pub struct Ctx {
     /// A form field has the keyboard.
     pub field: bool,
     pub fields_shown: bool,
+    /// Spelling is checked as one types.
+    pub spelling: bool,
     pub theme: ThemePreference,
     pub page_look: PageLook,
     pub pictures_too: bool,
@@ -760,6 +776,13 @@ const PREVIEW_KEYS: &[KeyboardShortcut] = if cfg!(target_os = "linux") {
     &[k(CS, Key::O), k(C, Key::F2)]
 } else {
     &[k(C, Key::F2)]
+};
+
+/// Spelling's keys: Word's F7, and on a Mac Word for Mac's Option+Cmd+L.
+const SPELLING_KEYS: &[KeyboardShortcut] = if cfg!(target_os = "macos") {
+    &[k(Modifiers::ALT.plus(Modifiers::COMMAND), Key::L)]
+} else {
+    &[k(N, Key::F7)]
 };
 
 /// A command with the usual settings: listed in the menu and the palette, no
@@ -1692,6 +1715,33 @@ pub static ACTIONS: &[Action] = &[
         label: "Comments",
         icon: icon::CHAT_TEXT,
         hint: "List the document's comments, notes and markup in the navigation panel.",
+        ..BASE
+    },
+    Action {
+        act: Act::Spelling,
+        group: Group::Tools,
+        label: "Spelling",
+        icon: icon::TEXT_AA,
+        keys: SPELLING_KEYS,
+        enabled: |c| c.doc,
+        hint: "Go through the words spelt wrongly in the comments, text boxes and form \
+               fields.",
+        ..BASE
+    },
+    Action {
+        act: Act::SpellAsYouType,
+        group: Group::Tools,
+        label: "Check spelling as you type",
+        checked: Some(|c| c.spelling),
+        hint: "Mark the words spelt wrongly in the text you type.",
+        ..BASE
+    },
+    Action {
+        act: Act::AddDictionary,
+        group: Group::Tools,
+        label: "Add a dictionary…",
+        hint: "Add a spelling dictionary for another language: a LibreOffice dictionary \
+               extension (.oxt), or a Hunspell dictionary's two files (.dic and .aff).",
         ..BASE
     },
     Action {

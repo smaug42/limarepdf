@@ -593,4 +593,4 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 
 ---
 
-[← Comments and markup](comments-and-markup.md) · [User guide](README.md) · [Filling in forms →](forms.md)
+[← Comments and markup](comments-and-markup.md) · [User guide](README.md) · [Checking spelling →](spelling.md)

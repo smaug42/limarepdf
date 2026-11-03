@@ -71,6 +71,7 @@ mod sig_save;
 mod sig_sign;
 mod sig_verify;
 mod sign;
+pub mod spelling;
 mod stamps;
 mod stand_in;
 mod std14;

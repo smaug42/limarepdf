@@ -36,6 +36,7 @@ mod organise;
 mod previews;
 mod proofs;
 mod replace;
+mod spelling;
 pub use comments::Review;
 use organise::Organise;
 use previews::{CropDrag, Picture};
@@ -88,6 +89,7 @@ pub enum Side {
     Search,
     Bookmarks,
     Comments,
+    Spelling,
     Signatures,
 }
 
@@ -440,6 +442,8 @@ pub struct Tab {
     comments: Option<(u64, Vec<Annot>)>,
     /// The Comments view's filter, search and place (ENH-40).
     pub review: Review,
+    /// The Spelling view's words ignored and list (NEW-06).
+    spell_view: spelling::SpellView,
     /// Single-page layout: whether the view was at the page's top and bottom at the end
     /// of the last frame, so the next wheel step past it turns the page.
     edge: (bool, bool),
@@ -580,6 +584,7 @@ impl Tab {
             outline: bookmarks::Outline::default(),
             comments: None,
             review: Review::default(),
+            spell_view: spelling::SpellView::default(),
             edge: (false, false),
             flipped: 0.0,
             layout: Layout::default(),
@@ -2864,7 +2869,8 @@ impl Tab {
     }
 
     /// A right-click in the text being typed on the page: the menu for its text, Cut, Copy
-    /// and Paste, Bold and Italic, as word processors have. The box as drawn this frame
+    /// and Paste, Bold and Italic, as word processors have, and over a word spelt wrongly its
+    /// suggestions, Ignore all and Add to dictionary. The box as drawn this frame
     /// (`Editor::typing_box`): one read again by its id would give up the keyboard it was
     /// just given back, when a press elsewhere came this frame.
     fn typing_menu(&mut self, base: &Ctx) {
@@ -2873,7 +2879,13 @@ impl Tab {
         };
         let mut c = *base;
         self.fill_ctx(&mut c);
-        resp.context_menu(|ui| actions::typing_menu(ui, &c, &mut self.requested));
+        // Over a word spelt wrongly, its suggestions first, as word processors put them.
+        resp.context_menu(|ui| {
+            if crate::spell::menu(ui, resp.id) {
+                ui.separator();
+            }
+            actions::typing_menu(ui, &c, &mut self.requested)
+        });
     }
 
     /// A small bar for the selected object or words, with icon buttons for the right-click

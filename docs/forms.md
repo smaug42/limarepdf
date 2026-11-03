@@ -92,4 +92,4 @@ flattens them: see [Forms](cli.md#forms).
 
 ---
 
-[← Editing text and pictures](content-editing.md) · [User guide](README.md) · [Fill and sign →](fill-and-sign.md)
+[← Checking spelling](spelling.md) · [User guide](README.md) · [Fill and sign →](fill-and-sign.md)
