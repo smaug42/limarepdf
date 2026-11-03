@@ -6,7 +6,7 @@ mod common;
 
 use common::saved::{tools, Saved};
 use limarepdf_core::render::{self, Renderer};
-use limarepdf_core::{part_file_name, FieldValue, LinkTarget, Pdf, SplitBy};
+use limarepdf_core::{part_file_name, FieldValue, LinkTarget, Pdf, SplitBy, Unfollowed};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
 fn s(t: &str) -> Object {
@@ -329,9 +329,13 @@ fn extracted_pages_keep_nothing_of_the_others() {
     );
     assert_eq!(field_names(&saved), ["field-1", "field-2", "shared"]);
     let q = Pdf::from_bytes(&saved.bytes, None).unwrap();
+    // The two links to page 3 go nowhere now.
+    let nowhere = LinkTarget::Unfollowed(Unfollowed::Nowhere);
     assert_eq!(
         targets(&q, 0),
         [
+            nowhere.clone(),
+            nowhere,
             LinkTarget::Page(1),
             LinkTarget::Uri("https://example.org/".into())
         ]

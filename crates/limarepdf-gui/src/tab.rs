@@ -3413,7 +3413,8 @@ impl Tab {
         match self.ed.follow.take() {
             Some(LinkTarget::Page(p)) => self.go_to(p),
             Some(LinkTarget::Uri(u)) => self.open_link = Some(u),
-            None => {}
+            // Never followed; the editor doesn't offer them.
+            Some(LinkTarget::Unfollowed(_)) | None => {}
         }
         if self.goto.is_none() {
             self.current = probe;

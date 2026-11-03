@@ -136,6 +136,11 @@
 
 ### Changed
 
+- Links LimarePDF doesn't follow now say what they would do when you hover over them ("Opens another file:
+  report.pdf", "Runs a program or opens a file", "Runs a script"), the pointer staying as it is. A link whose
+  address isn't a web page's or an email address (`file:`, `javascript:`, `tel:` and the like) is no longer
+  offered to your browser after asking: it is one of these, never opened. Links to web pages and email
+  addresses still ask first. A link over several lines now reacts only over its lines, not the gaps between.
 - Print is shorter, for smaller screens: the printer, pages, copies, sides, and the paper with the orientation
   beside it are shown, and the settings used less often are folded under their titles, **Scale**, **Layout**
   (pages per sheet and booklets) and **Advanced** (Print as image), each opened by a click, as Chrome's and
@@ -181,6 +186,9 @@
 
 ### Fixed
 
+- Hovering over a web link showed its address as the file gave it, with any direction-changing or invisible
+  characters in it, which could make it look like another address; it is now shown cleaned of them, as the Open
+  link? window already showed it.
 - A tool's button clicked again didn't turn the tool off: Insert > Text, Note, Text box, Draw and its shapes,
   Stamp, Image, Mark redaction, Fill and sign and the arrow stayed on, and only Esc or Edit > Edit text left them.
   Clicked again, each now goes back to reading, as in Word and Acrobat, what was typed kept; a picture waiting to

@@ -19,7 +19,7 @@ use limarepdf_core::{
     words_text, Annot, AnnotKind, Block, BoxSetting, DecoKind, Decorated, DocWords, FieldValue,
     FontChoice, FontRefusal, LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord,
     ParagraphSetting, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
-    StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
+    StampPlace, TextEdit, TextPart, TextStyle, Unfollowed, MIN_SIGNATURE_BOX,
 };
 use paragraph::{para_id, ParaEdit, Then};
 use std::collections::{BTreeMap, HashMap};
@@ -602,6 +602,34 @@ impl Marquee {
 /// Whether box `b` is wholly inside box `r`.
 fn inside(b: [f32; 4], r: [f32; 4]) -> bool {
     b[0] >= r[0] && b[1] >= r[1] && b[2] <= r[2] && b[3] <= r[3]
+}
+
+/// What a link LimarePDF doesn't follow does, for its tooltip.
+pub fn unfollowed(u: &Unfollowed) -> String {
+    let named = |what: &str, name: &str| match limarepdf_core::display_line(name, 80) {
+        n if n.is_empty() => what.to_string(),
+        n => format!("{what}: {n}"),
+    };
+    match u {
+        Unfollowed::File(f) => format!(
+            "{}. LimarePDF doesn't open other files from links.",
+            named("Opens another file", f)
+        ),
+        Unfollowed::Program(p) => format!(
+            "{}. LimarePDF doesn't run them.",
+            named("Runs a program or opens a file", p)
+        ),
+        Unfollowed::Script => "Runs a script. LimarePDF doesn't run scripts.".into(),
+        Unfollowed::Address(a) => format!(
+            "{}\nLimarePDF opens web and email links only.",
+            limarepdf_core::display_line(a, 300)
+        ),
+        Unfollowed::Action(a) => format!(
+            "{}. LimarePDF doesn't do this from a link.",
+            named("Does something else", a)
+        ),
+        Unfollowed::Nowhere => "Goes nowhere in this document.".into(),
+    }
 }
 
 /// Box `b` moved by `(dx, dy)`.
@@ -4052,16 +4080,22 @@ impl Editor {
                     .entry(page)
                     .or_insert_with(|| pdf.page_links(page).unwrap_or_default());
                 links.iter().find(|l| {
-                    let b = l.bbox;
-                    (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y)
+                    l.areas
+                        .iter()
+                        .any(|b| (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y))
                 })
             });
-            if let Some(link) = link {
+            // A link LimarePDF doesn't follow says what it does, and the page goes on
+            // taking clicks there as if it weren't there.
+            if let Some(LinkTarget::Unfollowed(u)) = link.map(|l| &l.target) {
+                resp = resp.on_hover_text_at_pointer(unfollowed(u));
+            } else if let Some(link) = link {
                 let target = link.target.clone();
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 let tip = match &target {
                     LinkTarget::Page(n) => format!("Go to page {}", n + 1),
-                    LinkTarget::Uri(u) => u.clone(),
+                    LinkTarget::Uri(u) => limarepdf_core::display_line(u, 300),
+                    LinkTarget::Unfollowed(u) => unfollowed(u),
                 };
                 over_link = true;
                 resp = resp.on_hover_text_at_pointer(tip);

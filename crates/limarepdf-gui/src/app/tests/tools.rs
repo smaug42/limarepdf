@@ -140,7 +140,7 @@ fn middle(b: [f32; 4]) -> (f32, f32) {
 }
 
 /// The text of the window's node whose text starts with `s`, and its top on screen.
-fn line_at(tree: &egui::accesskit::TreeUpdate, s: &str) -> Option<(String, f64)> {
+pub(super) fn line_at(tree: &egui::accesskit::TreeUpdate, s: &str) -> Option<(String, f64)> {
     tree.nodes.iter().find_map(|(_, n)| {
         let v = n.value().filter(|v| v.starts_with(s))?;
         Some((v.to_string(), n.bounds()?.y0))

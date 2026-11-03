@@ -7215,6 +7215,7 @@ mod tests {
     mod forms;
     mod history;
     mod input_methods;
+    mod links;
     mod organise;
     mod overflow;
     mod paragraphs;

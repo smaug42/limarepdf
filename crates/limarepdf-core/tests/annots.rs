@@ -3,8 +3,8 @@
 
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
-    Align, AnnotKind, DateStyle, InkColor, Mark, Pdf, Shape, ShapeLook, SignArt, SignRole,
-    SignStyle, Stamp, StampColor, StampKind, StampPlace,
+    Align, AnnotKind, DateStyle, InkColor, LinkTarget, Mark, Pdf, Shape, ShapeLook, SignArt,
+    SignRole, SignStyle, Stamp, StampColor, StampKind, StampPlace, Unfollowed,
 };
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 
@@ -502,11 +502,10 @@ fn flattening_keeps_the_look_and_removes_the_annotations() {
     let left = p.annotations();
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].kind, AnnotKind::Other("FileAttachment".into()));
-    assert_eq!(
-        p.page_links(0).unwrap().len(),
-        0,
-        "link has no target, but stays"
-    );
+    // The link stays, going nowhere as it did.
+    let links = p.page_links(0).unwrap();
+    let targets: Vec<&LinkTarget> = links.iter().map(|l| &l.target).collect();
+    assert_eq!(targets, [&LinkTarget::Unfollowed(Unfollowed::Nowhere)]);
     let pg = p.page_ids()[0];
     let annots = p.doc.get_dictionary(pg).unwrap().get(b"Annots").unwrap();
     assert_eq!(annots.as_array().unwrap().len(), 2);

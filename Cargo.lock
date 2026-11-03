@@ -2452,6 +2452,7 @@ dependencies = [
  "unicode-normalization",
  "unicode-script",
  "unicode-segmentation",
+ "url",
  "windows-sys 0.61.2",
  "x509-cert",
  "zeroize",

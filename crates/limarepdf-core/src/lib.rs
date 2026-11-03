@@ -102,7 +102,7 @@ pub use ids::{
 pub use imgs::{image_dimensions, picture_preview, ImageImport};
 pub use labels::{LabelRange, LabelStyle};
 pub use layout::{fallback_faces, fallbacks, set_in, warm_fallbacks};
-pub use links::{Link, LinkTarget};
+pub use links::{email_link, web_link, Link, LinkId, LinkTarget, Unfollowed};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord, TextSpan};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
 pub use outline::{BookmarkPlace, OutlineItem};

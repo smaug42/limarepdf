@@ -38,6 +38,8 @@ It uses:
   `unicode-segmentation` and `unicode-normalization` for words, grapheme clusters and NFC (the app uses both too,
   `unicode-normalization` since batch 45): the text pipeline below;
 - [`image`](https://crates.io/crates/image) for images;
+- [`url`](https://crates.io/crates/url) 2.5.8 for the addresses new links are written with (ENH-17: IDNA and
+  percent-encoding; already in the tree through `webbrowser`);
 - [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scans and OCR](../scanning-and-ocr.md));
   the usual scanner and OCR libraries, SANE and Tesseract, are C/C++, so LimarePDF doesn't drive scanners;
 - [`serde_json`](https://crates.io/crates/serde_json) in the command line, for form values as JSON.
@@ -1048,6 +1050,31 @@ Annotation drawings LimarePDF makes are built in `annot_ap.rs`. A line's endings
 pen of their own: on a dashed line it sets an empty dash pattern (`[] 0 d`) before the ending, as `Pen::paint`
 only writes `d` when the pen has a pattern and the shaft's dashes would otherwise carry on into it. The same
 drawing is what flattening writes into the page.
+
+Links (ENH-17) are `links.rs`, kept apart from comments: `AnnotKind::of` leaves them out, so they are never in
+the Comments view or `Pdf::annotations`. `Pdf::page_links` reads every link of a page with an area: its id
+(`LinkId::Object`, or `LinkId::Inline` for a link written inside the page's `/Annots` rather than as an object,
+which a change makes an object first through `own_direct_annots` and returns the new id), its box, its areas
+(each `/QuadPoints` quadrilateral's box, else the box; the app finds a link under the pointer by them), its
+target and whether it is underlined (`/BS /S /U`, a width above 0). A target LimarePDF doesn't follow is
+`LinkTarget::Unfollowed`: another file (`GoToR`, `GoToE`, named by `/F`, a file specification's `/UF` first),
+a program (`Launch`, Windows' `/Win /F` too), a script, an address whose scheme isn't `http`, `https` or
+`mailto` (`file:`, `javascript:`, `tel:`; an address without a scheme is followed, as before), another action
+(`Print`, `SubmitForm`) or nowhere (a page or name the document hasn't). The rule for new addresses is in one
+place: `web_link` and `email_link` turn what was typed into the address written (`https://` put in front of one
+without a scheme; the `url` crate writes a name or path in other alphabets in ASCII, IDNA and percent-encoding,
+as PDF's URI strings must be), refusing other schemes; every writer checks the address again (`checked`), so
+nothing but a web or email address and this document's pages is ever written, whatever the caller passes.
+`add_link`, `set_link`, `move_link` and `remove_links` write and change them: a page target is `/Dest [page /XYZ
+null top null]`, the page's top with the zoom left alone, as `add_bookmark` writes; an address is a URI action.
+Every new link has `/QuadPoints` (one area a line, in Acrobat's corner order as text markup's), `/H /I` and the
+Print flag. Its look is set by `set_look`: underlined, `/BS << /W 1 /S /U >>`, `/C` Word's hyperlink blue
+(`LINK_BLUE`) and a drawing LimarePDF makes (`annot_ap.rs`'s `Link` arm: Underline markup's line under each
+area, so it shows in LimarePDF, which hayro draws any annotation's appearance for, and in readers that draw
+appearances or link borders; Poppler draws it, `cross_check_links_with_poppler`); not underlined, `/BS` width 0,
+`/Border [0 0 0]` and no drawing, so nothing shows. A link isn't in `annot_ap.rs`'s `DRAWN`, so other apps'
+links are never given a drawing (`missing_appearances`); `move_link` draws an underlined one again at its new
+size. The page's words are never restyled for a link (ENH-17's Q2).
 
 Digital signatures are checked in `crates/limarepdf-core/src/sig_verify.rs` (finding them, the byte-range rules, and
 tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
