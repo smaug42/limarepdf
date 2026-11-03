@@ -120,7 +120,7 @@
   sheet (so Scale is greyed meanwhile), turned in it when its shape is the other way round; with Orientation on
   Automatic each sheet is held the way its pages come out largest, so two upright pages print side by side on a
   sheet turned sideways. The preview shows and counts the sheets as they will print. The choices are remembered
-  when you print. Printing selected text, its layout is chosen in the same group. `limarepdf-cli print` takes
+  when you print. `limarepdf-cli print` takes
   `--pages-per-sheet`, `--page-order across|across-from-right|down|down-from-right` and `--borders`.
 - **Print as a booklet**, at the top of Print's Layout group: the pages go two to a side, in the order that reads
   straight through once the printed sheets are folded in half and stacked, each fitted to its half of the sheet,
@@ -136,6 +136,13 @@
 
 ### Changed
 
+- Print is shorter, for smaller screens: the printer, pages, copies, sides, and the paper with the orientation
+  beside it are shown, and the settings used less often are folded under their titles, **Scale**, **Layout**
+  (pages per sheet and booklets) and **Advanced** (Print as image), each opened by a click, as Chrome's and
+  Windows' print dialogs fold them. Each title says what is chosen ("Scale: Shrink oversized pages", "Layout:
+  Booklet, bound on the left"). They are closed each time Print opens, and each opens by itself while it is set to
+  something other than the usual (a booklet remembered from last time, say). Printing selected text, its layout is
+  chosen in a **Selected text** group where the pages would be.
 - Every number box (Copies, the scale's percentage, line widths, X and Y, width and height, margins, the
   resolution, Bates digits and the like) is a spin box, as in word processors: type a number and press Enter or
   leave the box, or step it with the ▲ and ▼ at its right or with Up and Down (Page Up and Page Down, ten steps).

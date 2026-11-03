@@ -1336,6 +1336,27 @@ kept for when the booklet is unticked. `Print::booklet_chosen` gives `Print::set
 `print_binding` and saved (`print_booklet = true|false`, `print_binding = left|right`; anything else read as no
 booklet, bound on the left); the sides to print aren't, so a later printout never prints the backs alone unasked.
 
+**Folded sections** (2026-11-02, after booklets made Print too long for a small screen; the user's answers: Paper
+size stays shown, each section starts closed every time, Scale and Layout their own sections with no level above
+them, Print as image back under Advanced, each title saying what is chosen). `print_body` shows the printer, Pages
+(or, printing selected text, its layout radios in a group of their own, "Selected text", in Pages' place), Copies
+and sides, and Page setup (`page_setup`: Paper size with Orientation beside it, as wide as its longest choice,
+through `columns`; one under the other where Paper size would be narrower than `PAPER_BESIDE`, 180 points, which a
+400-point window still allows). Then `fold`, an egui `CollapsingHeader` titled in the groups' look, for each of
+**Scale** (`scale_field`: the list, named "Scale" for screen readers, and the Custom percentage), **Layout**
+(`print_layout`) and, on Linux and macOS, **Advanced** (Print as image, its tooltip `AS_IMAGE`), as Chrome's and
+Windows 11's print dialogs fold what is less used. Each header's text, which is its accessible name, says what is
+chosen (`scale_title`: "Scale: Shrink oversized pages", "Scale: Custom, 65%", "Scale: Each page fitted to its
+place" with several a sheet or a booklet; `layout_title`: "Layout: 1 page per sheet", "Layout: 4 pages per sheet",
+"Layout: Booklet, bound on the left, back sides only"), so it never shares the list's name; its id is fixed
+(`id_salt`) as the text changes. `Print::folds` (`Folds`: scale, layout, advanced) holds which are open, all closed
+each time Print opens; a header is drawn `open(Some(..))` and a click flips its own. `Print::needs_open` gives
+those set to something other than the usual (Scale with a scale other than Shrink oversized pages; Layout with
+more than one page a sheet or a booklet; Advanced with Print as image): each is opened every frame while it is,
+a click on its header doing nothing and its tooltip (`KEPT_OPEN`) saying why, so a setting changing the printout,
+remembered from last time, is never hidden; set back to the usual, it stays open until clicked. The closed dialog
+fits a 1366 × 700-point window, the last section above the buttons (`sections_fold_what_is_less_used`).
+
 The preview is `print_preview.rs`. Opening Print spawns a `Preview` with a `Source`: a copy of the document
 (`Source::Pages(Box<Pdf>)`, cloned on the window's thread as a print job's copy is), or for selected text a
 `Make` closure holding the copy and both layouts' `Excerpt`s, which makes the selection's document on the

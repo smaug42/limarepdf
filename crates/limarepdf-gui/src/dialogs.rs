@@ -838,6 +838,14 @@ pub enum Papers {
     Failed(String, String),
 }
 
+/// Print's sections that fold under their carets: which are open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Folds {
+    pub scale: bool,
+    pub layout: bool,
+    pub advanced: bool,
+}
+
 pub struct Print {
     pub printers: Vec<Printer>,
     pub search: Search,
@@ -874,6 +882,8 @@ pub struct Print {
     pub booklet: bool,
     pub binding: Binding,
     pub booklet_sides: BookletSides,
+    /// Which of Scale, Layout and Advanced are open: each closed when Print opens.
+    pub folds: Folds,
     pub preview: Preview,
 }
 impl Print {
@@ -903,6 +913,7 @@ impl Print {
             booklet: false,
             binding: Binding::Left,
             booklet_sides: BookletSides::Both,
+            folds: Folds::default(),
             preview: Preview::default(),
         }
     }
@@ -1012,6 +1023,16 @@ impl Print {
             binding: self.binding,
             sides: self.booklet_sides,
         })
+    }
+    /// The sections whose setting changes the printout from the usual, so that they are
+    /// shown open: Scale with a scale other than Shrink oversized pages, Layout with more
+    /// than one page a sheet or a booklet, Advanced with Print as image (but on Windows).
+    pub fn needs_open(&self) -> Folds {
+        Folds {
+            scale: self.scale != Scale::ShrinkOversized,
+            layout: self.per_sheet.pages > 1 || self.booklet,
+            advanced: self.as_image && !cfg!(windows),
+        }
     }
     /// How the printer prints the sides: a booklet's own, else as Print on says.
     pub fn sides_used(&self) -> Sides {
@@ -1249,26 +1270,128 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
             }
         });
     }
+    // Printing selected text, how it is laid out, in Pages' place.
+    if let Some(layout) = &mut s.selection {
+        group(ui, "Selected text", |ui| {
+            layout_radios(ui, layout, &[Layout::Original, Layout::Plain]);
+        });
+    }
     group(ui, "Copies and sides", |ui| copies_and_sides(ui, s));
     group(ui, "Page setup", |ui| page_setup(ui, s));
-    group(ui, "Layout", |ui| print_layout(ui, s));
+    // What is less used folds under its caret, each section on its own, its title saying
+    // what is chosen.
+    let needed = s.needs_open();
+    let mut open = s.folds;
+    let title = scale_title(s);
+    fold(ui, "scale", &title, &mut open.scale, needed.scale, |ui| {
+        scale_field(ui, s)
+    });
+    let title = layout_title(s);
+    fold(
+        ui,
+        "layout",
+        &title,
+        &mut open.layout,
+        needed.layout,
+        |ui| print_layout(ui, s),
+    );
     // Windows always prints pages drawn by LimarePDF.
     if !cfg!(windows) {
-        ui.add_space(GAP);
-        ui.add(egui::Separator::default().spacing(0.0));
-        ui.add_space(8.0);
-        egui::CollapsingHeader::new("Advanced")
-            .default_open(s.as_image)
-            .show(ui, |ui| {
-                let tip = "LimarePDF draws each page at 300 dpi and sends pictures of them, so \
-                           the printout matches the screen. Text is less sharp and the job is \
-                           larger.";
-                ui.checkbox(&mut s.as_image, "Print as image")
-                    .on_hover_text(tip);
-                ui.weak("Use this if normal printing gives a wrong printout.");
-            });
+        let advanced = |ui: &mut Ui| {
+            ui.checkbox(&mut s.as_image, "Print as image")
+                .on_hover_text(AS_IMAGE);
+            ui.weak("Use this if normal printing gives a wrong printout.");
+        };
+        fold(
+            ui,
+            "advanced",
+            "Advanced",
+            &mut open.advanced,
+            needed.advanced,
+            advanced,
+        );
     }
+    s.folds = open;
     enter
+}
+
+/// What Print as image does.
+const AS_IMAGE: &str = "LimarePDF draws each page at 300 dpi and sends pictures of them, so \
+                        the printout matches the screen. Text is less sharp and the job is \
+                        larger.";
+
+/// Why a section stays open.
+const KEPT_OPEN: &str = "Open while a setting here changes how the pages print.";
+
+/// A section of Print folded under its caret, as Chrome's and Windows' print dialogs fold
+/// what is less used, its `title` in the look of the groups' titles: open as `open` says
+/// (closed each time Print opens), and open by itself, a click leaving it so, while
+/// `needed`, so that nothing changing the printout is hidden.
+fn fold(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    open: &mut bool,
+    needed: bool,
+    body: impl FnOnce(&mut Ui),
+) {
+    gap(ui);
+    if needed {
+        *open = true;
+    }
+    let text = RichText::new(title).family(theme::medium()).strong();
+    // The title's row as tall as a group's title, not a dialog control's; the section's
+    // controls as tall as usual.
+    let spacing = ui.spacing().clone();
+    let shown = ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = 0.0;
+        ui.spacing_mut().button_padding.y = 2.0;
+        egui::CollapsingHeader::new(text)
+            .id_salt(id)
+            .open(Some(*open))
+            .show(ui, |ui| {
+                *ui.spacing_mut() = spacing;
+                ui.add_space(4.0);
+                body(ui);
+            })
+    });
+    let header = shown.inner.header_response;
+    if needed {
+        header.on_hover_text(KEPT_OPEN);
+    } else if header.clicked() {
+        *open = !*open;
+    }
+}
+
+/// Scale's title: what is chosen.
+fn scale_title(s: &Print) -> String {
+    if s.per_sheet.pages > 1 || s.booklet {
+        return "Scale: Each page fitted to its place".into();
+    }
+    match s.scale {
+        Scale::Custom(p) => format!("Scale: Custom, {p}%"),
+        x => format!("Scale: {}", scale_name(x)),
+    }
+}
+
+/// Layout's title: what is chosen.
+fn layout_title(s: &Print) -> String {
+    if s.booklet {
+        let bound = match s.binding {
+            Binding::Left => "left",
+            Binding::Right => "right",
+        };
+        let sides = match s.booklet_sides {
+            BookletSides::Both => "",
+            BookletSides::Fronts => ", front sides only",
+            BookletSides::Backs => ", back sides only",
+        };
+        return format!("Layout: Booklet, bound on the {bound}{sides}");
+    }
+    match s.per_sheet.count() {
+        1 => "Layout: 1 page per sheet".into(),
+        n => format!("Layout: {n} pages per sheet"),
+    }
 }
 
 /// Copies beside Print on, as two columns when the longest choice fits beside Copies;
@@ -1357,59 +1480,54 @@ fn list_width(ui: &Ui, labels: impl IntoIterator<Item = &'static str>) -> f32 {
     widest + 2.0 * sp.button_padding.x + sp.icon_width + sp.icon_spacing
 }
 
-/// Page setup: the paper, of the sizes the printer takes once they are found; Orientation
-/// beside Scale, as two columns when they fit, the percentage beside Custom.
+/// The narrowest Paper size is given beside Orientation before they go one under the other.
+const PAPER_BESIDE: f32 = 180.0;
+
+/// Page setup: the paper, of the sizes the printer takes once they are found, with the
+/// Orientation beside it, as wide as its longest choice; one under the other where Paper
+/// size would be narrower than [`PAPER_BESIDE`].
 fn page_setup(ui: &mut Ui, s: &mut Print) {
     let wide = ui.available_width();
-    if let Some(why) = s.papers_failed() {
-        ui.label("Paper size");
-        ui.add_space(2.0);
-        let why = format!("LimarePDF couldn't find the paper sizes this printer takes: {why}.");
-        ui.colored_label(ui.visuals().error_fg_color, why);
-    } else if let Some(labels) = s.paper_labels() {
-        let chosen = labels.get(s.paper).cloned().unwrap_or_default();
-        field(ui, "Paper size", |ui| {
-            egui::ComboBox::from_id_salt("paper")
-                .width(wide)
-                .truncate()
-                .selected_text(&chosen)
-                .show_ui(ui, |ui| {
-                    ui.set_max_width(wide);
-                    for (i, label) in labels.iter().enumerate() {
-                        ui.selectable_value(&mut s.paper, i, label);
-                    }
-                })
-                .response
-                .on_hover_text(chosen)
-        });
-    } else {
-        ui.label("Paper size");
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label("Finding the printer's paper sizes…");
-        });
-    }
-    ui.add_space(FIELD_GAP);
-    let orientation_width = list_width(ui, ORIENTATIONS.map(|(_, l)| l));
-    let scales = [
-        Scale::ShrinkOversized,
-        Scale::Fit,
-        Scale::ActualSize,
-        Scale::Custom(s.percent),
-    ];
-    let custom = matches!(s.scale, Scale::Custom(_));
-    let beside = match custom {
-        true => PERCENT + ui.spacing().item_spacing.x,
-        false => 0.0,
+    let need = list_width(ui, ORIENTATIONS.map(|(_, l)| l)).min(wide);
+    let beside = wide - need - COLUMN_GAP;
+    let left = if beside >= PAPER_BESIDE { beside } else { wide };
+    let paper = |ui: &mut Ui, s: &mut Print, width: f32| {
+        if let Some(why) = s.papers_failed() {
+            ui.label("Paper size");
+            ui.add_space(2.0);
+            let why = format!("LimarePDF couldn't find the paper sizes this printer takes: {why}.");
+            ui.colored_label(ui.visuals().error_fg_color, why);
+        } else if let Some(labels) = s.paper_labels() {
+            let chosen = labels.get(s.paper).cloned().unwrap_or_default();
+            field(ui, "Paper size", |ui| {
+                egui::ComboBox::from_id_salt("paper")
+                    .width(width)
+                    .truncate()
+                    .selected_text(&chosen)
+                    .show_ui(ui, |ui| {
+                        ui.set_max_width(wide);
+                        for (i, label) in labels.iter().enumerate() {
+                            ui.selectable_value(&mut s.paper, i, label);
+                        }
+                    })
+                    .response
+                    .on_hover_text(chosen)
+            });
+        } else {
+            ui.label("Paper size");
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spinner();
+                ui.label("Finding the printer's paper sizes…");
+            });
+        }
     };
-    let need = list_width(ui, scales.map(scale_name)) + beside;
-    let orientation = |ui: &mut Ui, s: &mut Print, width: f32| {
+    let orientation = |ui: &mut Ui, s: &mut Print, _| {
         let shown = ORIENTATIONS.iter().find(|(o, _)| *o == s.orientation);
         ui.add_enabled_ui(!s.booklet, |ui| {
             field(ui, "Orientation", |ui| {
                 egui::ComboBox::from_id_salt("orientation")
-                    .width(width)
+                    .width(need)
                     .selected_text(shown.map(|(_, l)| *l).unwrap_or_default())
                     .show_ui(ui, |ui| {
                         for (o, label) in ORIENTATIONS {
@@ -1421,39 +1539,50 @@ fn page_setup(ui: &mut Ui, s: &mut Print) {
             });
         });
     };
-    let scale = |ui: &mut Ui, s: &mut Print, width: f32| {
-        // With several pages a sheet, or a booklet, each is fitted to its place.
-        let one = s.per_sheet.pages <= 1 && !s.booklet;
-        let why = if s.booklet { BOOKLET_SETS } else { FITTED };
-        ui.add_enabled_ui(one, |ui| {
-            ui.label("Scale");
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                let list = egui::ComboBox::from_id_salt("scale")
-                    .width(width - beside)
-                    .selected_text(scale_name(s.scale))
-                    .show_ui(ui, |ui| {
-                        for x in scales {
-                            ui.selectable_value(&mut s.scale, x, scale_name(x));
-                        }
-                    })
-                    .response
-                    .on_disabled_hover_text(why);
-                set_name(&list, "Scale");
-                if let Scale::Custom(_) = s.scale {
-                    let max = limarepdf_core::print::MAX_PERCENT;
-                    let n = Spin::new(&mut s.percent, 1..=max)
-                        .suffix("%")
-                        .name("Scale percentage")
-                        .width(PERCENT);
-                    let tip = format!("1 to {max}% of each page's own size");
-                    ui.add(n).on_hover_text(tip).on_disabled_hover_text(why);
-                    s.scale = Scale::Custom(s.percent);
-                }
-            });
-        });
+    columns(ui, s, left, need, paper, orientation);
+}
+
+/// Scale, in its section under the title naming it, the percentage beside Custom; greyed
+/// with several pages a sheet or a booklet, which fit each page to its place.
+fn scale_field(ui: &mut Ui, s: &mut Print) {
+    let scales = [
+        Scale::ShrinkOversized,
+        Scale::Fit,
+        Scale::ActualSize,
+        Scale::Custom(s.percent),
+    ];
+    let beside = match s.scale {
+        Scale::Custom(_) => PERCENT + ui.spacing().item_spacing.x,
+        _ => 0.0,
     };
-    columns(ui, s, orientation_width, need, orientation, scale);
+    let width = list_width(ui, scales.map(scale_name)).min(ui.available_width() - beside);
+    let one = s.per_sheet.pages <= 1 && !s.booklet;
+    let why = if s.booklet { BOOKLET_SETS } else { FITTED };
+    ui.add_enabled_ui(one, |ui| {
+        ui.horizontal(|ui| {
+            let list = egui::ComboBox::from_id_salt("scale")
+                .width(width)
+                .selected_text(scale_name(s.scale))
+                .show_ui(ui, |ui| {
+                    for x in scales {
+                        ui.selectable_value(&mut s.scale, x, scale_name(x));
+                    }
+                })
+                .response
+                .on_disabled_hover_text(why);
+            set_name(&list, "Scale");
+            if let Scale::Custom(_) = s.scale {
+                let max = limarepdf_core::print::MAX_PERCENT;
+                let n = Spin::new(&mut s.percent, 1..=max)
+                    .suffix("%")
+                    .name("Scale percentage")
+                    .width(PERCENT);
+                let tip = format!("1 to {max}% of each page's own size");
+                ui.add(n).on_hover_text(tip).on_disabled_hover_text(why);
+                s.scale = Scale::Custom(s.percent);
+            }
+        });
+    });
 }
 
 /// Why Scale is greyed with several pages a sheet.
@@ -1488,15 +1617,11 @@ const PAGE_ORDERS: [(PageOrder, &str); 4] = [
     (PageOrder::DownFromRight, "Top to bottom, right to left"),
 ];
 
-/// Layout: printing selected text, how it is laid out; then Print as a booklet; Pages per
-/// sheet beside Page order, and Borders around pages under them, the last two greyed with
-/// one page a sheet. As a booklet, Pages per sheet and the borders are greyed, Binding is
-/// in Page order's place and Sides to print under them.
+/// Layout, in its section: Print as a booklet; Pages per sheet beside Page order, and
+/// Borders around pages under them, the last two greyed with one page a sheet. As a booklet,
+/// Pages per sheet and the borders are greyed, Binding is in Page order's place and Sides to
+/// print under them.
 fn print_layout(ui: &mut Ui, s: &mut Print) {
-    if let Some(layout) = &mut s.selection {
-        layout_radios(ui, layout, &[Layout::Original, Layout::Plain]);
-        ui.add_space(FIELD_GAP);
-    }
     ui.checkbox(&mut s.booklet, "Print as a booklet");
     ui.add_space(FIELD_GAP);
     let label = "Pages per sheet";
@@ -2308,28 +2433,34 @@ mod tests {
     }
 
     /// ENH-14: Page setup under Copies and sides, its fields labelled above them: the
-    /// printer's paper sizes, then Orientation beside Scale where they fit; picking from
-    /// the lists sets them, and Custom shows its percentage beside Scale. The preview is
-    /// beside the settings in a wide window and under them in a narrow one, the sheet's
-    /// number under it.
+    /// printer's paper sizes with Orientation beside them, a 400-point window too (narrower,
+    /// one under the other, as `columns` does); Scale in its own section, under its title. Picking from the lists sets
+    /// them, and Custom shows its percentage beside Scale. The preview is beside the settings
+    /// in a wide window and under them in a narrow one, the sheet's number under it.
     #[test]
     fn page_setup_and_the_preview_follow_the_mockup() {
         for size in [(1200.0, 800.0), (400.0, 800.0)] {
             let at = format!("{size:?}");
             let mut w = PrintWin::new(size, 1.0);
+            w.s.folds.scale = true;
             let tree = w.settled();
             let get = |label: &str| named(&tree, label).expect(label);
-            for f in ["Paper size", "Orientation", "Scale"] {
+            for f in ["Paper size", "Orientation"] {
                 label_above(&tree, f).unwrap();
             }
             assert!(get("Paper size").top() > get("Print on").bottom(), "{at}");
-            let (o, scale) = (get("Orientation"), get("Scale"));
-            let beside = (o.top() - scale.top()).abs() < 1.0 && scale.left() > o.right();
-            if size.0 >= 800.0 {
-                assert!(beside, "{at}: {o:?} {scale:?}");
-            } else {
-                assert!(scale.top() > o.bottom(), "{at}: {o:?} {scale:?}");
-            }
+            let (paper, o, scale) = (get("Paper size"), get("Orientation"), get("Scale"));
+            // Beside each other, as wide as Print on's row, even in a narrow window.
+            let beside = (paper.top() - o.top()).abs() < 1.0 && o.left() > paper.right();
+            assert!(beside, "{at}: {paper:?} {o:?}");
+            assert!(
+                (o.right() - get("Print on").right()).abs() < 1.0,
+                "{at}: {o:?}"
+            );
+            assert!(w.window().contains_rect(o), "{at}: {o:?}");
+            let title = get("Scale: Shrink oversized pages");
+            assert!(title.top() > o.bottom(), "{at}");
+            assert!(scale.top() > title.bottom(), "{at}: {o:?} {scale:?}");
             assert!(named(&tree, "Scale percentage").is_none(), "{at}");
             let prev = get("Previous sheet");
             assert!(text(&tree, "1 of 1").is_some(), "{at}: the sheet's number");
@@ -2363,8 +2494,8 @@ mod tests {
         }
     }
 
-    /// NEW-05: Layout under Page setup: Pages per sheet beside Page order where they fit,
-    /// one under the other otherwise, Borders around pages under them; the order and the
+    /// NEW-05: Layout's section under Scale's: Pages per sheet beside Page order where they
+    /// fit, one under the other otherwise, Borders around pages under them; the order and the
     /// borders greyed with one page a sheet, Scale greyed with more; picking sets the page
     /// setup.
     #[test]
@@ -2378,6 +2509,8 @@ mod tests {
         for size in [(1200.0, 1200.0), (400.0, 1200.0)] {
             let at = format!("{size:?}");
             let mut w = PrintWin::new(size, 1.0);
+            w.s.folds.scale = true;
+            w.s.folds.layout = true;
             let tree = w.settled();
             let get = |label: &str| named(&tree, label).expect(label);
             for f in ["Pages per sheet", "Page order"] {
@@ -2430,6 +2563,8 @@ mod tests {
         for size in [(1200.0, 1200.0), (400.0, 1200.0)] {
             let at = format!("{size:?}");
             let mut w = PrintWin::new(size, 1.0);
+            w.s.folds.scale = true;
+            w.s.folds.layout = true;
             w.click("Print on");
             w.click("Both sides, flip on long edge");
             let tree = w.settled();
@@ -2494,14 +2629,147 @@ mod tests {
         }
     }
 
-    /// Printing selected text, its layout is chosen in the same Layout group, above Pages
-    /// per sheet: one group of that name.
+    /// What is less used folds under carets, as Chrome's and Windows' print dialogs do, a
+    /// section each: Scale, Layout and (not on Windows) Advanced, each closed when Print
+    /// opens, its title saying what is chosen, the printer, pages, copies, sides, paper and
+    /// orientation shown. The closed dialog fits a 1366 × 768 laptop's window without
+    /// scrolling. Each opens from its own caret, and closes again. A setting that changes the
+    /// printout (remembered from last time) opens its section, which stays open, saying why;
+    /// set back to the usual, it can be closed again.
     #[test]
-    fn printing_a_selection_chooses_its_layout_in_layout() {
+    fn sections_fold_what_is_less_used() {
+        const SCALE: &str = "Scale: Shrink oversized pages";
+        const LAYOUT: &str = "Layout: 1 page per sheet";
+        // Narrow, the preview is under the settings: tall enough to click the sections.
+        for size in [(1366.0, 700.0), (400.0, 1300.0)] {
+            let at = format!("{size:?}");
+            let mut w = PrintWin::new(size, 1.0);
+            let tree = w.settled();
+            for hidden in [
+                "Scale",
+                "Pages per sheet",
+                "Print as a booklet",
+                "Print as image",
+            ] {
+                assert!(named(&tree, hidden).is_none(), "{at}: {hidden} shown");
+            }
+            assert!(named(&tree, "More settings").is_none(), "{at}");
+            let orientation = named(&tree, "Orientation").expect("Orientation");
+            let scale = named(&tree, SCALE).expect(SCALE);
+            let layout = named(&tree, LAYOUT).expect(LAYOUT);
+            assert!(scale.top() > orientation.bottom(), "{at}");
+            assert!(layout.top() > scale.bottom(), "{at}");
+            let last = match cfg!(windows) {
+                true => layout,
+                false => {
+                    let advanced = named(&tree, "Advanced").expect("Advanced");
+                    assert!(advanced.top() > layout.bottom(), "{at}");
+                    advanced
+                }
+            };
+            let window = w.window();
+            let print = named(&tree, "Print").unwrap();
+            if size.0 > 1000.0 {
+                // Nothing scrolled away: the last section whole, above the buttons.
+                assert!(window.contains_rect(last), "{at}: {last:?} in {window:?}");
+                assert!(last.bottom() < print.top(), "{at}");
+            }
+            assert!(unclear_names(&tree).is_empty(), "{at}");
+            // Each opens on its own: in a window tall enough for all of them open.
+            w.size.y = 1300.0;
+            let tree = w.click(SCALE);
+            assert_eq!(
+                w.s.folds,
+                Folds {
+                    scale: true,
+                    ..Folds::default()
+                },
+                "{at}"
+            );
+            let list = named(&tree, "Scale").expect("Scale inside");
+            assert!(list.top() > named(&tree, SCALE).unwrap().bottom(), "{at}");
+            assert!(named(&tree, "Pages per sheet").is_none(), "{at}");
+            let tree = w.click(LAYOUT);
+            assert!(
+                w.s.folds.layout && named(&tree, "Pages per sheet").is_some(),
+                "{at}"
+            );
+            if !cfg!(windows) {
+                let tree = w.click("Advanced");
+                assert!(w.s.folds.advanced, "{at}");
+                assert!(named(&tree, "Print as image").is_some(), "{at}");
+            }
+            let tree = w.settled();
+            assert!(unclear_names(&tree).is_empty(), "{at}");
+            // Folded at once: test frames have no clock to animate by.
+            w.ctx.all_styles_mut(|s| s.animation_time = 0.0);
+            let tree = w.click(SCALE);
+            assert!(!w.s.folds.scale && named(&tree, "Scale").is_none(), "{at}");
+            assert!(w.s.folds.layout, "{at}");
+        }
+        // Remembered from last time: its section open by itself, titled so, kept open.
+        for (set, title, inside) in [
+            (
+                (|s: &mut Print| s.booklet = true) as fn(&mut Print),
+                "Layout: Booklet, bound on the left",
+                "Print as a booklet",
+            ),
+            (
+                |s: &mut Print| s.per_sheet.pages = 4,
+                "Layout: 4 pages per sheet",
+                "Pages per sheet",
+            ),
+            (
+                |s: &mut Print| s.scale = Scale::Fit,
+                "Scale: Fit to printable area",
+                "Scale",
+            ),
+            (
+                // As the app opens Print with a custom scale remembered.
+                |s: &mut Print| (s.scale, s.percent) = (Scale::Custom(65), 65),
+                "Scale: Custom, 65%",
+                "Scale percentage",
+            ),
+        ] {
+            let mut w = PrintWin::new((1366.0, 900.0), 1.0);
+            set(&mut w.s);
+            let tree = w.settled();
+            assert!(named(&tree, inside).is_some(), "{title}");
+            let tree = w.click(title);
+            assert!(named(&tree, inside).is_some(), "{title}: closed");
+        }
+        // Several a sheet: Scale's title says each page is fitted.
+        let mut w = PrintWin::new((1366.0, 900.0), 1.0);
+        w.s.per_sheet.pages = 2;
+        let tree = w.settled();
+        assert!(named(&tree, "Scale: Each page fitted to its place").is_some());
+        // A booklet unticked: Layout can be closed again.
+        let mut w = PrintWin::new((1366.0, 900.0), 1.0);
+        w.ctx.all_styles_mut(|s| s.animation_time = 0.0);
+        w.s.booklet = true;
+        w.s.binding = Binding::Right;
+        w.s.booklet_sides = BookletSides::Fronts;
+        let tree = w.settled();
+        let title = "Layout: Booklet, bound on the right, front sides only";
+        assert!(named(&tree, title).is_some());
+        w.click("Print as a booklet");
+        assert!(!w.s.booklet && w.s.folds.layout);
+        let tree = w.click(LAYOUT);
+        assert!(!w.s.folds.layout && named(&tree, "Pages per sheet").is_none());
+    }
+
+    /// Printing selected text, its layout is chosen in a group of its own, Selected text, in
+    /// Pages' place and shown with the sections closed, apart from Layout's pages per sheet
+    /// and booklets.
+    #[test]
+    fn printing_a_selection_chooses_its_layout_in_its_own_group() {
         let mut w = PrintWin::new((1200.0, 1200.0), 1.0);
         w.s.selection = Some(Layout::Original);
         let tree = w.settled();
         let plain = named(&tree, Layout::Plain.label()).expect("the layouts");
+        assert!(named(&tree, "All pages").is_none());
+        assert!(plain.bottom() < named(&tree, "Copies").unwrap().top());
+        let tree = w.click("Layout: 1 page per sheet");
         let count = named(&tree, "Pages per sheet").unwrap();
         assert!(count.top() > plain.bottom());
         // Shown as often as another group's title.
@@ -2509,7 +2777,7 @@ mod tests {
             let titles = tree.nodes.iter().filter(|(_, n)| n.value() == Some(title));
             titles.count()
         };
-        assert_eq!(shown("Layout"), shown("Page setup"));
+        assert_eq!(shown("Selected text"), shown("Page setup"));
     }
 
     /// ENH-14: Print waits for the printer's paper sizes, greyed and saying so, Enter in the
@@ -2598,12 +2866,12 @@ mod tests {
     }
 
     /// BUG-50: a dialog keeps its top as its content grows (Page range's field shown,
-    /// Advanced opened), extending downward as desktop dialogs do; it moved up by half of
-    /// what was added, kept centred.
+    /// Layout opened), extending downward as desktop dialogs do; it moved up by half of what
+    /// was added, kept centred.
     #[test]
     fn print_keeps_its_top_as_it_grows() {
-        // Tall enough for it all, Layout's group too (NEW-05).
-        let mut w = PrintWin::new((1200.0, 1200.0), 1.0);
+        // Tall enough for it all, Layout open too.
+        let mut w = PrintWin::new((1200.0, 1600.0), 1.0);
         w.settled();
         let before = w.window();
         w.click("Page range");
@@ -2611,16 +2879,13 @@ mod tests {
         assert!(ranged.height() > before.height() + 10.0, "{ranged:?}");
         let kept = |r: egui::Rect| (r.top() - before.top()).abs() < 0.5;
         assert!(kept(ranged), "{before:?} to {ranged:?}");
-        // Advanced isn't on Windows, which always prints pages drawn by LimarePDF.
-        if !cfg!(windows) {
-            w.click("Advanced");
-            for _ in 0..10 {
-                w.frame(vec![]);
-            }
-            let open = w.window();
-            assert!(open.height() > ranged.height() + 10.0, "{open:?}");
-            assert!(kept(open), "{before:?} to {open:?}");
+        w.click("Layout: 1 page per sheet");
+        for _ in 0..10 {
+            w.frame(vec![]);
         }
+        let open = w.window();
+        assert!(open.height() > ranged.height() + 10.0, "{open:?}");
+        assert!(kept(open), "{before:?} to {open:?}");
     }
 
     /// ENH-48: Copies is a spin box: a number out of range typed in becomes the nearest

@@ -12718,6 +12718,7 @@ mod tests {
         };
         let print = dlg::Print::with_papers(vec![printer], "test.pdf".into());
         app.dialog = Dialog::Print(app.asked(), Box::new(print));
+        // Scale, Layout and Advanced are folded under their titles, which say what is chosen.
         let mut want = vec![
             "Printer",
             "All pages",
@@ -12726,10 +12727,8 @@ mod tests {
             "Print on",
             "Paper size",
             "Orientation",
-            "Scale",
-            "Print as a booklet",
-            // Page order and Borders around pages are greyed with one page a sheet.
-            "Pages per sheet",
+            "Scale: Shrink oversized pages",
+            "Layout: 1 page per sheet",
         ];
         if !cfg!(windows) {
             want.push("Advanced");
@@ -12744,6 +12743,29 @@ mod tests {
             ctx.memory_mut(|m| m.surrender_focus(id));
         }
         want.insert(3, "Pages to print");
+        assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
+        // Each open: its controls after its title (Page order and Borders around pages greyed
+        // with one page a sheet), Print as image but on Windows.
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.folds = dlg::Folds {
+                scale: true,
+                layout: true,
+                advanced: true,
+            };
+        }
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        let at = want
+            .iter()
+            .position(|&n| n == "Layout: 1 page per sheet")
+            .unwrap();
+        want.insert(at, "Scale");
+        want.splice(at + 2..at + 2, ["Print as a booklet", "Pages per sheet"]);
+        if !cfg!(windows) {
+            let at = want.iter().position(|&n| n == "Advanced").unwrap();
+            want.insert(at + 1, "Print as image");
+        }
         assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
 
         app.dialog = Dialog::None;

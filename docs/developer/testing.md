@@ -1007,6 +1007,21 @@ blocks fewer, the run sharing the machine with the test suite. Its timings aren'
   `print_preview.rs`'s `several_pages_a_sheet_are_shown_as_planned`, `settings.rs`'s `print_choices_are_remembered`
   (the count, order and borders; a count that can't be printed read as one). Not run: deferred to the RC cycle:
   pages per sheet on paper against the preview, Windows and macOS.
+- Print's folded sections (2026-11-02). `dialogs.rs`'s `sections_fold_what_is_less_used` (at 1366 × 700 and
+  400 wide: all closed when Print opens, Scale, Pages per sheet, Print as a booklet and Print as image not shown,
+  no More settings; "Scale: Shrink oversized pages", "Layout: 1 page per sheet" and (not on Windows) "Advanced"
+  under Orientation in that order, the last, on the laptop-sized window, whole and above the buttons, nothing
+  scrolled; every name clear open and closed; each opened on its own from its title, its controls under it, and
+  Scale closed again leaving Layout open. A booklet, four pages a sheet, Fit or Custom 65% remembered opens its
+  section by itself, titled so ("Layout: Booklet, bound on the left", "Scale: Custom, 65%"), and a click doesn't
+  close it; Scale's title with several a sheet; a booklet bound on the right printing its fronts titled so, and
+  once unticked Layout closes again), `page_setup_and_the_preview_follow_the_mockup` (Orientation beside Paper
+  size, its right edge with Print on's, at 1200 and at 400 wide) and
+  `printing_a_selection_chooses_its_layout_in_its_own_group` (the layouts in "Selected text", in Pages' place,
+  above Copies). The Tab walk through Print (`tab_goes_through_dialogs_in_reading_order`) reaches the three titles
+  after Orientation, then with all open Scale, Layout's Print as a booklet and Pages per sheet, and Print as image,
+  each after its title. The dialog tests that use Scale or Layout open them first (`Print::folds`), and
+  `print_keeps_its_top_as_it_grows` opens Layout on a 1,600-point screen.
 - Booklets (NEW-05's stage 2). `sheets.rs`'s unit tests: `a_booklet_puts_its_pages_in_folding_order` (eight pages
   as each side is held, left to right: 7 and 0, 1 and 6, 5 and 2, 3 and 4, every side held sideways with no
   borders; bound on the right, each side mirrored), `a_booklet_is_padded_to_whole_sheets_with_blanks_at_the_end`
@@ -1071,7 +1086,7 @@ blocks fewer, the run sharing the machine with the test suite. Its timings aren'
   shown as it is, and a box for differing widths shows nothing until typed in. `numbers_are_read_as_typed` (units
   typed or not, thousands' commas, a decimal comma). `every_number_box_is_a_spin_box` reads the app's source and
   fails when egui's own number box is used anywhere. Dialogs keeping their top (BUG-50): `dialogs.rs`'s
-  `print_keeps_its_top_as_it_grows` (Print on a 1000-point screen: Page range's field, then Advanced opened, each
+  `print_keeps_its_top_as_it_grows` (Print on a screen tall enough, 1,600 points since the folded sections: Page range's field, then Layout opened, each
   growing it downward with its top where it was; failed before the fix, the top 33 points up), with G02's
   `a_dialog_fits_again_when_the_screen_gets_shorter` still passing. `dialogs.rs`'s `copies_out_of_range_uses_the_nearest_and_says_so`
   (Copies 0 in Print: 1, the note under Copies inside the dialog, ▲ to 2). The opacity test now presses the slider

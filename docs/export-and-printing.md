@@ -9,11 +9,11 @@ Print a document, save its pages as pictures, or save its text.
 1. Press Ctrl+P (⌘P on a Mac), or **Print** at the right of the commands row (or ☰ > Print…).
 2. Choose the printer, the pages (**All pages**, or **Page range**, which starts as the selected pages when there
    are any), the copies, and **Print on** one side or both sides (flipped on the long or the short edge).
-3. Under **Page setup**, choose the paper, the orientation and the scale, and under **Layout** how many pages go
-   on each sheet, or a booklet (below); check the preview.
+3. Under **Page setup**, choose the paper and the orientation; check the preview. **Scale**, **Layout** (pages
+   per sheet and booklets) and **Advanced** are folded below them (below).
 4. Press **Print**.
 
-<img src="images/print.png" width="802" alt="The Print dialog: the printer, All pages or Page range, Copies and Print on, greyed at Both sides, flip on short edge; Page setup with the paper size (Letter) and the orientation and scale, greyed; Layout with Print as a booklet ticked, Pages per sheet greyed, Binding Left beside it, Sides to print Both sides under them and Borders around pages greyed; beside them the preview of the first sheet's front, held sideways, an eight-page report's last page and first page side by side, Front of sheet 1 above the arrows and 1 of 4 between them; Print and Cancel at the bottom">
+<img src="images/print.png" width="802" alt="The Print dialog as it opens: the printer, All pages or Page range, Copies and Print on (One side); Page setup with the paper size (Letter) and the orientation (Automatic) side by side; then, folded, Scale: Shrink oversized pages, Layout: 1 page per sheet and Advanced; beside them the preview of the first page on its sheet, 1 of 8 between the arrows under it; Print and Cancel at the bottom">
 
 **Print preview** in the ☰ menu opens the same dialog, as in Word: Ctrl+F2 (⌘F2 on a Mac). On Linux it is also
 Ctrl+Shift+O, as in LibreOffice, since some desktops (KDE's) keep Ctrl+F2 for themselves.
@@ -28,7 +28,7 @@ again** looks once more (after adding a printer in the system's settings, say).
 
 ### Page setup
 
-- **Paper size:** the sizes the printer takes, as the system names them ("Letter (8.5 × 11 in)", "A4 (210 ×
+- **Paper size** (with Orientation beside it): the sizes the printer takes, as the system names them ("Letter (8.5 × 11 in)", "A4 (210 ×
   297 mm)"). LimarePDF asks the printing service for them when you choose the printer; meanwhile the dialog says
   it is finding them and Print is greyed. If they can't be found, the dialog says why, and **Try again** asks
   once more. The paper chosen at first is the one you last printed on with that printer, else the printer's own
@@ -36,14 +36,29 @@ again** looks once more (after adding a printer in the system's settings, say).
 - **Orientation:** **Automatic** (the usual choice) turns each page wider than it is tall a quarter turn onto the
   sheet, as printers turn landscape pages; **Portrait** prints every page upright; **Landscape** turns every
   page.
-- **Scale:** **Shrink oversized pages** (the usual choice, as in Acrobat) prints each page at its own size,
-  shrunk to the printable area only when it is larger; **Fit to printable area** enlarges or shrinks each page to
-  fill it; **Actual size** prints each page at its own size; **Custom** prints at a percentage from 1 to 400%,
-  set beside it.
 
-The printer, the paper for each printer, the orientation and the scale are remembered for next time when you
-print, as Acrobat keeps the last scaling. Copies and the scale's percentage are [number
-boxes](gui.md#number-boxes): type a number, or step it with ▲ and ▼.
+The printer, the paper for each printer and the orientation are remembered for next time when you print. Copies
+is a [number box](gui.md#number-boxes): type a number, or step it with ▲ and ▼.
+
+### Scale, Layout and Advanced
+
+The settings used less often are folded, each under its own title: **Scale**, **Layout** and (on Linux and
+macOS) **Advanced**. Click a title (or press Space or Enter on it) to open it below; click it again to close it.
+Each title says what is chosen, so you can see it without opening it: "Scale: Shrink oversized pages", "Layout: 1
+page per sheet", "Layout: Booklet, bound on the left". They are closed each time Print opens, so the everyday
+choices are all you see. When one of them is set to something other than the usual (a booklet or a scale
+remembered from last time, say), it opens by itself and stays open while it is, so nothing that changes your
+printout is hidden.
+
+<img src="images/print-more.png" width="802" alt="The Print dialog with Layout open by itself, a booklet remembered from last time: Print on and Orientation greyed, Print on at Both sides, flip on short edge; Scale: Each page fitted to its place, folded; Layout: Booklet, bound on the left, open, with Print as a booklet ticked, Pages per sheet greyed, Binding Left beside it, Sides to print Both sides under them and Borders around pages greyed; Advanced, folded; beside them the preview of the first sheet's front, held sideways, an eight-page report's last page and first page side by side, Front of sheet 1 above the arrows and 1 of 4 between them">
+
+### Scale
+
+**Shrink oversized pages** (the usual choice, as in Acrobat) prints each page at its own size, shrunk to the
+printable area only when it is larger; **Fit to printable area** enlarges or shrinks each page to fill it;
+**Actual size** prints each page at its own size; **Custom** prints at a percentage from 1 to 400%, set beside it
+in a number box. The scale is remembered for next time, as Acrobat keeps the last scaling. With several pages a
+sheet or a booklet, each page is fitted to its place instead, and Scale says so.
 
 ### Layout
 
@@ -61,8 +76,8 @@ sideways, four upright pages in two rows on an upright sheet. Portrait and Lands
 held, and the pages go on it in rows as it is held. A last sheet with fewer pages leaves the rest of it blank.
 Pages per sheet, the order and the borders are remembered for next time when you print.
 
-Printing selected text, the choice of how it is laid out (as it looks, or plain text) is at the top of the same
-group.
+Printing selected text, the choice of how it is laid out (as it looks, or plain text) is in a group of its own,
+**Selected text**, where the pages would be.
 
 ### Booklets
 
