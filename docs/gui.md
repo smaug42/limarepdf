@@ -527,6 +527,9 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Up, Down, Home, End (in the Comments view's cards) | Select the comment before or after, the first or the last, and show it on the page |
 | Enter, Esc (in the Comments view's cards) | Type a reply to the selected comment; go back to the page, the comment staying selected |
 | Ctrl+Enter (in the inspector's Reply box) | Add the reply |
+| Up, Down, Home, End; Right, Left (in the Bookmarks view) | Select the bookmark above or below, the first or the last, and show its page; show the bookmarks inside one, then go in; hide them, then go out |
+| F2, Delete, Esc (in the Bookmarks view) | Rename the selected bookmark; delete it with the bookmarks inside it; go back to the page |
+| Alt+Shift+Up, Alt+Shift+Down; Alt+Shift+Left, Alt+Shift+Right (in the Bookmarks view) | Move the selected bookmark up or down among those at its level; Promote it out of the one it is in; Demote it into the one above, as Word's outline does ([Bookmarks](reading-and-finding.md#bookmarks)) |
 | Alt+Shift+Left, Alt+Shift+Right; Alt+Shift+Up, Alt+Shift+Down; Alt+Shift+Home, Alt+Shift+End | Move the selected pages a place earlier or later; a row up or down (a place, in the thumbnails); to the start or the end |
 | Ctrl+A (Organise) | Select every page |
 | Delete, Backspace | Delete the selected words, objects, comment or mark, or the selected pages |
@@ -549,7 +552,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J (in page text being edited, or with words or lines selected; in new text or a text box) | Align left, Centre, Align right, Justify their paragraphs, as in Word; Centre, Align right or Justify again puts them back to the left. New text's lines and a text box's are aligned left, centred or right, not justified |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
-| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so is Organise's grid); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+Shift+P every command |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so are Organise's grid and the bookmarks list); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+Shift+P every command |
 
 ### Screen readers
 

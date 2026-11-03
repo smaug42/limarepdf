@@ -148,6 +148,17 @@
   The underline is drawn by the link, in Word's link blue, so the words keep their colour and font; it shows in
   readers that draw link borders (Poppler-based ones were checked). A link LimarePDF doesn't follow says what it
   does now and can be pointed somewhere else or removed. Each change is one undo step.
+- **Bookmarks can be moved**, the bookmarks inside one going with it, as Word moves headings in its outline and
+  Navigation pane. Drag a bookmark onto the top of another to put it before, onto the bottom to put it after, or
+  onto the middle to put it inside (a line or an outline shows where), or below the list to put it last. With
+  a bookmark selected, Alt+Shift+Up and Alt+Shift+Down (Option+Shift on a Mac) move it among the bookmarks at its
+  level, Alt+Shift+Left (Promote) moves it out of the one it is in and Alt+Shift+Right (Demote) into the one
+  above; the right-click menu has Move up, Move down, Promote and Demote too. Where it can't go, a note says why.
+  Each move is one undo step, and the bookmark still goes to the same place. One bookmark moves at a time.
+  `limarepdf-cli bookmarks move N` takes `--before`, `--after` or `--under`, and `bookmarks add` takes `--before`.
+- The Bookmarks list works from the keyboard: it is one stop for Tab, where Up and Down go through the bookmarks
+  showing their pages, Home and End go to the first and last, Right and Left show and hide the bookmarks inside
+  one and go in and out, F2 renames, Delete deletes and Esc goes back to the page.
 
 ### Changed
 
@@ -203,6 +214,8 @@
 
 ### Fixed
 
+- Bookmarks shown or hidden in the Bookmarks list went back to how the file had them after any change to the
+  document (renaming a bookmark, say); they now stay as you left them while the document is open.
 - Hovering over a web link showed its address as the file gave it, with any direction-changing or invisible
   characters in it, which could make it look like another address; it is now shown cleaned of them, as the Open
   link? window already showed it.

@@ -105,7 +105,7 @@ pub use layout::{fallback_faces, fallbacks, set_in, warm_fallbacks};
 pub use links::{email_link, web_link, Link, LinkId, LinkTarget, Unfollowed};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord, TextSpan};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
-pub use outline::{BookmarkPlace, OutlineItem};
+pub use outline::{bookmark_moves, bookmark_step, BookmarkPlace, BookmarkStep, OutlineItem};
 pub use overlay::{
     picture_size, text_width, today_iso, Bates, HeaderFooter, ImageWatermark, Placed, Watermark,
 };

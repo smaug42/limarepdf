@@ -279,12 +279,17 @@ impl Tab {
         egui::Id::unique(("page-list", self.id))
     }
 
-    /// Whether the grid, the thumbnails or the comment cards have the keyboard: their keys
-    /// are the pages' or the comments', and the commands' plain keys (Delete, Esc) work there
-    /// too.
+    /// Whether the grid, the thumbnails, the comment cards or the bookmarks have the
+    /// keyboard: their keys are the pages', the comments' or the bookmarks', and the
+    /// commands' plain keys (Delete, Esc) work there too.
     pub fn holds_keys(&self, ctx: &egui::Context) -> bool {
         let focused = ctx.memory(|m| m.focused());
-        let lists = [self.grid_id(), self.list_id(), self.comments_id()];
+        let lists = [
+            self.grid_id(),
+            self.list_id(),
+            self.comments_id(),
+            self.outline_id(),
+        ];
         focused.is_some_and(|f| lists.contains(&f))
     }
 
@@ -797,12 +802,17 @@ impl Tab {
     }
 
     /// The keys of the grid, when it has the keyboard or nothing has, or of the
-    /// thumbnails or the comment cards, when they have it (see [`list_key`] and
-    /// [`Tab::comment_keys`]). Run before the commands' keys, which then don't see them.
+    /// thumbnails, the comment cards or the bookmarks, when they have it (see [`list_key`],
+    /// [`Tab::comment_keys`] and [`Tab::outline_keys`]). Run before the commands' keys,
+    /// which then don't see them.
     pub fn list_keys(&mut self, ctx: &egui::Context) {
         let focused = ctx.memory(|m| m.focused());
         if focused == Some(self.comments_id()) {
             self.comment_keys(ctx);
+            return;
+        }
+        if focused == Some(self.outline_id()) {
+            self.outline_keys(ctx);
             return;
         }
         let n = self.page_count();

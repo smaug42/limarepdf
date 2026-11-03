@@ -750,6 +750,32 @@ fn parse_open_page(s: &str) -> std::result::Result<OpenPageArg, String> {
     }
 }
 
+/// Where `bookmarks add` and `bookmarks move` put a bookmark.
+#[derive(Args)]
+#[group(multiple = false)]
+struct PlaceArgs {
+    /// Put it just before bookmark N (from `list`), at its level
+    #[arg(long, value_name = "N")]
+    before: Option<usize>,
+    /// Put it just after bookmark N (from `list`) and the bookmarks inside it, at its level
+    #[arg(long, value_name = "N")]
+    after: Option<usize>,
+    /// Put it last among the bookmarks inside bookmark N
+    #[arg(long, value_name = "N")]
+    under: Option<usize>,
+}
+
+impl PlaceArgs {
+    fn place(&self) -> Result<BookmarkPlace> {
+        Ok(match (self.before, self.after, self.under) {
+            (Some(n), _, _) => BookmarkPlace::Before(bookmark_index(n)?),
+            (_, Some(n), _) => BookmarkPlace::After(bookmark_index(n)?),
+            (_, _, Some(n)) => BookmarkPlace::Under(bookmark_index(n)?),
+            _ => BookmarkPlace::End,
+        })
+    }
+}
+
 #[derive(Subcommand)]
 enum BookmarksCmd {
     /// List the bookmarks, numbered, indented by level, with the page each goes to
@@ -758,7 +784,8 @@ enum BookmarksCmd {
         #[arg(long)]
         password: Option<String>,
     },
-    /// Add a bookmark to a page. Without --after or --under it goes last at the top level
+    /// Add a bookmark to a page. Without --before, --after or --under it goes last at the
+    /// top level
     Add {
         #[command(flatten)]
         io: Io,
@@ -767,12 +794,17 @@ enum BookmarksCmd {
         /// The page it goes to (1-based)
         #[arg(long)]
         page: usize,
-        /// Put it just after bookmark N (from `list`), at its level
-        #[arg(long, value_name = "N", conflicts_with = "under")]
-        after: Option<usize>,
-        /// Put it last among bookmark N's children
-        #[arg(long, value_name = "N")]
-        under: Option<usize>,
+        #[command(flatten)]
+        place: PlaceArgs,
+    },
+    /// Move bookmark N (from `list`), with the bookmarks inside it. Without --before,
+    /// --after or --under it goes last at the top level. What it goes to stays as it was
+    Move {
+        #[command(flatten)]
+        io: Io,
+        number: usize,
+        #[command(flatten)]
+        place: PlaceArgs,
     },
     /// Give bookmark N (from `list`) a new title
     Rename {
@@ -3894,18 +3926,17 @@ fn run(cmd: Cmd) -> Result<()> {
                 io,
                 title,
                 page,
-                after,
-                under,
+                place,
             } => run_edit(&io, |p| {
-                let place = match (after, under) {
-                    (Some(n), _) => BookmarkPlace::After(bookmark_index(n)?),
-                    (_, Some(n)) => BookmarkPlace::Under(bookmark_index(n)?),
-                    _ => BookmarkPlace::End,
-                };
+                let place = place.place()?;
                 if page == 0 {
                     bail!("pages are numbered from 1");
                 }
                 p.add_bookmark(&title, page - 1, place).map(|_| ())
+            })?,
+            BookmarksCmd::Move { io, number, place } => run_edit(&io, |p| {
+                let place = place.place()?;
+                p.move_bookmark(bookmark_index(number)?, place).map(|_| ())
             })?,
             BookmarksCmd::Rename { io, number, title } => {
                 run_edit(&io, |p| p.rename_bookmark(bookmark_index(number)?, &title))?

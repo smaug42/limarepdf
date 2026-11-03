@@ -378,6 +378,19 @@ fn each_kind_of_edit_is_undone_and_redone_byte_for_byte() {
             }),
         ),
         (
+            "a bookmark moved into another",
+            || {
+                let mut p = pages(3);
+                for (title, page) in [("One", 0), ("Two", 1), ("Three", 2)] {
+                    p.add_bookmark(title, page, BookmarkPlace::End).unwrap();
+                }
+                p
+            },
+            Box::new(|p| {
+                p.move_bookmark(2, BookmarkPlace::Under(0)).unwrap();
+            }),
+        ),
+        (
             "Greek text, in a font LimarePDF makes",
             three,
             Box::new(|p| {

@@ -7260,6 +7260,7 @@ mod tests {
 
     mod align;
     mod backdrop;
+    mod bookmarks;
     mod forms;
     mod history;
     mod input_methods;

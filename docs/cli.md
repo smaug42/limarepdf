@@ -154,7 +154,8 @@ Bookmarks are numbered from 1 in the order `list` shows them, each followed by t
 | Command | What it does |
 | --- | --- |
 | `limarepdf-cli bookmarks list in.pdf` | List the bookmarks, numbered and indented by level, with the page each goes to (`-` for another file or a web address) |
-| `limarepdf-cli bookmarks add in.pdf -o out.pdf --title "Results" --page 12` | Add a bookmark to page 12, last at the top level. `--after N` puts it just after bookmark N, at its level; `--under N` puts it last inside bookmark N |
+| `limarepdf-cli bookmarks add in.pdf -o out.pdf --title "Results" --page 12` | Add a bookmark to page 12, last at the top level. `--before N` puts it just before bookmark N and `--after N` just after it (and the bookmarks inside it), at its level; `--under N` puts it last inside bookmark N |
+| `limarepdf-cli bookmarks move in.pdf -o out.pdf 5 --under 2` | Move bookmark 5, with the bookmarks inside it, last inside bookmark 2. `--before N` and `--after N` put it beside bookmark N, at its level; with none of the three it goes last at the top level. It still goes to the same place in the document. A bookmark can't go inside itself |
 | `limarepdf-cli bookmarks rename in.pdf -o out.pdf 3 --title "Method"` | Rename bookmark 3 |
 | `limarepdf-cli bookmarks remove in.pdf -o out.pdf 3` | Remove bookmark 3 and the bookmarks inside it |
 

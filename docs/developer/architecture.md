@@ -1098,6 +1098,35 @@ Enter gives `Action::EditLink`; the arrow keys move a selected link (`nudge`, `n
 changed link selected by the id core returns (an inline link becomes an object). The read tool's hover and
 following find a link by its areas (`on_link`) and show `link_tip`.
 
+**Bookmarks** are core's `outline.rs`. `Pdf::outline_nodes` walks the outline once (loops end the walk, at most
+100,000 items and 64 levels) and gives each bookmark's object with its `OutlineItem`, in reading order, each
+followed by those inside it; `outline` drops the objects. Positions in that list name bookmarks for
+`add_bookmark`, `rename_bookmark`, `remove_bookmark` and `move_bookmark`, and `BookmarkPlace` says where:
+`End`, `Before(i)`, `After(i)` (past those inside `i`) or `Under(i)` (last inside it). A move (ENH-16) is worked
+out on the items alone by `plan_move` (the list it leaves and the one it joins, by position): `bookmark_moves`
+gives the same answer beforehand, false when it would stay put and an error when it can't go (into itself, or so
+deep that something inside it would pass the 64th level), so the app asks before making an undo step. The move
+writes only the links: the list it leaves and the list it joins are linked again from the outline as read
+(`relink`: the parent's `First` and `Last`, each child's `Parent`, `Prev` and `Next`), which puts right any wrong
+`Prev` or `Parent` a file had in those lists, then every `Count` is set again from the tree (`fix_outline_counts`);
+moving into a closed bookmark opens it. Its `Title`, `Dest`, `A`, `C` and `F` are never touched, so it goes where
+it went. `bookmark_step` turns Word's outline keys into places: Up before the bookmark above at its level, Down
+after the one below, Promote after the one it is in, Demote into the one above, last; `None` at the edges, so a
+bookmark changes level only when promoted or demoted (ENH-16's Q2).
+
+In the app, the Bookmarks view is `tab/bookmarks.rs`. `Outline` holds the bookmarks as read for a revision
+(`Read`: objects and items), which ones the list has opened or closed (`open`, by object, over the file's own
+`Count`; kept across edits and never written), the selection (`sel`, by object, so it follows a moved bookmark
+and comes back with Undo), a rename and a drag. The list is one stop for Tab (`outline_id`, in `holds_keys` and
+`list_keys`), its rows and carets sensing clicks and drags only, drawn for the rows in view at a fixed pitch.
+`outline_keys` takes the tree's keys and, first, Alt+Shift with an arrow (`MOVE`, `STEPS`), before the page
+commands with the same keys see them. A drag is followed by the pointer, not the row that started it (so it
+survives the row scrolling out of view): `Read::drop_place` takes the row under the pointer, its top third
+`Before`, middle `Under`, bottom third `After` (or `Before` the first one inside, when those are shown), below the
+rows `End`, and keeps a place only where `bookmark_moves` says it moves. `Tab::move_bookmark` makes the move one
+`edit_setting` step (bookmarks aren't drawn on the pages, so nothing is redrawn); a refused step or move says why
+through `Tab::info`. The right-click menu's Move up, Move down, Promote and Demote are greyed by `bookmark_step`.
+
 Digital signatures are checked in `crates/limarepdf-core/src/sig_verify.rs` (finding them, the byte-range rules, and
 tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
 signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, that walks the data exactly as written

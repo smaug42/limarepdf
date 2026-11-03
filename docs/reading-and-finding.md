@@ -175,15 +175,32 @@ left, or choose ☰ > View > Bookmarks. A document opens on its page thumbnails,
 bookmarks.
 
 - **Go to a bookmark's page** by clicking it. The arrow beside a bookmark shows or hides the bookmarks inside it,
-  which start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out.
+  which start shown or hidden as the file asks; what you show or hide stays so while the document is open, and
+  isn't saved in the file. Bookmarks that go to another file or a web address are greyed out.
 - **Add a bookmark** for the page you are on with Add bookmark. It goes after the bookmark you clicked last (or at
   the end, when you haven't clicked one), and its name opens for typing: Enter keeps what you typed, Esc keeps
   "Page N".
-- **Rename a bookmark** by double-clicking it.
-- **Right-click a bookmark** to rename it, add a bookmark inside it, or delete it along with the bookmarks inside
-  it.
+- **Rename a bookmark** by double-clicking it, or by selecting it and pressing F2.
+- **Move a bookmark** by dragging it; the bookmarks inside it go with it. Drop it on the top of another bookmark to
+  put it before that one, on the bottom to put it after, or on the middle to put it inside, last of the bookmarks
+  there. A line shows where it will go, or an outline round the bookmark it will go inside. Dropped below the
+  list, it goes last. A moved bookmark still goes to the same place in the document, and each move can be undone.
+- **Right-click a bookmark** to rename it, move it (**Move up**, **Move down**, **Promote**, **Demote**, each
+  showing its key), add a bookmark inside it, or delete it along with the bookmarks inside it.
 
-Undo reverses each of these. Bookmarks can't be moved or reordered yet. On the command line:
+The bookmarks list works from the keyboard too: click a bookmark, or press Tab until the list has the keyboard.
+
+- **Up** and **Down** go to the bookmark above or below, showing its page; **Home** and **End** to the first and
+  last. **Right** shows the bookmarks inside one, then goes to the first of them; **Left** hides them, then goes
+  to the bookmark it is in. **Enter** shows its page again, **F2** renames it, **Delete** deletes it, and **Esc**
+  goes back to the page.
+- **Alt+Shift+Up** and **Alt+Shift+Down** (Option+Shift on a Mac) move the selected bookmark up or down among the
+  bookmarks at its level, as Word's outline moves headings. **Alt+Shift+Left** (Promote) moves it out of the
+  bookmark it is in, to just after that one; **Alt+Shift+Right** (Demote) moves it inside the bookmark above it,
+  last. When it can't go that way (it is already first or last at its level, or already at the top), a note says
+  so and nothing changes.
+
+Undo reverses each of these. One bookmark moves at a time. On the command line:
 [`limarepdf-cli bookmarks`](cli.md#bookmarks).
 
 ## Links
