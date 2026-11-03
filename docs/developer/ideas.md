@@ -14,8 +14,6 @@ as possible later work but aren't picked ahead of them, so the app doesn't fill 
 
 Small or medium additions that build on what LimarePDF already has:
 
-- **Extract images** (S–M): save a document's embedded images as files.
-- **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
 - **Shell completions** for `limarepdf-cli` (S): needs the `clap_complete` crate.
 
 ## Pages and layout

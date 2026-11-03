@@ -1337,6 +1337,7 @@ mod tests {
                         | Act::JoinHyphen
                         | Act::KeepHyphen
                         | Act::ReplaceImage
+                        | Act::SaveImage
                         | Act::ReplaceMatch
                         | Act::ReplaceAll
                         | Act::FindNext

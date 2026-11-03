@@ -51,6 +51,7 @@ mod paper;
 mod para_frames;
 mod para_write;
 mod paragraph;
+mod pictures;
 mod pkcs12;
 mod preview_font;
 pub mod print;
@@ -116,6 +117,7 @@ pub use overlay::{
 pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
+pub use pictures::{PictureFormat, SavedPictures};
 pub use redact::{PageRedaction, RedactReport};
 pub use reduce::{
     KeptWhy, Most, PictureQuality, ReduceOptions, ReducePreview, Reduced, PREVIEW_SIDE,

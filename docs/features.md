@@ -43,7 +43,7 @@ source.
 - **Redact for good:** remove text, pictures and drawings for real, not just cover them up, and strip hidden
   information such as metadata, scripts and attachments before you share a document.
 - **Protect documents:** add a password and choose what others may do with a document, or open a protected one.
-- **Print and export:** print, save pages as pictures, or save a document's text.
+- **Print and export:** print, save pages as pictures, save the pictures in a document, or save its text.
 - **Keep your work safe:** undo and redo your changes, and recovery copies bring back your recent unsaved work
   after a crash.
 - **Work from the command line:** `limarepdf-cli` does most of this in scripts and batches.

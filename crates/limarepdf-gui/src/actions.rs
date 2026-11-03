@@ -35,6 +35,8 @@ pub enum Act {
     Reload,
     ExportImages,
     ExportText,
+    /// Save every picture the pages show to a folder (NEW-09's stage 2).
+    SaveAllImages,
     Print,
     /// Print, opened as Word's Print preview opens it: the same dialog, with its preview.
     PrintPreview,
@@ -133,6 +135,8 @@ pub enum Act {
     CreateSign(SignRole),
     /// Replace the selected image with one from a file.
     ReplaceImage,
+    /// Save the selected picture as a file, as Word's Save as Picture (NEW-09's stage 2).
+    SaveImage,
     DeleteObject,
     /// Move the selected object by this many points (×10 with Shift).
     Nudge(i8, i8),
@@ -305,6 +309,8 @@ impl Act {
             | Act::ReduceSize
             | Act::Reload
             | Act::ExportText
+            | Act::SaveAllImages
+            | Act::SaveImage
             | Act::Print
             | Act::PrintPreview
             | Act::PrintSelection
@@ -848,6 +854,14 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::SaveAllImages,
+        label: "Save all images…",
+        icon: icon::IMAGES,
+        enabled: idle,
+        hint: "Save every picture in the document to a folder, each as a file.",
+        ..BASE
+    },
+    Action {
         act: Act::Print,
         label: "Print…",
         icon: icon::PRINTER,
@@ -1159,6 +1173,14 @@ pub static ACTIONS: &[Action] = &[
         label: "Replace image…",
         icon: icon::IMAGE,
         enabled: image_object,
+        ..BASE
+    },
+    Action {
+        act: Act::SaveImage,
+        label: "Save image as…",
+        icon: icon::FLOPPY_DISK,
+        enabled: image_object,
+        hint: "Save the selected picture as a file.",
         ..BASE
     },
     Action {
@@ -2343,7 +2365,11 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
                 &[Act::Cut, Act::DeleteObject],
             ]
         }
-        Selection::Objects { .. } => &[&[Act::ReplaceImage], &ALIGNS, &[Act::DeleteObject]],
+        Selection::Objects { .. } => &[
+            &[Act::ReplaceImage, Act::SaveImage],
+            &ALIGNS,
+            &[Act::DeleteObject],
+        ],
         Selection::None | Selection::Pages(_) => &[
             &[Act::Cut, Act::Copy, Act::Paste],
             &[Act::RotR, Act::RotL, Act::Crop],

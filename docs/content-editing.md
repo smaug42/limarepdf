@@ -336,6 +336,9 @@ To put the same text on every page, such as page numbers or DRAFT, use
 
 A photo shows upright, the way it was taken, even when the camera or phone was turned.
 
+To save a picture on a page as a file, select it and choose **Save image as…** from its right-click menu or its
+floating toolbar ([details](export-and-printing.md#pictures)).
+
 ## Move, resize or delete
 
 With the read tool:

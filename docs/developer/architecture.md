@@ -1589,6 +1589,36 @@ The locale is app.rs's `paper_locale`: on Linux and the BSDs `LC_ALL`, `LC_PAPER
 the paper; `sys-locale` reads `LC_MESSAGES` instead), else `sys_locale::get_locale` (Windows and macOS name the
 region there).
 
+**Saving pictures** (NEW-09's stage 2; core's `pictures.rs`, `limarepdf-cli save-images`): every picture is a
+picture object (an inline one through `redact_img::inline_stream`) and where it shows, `shown`, its unit square
+to the displayed page (the object's `ctm` times the inverse of `vis_down`, so a page's `/Rotate` counts).
+`format_of` writes it byte for byte (`PictureFormat::Jpeg`) only when `upright` (x along the page's x, y up, no
+turn beyond a thousandth, stretched or not) and `jpeg_as_is`: `/DCTDecode` alone, no `/SMask`, `/Mask`,
+`/Decode`, `/ImageMask` or `/ColorTransform` (each would show differently outside the PDF), a grey or RGB space
+(`/DeviceGray`, `/DeviceRGB`, `/CalGray`, `/CalRGB`, `/ICCBased` of 1 or 3) matching the JPEG's components, and
+`imgs::jpeg_as_shown` (the JPEG's own size, no EXIF turn, which a photo viewer would apply and a PDF reader
+ignores). Anything else is `picture_png`: `placed` lays the picture on a page of its own, each side as many
+points as its pixels in the direction it shows (a side within 1e-4 of upright or across taken as exactly so),
+the page the bounding box; `alone` writes a one-page document of the picture with every object its dictionary
+reaches copied under the same numbers (`/OC`, `/Metadata`, `/Alternates`, `/OPI`, `/StructParent` dropped), and
+`render.rs`'s `Renderer::render_clear` draws it at 72 dpi on a clear backdrop (`render_bands` with
+`TargetInit::Clear(TRANSPARENT)`, then the colours divided by alpha). Drawn 1:1 on whole pixels, the renderer
+samples each pixel as stored, so a Flate RGB or grey picture comes out exactly (core's `tests/pictures.rs`, and a
+flipped RGB picture of Ghostscript's `GS9_Color_Management.pdf` equal to pdfimages' flipped); its colours are the
+renderer's, so CMYK, ICC, Lab, palettes, JPEG 2000, JBIG2 and masks show as on the page. A picture the renderer
+reports it couldn't decode (`take_missing`) is an error, not an empty file. `png_of` writes grey, grey and alpha,
+RGB or RGBA, whichever holds the pixels. Save all images walks the pages with reduce.rs's `walk_pages`, whose
+`Walk::seen` now records each picture drawn, page content and the drawings it uses, in drawing order, an inline
+one as a picture object; `found` keeps an object's first use only and numbers each picture by its place among
+its page's (`names`: `<stem>-page-<page>-image-<n>`, pages padded to three digits at least as `image_names` pads
+them, `n` to the most on a page). `save_all_pictures` draws them in parallel in batches of about 1 GB of bitmaps,
+writes each whole (`write_file`), reports one that can't be saved by name and goes on, and returns a
+`NotConfirmed` as `write_images` does. The app: `Act::SaveImage` (the Objects group of `context_items` beside
+Replace image, so the right-click menu and the floating bar; ☰ > Edit) asks `picture_format` for the chooser's
+kind, then `App::save_image` spawns the job (`picture_file`, `write_file`); `Act::SaveAllImages` (☰ > Export)
+says when `picture_names` is empty, else `pick_folder` (now given its title) and `Replacing::Pictures` when
+`existing` finds files, then `start_save_pictures`. Neither changes the document (`changed` false).
+
 **Decoding parameters given as a reference**: lopdf's `decompressed_content` reads `/DecodeParms` only when it is
 written in place (a dictionary, or an array of them); given as a reference (pdf.js's `issue17906`) it decodes as
 if there were none, leaving a PNG predictor's byte at the start of every row, so the samples read shifted.

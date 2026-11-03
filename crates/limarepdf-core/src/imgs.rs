@@ -248,6 +248,17 @@ struct JpegInfo {
     luma_q: Option<u32>,
 }
 
+/// Whether JPEG `bytes` is a `w` × `h` grey or colour picture that other apps show as a PDF
+/// reader does: one or three components, the size the PDF gives it, and no EXIF turn (a PDF
+/// reader ignores one; a photo viewer applies it).
+pub(crate) fn jpeg_as_shown(bytes: &[u8], w: i64, h: i64) -> bool {
+    jpeg_info(bytes).is_some_and(|i| {
+        matches!(i.components, 1 | 3)
+            && (i.w as i64, i.h as i64) == (w, h)
+            && i.orientation == Orientation::NoTransforms
+    })
+}
+
 /// Sum of the IJG standard luminance quantisation table, which quality 50 uses as is.
 const IJG_LUMA_SUM: u32 = 3_688;
 

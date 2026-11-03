@@ -186,12 +186,29 @@ struct Use {
 
 /// What walking the pages found.
 #[derive(Default)]
-struct Walk {
+pub(crate) struct Walk {
     uses: HashMap<ObjectId, Vec<Use>>,
     /// The `/ColorSpace` resources of the first place each picture is drawn.
     spaces: HashMap<ObjectId, Dictionary>,
     /// Inline pictures on each page.
     inline: HashMap<usize, usize>,
+    /// Every picture drawn, in the pages' drawing order.
+    pub seen: Vec<Seen>,
+}
+
+/// A picture drawn on a page ([`Walk::seen`]).
+pub(crate) struct Seen {
+    pub page: usize,
+    /// From the picture's unit square to the page's user space.
+    pub ctm: M,
+    pub picture: Drawn,
+}
+
+/// A picture as a page draws it.
+pub(crate) enum Drawn {
+    Object(ObjectId),
+    /// An inline picture, as a picture object.
+    Inline(Box<Stream>),
 }
 
 /// Resources as found: the dictionary and the object holding it.
@@ -219,18 +236,7 @@ impl Pdf {
         }
         // Every page is walked: a picture also drawn on a page not chosen keeps its original
         // there.
-        let mut walk = Walk::default();
-        for (i, &page) in ids.iter().enumerate() {
-            let Ok(data) = self
-                .doc
-                .get_page_content_with_limit(page, crate::MAX_CONTENT)
-            else {
-                continue;
-            };
-            let res = self.resources_of(page, self.inherited(page, b"Resources").as_ref());
-            let mut forms = Vec::new();
-            self.walk(i, &data, res.as_ref(), mx::ID, &mut forms, &mut walk);
-        }
+        let walk = self.walk_pages();
         for (page, n) in &walk.inline {
             if chosen.contains(page) {
                 *report.kept.entry(KeptWhy::Inline).or_default() += n;
@@ -416,6 +422,23 @@ impl Pdf {
         })
     }
 
+    /// Every picture every page draws, in their content and the drawings it uses.
+    pub(crate) fn walk_pages(&self) -> Walk {
+        let mut walk = Walk::default();
+        for (i, page) in self.page_ids().into_iter().enumerate() {
+            let Ok(data) = self
+                .doc
+                .get_page_content_with_limit(page, crate::MAX_CONTENT)
+            else {
+                continue;
+            };
+            let res = self.resources_of(page, self.inherited(page, b"Resources").as_ref());
+            let mut forms = Vec::new();
+            self.walk(i, &data, res.as_ref(), mx::ID, &mut forms, &mut walk);
+        }
+        walk
+    }
+
     /// Resources given by `o` (a dictionary or a reference to one) of the page or drawing
     /// `owner`, with the object holding its `/XObject` dictionary.
     fn resources_of(&self, owner: ObjectId, o: Option<&Object>) -> Option<Res> {
@@ -494,6 +517,11 @@ impl Pdf {
                                 ctm,
                                 home: res.home,
                             });
+                            walk.seen.push(Seen {
+                                page,
+                                ctm,
+                                picture: Drawn::Object(*id),
+                            });
                         }
                         Ok(b"Form") if forms.len() < MAX_NESTING && !forms.contains(id) => {
                             let Ok(inner) = s.get_plain_content_with_limit(crate::MAX_CONTENT)
@@ -517,7 +545,17 @@ impl Pdf {
                         _ => {}
                     }
                 }
-                t if inline.raw(t).is_some() => *walk.inline.entry(page).or_default() += 1,
+                t if inline.raw(t).is_some() => {
+                    *walk.inline.entry(page).or_default() += 1;
+                    let raw = inline.raw(t).unwrap_or_default();
+                    if let Some(s) = redact_img::inline_stream(raw, &spaces) {
+                        walk.seen.push(Seen {
+                            page,
+                            ctm,
+                            picture: Drawn::Inline(Box::new(s)),
+                        });
+                    }
+                }
                 _ => {}
             }
         }

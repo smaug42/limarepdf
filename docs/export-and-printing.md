@@ -2,7 +2,7 @@
 
 # Export and printing
 
-Print a document, save its pages as pictures, or save its text.
+Print a document, save its pages or its pictures as image files, or save its text.
 
 ## Printing
 
@@ -233,6 +233,29 @@ On the command line: `limarepdf-cli render --format png|jpeg`. Like the app, it 
 no drawing of its own (some apps leave drawing it to the reader). A field whose text LimarePDF can't draw
 (Hebrew or Arabic, say, or characters no installed font has) comes out empty: the images are still written, with a warning naming
 those fields.
+
+## Pictures
+
+To save one picture, as Word's Save as Picture does: select it, then choose **Save image as…** from its
+right-click menu or its floating toolbar (also ☰ > Edit, and the command search), and name the file.
+
+To save every picture in the document, choose ☰ > Export > **Save all images…** and pick a folder. The files are
+named after the document, the page and the picture's place on that page (`report-page-003-image-2.jpg`), so they
+sort in page order. A picture shown on several pages, such as a logo, is saved once, with the first page that
+shows it. Saving runs in the background and asks before replacing files.
+
+How each picture is saved:
+
+- A JPEG photo shown upright is saved exactly as it is stored in the document, so no quality is lost.
+- Any other picture, or one turned or flipped on the page, is saved as a PNG as it shows on the page: at its own
+  size in pixels, turned as the page shows it, its transparency kept. A PNG loses nothing either.
+
+Neither changes the document. A picture is saved whole, even when the page shows only part of it. Pictures inside
+comments, stamps and form fields aren't saved, and a picture inside a group (a form XObject) can't be selected
+alone, though Save all images saves it.
+
+On the command line: `limarepdf-cli save-images in.pdf --out-dir pictures` (see the
+[command-line reference](cli.md#images-and-scans)).
 
 ## Text
 

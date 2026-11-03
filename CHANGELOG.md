@@ -220,6 +220,14 @@
   Blank document does. The page is Letter in the United States, Canada and the other countries that use Letter,
   and A4 elsewhere, by your system's region (on Linux, its paper setting). One you haven't changed closes without
   asking; once changed, Save asks where to save it.
+- **Save image as…**: a selected picture's right-click menu, its floating toolbar, ☰ > Edit and the command
+  search save the picture as a file, as Word's Save as Picture does. A JPEG photo shown upright is saved exactly
+  as it is in the document, with no quality lost; any other picture, or one turned or flipped on the page, is
+  saved as a PNG as it shows, with its own pixels and its transparency.
+- **Save all images…** (☰ > Export) saves every picture in the document to a folder you choose, each as
+  Save image as saves one, named by page and number (`report-page-003-image-2.jpg`). A picture shown on several
+  pages, such as a logo, is saved once. It asks before replacing files. On the command line:
+  `limarepdf-cli save-images in.pdf --out-dir pictures`.
 
 ### Changed
 

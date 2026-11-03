@@ -631,6 +631,19 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
+    /// Save every picture the pages show to out-dir/<stem>-page-<page>-image-<n>.jpg (or
+    /// .png): a JPEG upright on the page as it is, any other picture, or one turned or
+    /// flipped, a lossless PNG as it shows. A picture shown on several pages is saved once
+    SaveImages {
+        input: PathBuf,
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Replace files already at the pictures' names; without it nothing is written then
+        #[arg(long)]
+        overwrite: bool,
+        #[arg(long)]
+        password: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -4328,6 +4341,38 @@ fn run(cmd: Cmd) -> Result<()> {
                     "warning: {these} empty in the images, because LimarePDF can't draw {their}: {}",
                     limarepdf_core::quoted_list(&blank)
                 );
+            }
+        }
+        Cmd::SaveImages {
+            input,
+            out_dir,
+            overwrite,
+            password,
+        } => {
+            let pdf = open(&input, &password)?;
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string();
+            let names = pdf.picture_names(&stem);
+            if names.is_empty() {
+                out!("no pictures to save");
+                return Ok(());
+            }
+            let files: Vec<PathBuf> = names.iter().map(|n| out_dir.join(n)).collect();
+            not_taken(&files, overwrite)?;
+            let done = saved(pdf.save_all_pictures(&out_dir, &stem))?;
+            out!(
+                "saved {} picture(s) to {}",
+                done.written.len(),
+                out_dir.display()
+            );
+            for (name, why) in &done.failed {
+                eprintln!("warning: {name} not saved: {why}");
+            }
+            if !done.failed.is_empty() {
+                bail!("{} picture(s) couldn't be saved", done.failed.len());
             }
         }
     }

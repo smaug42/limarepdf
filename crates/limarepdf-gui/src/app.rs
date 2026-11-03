@@ -29,7 +29,7 @@ use limarepdf_core::disk::{self, OnDisk};
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
     parse_page_range, part_file_name, print, ImageImport, LinkTarget, OcrResult, OpenPanel, Pdf,
-    Query, ScanResult, SplitBy, TrustEntry, TrustRole,
+    PictureFormat, Query, ScanResult, SplitBy, TrustEntry, TrustRole,
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -396,11 +396,19 @@ struct SplitFiles {
     stem: String,
 }
 
+/// Every picture of the document in front to save in `dir`, named from `stem` (NEW-09).
+#[derive(Clone)]
+struct PicturesTo {
+    dir: PathBuf,
+    stem: String,
+}
+
 /// Files about to be written, replacing files of the same names.
 #[derive(Clone)]
 enum Replacing {
     Images(ImageExport),
     Split(SplitFiles),
+    Pictures(PicturesTo),
 }
 
 impl Replacing {
@@ -408,6 +416,7 @@ impl Replacing {
         match self {
             Replacing::Images(e) => &e.dir,
             Replacing::Split(s) => &s.dir,
+            Replacing::Pictures(p) => &p.dir,
         }
     }
 }
@@ -2355,6 +2364,123 @@ impl App {
         });
     }
 
+    /// Save the selected picture as a file, as Word's Save as Picture (NEW-09's stage 2):
+    /// named in the save chooser, then written on a background thread, a JPEG upright on the
+    /// page as it is and any other picture a PNG as it shows. The document isn't changed.
+    fn save_image(&mut self, ctx: &egui::Context) {
+        let t = &self.tabs[self.active];
+        let Some((page, id)) = t.ed.sel() else {
+            return;
+        };
+        let format = match t.pdf.picture_format(page, id) {
+            Ok(f) => f,
+            Err(e) => {
+                self.dialog = Dialog::Message(
+                    "Save image as".into(),
+                    format!("This picture can't be saved: {e:#}."),
+                );
+                return;
+            }
+        };
+        let ext = format.extension();
+        let kinds: &[&str] = match format {
+            PictureFormat::Jpeg => &["jpg", "jpeg"],
+            PictureFormat::Png => &["png"],
+        };
+        let name = format!("{}-page-{}-image.{ext}", t.stem("document"), page + 1);
+        let mut d = rfd::FileDialog::new()
+            .set_title("Save image as")
+            .add_filter(format.name(), kinds)
+            .set_file_name(name);
+        if let Some(dir) = Self::start_folder(Some(t), self.settings.folder.as_deref()) {
+            d = d.set_directory(dir);
+        }
+        let Some(mut path) = Self::save_as(d) else {
+            return;
+        };
+        // The kind's own extension, added to a name without it.
+        let given = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+        if !given.is_some_and(|e| kinds.contains(&e.as_str())) {
+            let mut named = path.into_os_string();
+            named.push(format!(".{ext}"));
+            path = named.into();
+        }
+        self.spawn_job(ctx, "Save image as", move |p| {
+            let (_, bytes) = p.picture_file(page, id)?;
+            match limarepdf_core::write_file(&path, &bytes) {
+                Ok(()) => Ok((false, format!("Saved the picture as {}.", path.display()))),
+                Err(err) if not_confirmed(&err) => Ok((
+                    false,
+                    format!(
+                        "Saved the picture as {}, but your system couldn't confirm it is safely \
+                         on disk. If the computer lost power just now, save it again.",
+                        path.display()
+                    ),
+                )),
+                Err(err) => Err(err),
+            }
+        });
+    }
+
+    /// Save every picture of the document to a folder the user picks (NEW-09's stage 2),
+    /// asking first when files there have the names they would get.
+    fn save_all_images(&mut self, ctx: &egui::Context) {
+        let t = &self.tabs[self.active];
+        let stem = t.stem("document");
+        let names = t.pdf.picture_names(&stem);
+        if names.is_empty() {
+            self.dialog = Dialog::Message(
+                "Save all images".into(),
+                "This document has no pictures to save.".into(),
+            );
+            return;
+        }
+        let start = Self::start_folder(Some(t), self.settings.folder.as_deref());
+        let asked = Asked::of(t);
+        let title = "Choose a folder for the pictures";
+        let Some(dir) = Self::pick_folder(title, start.as_deref()) else {
+            return;
+        };
+        let to = PicturesTo { dir, stem };
+        let files: Vec<PathBuf> = names.iter().map(|n| to.dir.join(n)).collect();
+        match limarepdf_core::existing(&files).len() {
+            0 => self.start_save_pictures(ctx, to),
+            n => self.dialog = Dialog::ConfirmReplace(asked, Replacing::Pictures(to), n),
+        }
+    }
+
+    /// Write every picture of the document to `to` on a background thread.
+    fn start_save_pictures(&mut self, ctx: &egui::Context, to: PicturesTo) {
+        self.spawn_job(ctx, "Save all images", move |p| {
+            match p.save_all_pictures(&to.dir, &to.stem) {
+                Ok(done) => {
+                    let n = done.written.len();
+                    let mut said = format!(
+                        "Saved {} to {}.",
+                        plural(n, "1 picture", "{n} pictures"),
+                        to.dir.display()
+                    );
+                    if let Some((name, why)) = done.failed.first() {
+                        said += &format!(
+                            "\n\n{} couldn't be saved; the first, {name}: {why}.",
+                            plural(done.failed.len(), "1 picture", "{n} pictures"),
+                        );
+                    }
+                    Ok((false, said))
+                }
+                Err(err) if not_confirmed(&err) => Ok((
+                    false,
+                    format!(
+                        "Saved the pictures to {}, but your system couldn't confirm they are \
+                         safely on disk. If the computer lost power just now, save them again.",
+                        to.dir.display()
+                    ),
+                )),
+                Err(err) => Err(err),
+            }
+        });
+    }
+
     /// Write the text of every page to a file, pages separated by form feeds.
     fn export_text(&mut self) {
         let t = &self.tabs[self.active];
@@ -2839,6 +2965,8 @@ impl App {
             }
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
+            Act::SaveAllImages if has && !self.busy => self.save_all_images(ctx),
+            Act::SaveImage if has && !self.busy => self.save_image(ctx),
             Act::Print | Act::PrintPreview | Act::PrintSelection if has && !self.busy => {
                 // Open at once, with the printers looked for meanwhile (BUG-11), and the
                 // preview drawn from a copy of what is printed.
@@ -3759,11 +3887,11 @@ impl App {
         self.settings.save();
     }
 
-    /// The documents folder the user picks, starting in `start`. Never the system's chooser
-    /// in tests.
+    /// The folder the user picks in a chooser called `title`, starting in `start`. Never the
+    /// system's chooser in tests.
     #[cfg(not(test))]
-    fn pick_folder(start: Option<&Path>) -> Option<PathBuf> {
-        let mut d = rfd::FileDialog::new().set_title("Documents folder");
+    fn pick_folder(title: &str, start: Option<&Path>) -> Option<PathBuf> {
+        let mut d = rfd::FileDialog::new().set_title(title);
         if let Some(dir) = start.filter(|d| d.is_dir()) {
             d = d.set_directory(dir);
         }
@@ -3771,7 +3899,7 @@ impl App {
     }
 
     #[cfg(test)]
-    fn pick_folder(_: Option<&Path>) -> Option<PathBuf> {
+    fn pick_folder(_: &str, _: Option<&Path>) -> Option<PathBuf> {
         tests::FOLDER.with(std::cell::Cell::take)
     }
 
@@ -4681,7 +4809,7 @@ impl App {
                 match out {
                     dlg::SettingsOut::ChooseFolder => {
                         let start = p.folder.clone().or_else(|| self.settings.folder.clone());
-                        if let Some(dir) = Self::pick_folder(start.as_deref()) {
+                        if let Some(dir) = Self::pick_folder("Documents folder", start.as_deref()) {
                             p.folder = Some(dir);
                         }
                     }
@@ -4882,6 +5010,7 @@ impl App {
                         match r {
                             Replacing::Images(_) => "these images",
                             Replacing::Split(_) => "the split's files",
+                            Replacing::Pictures(_) => "these pictures",
                         },
                         if *n == 1 { "it" } else { "them" },
                     ),
@@ -4894,6 +5023,7 @@ impl App {
                         match r.clone() {
                             Replacing::Images(e) => self.start_export(ctx, e),
                             Replacing::Split(s) => self.start_split(ctx, s),
+                            Replacing::Pictures(p) => self.start_save_pictures(ctx, p),
                         }
                     }
                     done = true;
@@ -6380,6 +6510,7 @@ fn of_the_page(a: Act) -> bool {
             | Act::EditObjectText
             | Act::MoveText
             | Act::ReplaceImage
+            | Act::SaveImage
             | Act::NextField
             | Act::PrevField
             | Act::ClearField
@@ -7819,6 +7950,7 @@ mod tests {
     mod reduce;
     mod replace;
     mod review;
+    mod save_image;
     mod settings_window;
     mod sign;
     mod spelling;

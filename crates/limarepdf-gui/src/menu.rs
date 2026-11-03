@@ -53,6 +53,7 @@ pub static MENU: &[Entry] = &[
         "Export",
         &[
             Cmd(Act::ExportImages),
+            Cmd(Act::SaveAllImages),
             Cmd(Act::ExportText),
             Cmd(Act::SaveSelection),
         ],
@@ -130,6 +131,7 @@ static EDIT: &[Entry] = &[
     Cmd(Act::MoveText),
     Cmd(Act::CopyObjectText),
     Cmd(Act::ReplaceImage),
+    Cmd(Act::SaveImage),
     Sep,
     // Arrange.
     Sub(
