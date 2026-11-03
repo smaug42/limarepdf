@@ -27,8 +27,8 @@ use eframe::egui::{self, AtomExt as _, Key};
 use limarepdf_core::disk::{self, OnDisk};
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
-    parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, Query,
-    ScanResult, SplitBy, TrustEntry, TrustRole,
+    parse_page_range, part_file_name, print, ImageImport, LinkTarget, OcrResult, OpenPanel, Pdf,
+    Query, ScanResult, SplitBy, TrustEntry, TrustRole,
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -468,6 +468,8 @@ enum Dialog {
     SaveSelection(Asked, dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
+    /// Insert link, or Edit link (ENH-17): where the link goes and how it looks.
+    Link(Asked, Box<dlg::LinkAsk>),
     /// The name for comments, being edited.
     CommentName(String),
     About(about::Page),
@@ -504,6 +506,7 @@ impl Dialog {
             | Dialog::ConfirmSaveMarks(a, ..)
             | Dialog::Print(a, _)
             | Dialog::SaveSelection(a, _)
+            | Dialog::Link(a, _)
             | Dialog::ConfirmSignRecovered(a)
             | Dialog::ConfirmStale(a, _)
             | Dialog::ConfirmReload(a) => Some(a),
@@ -530,6 +533,7 @@ impl Dialog {
             | Dialog::ConfirmSaveMarks(a, ..)
             | Dialog::Print(a, _)
             | Dialog::SaveSelection(a, _)
+            | Dialog::Link(a, _)
             | Dialog::ConfirmSignRecovered(a)
             | Dialog::ConfirmStale(a, _)
             | Dialog::ConfirmReload(a) => Some(a),
@@ -730,7 +734,7 @@ struct Toast {
     away: Option<(f64, f64)>,
 }
 
-/// The command palette (Ctrl+K) while it is open.
+/// The command palette (Ctrl+Shift+P) while it is open.
 #[derive(Default)]
 struct Palette {
     query: String,
@@ -2657,6 +2661,29 @@ impl App {
             }
             Act::SaveSelection if has => {
                 self.dialog = Dialog::SaveSelection(self.asked(), dlg::Layout::Original);
+            }
+            Act::Link if has => self.tabs[self.active].link_command(),
+            Act::EditLink if has => {
+                let t = &mut self.tabs[self.active];
+                if let Some((page, id)) = t.ed.selection.link() {
+                    t.ask_edit_link(page, id);
+                }
+            }
+            Act::OpenLink if has => {
+                let t = &mut self.tabs[self.active];
+                t.ed.follow = t.ed.selected_link().map(|l| l.target.clone());
+            }
+            Act::CopyLinkAddress if has => {
+                let t = &self.tabs[self.active];
+                if let Some(LinkTarget::Uri(u)) = t.ed.selected_link().map(|l| &l.target) {
+                    ctx.copy_text(u.clone());
+                }
+            }
+            Act::RemoveLink if has => {
+                let t = &mut self.tabs[self.active];
+                if let Some((page, id)) = t.ed.selection.link() {
+                    t.remove_link(ctx, page, id);
+                }
             }
             Act::Mark(m) if has => {
                 let color = markup::color(m, &self.state(ctx));
@@ -4796,6 +4823,22 @@ impl App {
                     Outcome::Open => {}
                 }
             }
+            Dialog::Link(asked, ask) => match dlg::link(ctx, file, ask) {
+                dlg::LinkOut::Done(to, underline) => {
+                    done = true;
+                    if self.still(asked) {
+                        self.tabs[self.active].write_link(ctx, ask, &to, underline);
+                    }
+                }
+                dlg::LinkOut::Remove => {
+                    done = true;
+                    if let Some((page, id)) = ask.editing.filter(|_| self.still(asked)) {
+                        self.tabs[self.active].remove_link(ctx, page, id);
+                    }
+                }
+                dlg::LinkOut::Cancel => done = true,
+                dlg::LinkOut::Open => {}
+            },
             Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, file, layout) {
                 Outcome::Apply => {
                     let layout = *layout;
@@ -4956,7 +4999,7 @@ impl App {
         }
     }
 
-    /// The command palette (Ctrl+K): type to filter the commands, Up and Down to move,
+    /// The command palette (Ctrl+Shift+P): type to filter the commands, Up and Down to move,
     /// Enter or a click to run, Esc or a click outside to close.
     fn palette_ui(&mut self, ctx: &egui::Context, c: &Ctx, acts: &mut Vec<Act>) {
         let Some(p) = self.palette.as_mut() else {
@@ -6009,6 +6052,8 @@ fn inspector_body(
         t.ed.keep.clone_from(&s.keep_tools);
         // The selected comment's page by its label, as the Comments view names it.
         t.ed.annot_page = t.ed.selection.annot().map(|(p, _)| t.page_name(p));
+        // For the selected link's page box.
+        t.ed.page_count = t.page_count();
         t.ed.inspector(ui);
         if std::mem::take(&mut t.ed.apply_redactions) {
             t.requested.push(Act::ApplyRedactions);
@@ -7025,6 +7070,9 @@ impl eframe::App for App {
             }
             if let Some(url) = t.open_link.take() {
                 self.dialog = link_dialog(url);
+            }
+            if let Some(ask) = t.ask_link.take() {
+                self.dialog = Dialog::Link(Asked::of(t), Box::new(ask));
             }
         }
 
@@ -8556,8 +8604,8 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         app.band = Band::Insert;
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        let name = "Link — Planned";
-        let (at, _) = node(&tree, name).expect("Link");
+        let name = "Blank document — Planned";
+        let (at, _) = node(&tree, name).expect("Blank document");
         let link = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
         assert!(link.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
         let before = "Header and footer";
@@ -13095,6 +13143,40 @@ mod tests {
                     prepared: None,
                 })),
             ),
+            // Insert link over words, and Edit link for another app's link (ENH-17).
+            32 => (
+                "Insert link".into(),
+                two("Insert link"),
+                Dialog::Link(
+                    app.asked(),
+                    Box::new(dlg::LinkAsk {
+                        form: dlg::LinkForm {
+                            web: format!("example.com/{long}"),
+                            ..dlg::LinkForm::new(3, 0, true)
+                        },
+                        areas: vec![(0, vec![[72.0, 90.0, 300.0, 110.0]])],
+                        editing: None,
+                        was: None,
+                    }),
+                ),
+            ),
+            33 => (
+                "Edit link".into(),
+                vec!["Save link", "Remove link", "Cancel"],
+                Dialog::Link(
+                    app.asked(),
+                    Box::new(dlg::LinkAsk {
+                        form: dlg::LinkForm {
+                            to: dlg::LinkTo::Email,
+                            email: format!("{long}@example.com"),
+                            ..dlg::LinkForm::new(3, 0, false)
+                        },
+                        areas: Vec::new(),
+                        editing: Some((0, limarepdf_core::LinkId::Object((1, 0)))),
+                        was: Some(format!("Opens another file: {long}.pdf")),
+                    }),
+                ),
+            ),
             _ => return None,
         };
         Some(q)
@@ -13250,7 +13332,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 32, "a question was left out");
+                assert_eq!(i, 34, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -13263,7 +13345,11 @@ mod tests {
                     ctx.memory_mut(|m| m.surrender_focus(id));
                 }
                 app.dialog = dialog;
-                let one_field = matches!(app.dialog, Dialog::Password(..) | Dialog::CommentName(_));
+                // Enter in their field answers them, as in Word's Insert Hyperlink.
+                let one_field = matches!(
+                    app.dialog,
+                    Dialog::Password(..) | Dialog::CommentName(_) | Dialog::Link(..)
+                );
                 let mut tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
                 for _ in 0..4 {
                     tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
@@ -13652,10 +13738,10 @@ mod tests {
         for _ in 0..3 {
             frame(&mut app, vec![]);
         }
-        frame(&mut app, vec![key(Key::K, egui::Modifiers::COMMAND)]);
+        frame(&mut app, vec![key(Key::P, CTRL_SHIFT)]);
         assert!(
             app.palette.is_none(),
-            "Ctrl+K opened the palette behind the question"
+            "Ctrl+Shift+P opened the palette behind the question"
         );
         frame(&mut app, vec![key(Key::Escape, egui::Modifiers::NONE)]);
         assert!(matches!(app.dialog, Dialog::None));
@@ -13663,7 +13749,7 @@ mod tests {
         for _ in 0..2 {
             frame(&mut app, vec![]);
         }
-        frame(&mut app, vec![key(Key::K, egui::Modifiers::COMMAND)]);
+        frame(&mut app, vec![key(Key::P, CTRL_SHIFT)]);
         assert!(
             app.palette.is_some(),
             "shortcuts stayed off after the question"
@@ -15119,7 +15205,7 @@ mod tests {
 
     /// Run the command `name` from the command palette, typed there.
     fn from_palette(app: &mut App, ty: &Typist, name: &str) {
-        ty.key(app, Key::K, CTRL);
+        ty.key(app, Key::P, CTRL_SHIFT);
         ty.text(app, name);
         ty.key(app, Key::Enter, egui::Modifiers::NONE);
         ty.pause(app);

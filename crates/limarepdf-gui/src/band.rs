@@ -223,12 +223,6 @@ const TEXT_ALIGNS: [Act; 4] = [
 ];
 
 // The planned features, each with the build plan's item that builds it.
-const LINK: Planned = Planned {
-    label: "Link",
-    icon: icon::LINK,
-    item: "ENH-17",
-    what: "Add a link to a web page or a place in the document.",
-};
 const BLANK_DOCUMENT: Planned = Planned {
     label: "Blank document",
     icon: icon::FILE_PLUS,
@@ -324,7 +318,7 @@ static INSERT: &[Group] = &[
             b(Act::Watermark, "Watermark", icon::DROP_HALF),
         ],
     ),
-    group("Navigation", &[Item::Planned(&LINK)]),
+    group("Navigation", &[b(Act::Link, "Link", icon::LINK)]),
     group(
         "Document",
         &[
@@ -941,6 +935,9 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
 pub fn is_on(act: Act, c: &Ctx) -> bool {
     match act {
         Act::Tool(t) => c.tool == Some(t) && t != Tool::Read,
+        // Link while its tool is on, as Acrobat's link tool shows; clicked then, it goes
+        // back to the read tool.
+        Act::Link => c.tool == Some(Tool::Link),
         // Edit text is text being edited on the page, or the Text tool chosen with it (not
         // Insert > Text's alone); clicked when on, it goes back to the read tool.
         Act::EditObjectText => c.edit_text,
@@ -1177,10 +1174,10 @@ mod tests {
     #[test]
     fn planned_features_name_their_plan_items() {
         let all = all_planned();
-        assert!(all.len() >= 7);
-        // Built: Underline (NEW-07, batch 46's 4b), Align (NEW-08, its stage 5) and Print
-        // preview (ENH-14, batch 30's stage 3).
-        let built = ["NEW-07", "NEW-08", "ENH-14"];
+        assert!(all.len() >= 6);
+        // Built: Underline (NEW-07, batch 46's 4b), Align (NEW-08, its stage 5), Print
+        // preview (ENH-14, batch 30's stage 3) and Link (ENH-17's stage 2).
+        let built = ["NEW-07", "NEW-08", "ENH-14", "ENH-17"];
         assert!(!all.iter().any(|p| built.contains(&p.item)));
         for p in &all {
             let id = p.item;
@@ -1298,6 +1295,10 @@ mod tests {
                         | Act::CopyObjectText
                         | Act::DeleteSelection
                         | Act::DeleteObject
+                        | Act::EditLink
+                        | Act::OpenLink
+                        | Act::CopyLinkAddress
+                        | Act::RemoveLink
                         | Act::MoveText
                         | Act::JoinHyphen
                         | Act::KeepHyphen

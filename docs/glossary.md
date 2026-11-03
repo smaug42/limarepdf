@@ -31,7 +31,7 @@ form). A document can be certified only before anyone else signs it.
 and below them the buttons of the name chosen, in groups. This guide writes a button as name > button, such as
 Pages > Split. See [The command band](gui.md#the-command-band).
 
-**Command palette.** The list of every command, opened with Ctrl+K: type to find one, Enter to run it.
+**Command palette.** The list of every command, opened with Ctrl+Shift+P (⌘⇧P on a Mac): type to find one, Enter to run it.
 
 **Compact commands.** The command band on one row of icons, which name themselves on hover. The small arrow at the
 right of the commands row, or View > Show > Compact commands, turns it on and off; windows under 600 points high
@@ -79,6 +79,10 @@ is. See [Add pages](organising-pages.md#add-pages-and-merge-documents).
 **Inspector.** The panel on the right of the window, which shows the options for what is selected, or for the
 whole document when nothing is. Tools such as Watermark and Crop open in it on their own, with a × to close them.
 
+**Link tool.** The tool for adding and changing links, turned on by Link (Insert > Link or Ctrl+K) with nothing
+selected. It outlines the page's links: drag a box to add one, or click one to move, resize, edit or delete it.
+See [Links](reading-and-finding.md#add-a-link).
+
 **Metadata.** Information about the document stored in it, such as its title, author and the program that made it.
 
 **OCR (text recognition).** Reading the text in a scan or photo, so that it can be searched and copied. LimarePDF
@@ -101,7 +105,7 @@ Turning off Show planned features, in the status bar or View > Show, hides them.
 
 **Read tool.** The tool every document opens with (the text cursor): it selects text, follows links, fills in
 forms, and selects and moves pictures, shapes and comments on the page (Shift+click for several pictures and
-shapes).
+shapes). Words it selects can be made a link with Link (Ctrl+K).
 
 **Recovery copy.** A private copy LimarePDF keeps of a document with unsaved changes, so it can offer the document
 back if the app stops unexpectedly. It never changes your own file.

@@ -1,5 +1,5 @@
 //! Every user-facing command, defined once. The menu, the top bar, the command palette
-//! (Ctrl+K) and the keyboard shortcuts are all built from [`ACTIONS`]; what a command
+//! (Ctrl+Shift+P) and the keyboard shortcuts are all built from [`ACTIONS`]; what a command
 //! does is in `App::act`.
 
 use crate::editor::{Align, Aligns, Axis, TextAlign, Tool};
@@ -83,6 +83,17 @@ pub enum Act {
         line: bool,
         index: usize,
     },
+    /// Add a link to the selected words, or change the selected link, in the Insert link
+    /// window; with neither, turn the Link tool on or off (ENH-17).
+    Link,
+    /// Change where the selected link goes, or its look, in the Edit link window.
+    EditLink,
+    /// Follow the selected link, as clicking it with the read tool does.
+    OpenLink,
+    /// Copy the selected link's web or email address.
+    CopyLinkAddress,
+    /// Remove the selected link, leaving the page as it is.
+    RemoveLink,
     /// Mark the selected words for redaction.
     MarkRedact,
     /// Mark every result of the last search for redaction.
@@ -285,6 +296,9 @@ impl Act {
             | Act::Undo
             | Act::Redo
             | Act::Mark(_)
+            | Act::Link
+            | Act::EditLink
+            | Act::RemoveLink
             | Act::MarkRedact
             | Act::MarkResultsRedact
             | Act::ReplaceMatch
@@ -327,6 +341,8 @@ impl Act {
             | Act::ToggleRecovery
             | Act::ShowRecoveryFile
             | Act::Quit
+            | Act::OpenLink
+            | Act::CopyLinkAddress
             | Act::Copy
             | Act::Paste
             | Act::SelectAllText
@@ -527,6 +543,11 @@ pub struct Ctx {
     /// How the text the alignment commands act on is aligned, when it is all aligned alike
     /// ([`crate::editor::Editor::text_align`]).
     pub text_align: Option<TextAlign>,
+    /// A link is selected (ENH-17), and whether it goes somewhere LimarePDF follows, and
+    /// to a web or email address.
+    pub link: bool,
+    pub link_opens: bool,
+    pub link_address: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -644,7 +665,7 @@ fn object(c: &Ctx) -> bool {
 }
 /// An object or annotation that can be moved with the current tool.
 fn nudgeable(c: &Ctx) -> bool {
-    c.object_moves || c.annot_moves
+    c.object_moves || c.annot_moves || (c.link && c.tool == Some(Tool::Link))
 }
 /// Objects selected that the current tool can move: what Align lines up.
 fn alignable(c: &Ctx) -> bool {
@@ -692,7 +713,11 @@ fn organising(c: &Ctx) -> bool {
     c.doc && c.organise
 }
 fn deletable(c: &Ctx) -> bool {
-    c.object || c.pages || (c.annot && !c.annot_locked) || (c.words && !c.busy)
+    c.object
+        || c.pages
+        || (c.annot && !c.annot_locked)
+        || (c.words && !c.busy)
+        || (c.link && !c.busy)
 }
 fn image_object(c: &Ctx) -> bool {
     c.object && c.obj_kind == Some(ObjKind::Image)
@@ -1193,8 +1218,8 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::TRASH,
         keys: &[k(N, Key::Delete), k(N, Key::Backspace)],
         enabled: deletable,
-        hint: "The selected words, object, comment or markup, or the pages selected in the \
-               thumbnails. Undo brings them back.",
+        hint: "The selected words, object, comment, markup or link, or the pages selected in \
+               the thumbnails. Undo brings them back.",
         ..BASE
     },
     Action {
@@ -1901,7 +1926,8 @@ pub static ACTIONS: &[Action] = &[
         group: Group::View,
         label: "Command palette…",
         icon: icon::COMMAND,
-        keys: &[k(C, Key::K)],
+        // Ctrl+K inserts a link, as in word processors (ENH-17's Q1).
+        keys: &[k(CS, Key::P)],
         enabled: always,
         palette: false,
         sep: true,
@@ -1962,6 +1988,58 @@ pub static ACTIONS: &[Action] = &[
         label: "Add image…",
         icon: icon::IMAGE,
         hint: "Choose a picture, then drag a box on the page or click to place it.",
+        ..BASE
+    },
+    // Links (ENH-17): Ctrl+K, as in Word, LibreOffice and Google Docs.
+    Action {
+        act: Act::Link,
+        group: Group::Tools,
+        label: "Link…",
+        icon: icon::LINK,
+        keys: &[k(C, Key::K)],
+        enabled: idle,
+        hint: "Link the selected text to a page, a web page or an email address. With no \
+               text selected, drag a box on the page for a link, or click a link to change it.",
+        ..BASE
+    },
+    Action {
+        act: Act::EditLink,
+        group: Group::Tools,
+        label: "Edit link…",
+        icon: icon::PENCIL_SIMPLE,
+        enabled: |c| c.link && !c.busy,
+        submenu: "Selected link",
+        hint: "Change where the selected link goes, or how it looks.",
+        ..BASE
+    },
+    Action {
+        act: Act::OpenLink,
+        group: Group::Tools,
+        label: "Open link",
+        icon: icon::ARROW_SQUARE_OUT,
+        enabled: |c| c.link && c.link_opens,
+        submenu: "Selected link",
+        hint: "Go where the selected link goes. A web or email address is asked about first.",
+        ..BASE
+    },
+    Action {
+        act: Act::CopyLinkAddress,
+        group: Group::Tools,
+        label: "Copy link address",
+        icon: icon::COPY,
+        enabled: |c| c.link && c.link_address,
+        submenu: "Selected link",
+        hint: "Copy the selected link's web or email address.",
+        ..BASE
+    },
+    Action {
+        act: Act::RemoveLink,
+        group: Group::Tools,
+        label: "Remove link",
+        icon: icon::TRASH,
+        enabled: |c| c.link && !c.busy,
+        submenu: "Selected link",
+        hint: "Remove the selected link. The page itself stays as it is.",
         ..BASE
     },
     Action {
@@ -2449,10 +2527,16 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
                 Act::Strikethrough,
             ],
             &[Act::Mark(Mark::Highlight)],
+            &[Act::Link],
             &[Act::MarkRedact],
             &[Act::PrintSelection, Act::SaveSelection],
         ],
         Selection::Annot { .. } => &[&[Act::DeleteSelection]],
+        // Word's four for a link.
+        Selection::Link { .. } => &[
+            &[Act::EditLink, Act::OpenLink, Act::CopyLinkAddress],
+            &[Act::RemoveLink],
+        ],
         Selection::Objects { held, .. }
             if (held.iter()).any(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText)) =>
         {
@@ -2588,7 +2672,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 29] = [
+    let fixes: [Fix; 32] = [
         (|d| d.busy = false, BUSY),
         // A match to type over first: while the search runs, that it waits for it.
         (|d| d.found_match = true, "Find a match to replace first."),
@@ -2637,6 +2721,19 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         (
             |d| d.objects = d.objects.max(3),
             "Select three or more objects first.",
+        ),
+        // A link selected that goes where the command can't, before a link at all.
+        (
+            |d| d.link_opens = true,
+            "LimarePDF doesn't open links to other files, programs or scripts.",
+        ),
+        (
+            |d| d.link_address = true,
+            "This link doesn't go to a web or email address.",
+        ),
+        (
+            |d| (d.link, d.link_opens, d.link_address) = (true, true, true),
+            "Select a link first.",
         ),
         (|d| d.signing = true, crate::signing::NOTHING_PLACED),
         (|d| d.marked = true, "Mark something for redaction first."),
@@ -2778,7 +2875,8 @@ pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
     }
     (groups.into_iter())
         .map(|g| {
-            let usable = |a: &&Action| (a.enabled)(c) && !a.icon.is_empty();
+            // Link stays in the selected words' menu: the bar keeps to styling and markup.
+            let usable = |a: &&Action| (a.enabled)(c) && !a.icon.is_empty() && a.act != Act::Link;
             g.iter().map(|&a| get(a)).filter(usable).collect::<Vec<_>>()
         })
         .filter(|g| !g.is_empty())

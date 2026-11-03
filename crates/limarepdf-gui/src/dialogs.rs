@@ -10,6 +10,7 @@ use limarepdf_core::print::{
     Binding, Booklet, BookletSides, Orientation, PageOrder, PageSetup, PaperList, PerSheet,
     Printer, Scale, Sides, PAGES_PER_SHEET,
 };
+use limarepdf_core::{LinkId, LinkTarget};
 use std::hash::Hash;
 use std::path::PathBuf;
 
@@ -1915,6 +1916,223 @@ pub fn confirm(ctx: &Context, a: Ask) -> Outcome {
         }
         false
     })
+}
+
+// ------------------------------------------------------------------ links
+
+/// What a link goes to, as chosen in the Insert link window and the inspector (ENH-17).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LinkTo {
+    Web,
+    Email,
+    Page,
+}
+
+impl LinkTo {
+    pub const ALL: [LinkTo; 3] = [LinkTo::Web, LinkTo::Email, LinkTo::Page];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LinkTo::Web => "Web page",
+            LinkTo::Email => "Email address",
+            LinkTo::Page => "Page in this document",
+        }
+    }
+}
+
+/// Where a link goes and how it looks, as being chosen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkForm {
+    pub to: LinkTo,
+    pub web: String,
+    pub email: String,
+    /// The page it goes to, counted from 1.
+    pub page: usize,
+    /// How many pages the document has.
+    pub pages: usize,
+    /// Shown with LimarePDF's blue underline.
+    pub underline: bool,
+}
+
+impl LinkForm {
+    /// A new link's: to a web page, nothing typed; `underline` for one over words (ENH-17's
+    /// Q2: the words' links show as links, a box's don't).
+    pub fn new(pages: usize, current: usize, underline: bool) -> Self {
+        LinkForm {
+            to: LinkTo::Web,
+            web: String::new(),
+            email: String::new(),
+            page: (current + 1).clamp(1, pages.max(1)),
+            pages,
+            underline,
+        }
+    }
+
+    /// A link's as it is: one LimarePDF doesn't follow shows as a web page, nothing typed.
+    pub fn of(target: &LinkTarget, underline: bool, pages: usize, current: usize) -> Self {
+        let mut f = LinkForm::new(pages, current, underline);
+        match target {
+            LinkTarget::Page(n) => {
+                f.to = LinkTo::Page;
+                f.page = n + 1;
+            }
+            LinkTarget::Uri(u) => match u.get(..7) {
+                Some(p) if p.eq_ignore_ascii_case("mailto:") => {
+                    f.to = LinkTo::Email;
+                    f.email = u[7..].to_string();
+                }
+                _ => f.web = u.clone(),
+            },
+            LinkTarget::Unfollowed(_) => {}
+        }
+        f
+    }
+
+    /// Where it goes, or why it can't go there yet, in the words the window shows.
+    pub fn target(&self) -> Result<LinkTarget, String> {
+        let said = |e: anyhow::Error| e.to_string();
+        match self.to {
+            LinkTo::Web => limarepdf_core::web_link(&self.web)
+                .map(LinkTarget::Uri)
+                .map_err(said),
+            LinkTo::Email => limarepdf_core::email_link(&self.email)
+                .map(LinkTarget::Uri)
+                .map_err(said),
+            LinkTo::Page if (1..=self.pages).contains(&self.page) => {
+                Ok(LinkTarget::Page(self.page - 1))
+            }
+            LinkTo::Page => Err(format!("Choose a page from 1 to {}.", self.pages)),
+        }
+    }
+
+    /// Why what is typed isn't taken, once something is typed (an empty box only greys the
+    /// window's button).
+    pub fn refusal(&self) -> Option<String> {
+        let typed = match self.to {
+            LinkTo::Web => !self.web.trim().is_empty(),
+            LinkTo::Email => !self.email.trim().is_empty(),
+            LinkTo::Page => true,
+        };
+        self.target().err().filter(|_| typed)
+    }
+
+    /// The controls: Link to, the address or page, why an address isn't taken, and Show as
+    /// a link. Returns the address box or page box, and whether Enter was pressed in it.
+    pub fn ui(&mut self, ui: &mut Ui, id: impl Hash + std::fmt::Debug) -> (egui::Response, bool) {
+        ui.label("Link to");
+        ui.add_space(2.0);
+        let mut chosen = self.to;
+        ui.horizontal_wrapped(|ui| {
+            for to in LinkTo::ALL {
+                ui.radio_value(&mut chosen, to, to.label());
+            }
+        });
+        self.to = chosen;
+        ui.add_space(FIELD_GAP);
+        fn edit<'t>(
+            text: &'t mut String,
+            hint: &str,
+            salt: impl Hash + std::fmt::Debug,
+        ) -> egui::TextEdit<'t> {
+            egui::TextEdit::singleline(text)
+                .id_salt(salt)
+                .hint_text(hint)
+                .desired_width(f32::INFINITY)
+        }
+        let r = match self.to {
+            LinkTo::Web => field(ui, "Address", |ui| {
+                let e = edit(&mut self.web, "example.com", ("web", &id));
+                ui.add(theme::field(e))
+            }),
+            LinkTo::Email => field(ui, "Email address", |ui| {
+                let e = edit(&mut self.email, "name@example.com", ("email", &id));
+                ui.add(theme::field(e))
+            }),
+            LinkTo::Page => field(ui, "Page", |ui| {
+                let spin = Spin::new(&mut self.page, 1..=self.pages.max(1)).name("Page");
+                ui.add(spin.width(95.0))
+            }),
+        };
+        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        if let Some(why) = self.refusal() {
+            ui.add_space(2.0);
+            let why = RichText::new(why).color(ui.visuals().error_fg_color);
+            ui.add(egui::Label::new(why).wrap());
+        }
+        ui.add_space(FIELD_GAP);
+        ui.checkbox(&mut self.underline, "Show as a link: blue underline");
+        (r, enter)
+    }
+}
+
+/// The Insert link or Edit link window's question: where the link goes and how it looks,
+/// and what it is over.
+pub struct LinkAsk {
+    pub form: LinkForm,
+    /// A new link's areas, page by page (displayed-page points); empty when changing one.
+    pub areas: Vec<(usize, Vec<[f32; 4]>)>,
+    /// The link being changed, by its page and id.
+    pub editing: Option<(usize, LinkId)>,
+    /// What a link being changed does that LimarePDF doesn't follow, said in the window.
+    pub was: Option<String>,
+}
+
+/// What the link window was answered with.
+#[derive(Debug, PartialEq)]
+pub enum LinkOut {
+    Open,
+    Cancel,
+    /// Insert link or Save link: where it goes, and whether it is underlined.
+    Done(LinkTarget, bool),
+    Remove,
+}
+
+/// The Insert link window, or Edit link for a link being changed: Link to, the address or
+/// page, Show as a link; Insert link (Save link), Remove link when changing one, Cancel.
+pub fn link(ctx: &Context, file: Option<&str>, s: &mut LinkAsk) -> LinkOut {
+    let editing = s.editing.is_some();
+    let title = if editing { "Edit link" } else { "Insert link" };
+    let (out, esc) = Shell::new(title).file(file).show(ctx, |ui| {
+        let (field, enter) = content(ui, |ui| {
+            if let Some(was) = &s.was {
+                let now = format!("Now: {was}");
+                ui.add(egui::Label::new(RichText::new(now).weak()).wrap());
+                ui.add_space(FIELD_GAP);
+            }
+            s.form.ui(ui, "link window")
+        });
+        // The address box takes the keyboard as the window opens.
+        if s.form.to != LinkTo::Page && ui.memory(|m| m.focused().is_none()) {
+            field.request_focus();
+        }
+        let target = s.form.target();
+        let why = target.as_ref().err().map(String::as_str);
+        let yes = if editing { "Save link" } else { "Insert link" };
+        let mut yes = Btn::primary(yes).enabled(target.is_ok());
+        if let Some(why) = why {
+            yes = yes.tip(why);
+        }
+        let mut buttons = vec![yes];
+        if editing {
+            buttons.push(Btn::plain("Remove link"));
+        }
+        buttons.push(Btn::cancel());
+        let done = |t: Result<LinkTarget, String>| match t {
+            Ok(t) => LinkOut::Done(t, s.form.underline),
+            Err(_) => LinkOut::Open,
+        };
+        match footer(ui, None, &buttons) {
+            Some(0) => done(target),
+            Some(1) if editing => LinkOut::Remove,
+            Some(_) => LinkOut::Cancel,
+            None if enter => done(target),
+            None => LinkOut::Open,
+        }
+    });
+    if esc {
+        return LinkOut::Cancel;
+    }
+    out
 }
 
 // ------------------------------------------------------------------ recovery

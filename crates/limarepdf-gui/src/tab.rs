@@ -1,5 +1,6 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
+use crate::dialogs::{LinkAsk, LinkForm};
 use crate::editor::{
     align_paragraphs, Action, Aligned, Editor, Match, NotAligned, StampPick, Tool, Typed,
 };
@@ -21,8 +22,8 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptio
 use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
-    Annot, BookmarkPlace, DocWords, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf,
-    Query, Restore, SearchHit, SearchOptions, Shape, ShapeLook, StampPlace,
+    Annot, BookmarkPlace, DocWords, Encryption, ImageWatermark, LinkId, LinkTarget, OutlineItem,
+    Pdf, Query, Restore, SearchHit, SearchOptions, Shape, ShapeLook, StampPlace,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -413,6 +414,8 @@ pub struct Tab {
     /// A link to a web address (or anything outside the document) was clicked; the app
     /// asks before opening it.
     pub open_link: Option<String>,
+    /// The Insert link or Edit link window to open (ENH-17); the app opens it.
+    pub ask_link: Option<LinkAsk>,
     /// A thumbnail drag in progress: the thumbnail it started on.
     thumb_drag: Option<usize>,
     /// Notices about the document shown above the pages, most important first.
@@ -579,6 +582,7 @@ impl Tab {
             notice: None,
             info: None,
             open_link: None,
+            ask_link: None,
             thumb_drag: None,
             stale: HashSet::new(),
             outline: None,
@@ -1368,6 +1372,23 @@ impl Tab {
                         self.after_annot(p, new);
                     }
                 }
+                Action::NewLink(p, rect) => {
+                    let form = LinkForm::new(self.page_count(), self.current, false);
+                    self.ask_link = Some(LinkAsk {
+                        form,
+                        areas: vec![(p, vec![rect])],
+                        editing: None,
+                        was: None,
+                    });
+                }
+                Action::MoveLink(p, id, to) => {
+                    self.change_link(ctx, p, |pdf| pdf.move_link(p, id, to));
+                }
+                Action::SetLink(p, id, to, underline) => {
+                    self.change_link(ctx, p, |pdf| pdf.set_link(p, id, &to, underline));
+                }
+                Action::EditLink(p, id) => self.ask_edit_link(p, id),
+                Action::RemoveLink(p, id) => self.remove_link(ctx, p, id),
                 Action::AddRedactMark(p, rect) => {
                     // Pinned, the tool stays, so several areas can be marked in a row.
                     let author = self.ed.author.clone();
@@ -1606,6 +1627,113 @@ impl Tab {
         };
         if self.edit_pages(ctx, &pages, add) {
             self.ed.selection.clear_words();
+        }
+    }
+
+    /// Link (ENH-17): the Insert link window for the selected words (a link over their
+    /// lines, underlined), the Edit link window for the selected link, else the Link tool on
+    /// or, when on, off.
+    pub fn link_command(&mut self) {
+        let lines = self.ed.selected_lines();
+        if !lines.is_empty() {
+            self.ask_link = Some(LinkAsk {
+                form: LinkForm::new(self.page_count(), self.current, true),
+                areas: lines,
+                editing: None,
+                was: None,
+            });
+            return;
+        }
+        if let Some((page, id)) = self.ed.selection.link() {
+            self.ask_edit_link(page, id);
+            return;
+        }
+        let tool = if self.ed.tool == Tool::Link {
+            Tool::Read
+        } else {
+            Tool::Link
+        };
+        self.ed.set_tool(tool);
+    }
+
+    /// The Edit link window for link `id` on `page`, as it goes now.
+    pub fn ask_edit_link(&mut self, page: usize, id: LinkId) {
+        let links = self.pdf.page_links(page).unwrap_or_default();
+        let Some(l) = links.into_iter().find(|l| l.id == id) else {
+            return;
+        };
+        let was = match &l.target {
+            LinkTarget::Unfollowed(u) => Some(crate::editor::unfollowed(u)),
+            _ => None,
+        };
+        let form = LinkForm::of(&l.target, l.underlined, self.page_count(), page);
+        self.ask_link = Some(LinkAsk {
+            form,
+            areas: Vec::new(),
+            editing: Some((page, id)),
+            was,
+        });
+    }
+
+    /// The link window answered with `to` and `underline`: the new link made (one a page
+    /// for words across pages), or the link changed, one undo step. The words are let go, as
+    /// Word leaves them; a link made or changed with the Link tool is selected.
+    pub fn write_link(
+        &mut self,
+        ctx: &egui::Context,
+        ask: &LinkAsk,
+        to: &LinkTarget,
+        underline: bool,
+    ) {
+        if let Some((p, id)) = ask.editing {
+            self.change_link(ctx, p, |pdf| pdf.set_link(p, id, to, underline));
+            return;
+        }
+        let pages: Vec<usize> = ask.areas.iter().map(|(p, _)| *p).collect();
+        let mut first = None;
+        let add = |pdf: &mut Pdf| {
+            for (p, boxes) in &ask.areas {
+                let id = pdf.add_link(*p, boxes, to, underline)?;
+                first.get_or_insert((*p, id));
+            }
+            Ok(())
+        };
+        if self.edit_pages(ctx, &pages, add) {
+            self.ed.selection.clear_words();
+            if let Some((page, id)) = first.filter(|_| self.ed.tool == Tool::Link) {
+                let id = LinkId::Object(id);
+                self.ed.selection = Selection::Link { page, id };
+            }
+        }
+    }
+
+    /// Change a link on `page` with `f`, which returns its id after (one written inside the
+    /// page's list becomes an object), one undo step; the link stays selected.
+    fn change_link(
+        &mut self,
+        ctx: &egui::Context,
+        page: usize,
+        f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<(u32, u16)>,
+    ) {
+        let was = self.ed.selection.link();
+        let mut now = None;
+        let change = |pdf: &mut Pdf| {
+            now = Some(f(pdf)?);
+            Ok(())
+        };
+        if self.edit_pages(ctx, &[page], change) && was.is_some_and(|(p, _)| p == page) {
+            if let Some(id) = now {
+                let id = LinkId::Object(id);
+                self.ed.selection = Selection::Link { page, id };
+            }
+        }
+    }
+
+    /// Remove link `id` from `page`, one undo step.
+    pub fn remove_link(&mut self, ctx: &egui::Context, page: usize, id: LinkId) {
+        let gone = |pdf: &mut Pdf| pdf.remove_links(page, &[id]).map(|_| ());
+        if self.edit_pages(ctx, &[page], gone) {
+            self.ed.selection.clear_link();
         }
     }
 
@@ -2898,6 +3026,10 @@ impl Tab {
         c.form = !self.ed.form.fields().is_empty();
         c.field = self.ed.form.focused_field().is_some();
         c.fields_shown = self.ed.form.highlight;
+        let link = self.ed.selected_link().map(|l| &l.target);
+        c.link = link.is_some();
+        c.link_opens = link.is_some_and(|t| !matches!(t, LinkTarget::Unfollowed(_)));
+        c.link_address = link.is_some_and(|t| matches!(t, LinkTarget::Uri(_)));
         let annot = self.ed.selected_annot();
         c.annot = annot.is_some();
         c.annot_locked = annot.is_some_and(|a| a.locked());

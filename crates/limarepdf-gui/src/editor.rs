@@ -17,7 +17,7 @@ use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeK
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
     words_text, Annot, AnnotKind, Block, BoxSetting, DecoKind, Decorated, DocWords, FieldValue,
-    FontChoice, FontRefusal, LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord,
+    FontChoice, FontRefusal, LineFont, Link, LinkId, LinkTarget, ObjectKind, PageObject, PageWord,
     ParagraphSetting, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
     StampPlace, TextEdit, TextPart, TextStyle, Unfollowed, MIN_SIGNATURE_BOX,
 };
@@ -66,6 +66,9 @@ pub enum Tool {
     /// Choose where a digital signature goes: click an empty signature field or drag a
     /// box. The signing window opens next.
     DigitalSign,
+    /// Links (ENH-17): each outlined; drag a box for a new one, click one to select it,
+    /// then move or resize it, change it or remove it. Stays on until turned off.
+    Link,
 }
 
 impl Tool {
@@ -120,7 +123,9 @@ impl Tool {
             Tool::Stamp => "stamp",
             Tool::Redact => "redact",
             Tool::Sign => "fill_and_sign",
-            Tool::Read | Tool::Select | Tool::Pen | Tool::Note | Tool::DigitalSign => "",
+            Tool::Read | Tool::Select | Tool::Pen | Tool::Note | Tool::DigitalSign | Tool::Link => {
+                ""
+            }
         }
     }
 
@@ -428,6 +433,17 @@ pub enum Action {
     AddStamp(usize, StampPlace),
     /// Mark an area (displayed-page points) for redaction.
     AddRedactMark(usize, [f32; 4]),
+    /// A box dragged with the Link tool (displayed-page points): a link there, once the
+    /// Insert link window says where it goes (ENH-17).
+    NewLink(usize, [f32; 4]),
+    /// Give a link a new box (displayed-page points).
+    MoveLink(usize, LinkId, [f32; 4]),
+    /// Point a link somewhere else, or give it another look, from the inspector.
+    SetLink(usize, LinkId, LinkTarget, bool),
+    /// Open the Edit link window for a link: a double-click on it, or Enter, with the Link
+    /// tool.
+    EditLink(usize, LinkId),
+    RemoveLink(usize, LinkId),
     /// The Sign tool's picked item.
     AddSign(usize, StampPlace),
     /// Sign in an empty signature field: its page and box. Switches to the Sign tool.
@@ -581,6 +597,38 @@ struct Draw {
     page: usize,
     start: Pos2,
     cur: Pos2,
+}
+
+/// A link being moved, or resized by one of its handles, with the Link tool.
+struct LinkDrag {
+    page: usize,
+    id: LinkId,
+    /// Its box as the drag began, and as it is now (displayed-page points).
+    from: [f32; 4],
+    cur: [f32; 4],
+    start: Pos2,
+    /// The handle dragged ([`handle_pos`]'s numbering); `None` moves it.
+    handle: Option<usize>,
+}
+
+/// The selected link as the inspector shows it: which link, and its form as typed.
+struct LinkInsp {
+    key: (usize, LinkId),
+    form: crate::dialogs::LinkForm,
+}
+
+/// A link's tooltip: where it goes, or what it would do.
+pub fn link_tip(t: &LinkTarget) -> String {
+    match t {
+        LinkTarget::Page(n) => format!("Go to page {}", n + 1),
+        LinkTarget::Uri(u) => limarepdf_core::display_line(u, 300),
+        LinkTarget::Unfollowed(u) => unfollowed(u),
+    }
+}
+
+/// Whether point `p` is over one of link `l`'s areas.
+fn on_link(l: &Link, p: Pos2) -> bool {
+    (l.areas.iter()).any(|b| (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y))
 }
 
 struct Marquee {
@@ -1705,6 +1753,12 @@ pub struct Editor {
     links: HashMap<usize, Vec<Link>>,
     /// A link was clicked; the tab follows it.
     pub follow: Option<LinkTarget>,
+    /// A link being moved or resized with the Link tool.
+    link_drag: Option<LinkDrag>,
+    /// The document's page count, lent for the selected link's page box.
+    pub page_count: usize,
+    /// The selected link as the inspector shows it, with what is typed there.
+    link_insp: Option<LinkInsp>,
     /// Filling in form fields.
     pub form: FormUi,
     annots: HashMap<usize, Vec<Annot>>,
@@ -1855,6 +1909,9 @@ impl Default for Editor {
             text_drag: false,
             links: HashMap::new(),
             follow: None,
+            link_drag: None,
+            page_count: 1,
+            link_insp: None,
             form: FormUi::default(),
             annots: HashMap::new(),
             annot_insp: None,
@@ -2177,10 +2234,24 @@ impl Editor {
         self.selection.clear_words();
         self.text_drag = false;
         self.links.clear();
+        self.link_drag = None;
         self.form.invalidate();
         self.annots.clear();
         self.annot_insp = None;
         self.ink = None;
+    }
+
+    /// The links on `page`, read once until the document changes.
+    pub fn page_links(&mut self, pdf: &limarepdf_core::Pdf, page: usize) -> &[Link] {
+        self.links
+            .entry(page)
+            .or_insert_with(|| pdf.page_links(page).unwrap_or_default())
+    }
+
+    /// The selected link, as last read from its page.
+    pub fn selected_link(&self) -> Option<&Link> {
+        let (page, id) = self.selection.link()?;
+        self.links.get(&page)?.iter().find(|l| l.id == id)
     }
 
     /// The annotations on `page`, read once until the document changes.
@@ -3310,6 +3381,11 @@ impl Editor {
             self.selection.clear_object();
             self.selection.clear_annot();
         }
+        // A link stays selected only for the Link tool.
+        self.link_drag = None;
+        if t != Tool::Link {
+            self.selection.clear_link();
+        }
         if t != Tool::DigitalSign {
             self.digital_place = None;
             self.digital_error = None;
@@ -3338,6 +3414,8 @@ impl Editor {
         self.para = None;
         self.then = None;
         self.annot_insp = None;
+        self.link_drag = None;
+        self.link_insp = None;
         self.digital_place = None;
         self.digital_error = None;
         self.actions.clear();
@@ -4074,17 +4152,8 @@ impl Editor {
             }
             over_link = true;
         } else if filling {
-            let link = resp.hover_pos().map(to_pt).and_then(|p| {
-                let links = self
-                    .links
-                    .entry(page)
-                    .or_insert_with(|| pdf.page_links(page).unwrap_or_default());
-                links.iter().find(|l| {
-                    l.areas
-                        .iter()
-                        .any(|b| (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y))
-                })
-            });
+            let link = (resp.hover_pos().map(to_pt))
+                .and_then(|p| self.page_links(pdf, page).iter().find(|l| on_link(l, p)));
             // A link LimarePDF doesn't follow says what it does, and the page goes on
             // taking clicks there as if it weren't there.
             if let Some(LinkTarget::Unfollowed(u)) = link.map(|l| &l.target) {
@@ -4092,13 +4161,8 @@ impl Editor {
             } else if let Some(link) = link {
                 let target = link.target.clone();
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                let tip = match &target {
-                    LinkTarget::Page(n) => format!("Go to page {}", n + 1),
-                    LinkTarget::Uri(u) => limarepdf_core::display_line(u, 300),
-                    LinkTarget::Unfollowed(u) => unfollowed(u),
-                };
                 over_link = true;
-                resp = resp.on_hover_text_at_pointer(tip);
+                resp = resp.on_hover_text_at_pointer(link_tip(&target));
                 if resp.clicked() {
                     self.follow = Some(target);
                     return resp;
@@ -4308,6 +4372,11 @@ impl Editor {
             _ if ctrl_annot.is_some() => {
                 if let Some(id) = ctrl_annot {
                     self.selection = Selection::Annot { page, id };
+                }
+            }
+            Tool::Link => {
+                if let Some(tip) = self.link_tool(ui, pdf, page, &resp, r, k) {
+                    resp = resp.on_hover_text_at_pointer(tip);
                 }
             }
             Tool::Select => {
@@ -4982,7 +5051,195 @@ impl Editor {
                 }
             }
         }
+        // The selected link: its areas framed (the Link tool frames it with its handles). One
+        // gone from the page (taken away by Undo) is let go.
+        if let Some((_, id)) = self.selection.link().filter(|(p, _)| *p == page) {
+            let areas = (self.page_links(pdf, page).iter())
+                .find(|l| l.id == id)
+                .map(|l| l.areas.clone());
+            match areas {
+                None => self.selection.clear_link(),
+                Some(_) if self.tool == Tool::Link => {}
+                Some(areas) => {
+                    for b in areas {
+                        let shown = screen_rect(b).expand(2.0);
+                        let line = Stroke::new(2.0, accent_strong);
+                        painter.rect_stroke(shown, 2.0, line, StrokeKind::Outside);
+                    }
+                }
+            }
+        }
         resp
+    }
+
+    /// The topmost link under `p` (page points) with the Link tool: over one of its areas,
+    /// or anywhere in the selected link's box, which moves by it.
+    fn link_under(&mut self, pdf: &limarepdf_core::Pdf, page: usize, p: Pos2) -> Option<&Link> {
+        let chosen = self
+            .selection
+            .link()
+            .filter(|(on, _)| *on == page)
+            .map(|(_, id)| id);
+        let inside = |b: [f32; 4]| (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y);
+        let links = self.page_links(pdf, page);
+        (links.iter().rev()).find(|l| on_link(l, p) || (chosen == Some(l.id) && inside(l.bbox)))
+    }
+
+    /// The Link tool on `page` (ENH-17), `r` the page on screen and `k` a point's size there:
+    /// every link outlined, dashed; a press on a link selects it and a drag moves it, or
+    /// resizes the selected one by a handle; a drag elsewhere draws a new link's box; a
+    /// double-click on a link, or Enter with one selected, opens it in the Edit link window.
+    /// Returns the tooltip for the link under the pointer.
+    fn link_tool(
+        &mut self,
+        ui: &mut egui::Ui,
+        pdf: &limarepdf_core::Pdf,
+        page: usize,
+        resp: &egui::Response,
+        r: Rect,
+        k: f32,
+    ) -> Option<String> {
+        let to_pt = |p: Pos2| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k);
+        let screen = |b: [f32; 4]| {
+            let at = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
+            Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3]))
+        };
+        let tol = 6.0 / k;
+        let links = self.page_links(pdf, page).to_vec();
+        let chosen = self.selection.link().filter(|(on, _)| *on == page);
+        let selected = chosen.and_then(|(_, id)| links.iter().find(|l| l.id == id).cloned());
+        let handle = |ed: &Self, p: Pos2| {
+            selected
+                .as_ref()
+                .and_then(|l| ed.handle_hit(l.bbox, p, tol))
+        };
+        let mut tip = None;
+        let still = self.link_drag.is_none() && self.draw.is_none();
+        if let Some(p) = resp.hover_pos().map(to_pt).filter(|_| still) {
+            let icon = match (handle(self, p), self.link_under(pdf, page, p).cloned()) {
+                (Some(h), _) => handle_cursor(h),
+                (None, Some(l)) => {
+                    tip = Some(link_tip(&l.target));
+                    if Some(l.id) == selected.as_ref().map(|s| s.id) {
+                        CursorIcon::Move
+                    } else {
+                        CursorIcon::PointingHand
+                    }
+                }
+                (None, None) => CursorIcon::Crosshair,
+            };
+            ui.ctx().set_cursor_icon(icon);
+        }
+        // A press on a handle of the selected link resizes it, on a link moves it (selected
+        // first), elsewhere draws a new one's box.
+        if resp.drag_started() {
+            if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
+                let drag = |l: &Link, handle| LinkDrag {
+                    page,
+                    id: l.id,
+                    from: l.bbox,
+                    cur: l.bbox,
+                    start: p,
+                    handle,
+                };
+                match (handle(self, p), self.link_under(pdf, page, p).cloned()) {
+                    (Some(h), _) => self.link_drag = selected.as_ref().map(|l| drag(l, Some(h))),
+                    (None, Some(l)) => {
+                        self.selection = Selection::Link { page, id: l.id };
+                        self.link_drag = Some(drag(&l, None));
+                    }
+                    (None, None) => {
+                        self.draw = Some(Draw {
+                            page,
+                            start: p,
+                            cur: p,
+                        })
+                    }
+                }
+            }
+        }
+        if resp.dragged() {
+            if let Some(at) = resp.interact_pointer_pos().map(to_pt) {
+                if let Some(d) = self.link_drag.as_mut().filter(|d| d.page == page) {
+                    let (dx, dy) = (at.x - d.start.x, at.y - d.start.y);
+                    d.cur = match d.handle {
+                        Some(h) => norm(resize(d.from, h, dx, dy, false)),
+                        None => shifted(d.from, dx, dy),
+                    };
+                } else if let Some(d) = self.draw.as_mut().filter(|d| d.page == page) {
+                    d.cur = at;
+                }
+            }
+        }
+        let big = |b: [f32; 4]| b[2] - b[0] > 2.0 && b[3] - b[1] > 2.0;
+        if resp.drag_stopped() {
+            if let Some(d) = self.link_drag.take_if(|d| d.page == page) {
+                if d.cur != d.from && big(d.cur) {
+                    self.actions.push(Action::MoveLink(page, d.id, d.cur));
+                }
+            }
+            if let Some(d) = self.draw.take_if(|d| d.page == page) {
+                let n = norm([d.start.x, d.start.y, d.cur.x, d.cur.y]);
+                if big(n) {
+                    self.actions.push(Action::NewLink(page, n));
+                }
+            }
+        }
+        let clicked = (resp.clicked() || resp.double_clicked())
+            .then(|| resp.interact_pointer_pos().map(to_pt))
+            .flatten();
+        if let Some(p) = clicked {
+            match self.link_under(pdf, page, p).map(|l| l.id) {
+                Some(id) if resp.double_clicked() => self.actions.push(Action::EditLink(page, id)),
+                Some(id) => self.selection = Selection::Link { page, id },
+                None => self.selection.clear_link(),
+            }
+        }
+        if let Some(l) = &selected {
+            let free = ui.memory(|m| m.focused().is_none());
+            let enter =
+                |i: &mut egui::InputState| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            if free && ui.input_mut(enter) {
+                self.actions.push(Action::EditLink(page, l.id));
+            }
+        }
+        // Every link dashed; the selected one, as it is or being dragged, framed with its
+        // handles; a new one's box as it is drawn.
+        let painter = ui.painter();
+        let accent = ui.visuals().selection.stroke.color;
+        let dashed = |b: Rect, stroke: Stroke| {
+            let corners = [
+                b.left_top(),
+                b.right_top(),
+                b.right_bottom(),
+                b.left_bottom(),
+                b.left_top(),
+            ];
+            painter.extend(egui::Shape::dashed_line(&corners, stroke, 4.0, 3.0));
+        };
+        for l in &links {
+            for &b in &l.areas {
+                dashed(screen(b), Stroke::new(1.0, accent));
+            }
+        }
+        let dragged = self.link_drag.as_ref().filter(|d| d.page == page);
+        if let Some(b) = dragged.map(|d| d.cur).or(selected.as_ref().map(|l| l.bbox)) {
+            let frame = Stroke::new(2.0, accent);
+            painter.rect_stroke(screen(b), 0.0, frame, StrokeKind::Outside);
+            let fill = ui.visuals().extreme_bg_color;
+            for h in 0..8 {
+                let (x, y) = handle_pos(b, h);
+                let at = screen([x, y, x, y]).center();
+                let dot = Rect::from_center_size(at, Vec2::splat(7.0));
+                painter.rect_filled(dot, 1.0, fill);
+                painter.rect_stroke(dot, 1.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+            }
+        }
+        if let Some(d) = self.draw.as_ref().filter(|d| d.page == page) {
+            let n = norm([d.start.x, d.start.y, d.cur.x, d.cur.y]);
+            dashed(screen(n), Stroke::new(1.5, accent));
+        }
+        tip
     }
 
     /// Before a right-click menu opens: select what is under the pointer `p` (page
@@ -5028,6 +5285,11 @@ impl Editor {
                 if under.is_some_and(|i| on.is_some_and(|r| r.contains(&i))) {
                     return;
                 }
+                // A link's menu over its words, as Word's is.
+                if let Some(l) = self.page_links(pdf, page).iter().find(|l| on_link(l, p)) {
+                    self.selection = Selection::Link { page, id: l.id };
+                    return;
+                }
                 if let Some(id) = self.annot_at(pdf, page, p).map(|a| a.id) {
                     self.selection = Selection::Annot { page, id };
                     return;
@@ -5043,6 +5305,13 @@ impl Editor {
                     if !self.selection.holds(page, i) {
                         self.select_object(page, i);
                     }
+                    return;
+                }
+            }
+            (Tool::Link, Some(p)) => {
+                let under = self.link_under(pdf, page, p).map(|l| l.id);
+                if let Some(id) = under {
+                    self.selection = Selection::Link { page, id };
                     return;
                 }
             }
@@ -5306,6 +5575,7 @@ impl Editor {
                 | Tool::DigitalSign
         ) || self.has_object()
             || self.selection.annot().is_some()
+            || self.selection.link().is_some()
             || self.words_panel()
     }
 
@@ -5319,6 +5589,9 @@ impl Editor {
                 Some(a) => a.label(),
                 None => "Comment".into(),
             };
+        }
+        if self.selection.link().is_some() {
+            return "Link".into();
         }
         if self.words_panel() {
             return "Selected text".into();
@@ -5355,7 +5628,8 @@ impl Editor {
             Tool::DigitalSign => "Sign with a digital ID",
             Tool::Redact => "Mark for redaction",
             Tool::TextBox => "New text box",
-            Tool::Select | Tool::Read => return None,
+            // The Link tool has no options: the inspector shows a link selected with it.
+            Tool::Select | Tool::Read | Tool::Link => return None,
         })
     }
 
@@ -5459,7 +5733,11 @@ impl Editor {
 
     /// The pointer is moving, resizing, drawing or selecting something.
     pub fn dragging(&self) -> bool {
-        self.drag.is_some() || self.draw.is_some() || self.marquee.is_some() || self.text_drag
+        self.drag.is_some()
+            || self.draw.is_some()
+            || self.marquee.is_some()
+            || self.text_drag
+            || self.link_drag.is_some()
     }
 
     /// One line of page text is selected, for Edit text to edit on the page.
@@ -5507,6 +5785,8 @@ impl Editor {
     pub fn delete_selected(&mut self) {
         if let Some((p, ids)) = self.selection.object_ids() {
             self.actions.push(Action::Delete(p, ids));
+        } else if let Some((p, id)) = self.selection.link() {
+            self.actions.push(Action::RemoveLink(p, id));
         } else if let Some(a) = self.selected_annot().filter(|a| !a.locked()) {
             self.actions.push(Action::DeleteAnnot(a.page, a.id));
         }
@@ -5514,6 +5794,14 @@ impl Editor {
 
     /// Move the selected objects, or annotation (arrow tool), by (dx, dy) points.
     pub fn nudge(&mut self, dx: f32, dy: f32) {
+        // A link selected with the Link tool, as a drag moves it.
+        if let Some(l) = self.selected_link().filter(|_| self.tool == Tool::Link) {
+            if let Some((p, _)) = self.selection.link() {
+                let to = shifted(l.bbox, dx, dy);
+                self.actions.push(Action::MoveLink(p, l.id, to));
+            }
+            return;
+        }
         if self.annot_moves() {
             if let Some(a) = self.selected_annot() {
                 let b = a.bbox;
@@ -5582,6 +5870,7 @@ impl Editor {
             self.draw = None;
             self.marquee = None;
             self.pen_stroke = None;
+            self.link_drag = None;
             if std::mem::take(&mut self.text_drag) {
                 self.selection.clear_words();
             }
@@ -5611,6 +5900,11 @@ impl Editor {
         }
         if self.selection.annot().is_some() {
             self.selection.clear_annot();
+            return;
+        }
+        // A link first lets go of the link; the Link tool then gives way to the read tool.
+        if self.selection.link().is_some() {
+            self.selection.clear_link();
             return;
         }
         match self.tool {
@@ -6097,6 +6391,52 @@ impl Editor {
 
     /// The selected annotation: what and whose it is, and its colour, opacity and comment,
     /// each finished change kept at once as one undo step.
+    /// The selected link's controls (ENH-17): Link to, the address or page, Show as a link,
+    /// as the Edit link window has them. A change is kept at once, an address when its box
+    /// is left or at Enter, each one undo step; an address not taken says why and isn't.
+    fn link_inspector(&mut self, ui: &mut egui::Ui) {
+        let Some(l) = self.selected_link().cloned() else {
+            return;
+        };
+        let Some((page, _)) = self.selection.link() else {
+            return;
+        };
+        let pages = self.page_count.max(1);
+        let form = || crate::dialogs::LinkForm::of(&l.target, l.underlined, pages, page);
+        let key = (page, l.id);
+        if self.link_insp.as_ref().is_none_or(|i| i.key != key) {
+            self.link_insp = Some(LinkInsp { key, form: form() });
+        }
+        let Some(insp) = self.link_insp.as_mut() else {
+            return;
+        };
+        note(ui, format!("Page {}", page + 1));
+        if let LinkTarget::Unfollowed(u) = &l.target {
+            note(ui, format!("Now: {}", unfollowed(u)));
+        }
+        ui.separator();
+        let before = insp.form.clone();
+        let (field, enter) = insp.form.ui(ui, ("link inspector", page));
+        // The address waits for the box to be left; Link to, the page and the look apply
+        // at once.
+        let typing = field.has_focus() && !enter;
+        let address = |f: &crate::dialogs::LinkForm| (f.web.clone(), f.email.clone());
+        let only_typed = address(&before) != address(&insp.form) && before.to == insp.form.to;
+        let left = field.lost_focus() || enter;
+        let changed = insp.form != before && !(typing && only_typed);
+        if !(changed || left) {
+            return;
+        }
+        let Ok(target) = insp.form.target() else {
+            return;
+        };
+        let underline = insp.form.underline;
+        if target != l.target || underline != l.underlined {
+            let set = Action::SetLink(page, l.id, target, underline);
+            self.actions.push(set);
+        }
+    }
+
     fn annot_inspector(&mut self, ui: &mut egui::Ui) {
         let Some(a) = self.selected_annot().cloned() else {
             ui.weak("Nothing selected.");
@@ -6468,6 +6808,10 @@ impl Editor {
             self.annot_inspector(ui);
             return;
         }
+        if self.selection.link().is_some() {
+            self.link_inspector(ui);
+            return;
+        }
         self.sync_insp();
         let page = self.selection.objects().map(|(p, _)| p);
         let page_err = page.and_then(|p| self.unavailable.get(&p)).cloned();
@@ -6644,7 +6988,7 @@ impl Editor {
                 self.group_ui(ui);
                 return;
             }
-            Tool::Select | Tool::Read | Tool::Text => {}
+            Tool::Select | Tool::Read | Tool::Text | Tool::Link => {}
         }
 
         // Below a tool's options, the object's own heading.

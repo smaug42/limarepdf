@@ -68,7 +68,7 @@ character you clicked along the line, and a double-click selects the word you cl
 
 To edit whole paragraphs, their lines rewrapping as you type, as in a word processor, turn on **Paragraph** in
 **Edit > Text flow** in the band. It shows pressed while it is on. It is also **Edit as paragraph** in the
-right-click menu and the command search (Ctrl+K), and **Paragraph** in the inspector's **Editing** row while text
+right-click menu and the command search (Ctrl+Shift+P), and **Paragraph** in the inspector's **Editing** row while text
 is selected. Then:
 
 1. Double-click a line of the paragraph with the read tool, or click it with the Text tool (or choose **Edit >
@@ -164,7 +164,7 @@ first-line indent; aligned left or justified again, the paragraph has its own ba
 
 A paragraph is aligned between its own edges, not the page's margins: open it with **Paragraph** on and drag an
 edge first to give it more room. **Centre** is on the floating toolbar too, and all four are in ☰ > Edit > Align
-text and the command search (Ctrl+K: type "align" or "centre").
+text and the command search (Ctrl+Shift+P: type "align" or "centre").
 
 A line on its own (a heading, say) has no paragraph to align it in, and text in a table or form, turned text,
 invisible recognised text and vertical writing aren't aligned either: a notice says what was left as it was.
@@ -187,7 +187,7 @@ As in a word processor:
   they are: **B** or ***I*** is greyed, and says why when you point at it, and Ctrl+B or Ctrl+I says so at the
   caret.
 - Strikethrough has no key on Windows and Linux, as in Word: use **S**, the right-click menu or the command search
-  (Ctrl+K). On a Mac it is ⌘⇧X, as in Word for Mac.
+  (Ctrl+Shift+P). On a Mac it is ⌘⇧X, as in Word for Mac.
 - An underline or strike-through shows as you type where it will be written: at the font's own place and
   thickness for it, in the words' colour. Spaces inside an underlined stretch are underlined; spaces at either end
   of the line are not.
@@ -386,9 +386,9 @@ Comments and markup are selected one at a time, never with page objects.
 **Align objects ▾**, in the **Arrange** group of **Edit** in the band, lines up the selected objects or spaces
 them out evenly, as Word's Align does. Its menu has **Align left**, **Align centre**, **Align right**, **Align
 top**, **Align middle** and **Align bottom**, then **Distribute horizontally** and **Distribute vertically**, then
-**Snap to objects**. The same commands are in ☰ > Edit > Align objects and in the command search (Ctrl+K: type
-"align", "distribute" or "snap"). Right-click selected objects for an **Align objects** submenu of the Align and
-Distribute commands that apply just then. It moves pictures, shapes and lines of text on the page; it doesn't
+**Snap to objects**. The same commands are in ☰ > Edit > Align objects and in the command search (Ctrl+Shift+P:
+type "align", "distribute" or "snap"). Right-click selected objects for an **Align objects** submenu of the Align
+and Distribute commands that apply just then. It moves pictures, shapes and lines of text on the page; it doesn't
 line text up inside a paragraph.
 
 1. Select the objects: Shift+click them, or drag a rectangle round them with the arrow (see

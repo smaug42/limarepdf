@@ -37,7 +37,7 @@ the item picked last.
 ## Make your signature
 
 **Create signature…**, in the Fill and sign pane, **Forms and sign > Fill and sign ▾ > Signature**, ☰ > Tools or
-the command palette (Ctrl+K), opens a window with three ways to make one (Create initials… likewise):
+the command palette (Ctrl+Shift+P), opens a window with three ways to make one (Create initials… likewise):
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what

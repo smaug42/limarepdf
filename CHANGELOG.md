@@ -133,9 +133,26 @@
   Print as a booklet and Binding are remembered when you print; Sides to print always starts at Both sides.
   `limarepdf-cli print` takes `--booklet`, `--binding left|right` and `--booklet-sides both|fronts|backs`, and
   says why when an option that a booklet sets itself is given with it.
+- **Link** in Insert > Navigation (no longer marked Planned), ☰ > Tools > **Link…**, the command palette, Ctrl+K
+  (⌘K on a Mac) and the right-click menu of selected words adds and changes links. With words selected it opens
+  **Insert link**: **Link to** a web page, an email address or a page in this document, and **Show as a link:
+  blue underline**, ticked for words; the link covers the words' lines, one link on each page. With nothing
+  selected it turns on the **Link tool**, which outlines the page's links with a dashed line: drag a box where
+  there is none to link it (not underlined unless you tick it), or click a link to select it, then drag it or its
+  handles, move it with the arrow keys, Delete it, or double-click it or press Enter for **Edit link** (with
+  **Save link** and **Remove link**). A right-click on a link, with the read tool or the Link tool, offers
+  **Edit link…**, **Open link**, **Copy link address** and **Remove link**, as in Word, and the inspector shows a
+  selected link, headed **Link**, and changes it at once. A web address typed without `https://` gets it, an email address is written
+  as `mailto:`, and names in other alphabets are written in the plain form links need; only web pages, email
+  addresses and this document's pages can be linked to, and an address that isn't taken says why under its box.
+  The underline is drawn by the link, in Word's link blue, so the words keep their colour and font; it shows in
+  readers that draw link borders (Poppler-based ones were checked). A link LimarePDF doesn't follow says what it
+  does now and can be pointed somewhere else or removed. Each change is one undo step.
 
 ### Changed
 
+- The command palette is now Ctrl+Shift+P (⌘⇧P on a Mac): Ctrl+K is Link, as in Word, LibreOffice and Google
+  Docs.
 - Links LimarePDF doesn't follow now say what they would do when you hover over them ("Opens another file:
   report.pdf", "Runs a program or opens a file", "Runs a script"), the pointer staying as it is. A link whose
   address isn't a web page's or an email address (`file:`, `javascript:`, `tel:` and the like) is no longer

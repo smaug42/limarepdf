@@ -1076,6 +1076,28 @@ appearances or link borders; Poppler draws it, `cross_check_links_with_poppler`)
 links are never given a drawing (`missing_appearances`); `move_link` draws an underlined one again at its new
 size. The page's words are never restyled for a link (ENH-17's Q2).
 
+In the app (ENH-17's stage 2), `Act::Link` (Ctrl+K, Word's key; the palette moved to Ctrl+Shift+P) goes through
+`Tab::link_command`: words selected open the Insert link window over `Editor::selected_lines` (one area a line,
+a link a page), underlined; a link selected opens Edit link (`Tab::ask_edit_link`); otherwise it turns
+`Tool::Link` on or off (`band::is_on` shows Link pressed while it is on). The window is `dialogs::link` over a
+`LinkAsk` (its `LinkForm`, the new link's areas or the link being changed, and what an unfollowed one does),
+asked for through `Tab::ask_link` and opened by the app as `Dialog::Link(Asked, …)`, answered through
+`Tab::write_link` or `remove_link`, each one `edit_pages` step. `LinkForm` holds Link to, the address or page and
+Show as a link; its `target` is core's `web_link`/`email_link`, its `refusal` says why once something is typed,
+and its `ui` draws the same controls in the window and in the inspector (`Editor::link_inspector`, applying a
+change at once, an address when its box is left or at Enter, as `Action::SetLink`). A selected link is
+`Selection::Link { page, id }` (a `LinkId`): its right-click menu (`context_items`) is Edit link…, Open link,
+Copy link address and Remove link, greyed through `Ctx::link`, `link_opens` and `link_address` (`why_not` says
+which is missing); Delete removes it (`deletable`, `Editor::delete_selected`); `Editor::selected_link` reads it
+from the page's links cache (`Editor::page_links`, cleared with every change in `invalidate`), and a selected
+link gone from its page (taken away by Undo) is let go where the page is drawn. `select_for_menu` selects a link
+under a right-click before a comment or word (Word's link menu over its words). The Link tool is
+`Editor::link_tool`: every link's areas dashed; a press on the selected link's handle resizes it (`resize`), on a
+link selects and moves it (`LinkDrag`), elsewhere draws a box (`Draw`) for `Action::NewLink`; a double-click or
+Enter gives `Action::EditLink`; the arrow keys move a selected link (`nudge`, `nudgeable`). `change_link` keeps a
+changed link selected by the id core returns (an inline link becomes an object). The read tool's hover and
+following find a link by its areas (`on_link`) and show `link_tip`.
+
 Digital signatures are checked in `crates/limarepdf-core/src/sig_verify.rs` (finding them, the byte-range rules, and
 tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
 signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, that walks the data exactly as written

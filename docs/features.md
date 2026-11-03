@@ -15,8 +15,8 @@ source.
 - **Feel at home:** the commands are labelled and grouped as in a word processor (Edit, Insert, Review, Pages,
   Forms and sign, Protect, View), in your desktop's accent colour, and fold into one row of icons when you want
   more room for the page.
-- **Read comfortably:** open documents in tabs, scroll and zoom smoothly, follow bookmarks and links, and switch
-  pages to dark, sepia or high-contrast colours for easier reading.
+- **Read comfortably:** open documents in tabs, scroll and zoom smoothly, follow bookmarks and links (and add or
+  change links), and switch pages to dark, sepia or high-contrast colours for easier reading.
 - **Find and replace:** search a whole document as you type, with every match highlighted on the page, then
   replace words a match at a time or all at once, told first what replacing them all will change.
 - **Edit text where it is:** double-click a line to change it, or switch it to Paragraph to edit the whole

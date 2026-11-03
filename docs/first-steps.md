@@ -74,7 +74,7 @@ name, keeps it on). A tool's button clicked again turns it off, and Esc always r
 
 ## Find any command
 
-Press **Ctrl+K** to open the command palette. Type a few letters of what you want, such as "rotate", "watermark" or
+Press **Ctrl+Shift+P** to open the command palette. Type a few letters of what you want, such as "rotate", "watermark" or
 "split", and press Enter. The ☰ menu also has every command: File's own, then Edit, View, Tools, Pages, Document
 and Help.
 

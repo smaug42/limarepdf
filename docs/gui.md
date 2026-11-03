@@ -73,10 +73,11 @@ or a text box) stays open while you are elsewhere, so the inspector can still ch
 lets you go on typing; a click anywhere finishes it as usual. F6 waits while a dialog, the command palette, a list
 or a menu is open. On a Mac keyboard you may need to hold fn for F6.
 
-Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
-Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search field, then each
-command with its category and shortcut in columns. A command from a submenu shows the submenu's name before its
-own, such as "Theme › Dark" and "Page colours › Dark", and typing the submenu's name ("theme") finds its commands.
+Ctrl+Shift+P (⌘⇧P on a Mac) opens the command palette, which lists every command. Type to filter, use Up and Down
+to choose, and press Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search
+field, then each command with its category and shortcut in columns. A command from a submenu shows the submenu's
+name before its own, such as "Theme › Dark" and "Page colours › Dark", and typing the submenu's name ("theme")
+finds its commands. Ctrl+K is Link, as in Word, LibreOffice and Google Docs.
 
 ## The command band
 
@@ -92,7 +93,7 @@ Click in a form field first.", then what it does.
 | Name | Groups and buttons |
 | --- | --- |
 | Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); the **Alignment** group: Align left, Centre, Align right and Justify for the paragraph or line being edited, or the paragraphs of the words or lines selected, and the first three for new text and text boxes, its own pressed ([Align text](content-editing.md#align-text)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
-| Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
+| Insert | Text and Image; Header and footer, Watermark; Link ([add or change a link](reading-and-finding.md#add-a-link)); From images (a new PDF from pictures) |
 | Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
 | Forms and sign | Fill fields ▾ (next and previous field, highlight fields, clear, reset or flatten the form), Fill and sign ▾ (saved signatures and initials, Create signature…, the date, your name, text, marks); Digital signature ▾ (sign, certify, the signatures in this document, digital IDs, trusted certificates) |
@@ -100,7 +101,7 @@ Click in a form field first.", then what it does.
 | View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
-Link and Blank document in Insert; Spelling and Export comments in Review; Create fields in Forms and sign; Your
+Blank document in Insert; Spelling and Export comments in Review; Create fields in Forms and sign; Your
 AI in View; Reduce file size in the File menu. They do nothing, and Tab passes them by. Turn
 off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is remembered.
 
@@ -121,6 +122,7 @@ other tools:
 | Add text (Insert > Text, or Edit > Edit text with nothing selected) | Click and type new text, or click a line to change it | [Add text](content-editing.md#add-text) |
 | Add image (Insert > Image) | Choose a picture, then drag a box | [Add a picture](content-editing.md#add-a-picture) |
 | Redact (Protect > Mark redaction) | Drag a box to mark an area for redaction | [Redaction](redaction.md) |
+| Link (Insert > Link, or Ctrl+K, with nothing selected) | Outlines the page's links; drag a box to add one, or click one to move, resize, edit or delete it. It stays on after each link, until Esc, Link again or another tool | [Links](reading-and-finding.md#add-a-link) |
 | Fill and sign (Forms and sign > Fill and sign) | Your signature, initials, the date and other items | [Fill and sign](fill-and-sign.md) |
 | Note, text box, rectangle, ellipse, line, pen (Review) | Annotations other readers list as comments | [Comments and markup](comments-and-markup.md) |
 | Stamp (Review > Stamp) | Approved, Draft, your own wording or a picture | [Stamps](headers-footers-watermarks.md#stamps) |
@@ -404,7 +406,8 @@ click a section's name to open or fold it.
 | An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (the **Editing** switch, **Paragraph** or **One line**, for page text, the one in use pressed, which turns paragraph editing on or off as Edit > Text flow's Paragraph does, Paragraph greyed with the reason for a line on its own, in a table or turned; New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
 | A form field you are typing in | Headed **Form field**. Words selected on the page before are let go, so Edit > Font and Ctrl+B don't change them meanwhile |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
-| Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, Underline, Strikethrough, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
+| Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, Underline, Strikethrough, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu, which also has **Link…** |
+| A link (clicked with the Link tool, or right-clicked with it or the read tool) | Headed **Link**: the page it is on, Link to, the address or page, and Show as a link; each change applies at once. The right-click menu has **Edit link…**, **Open link**, **Copy link address** (web and email links) and **Remove link**; Delete removes it ([Change or remove a link](reading-and-finding.md#change-or-remove-a-link)) |
 
 The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
 use a tool is in its button's tooltip and the menus, and in this guide.
@@ -436,7 +439,7 @@ tool can also be typed over or cut (see
 ### Tools in the inspector
 
 These commands open their tool in the inspector, on its own and headed by its name. They are also in the ☰ menu
-and the command palette (Ctrl+K).
+and the command palette (Ctrl+Shift+P).
 
 | Command | Tool |
 | --- | --- |
@@ -512,7 +515,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | F3, Shift+F3 (or Ctrl+G, Ctrl+Shift+G) | Next, previous match, wherever the keyboard is; with nothing searched, F3 opens Find |
 | Enter in Replace with, or Alt+R in Search results | Replace the current match and go on to the next (Alt+R as in Word; not on a Mac) |
 | Alt+A in Search results | Replace all, after saying what that changes (as in Word; not on a Mac) |
-| Ctrl+K | Command palette |
+| Ctrl+Shift+P | Command palette |
 | F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the tabs, the commands, notices, navigation, the page, the inspector, the status bar |
 | Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |
 | Ctrl+= , Ctrl+- | Zoom in, zoom out (in Organise, the cards) |
@@ -528,6 +531,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+A (Organise) | Select every page |
 | Delete, Backspace | Delete the selected words, objects, comment or mark, or the selected pages |
 | Ctrl+Shift+H | Highlight the selected text |
+| Ctrl+K | Link…: link the words selected with the read tool, edit the selected link, or with nothing selected turn the Link tool on or off ([Links](reading-and-finding.md#links)) |
 | Arrow keys (Shift for 10 points) | Move the selected objects |
 | Shift+Left, Shift+Right; Shift+Up, Shift+Down; Shift+Home, Shift+End (words selected with the read tool) | Extend the selection by a word; to the line above or below; to the start or end of the line, across pages |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool or Text tool) |
@@ -545,7 +549,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J (in page text being edited, or with words or lines selected; in new text or a text box) | Align left, Centre, Align right, Justify their paragraphs, as in Word; Centre, Align right or Justify again puts them back to the left. New text's lines and a text box's are aligned left, centred or right, not justified |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
-| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so is Organise's grid); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+K every command |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so is Organise's grid); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+Shift+P every command |
 
 ### Screen readers
 

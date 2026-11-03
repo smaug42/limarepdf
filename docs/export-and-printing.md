@@ -236,7 +236,7 @@ those fields.
 
 ## Text
 
-☰ > **Export text…** (or the command palette, Ctrl+K) writes every page's text to a `.txt` file, with pages
+☰ > **Export text…** (or the command palette, Ctrl+Shift+P or ⌘⇧P) writes every page's text to a `.txt` file, with pages
 separated by form feeds, as pdftotext does. On the command line, `limarepdf-cli text` prints it. How the text is
 read, and its limits: [How text is read](reading-and-finding.md#how-text-is-read).
 
