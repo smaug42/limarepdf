@@ -276,6 +276,65 @@ fn print_lays_the_pages_out_on_the_paper() {
     assert!(said.contains("a percentage from 1 to 400"), "{said}");
 }
 
+/// NEW-05: `--pages-per-sheet` puts several pages on each sheet, in `--page-order`, with
+/// `--borders`; a count that can't be printed, a scale with several pages a sheet, and the
+/// order or borders with one are refused before anything is sent.
+#[test]
+fn print_puts_several_pages_on_a_sheet() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-several");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, socket) = fake_printing(&dir);
+    let file = two_pages(&dir);
+    let run = |args: &[&str]| {
+        let _ = std::fs::remove_file(dir.join("job.pdf"));
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("print")
+            .args(args)
+            .arg(&file)
+            .env("PATH", &path)
+            .env("CUPS_SERVER", &socket)
+            .output()
+            .unwrap()
+    };
+    let err = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).to_string();
+    let sheets = || {
+        let job = limarepdf_core::Pdf::open(dir.join("job.pdf"), None).unwrap();
+        let objects = |i| job.page_objects(i).unwrap().len();
+        (0..job.page_count()).map(objects).collect::<Vec<_>>()
+    };
+
+    // Both pages on one A4 sheet, each a drawing of its own.
+    let out = run(&["--pages-per-sheet", "2"]);
+    assert!(out.status.success(), "{}", err(&out));
+    assert_eq!(sheets(), [2]);
+    let four = ["--pages-per-sheet", "4", "--page-order", "down-from-right"];
+    let out = run(&[&four[..], &["--borders"]].concat());
+    assert!(out.status.success(), "{}", err(&out));
+    // The two drawings, and the borders.
+    assert_eq!(sheets(), [3]);
+
+    let border = "--borders is for more than one page a sheet";
+    let counts = "expected 1, 2, 4, 6, 9 or 16";
+    for (args, said) in [
+        (&["--pages-per-sheet", "3"][..], counts),
+        (
+            &["--pages-per-sheet", "2", "--scale", "fit"],
+            "--scale is for one page a sheet",
+        ),
+        (&["--borders"], border),
+        (
+            &["--page-order", "down"],
+            "--page-order is for more than one page a sheet",
+        ),
+    ] {
+        let out = run(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(err(&out).contains(said), "{args:?}: {}", err(&out));
+        assert!(!dir.join("job.pdf").exists(), "{args:?}: a job reached lp");
+    }
+}
+
 #[test]
 fn fields_that_would_print_empty_stop_printing() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-fields");

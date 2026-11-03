@@ -6,7 +6,9 @@ use crate::print_preview::{self, Preview, What};
 use crate::spin::Spin;
 use crate::theme;
 use eframe::egui::{self, Align, Context, Key, Margin, RichText, Ui};
-use limarepdf_core::print::{Orientation, PageSetup, PaperList, Printer, Scale, Sides};
+use limarepdf_core::print::{
+    Orientation, PageOrder, PageSetup, PaperList, PerSheet, Printer, Scale, Sides, PAGES_PER_SHEET,
+};
 use std::hash::Hash;
 use std::path::PathBuf;
 
@@ -801,11 +803,13 @@ impl Layout {
 }
 
 fn layout_choice(ui: &mut Ui, layout: &mut Layout, choices: &[Layout]) {
-    group(ui, "Layout", |ui| {
-        for &x in choices {
-            ui.radio_value(layout, x, x.label()).on_hover_text(x.tip());
-        }
-    });
+    group(ui, "Layout", |ui| layout_radios(ui, layout, choices));
+}
+
+fn layout_radios(ui: &mut Ui, layout: &mut Layout, choices: &[Layout]) {
+    for &x in choices {
+        ui.radio_value(layout, x, x.label()).on_hover_text(x.tip());
+    }
 }
 
 /// Looking for the printers, which the Print dialog does once open (BUG-11).
@@ -863,6 +867,7 @@ pub struct Print {
     pub scale: Scale,
     /// The percentage a custom scale is, kept while another scale is chosen.
     pub percent: u16,
+    pub per_sheet: PerSheet,
     pub preview: Preview,
 }
 impl Print {
@@ -888,6 +893,7 @@ impl Print {
             orientation: Orientation::Automatic,
             scale: Scale::ShrinkOversized,
             percent: 100,
+            per_sheet: PerSheet::default(),
             preview: Preview::default(),
         }
     }
@@ -987,6 +993,7 @@ impl Print {
             paper,
             orientation: self.orientation,
             scale: self.scale,
+            per_sheet: self.per_sheet,
         })
     }
     /// For tests: Print with `printers`, the first one's paper sizes found: Letter, its
@@ -1223,9 +1230,7 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
     }
     group(ui, "Copies and sides", |ui| copies_and_sides(ui, s));
     group(ui, "Page setup", |ui| page_setup(ui, s));
-    if let Some(layout) = &mut s.selection {
-        layout_choice(ui, layout, &[Layout::Original, Layout::Plain]);
-    }
+    group(ui, "Layout", |ui| print_layout(ui, s));
     // Windows always prints pages drawn by LimarePDF.
     if !cfg!(windows) {
         ui.add_space(GAP);
@@ -1388,32 +1393,104 @@ fn page_setup(ui: &mut Ui, s: &mut Print) {
         });
     };
     let scale = |ui: &mut Ui, s: &mut Print, width: f32| {
-        ui.label("Scale");
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            let list = egui::ComboBox::from_id_salt("scale")
-                .width(width - beside)
-                .selected_text(scale_name(s.scale))
-                .show_ui(ui, |ui| {
-                    for x in scales {
-                        ui.selectable_value(&mut s.scale, x, scale_name(x));
-                    }
-                })
-                .response;
-            set_name(&list, "Scale");
-            if let Scale::Custom(_) = s.scale {
-                let max = limarepdf_core::print::MAX_PERCENT;
-                let n = Spin::new(&mut s.percent, 1..=max)
-                    .suffix("%")
-                    .name("Scale percentage")
-                    .width(PERCENT);
-                let tip = format!("1 to {max}% of each page's own size");
-                ui.add(n).on_hover_text(tip);
-                s.scale = Scale::Custom(s.percent);
-            }
+        // With several pages a sheet, each is fitted to its place.
+        let one = s.per_sheet.pages <= 1;
+        ui.add_enabled_ui(one, |ui| {
+            ui.label("Scale");
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                let list = egui::ComboBox::from_id_salt("scale")
+                    .width(width - beside)
+                    .selected_text(scale_name(s.scale))
+                    .show_ui(ui, |ui| {
+                        for x in scales {
+                            ui.selectable_value(&mut s.scale, x, scale_name(x));
+                        }
+                    })
+                    .response
+                    .on_disabled_hover_text(FITTED);
+                set_name(&list, "Scale");
+                if let Scale::Custom(_) = s.scale {
+                    let max = limarepdf_core::print::MAX_PERCENT;
+                    let n = Spin::new(&mut s.percent, 1..=max)
+                        .suffix("%")
+                        .name("Scale percentage")
+                        .width(PERCENT);
+                    let tip = format!("1 to {max}% of each page's own size");
+                    ui.add(n).on_hover_text(tip).on_disabled_hover_text(FITTED);
+                    s.scale = Scale::Custom(s.percent);
+                }
+            });
         });
     };
     columns(ui, s, orientation_width, need, orientation, scale);
+}
+
+/// Why Scale is greyed with several pages a sheet.
+const FITTED: &str = "With more than one page a sheet, each page is fitted to its place.";
+
+/// Why Page order and borders are greyed with one page a sheet.
+const SEVERAL_ONLY: &str = "For more than one page a sheet.";
+
+/// The orders pages can fill a sheet in.
+const PAGE_ORDERS: [(PageOrder, &str); 4] = [
+    (PageOrder::Across, "Left to right, top to bottom"),
+    (PageOrder::AcrossFromRight, "Right to left, top to bottom"),
+    (PageOrder::Down, "Top to bottom, left to right"),
+    (PageOrder::DownFromRight, "Top to bottom, right to left"),
+];
+
+/// Layout: printing selected text, how it is laid out; then Pages per sheet beside Page
+/// order, and Borders around pages under them, the last two greyed with one page a sheet.
+fn print_layout(ui: &mut Ui, s: &mut Print) {
+    if let Some(layout) = &mut s.selection {
+        layout_radios(ui, layout, &[Layout::Original, Layout::Plain]);
+        ui.add_space(FIELD_GAP);
+    }
+    let label = "Pages per sheet";
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.into(), font, egui::Color32::PLACEHOLDER);
+    // As wide as its label, or its widest number.
+    let count_width = galley.size().x.max(list_width(ui, ["16"]));
+    let need = list_width(ui, PAGE_ORDERS.map(|(_, l)| l));
+    let count = |ui: &mut Ui, s: &mut Print, width: f32| {
+        field(ui, label, |ui| {
+            egui::ComboBox::from_id_salt("pages per sheet")
+                .width(width)
+                .selected_text(s.per_sheet.pages.to_string())
+                .show_ui(ui, |ui| {
+                    for n in PAGES_PER_SHEET {
+                        ui.selectable_value(&mut s.per_sheet.pages, n, n.to_string());
+                    }
+                })
+                .response
+        });
+    };
+    let order = |ui: &mut Ui, s: &mut Print, width: f32| {
+        let shown = PAGE_ORDERS.iter().find(|(o, _)| *o == s.per_sheet.order);
+        ui.add_enabled_ui(s.per_sheet.pages > 1, |ui| {
+            field(ui, "Page order", |ui| {
+                egui::ComboBox::from_id_salt("page order")
+                    .width(width)
+                    .selected_text(shown.map(|(_, l)| *l).unwrap_or_default())
+                    .show_ui(ui, |ui| {
+                        for (o, label) in PAGE_ORDERS {
+                            ui.selectable_value(&mut s.per_sheet.order, o, label);
+                        }
+                    })
+                    .response
+                    .on_disabled_hover_text(SEVERAL_ONLY)
+            });
+        });
+    };
+    columns(ui, s, count_width, need, count, order);
+    ui.add_space(8.0);
+    ui.add_enabled_ui(s.per_sheet.pages > 1, |ui| {
+        ui.checkbox(&mut s.per_sheet.borders, "Borders around pages")
+            .on_disabled_hover_text(SEVERAL_ONLY);
+    });
 }
 
 /// Save the selected text: choose the layout; the file dialog follows.
@@ -2190,6 +2267,75 @@ mod tests {
         }
     }
 
+    /// NEW-05: Layout under Page setup: Pages per sheet beside Page order where they fit,
+    /// one under the other otherwise, Borders around pages under them; the order and the
+    /// borders greyed with one page a sheet, Scale greyed with more; picking sets the page
+    /// setup.
+    #[test]
+    fn layout_puts_several_pages_on_a_sheet() {
+        let greyed = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let (_, n) = (tree.nodes.iter())
+                .find(|(_, n)| n.label() == Some(name))
+                .expect(name);
+            n.is_disabled()
+        };
+        for size in [(1200.0, 1200.0), (400.0, 1200.0)] {
+            let at = format!("{size:?}");
+            let mut w = PrintWin::new(size, 1.0);
+            let tree = w.settled();
+            let get = |label: &str| named(&tree, label).expect(label);
+            for f in ["Pages per sheet", "Page order"] {
+                label_above(&tree, f).unwrap();
+            }
+            let (count, order) = (get("Pages per sheet"), get("Page order"));
+            assert!(count.top() > get("Scale").bottom(), "{at}");
+            let beside = (count.top() - order.top()).abs() < 1.0 && order.left() > count.right();
+            if size.0 >= 800.0 {
+                assert!(beside, "{at}: {count:?} {order:?}");
+            } else {
+                assert!(order.top() > count.bottom(), "{at}: {count:?} {order:?}");
+            }
+            let borders = get("Borders around pages");
+            assert!(borders.top() > order.bottom(), "{at}");
+            assert!(w.window().contains_rect(borders), "{at}");
+            assert!(greyed(&tree, "Page order") && greyed(&tree, "Borders around pages"));
+            assert!(!greyed(&tree, "Scale"), "{at}");
+            assert!(unclear_names(&tree).is_empty(), "{at}");
+            w.click("Pages per sheet");
+            let tree = w.click("4");
+            assert_eq!(w.s.per_sheet.pages, 4, "{at}");
+            assert!(!greyed(&tree, "Page order") && !greyed(&tree, "Borders around pages"));
+            assert!(greyed(&tree, "Scale"), "{at}: Scale isn't greyed");
+            w.click("Page order");
+            w.click("Top to bottom, right to left");
+            w.click("Borders around pages");
+            let per = w.s.setup().unwrap().per_sheet;
+            assert_eq!(per.order, PageOrder::DownFromRight, "{at}");
+            assert!(per.borders && per.pages == 4, "{at}");
+            // The preview counts the sheets: one, of the document's one page.
+            let tree = w.settled();
+            assert!(text(&tree, "1 of 1").is_some(), "{at}");
+        }
+    }
+
+    /// Printing selected text, its layout is chosen in the same Layout group, above Pages
+    /// per sheet: one group of that name.
+    #[test]
+    fn printing_a_selection_chooses_its_layout_in_layout() {
+        let mut w = PrintWin::new((1200.0, 1200.0), 1.0);
+        w.s.selection = Some(Layout::Original);
+        let tree = w.settled();
+        let plain = named(&tree, Layout::Plain.label()).expect("the layouts");
+        let count = named(&tree, "Pages per sheet").unwrap();
+        assert!(count.top() > plain.bottom());
+        // Shown as often as another group's title.
+        let shown = |title: &str| {
+            let titles = tree.nodes.iter().filter(|(_, n)| n.value() == Some(title));
+            titles.count()
+        };
+        assert_eq!(shown("Layout"), shown("Page setup"));
+    }
+
     /// ENH-14: Print waits for the printer's paper sizes, greyed and saying so, Enter in the
     /// page range doing nothing meanwhile; sizes that can't be found are said, with Try
     /// again.
@@ -2280,7 +2426,8 @@ mod tests {
     /// what was added, kept centred.
     #[test]
     fn print_keeps_its_top_as_it_grows() {
-        let mut w = PrintWin::new((1200.0, 1000.0), 1.0);
+        // Tall enough for it all, Layout's group too (NEW-05).
+        let mut w = PrintWin::new((1200.0, 1200.0), 1.0);
         w.settled();
         let before = w.window();
         w.click("Page range");

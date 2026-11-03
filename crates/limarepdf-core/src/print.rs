@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 
 pub use crate::paper::{Paper, PaperList};
 pub use crate::sheets::{
-    place, Orientation, PageSetup, Placed, Scale, ASSUMED_MARGIN, MAX_PERCENT,
+    place, sheets, Orientation, PageOrder, PageSetup, PerSheet, Placed, Scale, SheetPlan,
+    ASSUMED_MARGIN, MAX_PERCENT, PAGES_PER_SHEET,
 };
 
 /// Resolution of pages printed as images.
@@ -73,6 +74,7 @@ pub struct PrintOptions {
     pub paper: Option<Paper>,
     pub orientation: Orientation,
     pub scale: Scale,
+    pub per_sheet: PerSheet,
 }
 
 impl Default for PrintOptions {
@@ -86,6 +88,7 @@ impl Default for PrintOptions {
             paper: None,
             orientation: Orientation::Automatic,
             scale: Scale::ShrinkOversized,
+            per_sheet: PerSheet::default(),
         }
     }
 }
@@ -512,6 +515,7 @@ impl Pdf {
             paper,
             orientation: opts.orientation,
             scale: opts.scale,
+            per_sheet: opts.per_sheet,
         };
         #[cfg(windows)]
         {

@@ -2639,6 +2639,7 @@ impl App {
                     orientation: self.settings.print_orientation,
                     scale,
                     percent,
+                    per_sheet: self.settings.print_per_sheet,
                     preview: print_preview::Preview::spawn(ctx, source),
                     ..dlg::Print::looking(search, file)
                 });
@@ -4667,6 +4668,7 @@ impl App {
                     self.settings.print_papers.insert(printer.clone(), paper);
                     self.settings.print_orientation = s.orientation;
                     self.settings.print_scale = s.scale;
+                    self.settings.print_per_sheet = s.per_sheet;
                     self.settings.save();
                     let t = &mut self.tabs[self.active];
                     let opts = print::PrintOptions {
@@ -4678,6 +4680,7 @@ impl App {
                         paper: Some(setup.paper),
                         orientation: setup.orientation,
                         scale: setup.scale,
+                        per_sheet: setup.per_sheet,
                     };
                     if let Some(layout) = s.selection {
                         let ex = Excerpt::new(t, layout);
@@ -12715,6 +12718,8 @@ mod tests {
             "Paper size",
             "Orientation",
             "Scale",
+            // Page order and Borders around pages are greyed with one page a sheet.
+            "Pages per sheet",
         ];
         if !cfg!(windows) {
             want.push("Advanced");
@@ -15813,6 +15818,69 @@ mod tests {
                 assert_eq!((s.scale, s.percent), (print::Scale::Custom(50), 50));
             }
             _ => unreachable!(),
+        }
+    }
+
+    /// NEW-05: pages per sheet as chosen in Print reach the sheets sent, and are
+    /// remembered: both pages on one sheet, each a drawing of its own. Run with stand-ins
+    /// for `lpstat`, `lpoptions` and `lp`, which keeps the job.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_sends_several_pages_a_sheet() {
+        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+        let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *Letter A4'\n";
+        let lp = "#!/bin/sh\ncat > \"$(dirname \"$0\")/job.pdf\"\n\
+                  echo 'request id is limarepdf-test-4 (1 file(s))'\n";
+        let dir = stand_in_cups(
+            "several-a-sheet",
+            &[("lpstat", lpstat), ("lpoptions", lpoptions), ("lp", lp)],
+        );
+        rerun_with_cups(&dir, "app::tests::several_a_sheet_with_stand_in_cups");
+        let printed = Pdf::open(dir.join("job.pdf"), None).expect("the job sent to lp");
+        assert_eq!(printed.page_count(), 1);
+        let objects = printed.page_objects(0).unwrap();
+        let form = limarepdf_core::ObjectKind::Form;
+        assert_eq!(objects.iter().filter(|o| o.kind == form).count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`print_sends_several_pages_a_sheet`] run with the stand-ins first on
+    /// PATH; without them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_sends_several_pages_a_sheet"]
+    fn several_a_sheet_with_stand_in_cups() {
+        if std::env::var_os(STAND_IN_CUPS).is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, papers_found);
+        let two = print::PerSheet {
+            pages: 2,
+            order: print::PageOrder::Down,
+            borders: true,
+        };
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.per_sheet = two;
+        }
+        click(&mut app, &ctx, "Print");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_loads(&ctx);
+        }
+        assert_eq!(app.settings.print_per_sheet, two);
+        app.dialog = Dialog::None;
+        app.act(&ctx, Act::Print);
+        match &app.dialog {
+            Dialog::Print(_, s) => assert_eq!(s.per_sheet, two),
+            _ => panic!("Print isn't open"),
         }
     }
 

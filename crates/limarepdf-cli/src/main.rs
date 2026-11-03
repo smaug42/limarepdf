@@ -558,13 +558,24 @@ enum Cmd {
         /// printer's
         #[arg(long)]
         paper: Option<String>,
-        /// Which way the pages go on the paper: auto turns pages wider than they are tall
+        /// Which way the pages go on the paper: auto turns pages wider than they are tall, or
+        /// with several pages a sheet holds each sheet the way they print largest
         #[arg(long, value_enum, default_value_t = OrientationArg::Auto)]
         orientation: OrientationArg,
-        /// How big the pages are printed: shrink (pages larger than the printable area only),
-        /// fit (to the printable area), actual, or a percentage from 1 to 400
-        #[arg(long, default_value = "shrink", value_parser = parse_scale)]
-        scale: print::Scale,
+        /// How big the pages are printed: shrink (the default: pages larger than the
+        /// printable area only), fit (to the printable area), actual, or a percentage from 1
+        /// to 400. With several pages a sheet, each is fitted to its place instead
+        #[arg(long, value_parser = parse_scale)]
+        scale: Option<print::Scale>,
+        /// How many pages go on each sheet: 1, 2, 4, 6, 9 or 16
+        #[arg(long, default_value_t = 1, value_parser = parse_pages_per_sheet)]
+        pages_per_sheet: u8,
+        /// The order the pages fill a sheet in, with several pages a sheet; default: across
+        #[arg(long, value_enum)]
+        page_order: Option<PageOrderArg>,
+        /// Draw a thin line around each page, with several pages a sheet
+        #[arg(long)]
+        borders: bool,
         /// Send sheets rendered by LimarePDF (300 dpi images) instead of a PDF of them. Windows
         /// always prints sheets rendered by LimarePDF
         #[arg(long)]
@@ -781,6 +792,28 @@ enum OrientationArg {
     Auto,
     Portrait,
     Landscape,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum PageOrderArg {
+    /// Left to right, top to bottom
+    Across,
+    /// Right to left, top to bottom
+    AcrossFromRight,
+    /// Top to bottom, left to right
+    Down,
+    /// Top to bottom, right to left
+    DownFromRight,
+}
+
+fn parse_pages_per_sheet(s: &str) -> std::result::Result<u8, String> {
+    match s.trim().parse::<u8>() {
+        Ok(n) if print::PAGES_PER_SHEET.contains(&n) => Ok(n),
+        _ => {
+            let [rest @ .., last] = print::PAGES_PER_SHEET.map(|n| n.to_string());
+            Err(format!("expected {} or {last}", rest.join(", ")))
+        }
+    }
 }
 
 fn parse_scale(s: &str) -> std::result::Result<print::Scale, String> {
@@ -3937,9 +3970,30 @@ fn run(cmd: Cmd) -> Result<()> {
             paper,
             orientation,
             scale,
+            pages_per_sheet,
+            page_order,
+            borders,
             as_image,
             password,
         } => {
+            if pages_per_sheet > 1 && scale.is_some() {
+                bail!(
+                    "--scale is for one page a sheet: with --pages-per-sheet {pages_per_sheet} \
+                     each page is fitted to its place on the sheet"
+                );
+            }
+            let several = [
+                (page_order.is_some(), "--page-order"),
+                (borders, "--borders"),
+            ];
+            if let Some((_, flag)) = several.iter().find(|(given, _)| *given) {
+                if pages_per_sheet == 1 {
+                    bail!(
+                        "{flag} is for more than one page a sheet: add --pages-per-sheet with \
+                         2, 4, 6, 9 or 16"
+                    );
+                }
+            }
             let mut p = open(&input, &password)?;
             let idx = parse_page_range(&pages, p.page_count())?;
             // The app asks; here the fields are named instead.
@@ -3968,13 +4022,27 @@ fn run(cmd: Cmd) -> Result<()> {
                     OrientationArg::Portrait => print::Orientation::Portrait,
                     OrientationArg::Landscape => print::Orientation::Landscape,
                 },
-                scale,
+                scale: scale.unwrap_or_default(),
+                per_sheet: print::PerSheet {
+                    pages: pages_per_sheet,
+                    order: match page_order.unwrap_or(PageOrderArg::Across) {
+                        PageOrderArg::Across => print::PageOrder::Across,
+                        PageOrderArg::AcrossFromRight => print::PageOrder::AcrossFromRight,
+                        PageOrderArg::Down => print::PageOrder::Down,
+                        PageOrderArg::DownFromRight => print::PageOrder::DownFromRight,
+                    },
+                    borders,
+                },
             };
-            let cut: Vec<usize> = idx
-                .iter()
-                .copied()
-                .filter(|&i| p.page_size(i).is_ok_and(|s| print::place(s, &setup).cut))
+            let sizes = p.page_sizes();
+            let sizes: Vec<(f32, f32)> = idx.iter().map(|&i| sizes[i]).collect();
+            let plan = print::sheets(&sizes, &setup);
+            let placed = plan.iter().flat_map(|s| &s.pages);
+            let mut cut: Vec<usize> = placed
+                .filter(|(_, at)| at.cut)
+                .map(|(i, _)| idx[*i])
                 .collect();
+            cut.sort_unstable();
             if !cut.is_empty() {
                 let (pages, reach, its) = match cut.len() {
                     1 => ("page", "reaches", "its"),
@@ -4003,6 +4071,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 paper: Some(setup.paper),
                 orientation: setup.orientation,
                 scale: setup.scale,
+                per_sheet: setup.per_sheet,
             };
             out!("{}", p.print(&idx, &opts)?);
         }

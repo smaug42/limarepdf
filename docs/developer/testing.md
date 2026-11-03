@@ -982,6 +982,31 @@ blocks fewer, the run sharing the machine with the test suite. Its timings aren'
   controls test covers Print with its Page setup. Not run: deferred to the RC cycle: the preview against paper
   printouts of the same sheets (each scale and orientation, on Letter and A4); the dialog and its preview on
   Windows and macOS; a screen reader on Page setup and the preview's arrows.
+- Pages per sheet (NEW-05's stage 1). `sheets.rs`'s unit tests: two upright pages side by side on a sheet held
+  sideways (each turned onto the paper, the first at its bottom, their boxes to the hundredth), the third alone on
+  the next sheet; the four orders (each place's middle, upright and on a sheet held sideways); each count's grid
+  upright and sideways, and a number between counts taking the next; a page turned in a place the other way round
+  (twice on a sheet held sideways), and the one wide page among upright ones; Automatic holding each sheet the way
+  its pages print largest, sheet by sheet; every count, orientation and paper (margins known, unknown, uneven) with
+  six sizes keeping each page inside the printable area, apart from the others, none cut; borders only with
+  several a sheet; the matrix for two and three turns. Core's `tests/print.rs`: `check_sheets` follows the plan,
+  each page's box and top found in its own pixels (pages side by side touch), with four more setups (2 Automatic,
+  4 Portrait down with borders, 6 Landscape right to left, 16 Automatic from the right with borders);
+  `several_pages_go_on_a_sheet_each_a_drawing`, `a_sheet_made_alone_is_drawn_as_among_all` (the preview's way, by
+  pixels) and `borders_are_drawn_around_each_page` (dark along each page's edges with borders, nowhere without,
+  none round an empty place). The opt-in cross-checks, run 2026-11-02 on Linux with the HP queue, passed:
+  `cross_check_sheets_with_poppler` with the new setups (Poppler can fill the one row of pixels past a page's edge
+  with what its crop box leaves out where two pages touch, at 72 dpi: allowed within a point of the edge, as hayro
+  doesn't) and `cross_check_sheets_pass_cupsfilter_unscaled` with four Letter pages a sheet (their corners where the
+  plan puts them after `cupsfilter`). The CLI's `print_puts_several_pages_on_a_sheet` (two a sheet, four down from
+  the right with borders, and the refusals: 3 a sheet, `--scale` with several, `--borders` or `--page-order` with
+  one). The app's `print_sends_several_pages_a_sheet` (stand-in CUPS: both pages on one sheet, remembered and
+  chosen again), `dialogs.rs`'s `layout_puts_several_pages_on_a_sheet` (wide and narrow: Pages per sheet beside Page
+  order or under it, Borders under them, inside the window; the order and borders greyed with one a sheet, Scale
+  greyed with four; picked into the page setup) and `printing_a_selection_chooses_its_layout_in_layout`,
+  `print_preview.rs`'s `several_pages_a_sheet_are_shown_as_planned`, `settings.rs`'s `print_choices_are_remembered`
+  (the count, order and borders; a count that can't be printed read as one). Not run: deferred to the RC cycle:
+  pages per sheet on paper against the preview, Windows and macOS.
 - Print opening ready (ENH-47). Core's `ipp.rs` `the_printers_are_listed_with_their_default` (a stand-in service
   answering CUPS-Get-Printers with a group for each of two printers, one name with a space, and CUPS-Get-Default;
   each request posted to `/` with its operation and no printer named; no printers and no default said so). The
@@ -1275,6 +1300,7 @@ before this table had a Status column, and wasn't run again on the date given.
 | Printers' paper sizes (ENH-14, stage 1) | `ipp.rs` and `paper.rs`'s unit tests, the CLI's `printers --paper` with a stand-in service (which failed on PR #79's macOS CI, BUG-48; `an_answer_the_service_closes_after_is_read_whole` reads an answer the service closes after at once, sent in pieces); the opt-in `cross_check_paper_sizes_with_ipptool` (run 2026-11-02 on Linux, the HP queue: 19 sizes, the default and the PPD's margins as CUPS reports them, passed) | `limarepdf-cli printers --paper` on Windows (a printer's driver: its sizes, default and margins) and on macOS | Not run: deferred to the RC cycle |
 | Every printout laid out on the paper (ENH-14, stage 2) | `sheets.rs`'s unit tests, core's `print.rs` (the sheets against the model's placements), the CLI's `print_lays_the_pages_out_on_the_paper`, the app's stand-in CUPS print; the opt-in `cross_check_sheets_with_poppler` and `cross_check_sheets_pass_cupsfilter_unscaled` (run 2026-11-02 on Linux, the HP queue: passed); Windows and macOS by cross-compiled clippy and PR CI | On Linux (CUPS), Windows and macOS, print a file with Letter and A4 pages, a small page, a landscape page, a page turned by its own rotation, a cropped page, comments (one not meant for print) and filled fields: each on the printer's default paper, the small page at its own size and centred, the landscape page turned with its top to the left, nothing cut off, only the printable comments and the field values printed. Then `limarepdf-cli print --paper A4 --scale fit`, `--orientation portrait` and `--scale actual` (the warning, and edges lost evenly); and the same file with Print as image | Not run: deferred to the RC cycle |
 | Print's page setup and preview (ENH-14, stage 3) | `print_preview.rs`'s unit tests, `dialogs.rs`'s page setup tests, the app's `print_sends_the_page_setup_chosen` with stand-ins for `lpstat`, `lpoptions` and `lp`, `settings.rs`'s `print_choices_are_remembered`; Windows and macOS by cross-compiled clippy and PR CI | On Linux (CUPS), Windows and macOS, open Print (and Print preview, Ctrl+F2 or Ctrl+Shift+O on Linux): the printer's sizes listed with its default chosen; page through the preview of the same mixed file, then print at each scale and orientation on Letter and A4 and lay each printout on its preview: the same placement, turn and size; a page reaching past the printable area named under the preview, and the margins line on a printer that doesn't say them; Print opened again starting with the paper, orientation and scale last printed with; with a screen reader, Page setup's lists and the preview's arrows named | Not run: deferred to the RC cycle |
+| Pages per sheet (NEW-05, stage 1) | `sheets.rs`'s unit tests, core's `print.rs` (the sheets against the plan, borders, a sheet made alone), the CLI's `print_puts_several_pages_on_a_sheet`, the app's `print_sends_several_pages_a_sheet` with stand-in CUPS, `dialogs.rs`'s Layout tests, `print_preview.rs`'s `several_pages_a_sheet_are_shown_as_planned`; the opt-in Poppler and `cupsfilter` cross-checks (run 2026-11-02 on Linux, the HP queue: passed); Windows and macOS by cross-compiled clippy and PR CI | On Linux (CUPS), Windows and macOS, print the mixed file at 2, 4, 6, 9 and 16 pages a sheet, each order, with and without borders, Automatic, Portrait and Landscape, and lay each printout on its preview: the same places, order and turns; then `limarepdf-cli print --pages-per-sheet 4 --page-order down --borders` | Not run: deferred to the RC cycle |
 | Digital signatures | `signatures.rs`, `signing.rs`, `signature_changes.rs`, pdfsig and OpenSSL | Check a signed sample; sign, certify, add a comment and save; reopen and check; then the Acrobat round trips below | Pass (earlier run), Linux |
 | Redaction, removing hidden information | `redact.rs`, `sanitise.rs`, the after-check | Redact a phrase and part of a picture, save, then search the output with `pdftotext` and another reader's search; remove hidden information and check `pdfinfo -meta` | Pass (earlier run), Linux |
 | Damaged files | `repair.rs`, the corpus | Open a damaged file: the notice shows; Save asks; Save as writes a new file; the original's checksum is unchanged | Pass (earlier run), Linux |

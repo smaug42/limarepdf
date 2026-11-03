@@ -114,6 +114,14 @@
   appeared. The first time, on Linux and macOS, the printers set up on the computer come at once (asked of CUPS
   directly, in milliseconds), and printers announced on the network about a second later, where the whole list
   waited for them before. The printer last printed to is remembered and chosen next time, when it is there.
+- **Pages per sheet** in Print: a new **Layout** group under Page setup prints 1, 2, 4, 6, 9 or 16 pages on each
+  sheet, in the **Page order** chosen (left to right or right to left, top to bottom; or top to bottom, left to
+  right or right to left), with **Borders around pages** if you like. Each page is fitted to its place on the
+  sheet (so Scale is greyed meanwhile), turned in it when its shape is the other way round; with Orientation on
+  Automatic each sheet is held the way its pages come out largest, so two upright pages print side by side on a
+  sheet turned sideways. The preview shows and counts the sheets as they will print. The choices are remembered
+  when you print. Printing selected text, its layout is chosen in the same group. `limarepdf-cli print` takes
+  `--pages-per-sheet`, `--page-order across|across-from-right|down|down-from-right` and `--borders`.
 
 ### Changed
 

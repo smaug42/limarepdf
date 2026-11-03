@@ -4,7 +4,8 @@
 //! placements the model gives.
 
 use limarepdf_core::print::{
-    lp_args, place, send, Orientation, PageSetup, Paper, PrintOptions, Scale, Sides,
+    lp_args, send, sheets as plan, Orientation, PageOrder, PageSetup, Paper, PerSheet,
+    PrintOptions, Scale, Sides,
 };
 use limarepdf_core::{render, Cipher, Encryption, FieldValue, ObjectKind, Pdf, Restrictions};
 use lopdf::{dictionary, Dictionary, Object, Stream};
@@ -26,6 +27,7 @@ fn setup(paper: Paper, orientation: Orientation, scale: Scale) -> PageSetup {
         paper,
         orientation,
         scale,
+        per_sheet: PerSheet::default(),
     }
 }
 
@@ -83,10 +85,30 @@ impl Pic {
     /// The box of the pixels `which` picks, in points from the sheet's bottom-left: left,
     /// bottom, right, top.
     fn inked(&self, which: impl Fn([u8; 3]) -> bool) -> Option<[f32; 4]> {
+        let all = [0.0, 0.0, self.w as f32, self.h as f32];
+        self.inked_in(which, all)
+    }
+
+    /// [`Pic::inked`] of the pixels whose middles are within the box `within` only.
+    fn inked_in(&self, which: impl Fn([u8; 3]) -> bool, within: [f32; 4]) -> Option<[f32; 4]> {
+        let [x0, y0, x1, y1] = within;
+        let inside = |x: f32, y: f32| x >= x0 && x <= x1 && y >= y0 && y <= y1;
+        self.inked_where(which, inside)
+    }
+
+    /// [`Pic::inked`] of the pixels whose middles, in points from the bottom-left, `keep`
+    /// keeps.
+    fn inked_where(
+        &self,
+        which: impl Fn([u8; 3]) -> bool,
+        keep: impl Fn(f32, f32) -> bool,
+    ) -> Option<[f32; 4]> {
+        let h = self.h as f32;
+        let inside = |x: usize, y: usize| keep(x as f32 + 0.5, h - y as f32 - 0.5);
         let mut b: Option<[usize; 4]> = None;
         for y in 0..self.h {
             for x in 0..self.w {
-                if which(self.at(x, y)) {
+                if inside(x, y) && which(self.at(x, y)) {
                     let r = b.get_or_insert([x, y, x, y]);
                     *r = [r[0].min(x), r[1].min(y), r[2].max(x + 1), r[3].max(y + 1)];
                 }
@@ -194,36 +216,62 @@ fn on_sheet(r: [f32; 4], size: (f32, f32)) -> Option<[f32; 4]> {
     (c[2] - c[0] > 1.0 && c[3] - c[1] > 1.0).then_some(c)
 }
 
-/// Each sheet of `sheets`, as `draw` draws it, holds its page of `doc` where [`place`] puts
-/// it: the page's shown area grey (nothing of what its crop box leaves out, which is blue),
-/// and its top's red bar along the top of its box, or along its left when turned.
+/// Each sheet of `sheets`, as `draw` draws it, holds its pages of `doc` where the plan
+/// ([`plan`]) puts them: each page's shown area grey (nothing of what its crop box leaves
+/// out, which is blue), and its top's red bar along the side of its box its turns put it
+/// at: the top, the left turned once, the bottom twice.
 fn check_sheets(doc: &Pdf, sheets: &[u8], setup: &PageSetup, draw: impl Fn(&[u8], usize) -> Pic) {
-    for i in 0..doc.page_count() {
-        let placed = place(doc.page_size(i).unwrap(), setup);
-        let pic = draw(sheets, i);
-        assert_eq!((pic.w, pic.h), (612, 792), "sheet {}", i + 1);
-        let what = format!("page {} at {:?}", i + 1, placed);
-        let page = pic.inked(page_ink).expect("the page drawn");
-        let want = on_sheet(placed.rect, placed.sheet).unwrap();
-        assert!(near(page, want), "{what}: drawn at {page:?}");
-        assert_eq!(pic.inked(blue), None, "{what}: past its crop box");
-        let [x0, y0, x1, y1] = placed.rect;
-        let bar = 10.0 * placed.scale;
-        let want = match placed.turned {
-            true => [x0, y0, x0 + bar, y1],
-            false => [x0, y1 - bar, x1, y1],
+    for (k, sheet) in plan(&doc.page_sizes(), setup).iter().enumerate() {
+        let pic = draw(sheets, k);
+        assert_eq!((pic.w, pic.h), (612, 792), "sheet {}", k + 1);
+        // Where two pages touch, Poppler can fill the row of pixels past one's edge with
+        // what its crop box leaves out: nowhere further.
+        let on_an_edge = |x: f32, y: f32| {
+            sheet.pages.iter().any(|(_, p)| {
+                let [x0, y0, x1, y1] = p.rect;
+                let on = |v: f32, a: f32, b: f32| v >= a - 1.0 && v <= b + 1.0;
+                let near = |v: f32, e: f32| (v - e).abs() <= 1.0;
+                (on(y, y0, y1) && (near(x, x0) || near(x, x1)))
+                    || (on(x, x0, x1) && (near(y, y0) || near(y, y1)))
+            })
         };
-        match on_sheet(want, placed.sheet) {
-            Some(want) => {
-                let got = pic.inked(red).expect("the top drawn");
-                assert!(near(got, want), "{what}: its top at {got:?}, not {want:?}");
+        let off_edges = |x: f32, y: f32| sheet.pages.len() < 2 || !on_an_edge(x, y);
+        let past = pic.inked_where(blue, off_edges);
+        assert_eq!(past, None, "sheet {}: past a crop box", k + 1);
+        for &(i, placed) in &sheet.pages {
+            let what = format!("page {} on sheet {} at {:?}", i + 1, k + 1, placed);
+            let [x0, y0, x1, y1] = placed.rect;
+            // Its own pixels: pages side by side can touch, so not those on its edges.
+            let Some(own) = on_sheet([x0 + 0.5, y0 + 0.5, x1 - 0.5, y1 - 0.5], placed.sheet) else {
+                panic!("{what}: not on the sheet");
+            };
+            let page = pic.inked_in(page_ink, own).expect("the page drawn");
+            let want = on_sheet(placed.rect, placed.sheet).unwrap();
+            assert!(near(page, want), "{what}: drawn at {page:?}");
+            let bar = 10.0 * placed.scale;
+            // Thinner than two pixels, the bar's colour mixes with the page's.
+            if bar < 2.0 {
+                continue;
             }
-            None => assert_eq!(pic.inked(red), None, "{what}: its top shown"),
+            let want = match placed.turns {
+                1 => [x0, y0, x0 + bar, y1],
+                2 => [x0, y0, x1, y0 + bar],
+                3 => [x1 - bar, y0, x1, y1],
+                _ => [x0, y1 - bar, x1, y1],
+            };
+            match on_sheet(want, placed.sheet) {
+                Some(want) => {
+                    let got = pic.inked_in(red, own).expect("the top drawn");
+                    assert!(near(got, want), "{what}: its top at {got:?}, not {want:?}");
+                }
+                None => assert_eq!(pic.inked_in(red, own), None, "{what}: its top shown"),
+            }
         }
     }
 }
 
-/// The page setups the sheets are checked with: every scale, and every orientation.
+/// The page setups the sheets are checked with: every scale, every orientation, and pages
+/// per sheet in every order, with borders and without.
 fn setups() -> Vec<PageSetup> {
     let mut v = Vec::new();
     for scale in [
@@ -241,6 +289,20 @@ fn setups() -> Vec<PageSetup> {
     let mut unknown = letter();
     unknown.margins = None;
     v.push(setup(unknown, Orientation::Automatic, Scale::Fit));
+    for (pages, orientation, order, borders) in [
+        (2, Orientation::Automatic, PageOrder::Across, false),
+        (4, Orientation::Portrait, PageOrder::Down, true),
+        (6, Orientation::Landscape, PageOrder::AcrossFromRight, false),
+        (16, Orientation::Automatic, PageOrder::DownFromRight, true),
+    ] {
+        let mut s = setup(letter(), orientation, Scale::ShrinkOversized);
+        s.per_sheet = PerSheet {
+            pages,
+            order,
+            borders,
+        };
+        v.push(s);
+    }
     v
 }
 
@@ -250,8 +312,87 @@ fn each_page_is_on_its_sheet_where_the_model_places_it() {
     let all: Vec<usize> = (0..doc.page_count()).collect();
     for s in setups() {
         let mut sheets = doc.print_sheets(&all, &s).unwrap();
-        assert_eq!(widths(&sheets), [612.0; 6], "{s:?}");
+        let count = plan(&doc.page_sizes(), &s).len();
+        assert_eq!(widths(&sheets), vec![612.0; count], "{s:?}");
         check_sheets(&doc, &sheets.to_bytes().unwrap(), &s, drawn);
+    }
+}
+
+/// Four pages a sheet: a sheet of four drawings, each page's vector content its own; six
+/// pages make two sheets.
+#[test]
+fn several_pages_go_on_a_sheet_each_a_drawing() {
+    let doc = marked_pages();
+    let mut s = setup(letter(), Orientation::Automatic, Scale::Fit);
+    s.per_sheet.pages = 4;
+    let data = doc.print_data(&[0, 1, 2, 3, 4, 5], &s, false).unwrap();
+    let sent = Pdf::from_bytes(&data, None).unwrap();
+    assert_eq!(widths(&sent), [612.0, 612.0]);
+    assert_eq!(kinds(&sent, 0), [ObjectKind::Form; 4]);
+    assert_eq!(kinds(&sent, 1), [ObjectKind::Form; 2]);
+}
+
+/// The preview's one sheet, made alone with only its pages, is drawn as it is among all
+/// the sheets.
+#[test]
+fn a_sheet_made_alone_is_drawn_as_among_all() {
+    let doc = marked_pages();
+    let pages = [5, 0, 1, 2, 3, 4];
+    let mut s = setup(letter(), Orientation::Automatic, Scale::ShrinkOversized);
+    s.per_sheet = PerSheet {
+        pages: 4,
+        order: PageOrder::Down,
+        borders: true,
+    };
+    let all = doc.print_sheets(&pages, &s).unwrap().to_bytes().unwrap();
+    let sizes: Vec<_> = pages.iter().map(|&i| doc.page_size(i).unwrap()).collect();
+    for (k, mut sheet) in plan(&sizes, &s).into_iter().enumerate() {
+        let own: Vec<usize> = sheet.pages.iter().map(|(i, _)| pages[*i]).collect();
+        for (j, p) in sheet.pages.iter_mut().enumerate() {
+            p.0 = j;
+        }
+        let mut alone = doc.print_planned(&own, &[sheet]).unwrap();
+        let alone = alone.to_bytes().unwrap();
+        assert!(
+            drawn(&alone, 0).rgb == drawn(&all, k).rgb,
+            "sheet {} differs",
+            k + 1
+        );
+    }
+}
+
+/// With borders, a line is drawn along each page's edges; without, nothing is.
+#[test]
+fn borders_are_drawn_around_each_page() {
+    let mut doc = Pdf::new();
+    for i in 0..3 {
+        doc.insert_blank(i, 300.0, 200.0).unwrap();
+    }
+    let mut s = setup(letter(), Orientation::Portrait, Scale::ShrinkOversized);
+    s.per_sheet.pages = 4;
+    for borders in [true, false] {
+        s.per_sheet.borders = borders;
+        let data = doc.print_data(&[0, 1, 2], &s, false).unwrap();
+        let pic = drawn(&data, 0);
+        let sheet = &plan(&[(300.0, 200.0); 3], &s)[0];
+        // The darkest of the pixels around (x, y) points from the bottom-left.
+        let darkest = |x: f32, y: f32| {
+            let (x, y) = (x.round() as usize, (792.0 - y).round() as usize);
+            let around = (x - 1..=x + 1).flat_map(|x| (y - 1..=y + 1).map(move |y| (x, y)));
+            around.map(|(x, y)| pic.at(x, y)[0]).min().unwrap()
+        };
+        for (i, p) in &sheet.pages {
+            let [x0, y0, x1, y1] = p.rect;
+            let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            for (x, y) in [(x0, my), (x1, my), (mx, y0), (mx, y1)] {
+                let v = darkest(x, y);
+                assert_eq!(v < 230, borders, "page {} at ({x}, {y}): {v}", i + 1);
+            }
+        }
+        // The fourth place, at the bottom right, is empty: no page, no border.
+        let dark = |c: [u8; 3]| c.iter().all(|&v| v < 230);
+        assert_eq!(pic.inked_in(dark, [310.0, 16.0, 596.0, 392.0]), None);
+        assert!(borders || pic.inked(dark).is_none());
     }
 }
 
@@ -725,26 +866,47 @@ fn cross_check_sheets_pass_cupsfilter_unscaled() {
     p.doc.get_dictionary_mut(page).unwrap().set("Contents", cs);
     let mut paper = letter();
     paper.id = "Letter".into();
-    let s = setup(paper, Orientation::Automatic, Scale::ActualSize);
-    let sheet = dir.join("sheet.pdf");
-    std::fs::write(&sheet, p.print_data(&[0], &s, false).unwrap()).unwrap();
-    let args = lp_args(&PrintOptions::default(), "Letter");
-    let options: Vec<&String> = args.iter().filter(|a| a.contains('=')).collect();
-    let mut cmd = std::process::Command::new("cupsfilter");
-    cmd.arg("-p").arg(dir.join("queue.ppd"));
-    cmd.args(["-i", "application/pdf", "-m", "application/vnd.cups-pdf"]);
-    for o in options {
-        cmd.args(["-o", o]);
-    }
-    let out = cmd.arg(&sheet).output().expect("cupsfilter");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    let filtered = dir.join("filtered.pdf");
-    std::fs::write(&filtered, out.stdout).unwrap();
-    let pic = poppler(&filtered, 0);
+    let mut s = setup(paper, Orientation::Automatic, Scale::ActualSize);
+    // The sheet `data` after CUPS's filter, as Poppler draws it.
+    let filtered = |name: &str, data: Vec<u8>| {
+        let sheet = dir.join(format!("{name}.pdf"));
+        std::fs::write(&sheet, data).unwrap();
+        let args = lp_args(&PrintOptions::default(), "Letter");
+        let options: Vec<&String> = args.iter().filter(|a| a.contains('=')).collect();
+        let mut cmd = std::process::Command::new("cupsfilter");
+        cmd.arg("-p").arg(dir.join("queue.ppd"));
+        cmd.args(["-i", "application/pdf", "-m", "application/vnd.cups-pdf"]);
+        for o in options {
+            cmd.args(["-o", o]);
+        }
+        let out = cmd.arg(&sheet).output().expect("cupsfilter");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{err}");
+        let filtered = dir.join(format!("{name}-filtered.pdf"));
+        std::fs::write(&filtered, out.stdout).unwrap();
+        poppler(&filtered, 0)
+    };
     let dark = |c: [u8; 3]| c.iter().all(|&v| v < 128);
+    let pic = filtered("sheet", p.print_data(&[0], &s, false).unwrap());
     let ink = pic.inked(dark).expect("the corners");
     let whole = near(ink, [0.0, 0.0, 612.0, 792.0]);
     assert!(whole, "the corners at {ink:?}");
+    // Four of the page a sheet: the corners of the four reach where the plan puts them.
+    for i in 1..4 {
+        p.insert_blank(i, 612.0, 792.0).unwrap();
+        let page = p.page_ids()[i];
+        p.doc.get_dictionary_mut(page).unwrap().set("Contents", cs);
+    }
+    s.per_sheet.pages = 4;
+    let sheet = &plan(&[(612.0, 792.0); 4], &s)[0];
+    let rects = sheet.pages.iter().map(|(_, p)| p.rect);
+    let both = |a: [f32; 4], b: [f32; 4]| {
+        let [x0, y0] = [a[0].min(b[0]), a[1].min(b[1])];
+        [x0, y0, a[2].max(b[2]), a[3].max(b[3])]
+    };
+    let want = rects.reduce(both).unwrap();
+    let pic = filtered("four", p.print_data(&[0, 1, 2, 3], &s, false).unwrap());
+    let ink = pic.inked(dark).expect("the corners");
+    assert!(near(ink, want), "the corners at {ink:?}, not {want:?}");
     std::fs::remove_dir_all(dir).unwrap();
 }

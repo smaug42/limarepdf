@@ -1,15 +1,16 @@
 //! The Print dialog's preview (ENH-14): each sheet as it will print, drawn off the window's
-//! thread from a copy of what is printed by core's own sheet writer ([`Pdf::print_sheets`]),
-//! so the preview is what reaches the printer. The sheet shown and its neighbours are drawn,
-//! the one shown first, and kept until what is printed, the page setup or the size they are
-//! shown at changes. A sheet with its page turned onto it is shown held sideways, as it is
-//! read.
+//! thread from a copy of what is printed by core's own plan of the sheets
+//! ([`print::sheets`]) and sheet writer ([`Pdf::print_planned`]), so the preview is what
+//! reaches the printer. The sheet shown and its neighbours are drawn, the one shown first,
+//! and kept until what is printed, the page setup or the size they are shown at changes. A
+//! sheet held sideways to be read (a page turned onto it, or pages side by side, NEW-05) is
+//! shown so.
 
 use crate::dialogs::{set_name, Layout};
 use crate::icon;
 use crate::theme;
 use eframe::egui::{self, Align, Color32, Pos2, Rect, RichText, TextureHandle, Vec2};
-use limarepdf_core::print::{self, PageSetup};
+use limarepdf_core::print::{self, PageSetup, SheetPlan};
 use limarepdf_core::render::{self, Bitmap, Renderer};
 use limarepdf_core::{format_page_range, Pdf};
 use std::collections::hash_map::Entry;
@@ -69,14 +70,15 @@ pub struct Ask {
     pub setup: PageSetup,
 }
 
-/// A sheet to draw: the `sheet`th, which prints page `page` of the document made in
-/// `layout`, as `setup` lays it out, at `step` / [`STEPS`] pixels a point.
+/// A sheet to draw: the `sheet`th, which prints pages `pages` of the document made in
+/// `layout` where `plan` puts them (its pages by their place in `pages`), at `step` /
+/// [`STEPS`] pixels a point.
 struct Job {
     generation: u64,
     sheet: usize,
     layout: Option<Layout>,
-    page: usize,
-    setup: PageSetup,
+    pages: Vec<usize>,
+    plan: SheetPlan,
     step: u32,
 }
 
@@ -168,7 +170,7 @@ fn run(source: Source, shared: Shared, tx: Sender<Came>, ctx: egui::Context) {
             continue;
         };
         let picture = match &made[&job.layout] {
-            Ok(doc) => crate::guard(|| draw(doc, job.page, &job.setup, job.step))
+            Ok(doc) => crate::guard(|| draw(doc, &job.pages, &job.plan, job.step))
                 .map_err(|e| format!("{e:#}")),
             Err(why) => Err(why.clone()),
         };
@@ -180,15 +182,13 @@ fn run(source: Source, shared: Shared, tx: Sender<Came>, ctx: egui::Context) {
     }
 }
 
-/// Page `page` of `doc` on its sheet as `setup` lays it out, drawn at `step` / [`STEPS`]
-/// pixels a point, and held as it is read: turned back a quarter turn when its page is
-/// turned onto the sheet.
-fn draw(doc: &Pdf, page: usize, setup: &PageSetup, step: u32) -> limarepdf_core::Result<Bitmap> {
-    let mut sheet = doc.print_sheets(&[page], setup)?;
+/// The sheet `plan` makes of pages `pages` of `doc`, drawn at `step` / [`STEPS`] pixels a
+/// point, and held as it is read: turned a quarter turn clockwise when held sideways.
+fn draw(doc: &Pdf, pages: &[usize], plan: &SheetPlan, step: u32) -> limarepdf_core::Result<Bitmap> {
+    let mut sheet = doc.print_planned(pages, std::slice::from_ref(plan))?;
     let hp = render::load(sheet.to_bytes()?, None)?;
     let b = Renderer::new(&hp).render(0, step as f32 / STEPS)?;
-    let turned = print::place(doc.page_size(page)?, setup).turned;
-    Ok(if turned { clockwise(&b) } else { b })
+    Ok(if plan.sideways { clockwise(&b) } else { b })
 }
 
 /// `b` turned a quarter turn clockwise.
@@ -216,6 +216,8 @@ pub struct Preview {
     thread: Option<(Shared, Receiver<Came>)>,
     sizes: Sizes,
     ask: Option<Ask>,
+    /// The sheets of what is shown, once its pages' sizes are known.
+    plan: Option<Vec<SheetPlan>>,
     generation: u64,
     /// The sheets drawn, by their number and step, or why they couldn't be.
     drawn: HashMap<(usize, u32), Result<TextureHandle, String>>,
@@ -248,6 +250,7 @@ impl Preview {
             thread: Some((shared, rx)),
             sizes: HashMap::new(),
             ask: None,
+            plan: None,
             generation: 0,
             drawn: HashMap::new(),
             pending: HashSet::new(),
@@ -278,18 +281,50 @@ impl Preview {
             q.make = make;
             cv.notify_one();
         }
-        self.notes = self.notes_now();
+        self.replan();
     }
 
     pub fn ask(&self) -> Option<&Ask> {
         self.ask.as_ref()
     }
 
-    /// How many sheets print, once known.
+    /// How many sheets print, once known: for the document's pages, before their sizes are.
     pub fn sheets(&self) -> Option<usize> {
+        if let Some(plan) = &self.plan {
+            return Some(plan.len());
+        }
+        let ask = self.ask.as_ref()?;
+        match &ask.what {
+            What::Pages(p) => Some(p.len().div_ceil(ask.setup.per_sheet.count())),
+            What::Selection(_) => None,
+        }
+    }
+
+    /// The sheets of what is shown, once its pages' sizes are known.
+    #[cfg(test)]
+    pub fn plan(&self) -> Option<&[SheetPlan]> {
+        self.plan.as_deref()
+    }
+
+    /// Plan the sheets of what is shown, once its pages' sizes are known, and say what
+    /// may not print.
+    fn replan(&mut self) {
+        self.plan = self.ask.as_ref().and_then(|ask| {
+            let sizes = self.sizes.get(&ask.what.layout())?.as_ref().ok()?;
+            let printed = match &ask.what {
+                What::Pages(p) => p.iter().map(|&i| sizes.get(i).copied()).collect(),
+                What::Selection(_) => Some(sizes.clone()),
+            };
+            Some(print::sheets(&printed?, &ask.setup))
+        });
+        self.notes = self.notes_now();
+    }
+
+    /// The page of the document the sheets are made from printed `i`th.
+    fn printed(&self, i: usize) -> Option<usize> {
         match &self.ask.as_ref()?.what {
-            What::Pages(p) => Some(p.len()),
-            What::Selection(l) => self.sizes.get(&Some(*l))?.as_ref().ok().map(Vec::len),
+            What::Pages(p) => p.get(i).copied(),
+            What::Selection(_) => Some(i),
         }
     }
 
@@ -298,18 +333,6 @@ impl Preview {
     #[cfg(test)]
     pub fn notes(&self) -> &[String] {
         &self.notes
-    }
-
-    /// The page sheet `sheet` prints, of the document it is made from, with the page's size
-    /// as shown, once known.
-    fn page(&self, sheet: usize) -> Option<(usize, (f32, f32))> {
-        let ask = self.ask.as_ref()?;
-        let sizes = self.sizes.get(&ask.what.layout())?.as_ref().ok()?;
-        let page = match &ask.what {
-            What::Pages(p) => *p.get(sheet)?,
-            What::Selection(_) => sheet,
-        };
-        Some((page, *sizes.get(page)?))
     }
 
     fn notes_now(&self) -> Vec<String> {
@@ -324,14 +347,14 @@ impl Preview {
                     .to_string(),
             );
         }
-        let Some(Ok(sizes)) = self.sizes.get(&ask.what.layout()) else {
+        let Some(plan) = &self.plan else {
             return out;
         };
-        let cut = |&s: &(f32, f32)| print::place(s, &ask.setup).cut;
-        let reach = |p: &usize| sizes.get(*p).is_some_and(cut);
+        let placed = plan.iter().flat_map(|s| &s.pages);
+        let cut = placed.filter(|(_, p)| p.cut).map(|&(i, _)| i);
         let (mut cut, kind): (Vec<usize>, _) = match &ask.what {
-            What::Pages(p) => (p.iter().copied().filter(reach).collect(), "page"),
-            What::Selection(_) => ((0..sizes.len()).filter(reach).collect(), "sheet"),
+            What::Pages(_) => (cut.filter_map(|i| self.printed(i)).collect(), "page"),
+            What::Selection(_) => (cut.collect(), "sheet"),
         };
         cut.sort_unstable();
         cut.dedup();
@@ -359,7 +382,7 @@ impl Preview {
             match c {
                 Came::Sizes(layout, sizes) => {
                     self.sizes.insert(layout, sizes);
-                    self.notes = self.notes_now();
+                    self.replan();
                 }
                 Came::Sheet(generation, sheet, step, picture) if generation == self.generation => {
                     self.pending.remove(&(sheet, step));
@@ -382,17 +405,25 @@ impl Preview {
         if self.drawn.contains_key(&key) || self.pending.contains(&key) {
             return;
         }
-        let (Some(ask), Some((page, _)), Some((shared, _))) =
-            (&self.ask, self.page(sheet), &self.thread)
-        else {
+        let plan = self.plan.as_ref().and_then(|p| p.get(sheet));
+        let (Some(ask), Some(plan), Some((shared, _))) = (&self.ask, plan, &self.thread) else {
             return;
         };
+        // Its own pages alone, the plan's pages counted among them.
+        let pages = plan.pages.iter().map(|&(i, _)| self.printed(i)).collect();
+        let Some(pages) = pages else {
+            return;
+        };
+        let mut plan = plan.clone();
+        for (j, p) in plan.pages.iter_mut().enumerate() {
+            p.0 = j;
+        }
         let job = Job {
             generation: self.generation,
             sheet,
             layout: ask.what.layout(),
-            page,
-            setup: ask.setup.clone(),
+            pages,
+            plan,
             step,
         };
         let (m, cv) = &**shared;
@@ -497,15 +528,15 @@ impl Preview {
             let r = Rect::from_center_size(at, Vec2::splat(24.0));
             ui.put(r, egui::Spinner::new());
         };
-        let found = self.ask.as_ref().zip(self.page(self.at));
-        let Some((ask, (_, size))) = found else {
+        let found = self.plan.as_ref().and_then(|p| p.get(self.at));
+        let Some(plan) = found else {
             if waiting || self.ask.is_some() {
                 spinner(ui, room.center());
             }
             return;
         };
-        let (pw, ph) = ask.setup.paper.size;
-        let held = match print::place(size, &ask.setup).turned {
+        let (pw, ph) = plan.size;
+        let held = match plan.sideways {
             true => Vec2::new(ph, pw),
             false => Vec2::new(pw, ph),
         };
@@ -548,7 +579,7 @@ impl Preview {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use limarepdf_core::print::{Orientation, Paper, Scale};
+    use limarepdf_core::print::{Orientation, Paper, PerSheet, Scale};
     use std::time::{Duration, Instant};
 
     fn letter(margins: Option<[f32; 4]>) -> Paper {
@@ -565,6 +596,7 @@ mod tests {
             paper: letter(Some([12.0; 4])),
             orientation,
             scale,
+            per_sheet: PerSheet::default(),
         }
     }
 
@@ -654,7 +686,8 @@ mod tests {
     fn a_turned_sheet_reads_the_right_way_up() {
         let pdf = doc();
         let s = setup(Orientation::Automatic, Scale::ActualSize);
-        let b = draw(&pdf, 1, &s, 20).unwrap();
+        let plan = &print::sheets(&[pdf.page_size(1).unwrap()], &s)[0];
+        let b = draw(&pdf, &[1], plan, 20).unwrap();
         assert_eq!((b.width, b.height), (792, 612));
         let dark = |x: usize, y: usize| b.rgba[(y * b.width + x) * 4] < 60;
         // The page, 792 by 400, is centred on the sheet held sideways, 792 by 612: as wide
@@ -662,6 +695,42 @@ mod tests {
         let top = ((612.0 - 400.0) / 2.0) as usize;
         assert!(dark(30, top + 30), "the square isn't at the top left");
         assert!(!dark(b.width - 30, b.height - top - 30));
+    }
+
+    /// NEW-05: with several pages a sheet the sheets are counted and held as core plans
+    /// them: two upright pages side by side on a sheet held sideways, the last sheet with
+    /// the page left over; four a sheet, all three on one.
+    #[test]
+    fn several_pages_a_sheet_are_shown_as_planned() {
+        let ctx = egui::Context::default();
+        let mut p = Preview::spawn(&ctx, Source::Pages(doc()));
+        let ask = |pages| {
+            let mut s = setup(Orientation::Automatic, Scale::ShrinkOversized);
+            s.per_sheet.pages = pages;
+            Ask {
+                what: What::Pages(vec![0, 2, 1]),
+                setup: s,
+            }
+        };
+        p.set(Some(ask(2)));
+        let size = Vec2::new(330.0, 420.0);
+        shown_until(&ctx, &mut p, size, |p| {
+            drawing(p, 0).is_some() && drawing(p, 1).is_some()
+        });
+        assert_eq!(p.sheets(), Some(2));
+        let plan = p.plan().unwrap();
+        // Letter and A3, upright: side by side; the wide page alone, as it comes.
+        assert!(plan[0].sideways && !plan[1].sideways, "{plan:?}");
+        assert_eq!(plan[0].pages.len(), 2);
+        let [w, h] = drawing(&p, 0).unwrap();
+        assert!(w > h, "held sideways: {w} x {h}");
+        let [w, h] = drawing(&p, 1).unwrap();
+        assert!(w < h, "held upright: {w} x {h}");
+        p.set(Some(ask(4)));
+        shown_until(&ctx, &mut p, size, |p| drawing(p, 0).is_some());
+        assert_eq!(p.sheets(), Some(1));
+        assert_eq!(p.plan().unwrap()[0].pages.len(), 3);
+        assert!(p.notes().is_empty(), "{:?}", p.notes());
     }
 
     /// A change of page setup drops the sheets drawn for the old one: what is shown is

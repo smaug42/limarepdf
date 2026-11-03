@@ -13,7 +13,9 @@ use crate::signing::SignKit;
 use anyhow::Context as _;
 use eframe::egui::ThemePreference;
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::print::{Orientation, Scale, MAX_PERCENT};
+use limarepdf_core::print::{
+    Orientation, PageOrder, PerSheet, Scale, MAX_PERCENT, PAGES_PER_SHEET,
+};
 pub use limarepdf_core::settings_dir;
 use limarepdf_core::{OpenLayout, StampColor};
 use std::collections::BTreeMap;
@@ -245,6 +247,8 @@ pub struct Settings {
     /// The orientation and scale last printed with.
     pub print_orientation: Orientation,
     pub print_scale: Scale,
+    /// The pages a sheet last printed with, their order and borders (NEW-05).
+    pub print_per_sheet: PerSheet,
     pub accent: Accent,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
@@ -321,6 +325,7 @@ impl Settings {
             print_papers: BTreeMap::new(),
             print_orientation: Orientation::Automatic,
             print_scale: Scale::ShrinkOversized,
+            print_per_sheet: PerSheet::default(),
             accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
             window_maximized: false,
@@ -429,6 +434,21 @@ impl Settings {
                         },
                     };
                 }
+                "print_pages_per_sheet" => {
+                    s.print_per_sheet.pages = match value.parse::<u8>() {
+                        Ok(n) if PAGES_PER_SHEET.contains(&n) => n,
+                        _ => 1,
+                    };
+                }
+                "print_page_order" => {
+                    s.print_per_sheet.order = match value {
+                        "across-from-right" => PageOrder::AcrossFromRight,
+                        "down" => PageOrder::Down,
+                        "down-from-right" => PageOrder::DownFromRight,
+                        _ => PageOrder::Across,
+                    };
+                }
+                "print_borders" => s.print_per_sheet.borders = value == "true",
                 "accent_colour" => {
                     s.accent = match value {
                         "limarepdf" => Accent::LimarePdf,
@@ -593,6 +613,17 @@ impl Settings {
             Scale::Custom(p) => p.to_string(),
         };
         text += &format!("print_orientation = {orientation}\nprint_scale = {scale}\n");
+        let per = self.print_per_sheet;
+        let order = match per.order {
+            PageOrder::Across => "across",
+            PageOrder::AcrossFromRight => "across-from-right",
+            PageOrder::Down => "down",
+            PageOrder::DownFromRight => "down-from-right",
+        };
+        text += &format!(
+            "print_pages_per_sheet = {}\nprint_page_order = {order}\nprint_borders = {}\n",
+            per.pages, per.borders
+        );
         if let Some(printer) = &self.print_printer {
             let printer = printer.lines().next().unwrap_or("").trim();
             if !printer.is_empty() {
@@ -892,9 +923,27 @@ mod tests {
             assert_eq!(s.print_scale, scale, "{value}");
         }
         std::fs::write(&f, "print_orientation = sideways\nprint_paper = A4\n").unwrap();
-        let s = Settings::from_file(Some(f));
+        let s = Settings::from_file(Some(f.clone()));
         assert_eq!(s.print_orientation, Orientation::Automatic);
         assert!(s.print_papers.is_empty());
+        // NEW-05: the pages a sheet, their order and borders; a count that can't be printed
+        // is one a sheet.
+        let mut s = s;
+        assert_eq!(s.print_per_sheet, PerSheet::default());
+        s.print_per_sheet = PerSheet {
+            pages: 6,
+            order: PageOrder::DownFromRight,
+            borders: true,
+        };
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.print_per_sheet.pages, 6);
+        assert_eq!(s.print_per_sheet.order, PageOrder::DownFromRight);
+        assert!(s.print_per_sheet.borders);
+        let odd = "print_pages_per_sheet = 5\nprint_page_order = sideways\nprint_borders = 1\n";
+        std::fs::write(&f, odd).unwrap();
+        let s = Settings::from_file(Some(f));
+        assert_eq!(s.print_per_sheet, PerSheet::default());
     }
 
     #[test]

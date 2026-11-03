@@ -1198,23 +1198,49 @@ placement model is `sheets.rs`'s `print::place(size, &PageSetup)`: a page's size
 and a `PageSetup` (a `Paper`, an `Orientation` Automatic, Portrait or Landscape, a `Scale` ShrinkOversized, Fit,
 ActualSize or Custom from 1 to `MAX_PERCENT`, 400) give a `Placed`: the sheet's size (the paper's as reported, never
 swapped), whether the page is turned a quarter turn anticlockwise (Automatic: when its shape is the other way round
-from the sheet's, a square page never; Portrait and Landscape: as the sheet is held), its scale against the
+from the sheet's, a square page never; Portrait and Landscape: as the sheet is held; `Placed::turns`, quarter
+turns anticlockwise, 0 or 1 here), its scale against the
 printable area (the paper less its margins, or `ASSUMED_MARGIN`, a quarter of an inch a side as GTK assumes, when
 the printer doesn't say: `Paper::margins_or_assumed`), its box on the sheet (centred on the sheet and kept within
 the printable area by `min` then `max`, not `f32::clamp`, whose bounds rounding can cross for a page scaled to the
 area's width or height, BUG-49; one larger than the area centred on it, losing as much on each side) and `cut`
-when part of it falls outside the area. `Pdf::print_sheets(pages, &setup)` makes the sheets on a copy: `extract`, unencrypted;
+when part of it falls outside the area.
+
+**The plan of the sheets** (NEW-05's stage 1) is `print::sheets(sizes, &setup)`: the pages printed, by their sizes
+as shown, give a `SheetPlan` a sheet (its size, the paper's; `sideways`, held sideways to be read, its left edge at
+the top; its pages by their place among those printed, each with its `Placed`; `borders`). `PageSetup::per_sheet`
+is a `PerSheet` (`pages`, one of `PAGES_PER_SHEET` 1, 2, 4, 6, 9, 16, another number taken as the next above it;
+`order`, a `PageOrder`: `Across` left to right then top to bottom, `AcrossFromRight`, `Down` top to bottom then left
+to right, `DownFromRight`; `borders`). One page a sheet is `place` as above, a sheet `sideways` when its page is
+turned. With more, the pages go `count()` a sheet in a grid (`PerSheet::grid`: 2 × 1, 2 × 2, 3 × 2, 3 × 3, 4 × 4,
+its longer side along the sheet's longer side as held). `places` works on the sheet as held: held sideways, its
+size swapped and its margins turned with it (the paper's left margin at the top); the printable area split evenly,
+no gap, the places in `order`, rows counted from the top. `fit` puts each page in its place, larger or smaller,
+centred, turned a quarter turn anticlockwise (as the sheet is held) when its shape is the other way round from the
+place's (Acrobat's "Auto-rotate pages"); `Scale` isn't used. Automatic holds each sheet the way its pages, fitted
+upright, cover the most area (by more than a thousandth; otherwise as the paper comes), so two upright pages go
+side by side on a sheet held sideways and the order reads as held; Portrait and Landscape hold it as for one page
+a sheet. A box on a sheet held sideways goes onto the paper as (x, y) to (paper width − y, x), and its `turns` are
+its turn in its place plus one, so a page turned in its place on a sheet held sideways is turned twice
+(`Placed::matrix` handles 0 to 3 turns). Nothing is `cut`; `borders` only with more than one page a sheet.
+
+`Pdf::print_sheets(pages, &setup)` plans the sheets from `page_sizes` (one walk) and makes them with
+`Pdf::print_planned(pages, &plan)`, the plan's pages by their place in `pages`; the preview makes one sheet at a time
+with it, from only that sheet's pages. It works on a copy: `extract`, unencrypted;
 `flatten_form_for_print` (Print-flagged widgets drawn, the others and the form removed); the annotations without a
 drawing given LimarePDF's (`missing_appearances`, `draw_annotations`); then for each page `flatten_page` with
 `print_annot` (an annotation with the Print flag drawn into the content, pop-ups and the rest dropped) and
-`make_sheet`. That makes the page's content and resources a form XObject, `LimarePage`, whose `BBox` is the
+`as_drawing`. That makes the page's content and resources a form XObject whose `BBox` is the
 visible box (`page_box`), with the page's `/Group` copied: a page with one content stream keeps it as stored, with
 its filter; several are joined (`get_page_content_with_limit`, within `MAX_CONTENT`) and compressed at flate2's
-fast level. The sheet draws it with `q M cm /LimarePage Do Q`, M being the inverse of `visual_matrix` (the page's
-user space to the page as shown) followed by `Placed::matrix` (the turn, the scale, the move to the box), so text
-stays text. The sheet's own `MediaBox`, `CropBox`, `Rotate` 0 and `Resources` are set so nothing comes from the
-page tree, and its annotations, other page boxes, `UserUnit`, `VP`, `Thumb`, beads, actions,
-`StructParents` and `Tabs` are removed.
+fast level. `make_sheet` then makes each sheet a new page drawing its pages with `q M cm /LimarePage Do Q`
+(`LimarePage1`, `LimarePage2` and so on for the others), M being the inverse of `visual_matrix` (the page's user
+space to the page as shown) followed by `Placed::matrix` (the turns, the scale, the move to the box), so text stays
+text, then the borders (half-point black lines round each page's box, `BORDER`). The sheet's own `MediaBox`,
+`CropBox`, `Rotate` 0 and `Resources` are set so nothing comes from the page tree, with the `/Group` of its first
+page that has one. The catalog's `PageLabels`, `OpenAction`, `Outlines` and `StructTreeRoot` go (they name the
+pages, which the sheets replace), the sheets become the page tree (`set_page_order`), and the pages' own objects
+are removed, so what they alone used is left out of what is written.
 `Pdf::print` takes the paper from `PrintOptions::paper`, else `print::printer_paper` (the printer's default from
 `print::papers`, else the first listed; the default printer from `printers`), and when that fails sends nothing
 and says why. `print::paper_named` finds the command line's `--paper` by id, label, or label without its size
@@ -1276,12 +1302,13 @@ printed (`What::Pages` from the page range, the last pages kept while the range 
 in its layout) and the `PageSetup`. A different `Ask` starts a new generation: the drawings and the queued jobs are
 dropped, and the thread skips jobs of earlier generations; a selection whose document isn't made yet sets
 `Queue::make`, so it is made and its sheets counted before any is asked for. The thread sends each document's
-page sizes first (`Came::Sizes`), which give the sheet count for a selection, whether each page is turned
-(`place(..).turned`, so the sheet is shown held sideways, the paper's sides swapped) and the notes: the margins
-unknown, and the pages `place` says are `cut`, named with `format_page_range` (sheets for a selection). A sheet is
-drawn by `print_sheets(&[page], &setup)`, `to_bytes`, `render::load` and `Renderer::render` at a step of a
-twentieth of a pixel a point (rounded up from what the space shown needs), the picture turned a quarter turn
-clockwise when the page is turned onto it, so it reads upright. Jobs are taken newest first: the neighbours are
+page sizes first (`Came::Sizes`); with them `Preview::replan` plans the sheets (`print::sheets`), which give the
+sheet count (before the sizes come, the pages over `PerSheet::count`, rounded up), whether each sheet is held
+sideways (shown so, the paper's sides swapped) and the notes: the margins unknown, and the pages the plan says are
+`cut`, named with `format_page_range` (sheets for a selection). A sheet's `Job` carries its own pages and its
+plan, renumbered to them, and is drawn by `print_planned`, `to_bytes`, `render::load` and `Renderer::render` at a
+step of a twentieth of a pixel a point (rounded up from what the space shown needs), the picture turned a quarter
+turn clockwise when the sheet is held sideways, so it reads upright. Jobs are taken newest first: the neighbours are
 asked for, then the sheet shown, so it is drawn first; sheets more than two from the one shown, and drawings at
 another step once the step shown has come, are dropped (a drawing at another step stands in meanwhile). Drawing
 failures show on the sheet. ‹ and › ("Previous sheet", "Next sheet") page through; one greyed as it is clicked
