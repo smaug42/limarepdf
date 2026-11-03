@@ -453,6 +453,39 @@ fn a_picture_whose_decode_parameters_are_a_reference_keeps_its_colours() {
 }
 
 #[test]
+fn the_preview_says_what_reducing_would_do_and_changes_nothing() {
+    let mut p = pages(1);
+    let im = p.doc.add_object(photo(1200, 800));
+    at_300(&mut p, 0, im);
+    let before = p.doc.objects.clone();
+    let now = p.saved_size().unwrap();
+    let opts = ReduceOptions {
+        quality: PictureQuality::Email,
+        jpeg_quality: None,
+    };
+    let preview = p.reduce_preview(&[0], &opts).unwrap();
+    assert!(p.doc.objects == before, "the document is changed");
+    assert_eq!(preview.report.pictures, 1);
+    assert!(preview.after * 4 < now, "{} of {now}", preview.after);
+    // The size it says is the size reducing and saving gives.
+    let mut reduced = p.clone();
+    reduced.reduce_pictures(&[0], &opts).unwrap();
+    assert_eq!(reduced.to_bytes().unwrap().len(), preview.after);
+    let (a, b) = preview.parts.unwrap();
+    let side = limarepdf_core::PREVIEW_SIDE as usize;
+    assert_eq!((a.width, a.height), (side, side));
+    assert_eq!((b.width, b.height), (side, side));
+    // The same part: alike on average, the after softer.
+    let mean = |m: &render::Bitmap| {
+        let sum: f64 = m.rgba.iter().map(|&v| v as f64).sum();
+        sum / m.rgba.len() as f64
+    };
+    let (ma, mb) = (mean(&a), mean(&b));
+    assert!((ma - mb).abs() < 4.0, "{ma} {mb}");
+    assert!(a.rgba != b.rgba);
+}
+
+#[test]
 fn a_page_past_the_end_is_refused() {
     let mut p = pages(1);
     let opts = ReduceOptions::default();

@@ -458,6 +458,8 @@ enum Dialog {
     /// Draw this many fill-and-sign items into the pages?
     ConfirmFinishSigning(Asked, usize),
     RemoveHidden(Asked, dlg::RemoveHidden),
+    /// Reduce file size, with its preview (ENH-19).
+    ReduceSize(Asked, Box<dlg::Reduce>),
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
     ConfirmSaveMarks(Asked, bool, usize),
     Print(Asked, Box<dlg::Print>),
@@ -503,6 +505,7 @@ impl Dialog {
             | Dialog::ConfirmApplyRedactions(a, _)
             | Dialog::ConfirmFinishSigning(a, _)
             | Dialog::RemoveHidden(a, _)
+            | Dialog::ReduceSize(a, _)
             | Dialog::ConfirmSaveMarks(a, ..)
             | Dialog::Print(a, _)
             | Dialog::SaveSelection(a, _)
@@ -530,6 +533,7 @@ impl Dialog {
             | Dialog::ConfirmApplyRedactions(a, _)
             | Dialog::ConfirmFinishSigning(a, _)
             | Dialog::RemoveHidden(a, _)
+            | Dialog::ReduceSize(a, _)
             | Dialog::ConfirmSaveMarks(a, ..)
             | Dialog::Print(a, _)
             | Dialog::SaveSelection(a, _)
@@ -676,6 +680,8 @@ impl Excerpt {
 
 /// Title of the OCR background job, also used to recognise its result.
 const OCR_JOB: &str = "Recognise text";
+/// Title of Reduce file size's background job (ENH-19).
+const REDUCE_JOB: &str = "Reduce file size";
 
 /// Title of the split background job and its messages.
 const SPLIT_JOB: &str = "Split into files";
@@ -2861,6 +2867,21 @@ impl App {
                 let author = self.settings.author();
                 self.tabs[self.active].mark_results_for_redaction(ctx, &author);
             }
+            Act::ReduceSize if has && !self.busy && !self.tabs[self.active].signed => {
+                let t = &self.tabs[self.active];
+                let pages = t.ed.selection.pages();
+                let selected: Vec<usize> = pages
+                    .map(|p| p.iter().copied().collect())
+                    .unwrap_or_default();
+                let reduce = dlg::Reduce {
+                    quality: self.settings.reduce_quality,
+                    all: selected.is_empty(),
+                    selected,
+                    pages: t.page_count(),
+                    estimate: crate::reduce_size::Estimate::spawn(ctx, t.pdf.clone()),
+                };
+                self.dialog = Dialog::ReduceSize(self.asked(), Box::new(reduce));
+            }
             Act::RemoveHidden if has => match self.tabs[self.active].pdf.find_hidden() {
                 Ok(found) => {
                     let kinds = limarepdf_core::Hidden::ALL
@@ -4650,6 +4671,28 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ReduceSize(asked, s) => match dlg::reduce_size(ctx, file, s) {
+                Outcome::Apply => {
+                    self.settings.reduce_quality = s.quality;
+                    self.settings.save();
+                    if self.still(asked) {
+                        let pages = s.chosen();
+                        let opts = limarepdf_core::ReduceOptions {
+                            quality: s.quality,
+                            jpeg_quality: None,
+                        };
+                        self.spawn_job(ctx, REDUCE_JOB, move |p| {
+                            let r = p.reduce_pictures(&pages, &opts)?;
+                            let size = p.saved_size()?;
+                            let text = crate::reduce_size::reduced_text(&r, size);
+                            Ok((r.pictures > 0, text))
+                        });
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::RemoveHidden(asked, s) => match dlg::remove_hidden(ctx, file, s) {
                 Outcome::Apply => {
                     let what: Vec<limarepdf_core::Hidden> = s
@@ -5139,16 +5182,8 @@ impl App {
             }
             if a.submenu.is_empty() {
                 menu_item(ui, a, c, acts);
-                let planned = match a.act {
-                    Act::Open => {
-                        recent_menu(ui, recent, acts);
-                        None
-                    }
-                    Act::SaveAs => Some(band::FILE_PLANNED[0]),
-                    _ => None,
-                };
-                if let Some(p) = planned.filter(|_| c.planned) {
-                    band::planned_menu_item(ui, p);
+                if a.act == Act::Open {
+                    recent_menu(ui, recent, acts);
                 }
                 i += 1;
                 continue;
@@ -7445,6 +7480,7 @@ mod tests {
     mod overflow;
     mod paragraphs;
     mod redact_marks;
+    mod reduce;
     mod replace;
     mod review;
     mod sign;
@@ -13360,6 +13396,23 @@ mod tests {
                     }),
                 ),
             ),
+            34 => (
+                "Reduce file size".into(),
+                two("Reduce"),
+                Dialog::ReduceSize(
+                    app.asked(),
+                    Box::new(dlg::Reduce {
+                        quality: limarepdf_core::PictureQuality::Web,
+                        all: false,
+                        selected: vec![0, 1],
+                        pages: 3,
+                        estimate: crate::reduce_size::Estimate::spawn(
+                            &egui::Context::default(),
+                            app.tabs[app.active].pdf.clone(),
+                        ),
+                    }),
+                ),
+            ),
             _ => return None,
         };
         Some(q)
@@ -13515,7 +13568,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 34, "a question was left out");
+                assert_eq!(i, 35, "a question was left out");
                 break;
             };
             for (size, scale) in sizes

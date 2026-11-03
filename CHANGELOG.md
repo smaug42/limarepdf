@@ -184,6 +184,13 @@
   of pictures. A document saying it is PDF/A-1 (an archive format that doesn't allow this), a password-protected
   one and a signed one (its changes added after what was signed) are saved as before, and a very small file is
   saved whichever way is smaller.
+- **Reduce file size** (☰ > Reduce file size…, no longer marked Planned) makes a file with many pictures
+  smaller, as Word's Compress Pictures does. Choose a picture quality (HD, Print, Web or Email; High fidelity
+  keeps them) and, with pages selected, all pages or the selected ones; the window works out in the background
+  the size the file would be saved at now and once reduced, and shows the same part of the picture that loses
+  most, before and after. **Reduce** is one change Undo takes back, and a message says how many pictures were
+  made smaller, the size once saved, and which were left and why. The quality chosen is remembered. A signed
+  document can't be reduced ("Signed documents keep exactly what was signed, so they can't be made smaller.").
 - `limarepdf-cli reduce` makes a file smaller as Word's Compress Pictures does: `--quality` HD (330 pixels per
   inch), Print (220, the default), Web (150), Email (96) or `high-fidelity` (the pictures as they are). Each
   picture is measured where the pages show it largest and, above the resolution, scaled down and saved again (a

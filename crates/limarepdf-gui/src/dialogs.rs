@@ -1759,6 +1759,135 @@ pub fn remove_hidden(ctx: &Context, file: Option<&str>, s: &mut RemoveHidden) ->
     })
 }
 
+/// Reduce file size's choices and what they would do (ENH-19's stage 2).
+pub struct Reduce {
+    pub quality: limarepdf_core::PictureQuality,
+    /// All pages, or the selected ones (`selected`, when there are any).
+    pub all: bool,
+    pub selected: Vec<usize>,
+    pub pages: usize,
+    pub estimate: crate::reduce_size::Estimate,
+}
+
+impl Reduce {
+    /// The pages reduced.
+    pub fn chosen(&self) -> Vec<usize> {
+        if self.all || self.selected.is_empty() {
+            (0..self.pages).collect()
+        } else {
+            self.selected.clone()
+        }
+    }
+}
+
+/// What each quality is for, as Word says it.
+fn quality_tip(q: limarepdf_core::PictureQuality) -> &'static str {
+    use limarepdf_core::PictureQuality as Q;
+    match q {
+        Q::HighFidelity => "Keeps the pictures as they are.",
+        Q::Hd => "Good for high-definition displays.",
+        Q::Print => "Excellent quality on most printers and screens.",
+        Q::Web => "Good for web pages and projectors.",
+        Q::Email => "The smallest file, for sharing.",
+    }
+}
+
+/// Reduce file size: the picture quality, the pages, the size now and once reduced (worked
+/// out in the background as the choice changes), and the picture losing most, before and
+/// after, side by side (stacked when there's no room).
+pub fn reduce_size(ctx: &Context, file: Option<&str>, s: &mut Reduce) -> Outcome {
+    use crate::reduce_size::{kept_text, size_text};
+    use limarepdf_core::PictureQuality as Q;
+    s.estimate.collect(ctx);
+    let keep = s.quality == Q::HighFidelity;
+    if !keep {
+        s.estimate.ask(s.chosen(), s.quality);
+    }
+    let mut reduce = Btn::primary("Reduce").enabled(!keep);
+    if keep {
+        reduce = reduce.tip(quality_tip(Q::HighFidelity));
+    }
+    let shell = Shell::new("Reduce file size").file(file);
+    modal(ctx, shell, reduce, true, |ui| {
+        group(ui, "Picture quality", |ui| {
+            for q in Q::ALL {
+                ui.radio_value(&mut s.quality, q, q.name())
+                    .on_hover_text(quality_tip(q));
+            }
+        });
+        if !s.selected.is_empty() {
+            group(ui, "Apply to", |ui| {
+                ui.radio_value(&mut s.all, true, "All pages");
+                let n = s.selected.len();
+                let some = format!("Selected pages ({n})");
+                ui.radio_value(&mut s.all, false, some);
+            });
+        }
+        let working = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Working it out…");
+            });
+        };
+        group(ui, "Size", |ui| {
+            match &s.estimate.now {
+                None => working(ui),
+                Some(Ok(n)) => fact(ui, "If saved now", size_text(*n)),
+                Some(Err(e)) => fact(ui, "If saved now", format!("Not known: {e}")),
+            }
+            if keep {
+                let same = "The same: the pictures are kept as they are.";
+                fact(ui, "Once reduced", same);
+                return;
+            }
+            match &s.estimate.shown {
+                None => working(ui),
+                Some(Err(e)) => fact(ui, "Once reduced", format!("Not known: {e}")),
+                Some(Ok(shown)) => {
+                    let about = format!("About {}", size_text(shown.after));
+                    fact(ui, "Once reduced", about);
+                    let made = match shown.report.pictures {
+                        1 => "1 made smaller".to_string(),
+                        n => format!("{n} made smaller"),
+                    };
+                    fact(ui, "Pictures", made);
+                    let kept = kept_text(&shown.report);
+                    if !kept.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(kept.trim_start()).weak()).wrap());
+                    }
+                }
+            }
+        });
+        if let Some(Ok(crate::reduce_size::Shown {
+            parts: Some((before, after)),
+            ..
+        })) = &s.estimate.shown
+        {
+            group(ui, "Preview", |ui| {
+                let side = before.size_vec2();
+                let one = |ui: &mut Ui, name: &str, tex: &egui::TextureHandle| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(name).weak());
+                        let img = egui::Image::new(tex).fit_to_exact_size(side);
+                        ui.add(img.alt_text(format!("{name}: part of the picture losing most")));
+                    });
+                };
+                let gap = ui.spacing().item_spacing.x;
+                if ui.available_width() >= 2.0 * side.x + gap {
+                    ui.horizontal_top(|ui| {
+                        one(ui, "Before", before);
+                        one(ui, "After", after);
+                    });
+                } else {
+                    one(ui, "Before", before);
+                    one(ui, "After", after);
+                }
+            });
+        }
+        false
+    })
+}
+
 /// A checkbox for each kind of hidden information, saying how many the document has. One
 /// the document has none of is greyed out and unticked, as nothing of it is removed; the
 /// choice stays for documents that have it (PB-08).

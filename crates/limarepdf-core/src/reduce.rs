@@ -162,6 +162,20 @@ pub struct Most {
     pub after: usize,
 }
 
+/// The largest side of [`ReducePreview::parts`], in pixels.
+pub const PREVIEW_SIDE: u32 = 160;
+
+/// What reducing would do ([`Pdf::reduce_preview`]).
+#[derive(Clone)]
+pub struct ReducePreview {
+    pub report: Reduced,
+    /// The size the document would be saved at once reduced, in bytes.
+    pub after: usize,
+    /// The same part of the picture that would lose the most, before and after, each the
+    /// same size.
+    pub parts: Option<(crate::render::Bitmap, crate::render::Bitmap)>,
+}
+
 /// One place a picture is drawn.
 struct Use {
     page: usize,
@@ -316,6 +330,90 @@ impl Pdf {
             }
         }
         Ok(report)
+    }
+
+    /// How large the document would be saved now, in bytes: written as a save writes it, on
+    /// a copy.
+    pub fn saved_size(&self) -> Result<usize> {
+        Ok(self.clone().to_bytes()?.len())
+    }
+
+    /// What reducing `pages` as `opts` says would do, worked out on a copy: the report, the
+    /// size the document would then be saved at, and the picture that would lose the most,
+    /// a part of it before and after ([`PREVIEW_SIDE`] pixels square at most, the after
+    /// scaled up to the same size, as a reader at 100% shows it). The document isn't changed.
+    pub fn reduce_preview(&self, pages: &[usize], opts: &ReduceOptions) -> Result<ReducePreview> {
+        let mut copy = self.clone();
+        let report = copy.reduce_pictures(pages, opts)?;
+        let after = copy.to_bytes()?.len();
+        let parts = report.most.as_ref().and_then(|m| {
+            let (w, h) = self.picture_size(m.picture)?;
+            let side = w.min(h).min(PREVIEW_SIDE);
+            // The middle of the picture, the same fraction of each.
+            let (fw, fh) = (side as f32 / w as f32, side as f32 / h as f32);
+            let part = [
+                (1.0 - fw) / 2.0,
+                (1.0 - fh) / 2.0,
+                (1.0 + fw) / 2.0,
+                (1.0 + fh) / 2.0,
+            ];
+            let before = self.picture_part(m.picture, part, side, side).ok()?;
+            let after = copy.picture_part(m.picture, part, side, side).ok()?;
+            Some((before, after))
+        });
+        Ok(ReducePreview {
+            report,
+            after,
+            parts,
+        })
+    }
+
+    /// Picture `id`'s width and height in pixels.
+    fn picture_size(&self, id: ObjectId) -> Option<(u32, u32)> {
+        let d = &self.doc.get_object(id).ok()?.as_stream().ok()?.dict;
+        let (w, h) = (int(d, b"Width")?, int(d, b"Height")?);
+        Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?))
+    }
+
+    /// The part `part` (fractions of its width and height, `[x0, y0, x1, y1]` from its top
+    /// left) of grey or RGB picture `id`, scaled to `w` × `h`, opaque: its mask is left out.
+    pub fn picture_part(
+        &self,
+        id: ObjectId,
+        part: [f32; 4],
+        w: u32,
+        h: u32,
+    ) -> Result<crate::render::Bitmap> {
+        let s = self.doc.get_object(id)?.as_stream()?;
+        let px = redact_img::decode(&self.doc, s, &Dictionary::new(), false)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if px.bpc != 8 || !matches!(px.n, 1 | 3) {
+            anyhow::bail!("the picture isn't grey or RGB");
+        }
+        let (pw, ph) = (px.w as f32, px.h as f32);
+        let x0 = (part[0] * pw).floor().clamp(0.0, pw - 1.0) as u32;
+        let y0 = (part[1] * ph).floor().clamp(0.0, ph - 1.0) as u32;
+        let x1 = ((part[2] * pw).ceil() as u32).clamp(x0 + 1, px.w as u32);
+        let y1 = ((part[3] * ph).ceil() as u32).clamp(y0 + 1, px.h as u32);
+        let rgb = if px.n == 1 {
+            let g = GrayImage::from_raw(px.w as u32, px.h as u32, px.data)
+                .ok_or_else(|| anyhow::anyhow!("the picture's data is short"))?;
+            image::DynamicImage::ImageLuma8(g).to_rgb8()
+        } else {
+            RgbImage::from_raw(px.w as u32, px.h as u32, px.data)
+                .ok_or_else(|| anyhow::anyhow!("the picture's data is short"))?
+        };
+        let cut = image::imageops::crop_imm(&rgb, x0, y0, x1 - x0, y1 - y0).to_image();
+        let shown = image::imageops::resize(&cut, w, h, FilterType::Triangle);
+        let rgba = shown
+            .pixels()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect();
+        Ok(crate::render::Bitmap {
+            width: w as usize,
+            height: h as usize,
+            rgba,
+        })
     }
 
     /// Resources given by `o` (a dictionary or a reference to one) of the page or drawing

@@ -25,6 +25,8 @@ pub enum Act {
     NewFromImages,
     Save,
     SaveAs,
+    /// Make the pictures smaller, with a preview (ENH-19): File > Reduce file size….
+    ReduceSize,
     /// Read the document's file again, as it now is on disk, after asking when there are
     /// unsaved changes.
     Reload,
@@ -292,6 +294,7 @@ impl Act {
         match self {
             Act::Save
             | Act::SaveAs
+            | Act::ReduceSize
             | Act::Reload
             | Act::ExportText
             | Act::Print
@@ -483,6 +486,9 @@ pub struct Ctx {
     pub busy: bool,
     /// The active tab's save is being written.
     pub saving: bool,
+    /// The document is digitally signed (`Tab::signed`): its saves add the changes after
+    /// what was signed.
+    pub signed: bool,
     pub can_undo: bool,
     pub can_redo: bool,
     /// Words are selected with the read tool.
@@ -627,6 +633,10 @@ fn other_docs(c: &Ctx) -> bool {
 /// The document's file, which waits while it is saved.
 fn file(c: &Ctx) -> bool {
     c.file && !c.busy && !c.saving
+}
+/// Reduce file size: not for a signed document, whose saves add to what was signed.
+fn reducible(c: &Ctx) -> bool {
+    c.doc && !c.busy && !c.saving && !c.signed
 }
 /// Signing, which replaces the tab with the signed file: not while the tab is saved.
 fn signable(c: &Ctx) -> bool {
@@ -835,6 +845,15 @@ pub static ACTIONS: &[Action] = &[
         group: Group::File,
         label: "Save As…",
         keys: &[k(CS, Key::S)],
+        ..BASE
+    },
+    Action {
+        act: Act::ReduceSize,
+        group: Group::File,
+        label: "Reduce file size…",
+        icon: icon::FILE_ARROW_UP,
+        enabled: reducible,
+        hint: "Makes the pictures smaller, with a preview of the result.",
         ..BASE
     },
     Action {
@@ -2700,6 +2719,9 @@ const NOT_NOW: &str = "Not available just now.";
 const SELECT_TEXT: &str = "Select some text first.";
 const SELECT_LINE: &str = "Select a line of text first.";
 const BUSY: &str = "Waits until the task under way finishes.";
+/// Why Reduce file size is off for a signed document (ENH-19's plan, Q2).
+pub const SIGNED_KEEPS: &str =
+    "Signed documents keep exactly what was signed, so they can't be made smaller.";
 
 /// Why command `a` can't be used in `c`, for its greyed button or menu item: the first of
 /// the things it may wait for, in the order people meet them, that would let it be used.
@@ -2722,8 +2744,9 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 32] = [
+    let fixes: [Fix; 33] = [
         (|d| d.busy = false, BUSY),
+        (|d| d.signed = false, SIGNED_KEEPS),
         // A match to type over first: while the search runs, that it waits for it.
         (|d| d.found_match = true, "Find a match to replace first."),
         (

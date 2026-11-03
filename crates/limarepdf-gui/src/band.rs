@@ -250,13 +250,6 @@ const YOUR_AI: Planned = Planned {
     item: "ENH-42",
     what: "Connect an AI of your own to ask about the document. Off unless you connect it.",
 };
-/// The planned features in the File menu.
-pub const FILE_PLANNED: [&Planned; 1] = [&Planned {
-    label: "Reduce file size",
-    icon: icon::FILE_ARROW_UP,
-    item: "ENH-19",
-    what: "Make the file smaller, with a preview of the result.",
-}];
 
 static EDIT: &[Group] = &[
     group(
@@ -1094,16 +1087,7 @@ fn outline_tag(ui: &egui::Ui, r: &egui::WidgetAtomResponse) {
         .extend(egui::Shape::dashed_line(&corners, line, 2.0, 2.0));
 }
 
-/// A planned feature in a menu: greyed, with "Planned" after it.
-pub fn planned_menu_item(ui: &mut egui::Ui, p: &Planned) {
-    let b = egui::Button::new(p.label).shortcut_text("Planned");
-    let r = ui.add_enabled(false, b);
-    let name = p.name();
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, false, &name));
-    r.on_disabled_hover_text(format!("{} Planned.", p.what));
-}
-
-/// Every planned feature shown: in the bands and the File menu.
+/// Every planned feature shown in the bands (the File menu has none since ENH-19).
 #[cfg(test)]
 pub fn all_planned() -> Vec<&'static Planned> {
     let mut out: Vec<&Planned> = Vec::new();
@@ -1116,7 +1100,6 @@ pub fn all_planned() -> Vec<&'static Planned> {
             }
         }
     }
-    out.extend(FILE_PLANNED);
     out
 }
 
@@ -1198,10 +1181,11 @@ mod tests {
     #[test]
     fn planned_features_name_their_plan_items() {
         let all = all_planned();
-        assert!(all.len() >= 5);
+        assert!(all.len() >= 4);
         // Built: Underline (NEW-07, batch 46's 4b), Align (NEW-08, its stage 5), Print
-        // preview (ENH-14, batch 30's stage 3), Link (ENH-17's stage 2) and Spelling (NEW-06).
-        let built = ["NEW-07", "NEW-08", "ENH-14", "ENH-17", "NEW-06"];
+        // preview (ENH-14, batch 30's stage 3), Link (ENH-17's stage 2), Spelling (NEW-06)
+        // and Reduce file size (ENH-19's stage 2).
+        let built = ["NEW-07", "NEW-08", "ENH-14", "ENH-17", "NEW-06", "ENH-19"];
         assert!(!all.iter().any(|p| built.contains(&p.item)));
         for p in &all {
             let id = p.item;

@@ -2804,6 +2804,7 @@ impl Tab {
     pub fn fill_ctx(&self, c: &mut Ctx) {
         c.doc = true;
         c.file = self.path.is_some();
+        c.signed = self.signed;
         c.layout = self.layout;
         c.cover = self.cover;
         c.can_undo = self.can_undo();

@@ -117,7 +117,9 @@ pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
 pub use redact::{PageRedaction, RedactReport};
-pub use reduce::{KeptWhy, Most, PictureQuality, ReduceOptions, Reduced};
+pub use reduce::{
+    KeptWhy, Most, PictureQuality, ReduceOptions, ReducePreview, Reduced, PREVIEW_SIDE,
+};
 pub use rewrap::{
     DocWords, Hyphen, LineEndHyphen, Paragraph, ParagraphPiece, ParagraphSetting, SetLine,
     SetParagraph,

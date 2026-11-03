@@ -103,7 +103,7 @@ Click in a form field first.", then what it does.
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
 Blank document in Insert; Export comments in Review; Create fields in Forms and sign; Your
-AI in View; Reduce file size in the File menu. They do nothing, and Tab passes them by. Turn
+AI in View. They do nothing, and Tab passes them by. Turn
 off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is remembered.
 
 **Compact commands.** The small arrow at the right of the commands row (or View > Show > Compact commands) puts the
@@ -203,8 +203,25 @@ as it was. Your file is only changed when you save.
 
 Files are saved compactly: what the document no longer uses is left out, and a picture or font it holds twice
 (as merging files often leaves them) is kept once, so a saved file is often a little smaller than the one you
-opened, with nothing on its pages changed. To make pictures smaller too, use `limarepdf-cli reduce`
-([command line](cli.md#images-and-scans)).
+opened, with nothing on its pages changed.
+
+### Reduce file size
+
+To make a file with many pictures smaller, as for sending it by email, choose **☰ > Reduce file size…**. As in
+Word's Compress Pictures, choose a **Picture quality**: **HD (330 ppi)**, **Print (220 ppi)**, **Web (150 ppi)**
+or **Email (96 ppi)**, the smaller the file the softer its pictures; **High fidelity** keeps them as they are.
+With pages selected, **Apply to** chooses all pages or the selected ones. While you choose, the window works out
+the size the file would be saved at now and once reduced, and shows the same part of the picture that loses the
+most, before and after, at its own size. **Reduce** makes the pictures smaller, as one change Undo takes back;
+the file is changed when you save. Text, fonts, form fields and comments stay as they are.
+
+<img src="images/reduce-file-size.png" width="472" alt="The Reduce file size window for photos.pdf: Picture quality with High fidelity, HD (330 ppi), Print (220 ppi, chosen), Web (150 ppi) and Email (96 ppi); Size: if saved now 9.3 MB, once reduced about 326 KB, 2 pictures made smaller; a Preview of the same part of a photo Before and After side by side; and the Reduce and Cancel buttons">
+
+Each picture is measured where the pages show it largest. Pictures already at or under the quality chosen are
+left as they are, and so are those of kinds LimarePDF can't make smaller (CMYK, palette and black-and-white
+pictures among them) and those also drawn where they aren't being reduced; the message after says how many and
+why. A digitally signed document can't be reduced: its saves keep exactly what was signed. On the command line:
+`limarepdf-cli reduce` ([command line](cli.md#images-and-scans)).
 
 The file is written in the background: while it is, the status bar shows **Saving** with the file's name, and you
 can go on reading and editing. A change made meanwhile isn't in the saved file, so the document stays marked

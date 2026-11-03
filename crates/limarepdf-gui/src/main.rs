@@ -25,6 +25,7 @@ mod present;
 mod print_preview;
 mod recent;
 mod recovery;
+mod reduce_size;
 mod regions;
 mod search;
 mod selection;

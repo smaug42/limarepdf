@@ -1568,6 +1568,18 @@ filters other than DCT, Flate, LZW, run length and the ASCII ones, a JPEG whose 
 a mask that isn't 8-bit grey, inline pictures. `Reduced::most` names the picture that lost the most bytes, for the
 app's preview.
 
+**Reduce file size in the app** (ENH-19's stage 2): `Act::ReduceSize` (File group, so no band place; greyed by
+`reducible` while busy, saving or for a signed tab, `Ctx::signed` from `Tab::signed`, whose `why_not` fix gives
+`actions::SIGNED_KEEPS`) opens `Dialog::ReduceSize(Asked, Box<dlg::Reduce>)`. `dlg::Reduce` holds the quality
+(`Settings::reduce_quality`, saved on Reduce), all or the selected pages, and a `reduce_size::Estimate`: a thread of
+its own on a copy of the document (as Print's preview), which first sends `Pdf::saved_size` and then, for each
+choice `Estimate::ask`s (numbered; only the newest is worked out, older ones drained, older answers ignored), core's
+`Pdf::reduce_preview` (reduces a copy, writes it for the size, cuts `PREVIEW_SIDE`-square parts of `most`'s picture
+before and after with `picture_part`); `collect` turns the parts into textures. Dropping the dialog drops the
+sender, so the thread ends after what it is doing. Reduce goes through `App::spawn_job` (`REDUCE_JOB`):
+`reduce_pictures` and `saved_size` on the tab's copy, applied as one undo step when a picture changed, and
+`reduce_size::reduced_text` as the job's message; nothing changed, nothing is applied.
+
 **Decoding parameters given as a reference**: lopdf's `decompressed_content` reads `/DecodeParms` only when it is
 written in place (a dictionary, or an array of them); given as a reference (pdf.js's `issue17906`) it decodes as
 if there were none, leaving a PNG predictor's byte at the start of every row, so the samples read shifted.

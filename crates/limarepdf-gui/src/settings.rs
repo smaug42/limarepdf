@@ -259,6 +259,8 @@ pub struct Settings {
     /// printed isn't kept, so that a later printout never prints the backs alone unasked.
     pub print_booklet: bool,
     pub print_binding: Binding,
+    /// The picture quality Reduce file size last used (ENH-19), as Word remembers it.
+    pub reduce_quality: limarepdf_core::PictureQuality,
     pub accent: Accent,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
@@ -340,6 +342,7 @@ impl Settings {
             print_per_sheet: PerSheet::default(),
             print_booklet: false,
             print_binding: Binding::Left,
+            reduce_quality: limarepdf_core::PictureQuality::Print,
             accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
             window_maximized: false,
@@ -468,6 +471,16 @@ impl Settings {
                 }
                 "print_borders" => s.print_per_sheet.borders = value == "true",
                 "print_booklet" => s.print_booklet = value == "true",
+                "reduce_quality" => {
+                    use limarepdf_core::PictureQuality as Q;
+                    s.reduce_quality = match value {
+                        "high-fidelity" => Q::HighFidelity,
+                        "hd" => Q::Hd,
+                        "web" => Q::Web,
+                        "email" => Q::Email,
+                        _ => Q::Print,
+                    }
+                }
                 "print_binding" => {
                     s.print_binding = match value {
                         "right" => Binding::Right,
@@ -690,6 +703,17 @@ impl Settings {
             "print_booklet = {}\nprint_binding = {binding}\n",
             self.print_booklet
         );
+        let quality = {
+            use limarepdf_core::PictureQuality as Q;
+            match self.reduce_quality {
+                Q::HighFidelity => "high-fidelity",
+                Q::Hd => "hd",
+                Q::Print => "print",
+                Q::Web => "web",
+                Q::Email => "email",
+            }
+        };
+        text += &format!("reduce_quality = {quality}\n");
         if let Some(printer) = &self.print_printer {
             let printer = printer.lines().next().unwrap_or("").trim();
             if !printer.is_empty() {
@@ -1044,8 +1068,19 @@ mod tests {
         let s = Settings::from_file(Some(f.clone()));
         assert!(s.print_booklet && s.print_binding == Binding::Right);
         std::fs::write(&f, "print_booklet = yes\nprint_binding = top\n").unwrap();
-        let s = Settings::from_file(Some(f));
+        let s = Settings::from_file(Some(f.clone()));
         assert!(!s.print_booklet && s.print_binding == Binding::Left);
+        // Reduce file size's quality (ENH-19); anything else read is Print.
+        use limarepdf_core::PictureQuality as Q;
+        let mut s = s;
+        assert_eq!(s.reduce_quality, Q::Print);
+        for q in Q::ALL {
+            s.reduce_quality = q;
+            s.save();
+            assert_eq!(Settings::from_file(Some(f.clone())).reduce_quality, q);
+        }
+        std::fs::write(&f, "reduce_quality = tiny\n").unwrap();
+        assert_eq!(Settings::from_file(Some(f)).reduce_quality, Q::Print);
     }
 
     #[test]
