@@ -13,8 +13,8 @@ use limarepdf_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
     ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, OpenLayout, OpenPanel, Pdf,
-    Restrictions, ScanMode, ScanOptions, ScanResult, SplitBy, Stamp, StampColor, StampKind,
-    StampPlace, ViewPrefs, Watermark,
+    PictureQuality, ReduceOptions, Restrictions, ScanMode, ScanOptions, ScanResult, SplitBy, Stamp,
+    StampColor, StampKind, StampPlace, ViewPrefs, Watermark,
 };
 use limarepdf_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
 use limarepdf_core::{
@@ -178,6 +178,21 @@ enum Cmd {
         /// Do not remove specks from black-and-white pages
         #[arg(long)]
         no_despeckle: bool,
+    },
+    /// Make the file smaller: pictures above the quality's resolution are scaled down and
+    /// saved again (Word's Compress Pictures choices); text, fonts, forms and comments stay
+    /// as they are. Every save is compact; this makes the pictures smaller too
+    Reduce {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long, default_value = "all")]
+        pages: String,
+        #[arg(long, value_enum, default_value = "print")]
+        quality: QualityArg,
+        /// JPEG quality instead of the quality's own (HD 90, Print 85, Web 80, Email 75),
+        /// 1 to 100
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+        jpeg_quality: Option<u8>,
     },
     /// Recognise text on pages that have none (scans) and add it as an invisible,
     /// searchable layer. Latin script only
@@ -909,6 +924,32 @@ enum ScanModeArg {
     Bw,
     Gray,
     Color,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum QualityArg {
+    /// Pictures as they are: only the compact saving every save does
+    HighFidelity,
+    /// 330 pixels per inch
+    Hd,
+    /// 220 pixels per inch
+    Print,
+    /// 150 pixels per inch
+    Web,
+    /// 96 pixels per inch
+    Email,
+}
+
+impl From<QualityArg> for PictureQuality {
+    fn from(q: QualityArg) -> Self {
+        match q {
+            QualityArg::HighFidelity => PictureQuality::HighFidelity,
+            QualityArg::Hd => PictureQuality::Hd,
+            QualityArg::Print => PictureQuality::Print,
+            QualityArg::Web => PictureQuality::Web,
+            QualityArg::Email => PictureQuality::Email,
+        }
+    }
 }
 
 fn kb(bytes: usize) -> String {
@@ -3154,6 +3195,52 @@ fn run(cmd: Cmd) -> Result<()> {
             out!("images: {} -> {}", kb(before_all), kb(after_all));
             Ok(())
         })?,
+        Cmd::Reduce {
+            io,
+            pages,
+            quality,
+            jpeg_quality,
+        } => {
+            let (mut p, original) = open_io(&io)?;
+            // Saving a signed document adds the changes after what was signed, so it can
+            // only grow; written whole, its signatures would break.
+            if p.signature_count() > 0 {
+                bail!(
+                    "Signed documents keep exactly what was signed, so they can't be made smaller."
+                );
+            }
+            let idx = parse_page_range(&pages, p.page_count())?;
+            let quality = PictureQuality::from(quality);
+            let r = p.reduce_pictures(
+                &idx,
+                &ReduceOptions {
+                    quality,
+                    jpeg_quality,
+                },
+            )?;
+            if quality.ppi().is_some() {
+                out!(
+                    "pictures made smaller: {}, {} -> {}",
+                    r.pictures,
+                    kb(r.before),
+                    kb(r.after)
+                );
+                for (why, n) in &r.kept {
+                    out!("kept as they are: {n}, {}", why.describe());
+                }
+            }
+            save_edited(&io, &mut p, &original, false)?;
+            let now = std::fs::metadata(&io.output).map(|m| m.len() as usize);
+            match now {
+                Ok(now) => out!(
+                    "wrote {}: {} -> {}",
+                    io.output.display(),
+                    kb(original.len()),
+                    kb(now)
+                ),
+                Err(_) => out!("wrote {}", io.output.display()),
+            }
+        }
         Cmd::Ocr { io, pages } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;
             let ocr = Ocr::bundled()?;

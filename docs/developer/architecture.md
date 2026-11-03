@@ -1529,6 +1529,51 @@ the app quits, so stopping part way keeps every document open. Answering a quit 
 questions and a tab's closing in progress, since quitting asks about every unsaved document anyway. Tests never
 open the save chooser: `App::save_as` takes the tests' `SAVE_AS` instead.
 
+**Compact saving** (ENH-19's stage 1; `compact.rs`, `Pdf::write_to` in `doc.rs`): every write of the whole
+document (`save`, `to_bytes`) prunes and compresses as before, then `compact::merge_identical` keeps each set of
+identical streams once (same data, same dictionary but `/Length`; rounds until none, since pictures become
+identical once their masks are merged; never object or cross-reference streams), every reference pointed at the
+first. The document is written with lopdf's `save_with_options` (object streams of up to 100 objects at Flate
+level 6, a cross-reference stream, the version raised to 1.5), and then `compact::put_back` returns the copies
+and every object whose references changed, and `put_header` the version, `max_id`, trailer and cross-reference
+kind lopdf's writer changed: the document in memory keeps each object where it was, so edits after a save (the
+CLI's later steps, the tab's own document when a copy wasn't handed over) find them, and Undo's `Before` compares
+like with like. Left as before: an encrypted document is written one object at a time (lopdf encrypts objects
+before its writer would pack them, so an object stream it made would go out in the clear; the merging runs on the
+copy encryption makes), a document whose XMP says `pdfaid:part` 1 with a table (`claims_pdfa1`; PDF/A-1 is PDF
+1.4), and one of under 32 objects lopdf could pack (`few_to_pack`) is written both ways in memory and the smaller
+kept (three corpus files of 4 to 6 objects grew by 9 to 31 bytes otherwise). `snapshot`, `pruned_snapshot` and the
+render copies don't go through it. The saved-output checker (`tests/common/saved.rs`) checks each object packed in
+an object stream by the stream's header, and searches object streams decoded as every Flate segment.
+
+**Reducing pictures** (ENH-19's stage 1; `reduce.rs`, `Pdf::reduce_pictures`, `limarepdf-cli reduce`): every page
+is walked (its content after `inline::extract`, through the form XObjects it draws, 12 deep, with `q`/`Q`/`cm` and
+each form's `/Matrix`), recording for each picture where it is drawn (`Use`: page, transform, and the object
+holding the `/XObject` dictionary its name was found in: a resources object, the `/XObject` dictionary's own, or
+the page or form holding it directly). A picture with a use on a chosen page is reduced only when every use is on
+a chosen page and every object referring to it (`referrers`, one pass over the objects) is one of those holders;
+otherwise (a page not chosen, a comment's or field's appearance, a pattern) it is counted `Shared` and left, since
+a copy beside the original the rest still needs makes the file larger (pdfbox's `2990` grew by half when copies
+were tried). Its resolution is the lowest over its uses of `min(width / drawn width, height / drawn height)` in
+pixels per inch (`shown_ppi`, the lengths of the transform's axes, so turns and skews count); above the choice's
+by more than 5% it is decoded through `redact_img::decode`, scaled with Catmull-Rom (`image`'s `resize`) and saved
+through `redact_img::encode` (which now writes the new `/Width` and `/Height`): a JPEG as JPEG at the lower of its
+own quality (`imgs::jpeg_quality`) and the choice's, a picture of at most 256 colours losslessly (Flate), others
+as JPEG at the choice's (HD and High fidelity 90, Print 85, Web 80, Email 75). A soft mask is scaled with it (to
+the picture's new size when it had the picture's, as `/Matte` needs) into a new object, Flate. The new picture
+replaces the old in place (`objects.insert`, so Undo's comparison keeps the old), only when it and its mask are
+smaller than before. Left and counted by `KeptWhy`: other spaces than grey and RGB (`plain_components`: Device,
+Cal, ICCBased of 1 or 3; never Indexed, Separation, DeviceN, Lab), not 8 bits, `/Decode`, `/Mask`, `/ImageMask`,
+filters other than DCT, Flate, LZW, run length and the ASCII ones, a JPEG whose components don't match its space,
+a mask that isn't 8-bit grey, inline pictures. `Reduced::most` names the picture that lost the most bytes, for the
+app's preview.
+
+**Decoding parameters given as a reference**: lopdf's `decompressed_content` reads `/DecodeParms` only when it is
+written in place (a dictionary, or an array of them); given as a reference (pdf.js's `issue17906`) it decodes as
+if there were none, leaving a PNG predictor's byte at the start of every row, so the samples read shifted.
+`imgs::direct_parms` makes a copy with them resolved, decoded by `redact_img::decode` (redaction, reducing) and
+`scan.rs`'s `decode` (Optimise scanned pages, the CCITT parameters too); the copy is never written back.
+
 Saving writes on a thread of its own (ENH-35, batch 37; `app/save.rs`). The window's thread does what comes
 before the write as it always did: keeping the typing, the questions (`App::save`, `save_unmarked`, `save_signed`,
 with `append_edits` for a signed document), and `App::save_target`'s checks. Then `save_now` hands

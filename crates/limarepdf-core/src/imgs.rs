@@ -264,6 +264,36 @@ pub(crate) fn jpeg_quality(bytes: &[u8]) -> Option<u8> {
     Some(q.round().clamp(1.0, 100.0) as u8)
 }
 
+/// `s` with its `/DecodeParms` written in place, when the file gives them (or an entry of
+/// their array) as a reference; `None` when nothing is a reference. lopdf reads only
+/// parameters written in place and otherwise decodes as if there were none: a PNG
+/// predictor left in, every row a byte longer, the colours shifted (pdf.js's
+/// `issue17906`). Decode the copy, never write it back.
+pub(crate) fn direct_parms(doc: &lopdf::Document, s: &Stream) -> Option<Stream> {
+    let resolve = |o: &Object| match o {
+        Object::Reference(r) => doc.get_object(*r).ok().cloned(),
+        o => Some(o.clone()),
+    };
+    let each = |a: &[Object]| {
+        Object::Array(
+            a.iter()
+                .map(|e| resolve(e).unwrap_or(Object::Null))
+                .collect(),
+        )
+    };
+    let direct = match s.dict.get(b"DecodeParms").ok()? {
+        r @ Object::Reference(_) => match resolve(r)? {
+            Object::Array(a) => each(&a),
+            o => o,
+        },
+        Object::Array(a) if a.iter().any(|e| matches!(e, Object::Reference(_))) => each(a),
+        _ => return None,
+    };
+    let mut t = s.clone();
+    t.dict.set("DecodeParms", direct);
+    Some(t)
+}
+
 /// Whether an image XObject's data looks readable, judged from its start without decoding
 /// it: a JPEG must have a header giving its size, and compressed data a valid zlib header.
 /// Other kinds are taken as readable.

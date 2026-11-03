@@ -266,6 +266,12 @@ impl Pdf {
         }
     }
 
+    /// Writes the document as a save does: unused objects removed, streams compressed,
+    /// identical streams kept once, and the rest packed into object streams with a
+    /// cross-reference stream (ENH-19). An encrypted document's objects are written one by
+    /// one, as lopdf can't encrypt an object stream it makes, and a document claiming PDF/A-1
+    /// keeps the layout of PDF 1.4. The document is left as it was, its unused objects
+    /// removed and its streams compressed.
     fn write_to<W: Write>(&mut self, w: &mut W) -> Result<()> {
         self.doc.prune_objects();
         self.doc.compress();
@@ -273,6 +279,8 @@ impl Pdf {
             // Encryption must be the last step: compressing ciphertext would corrupt streams.
             Some(enc) => {
                 let mut d = self.doc.clone();
+                // A copy: nothing to put back.
+                crate::compact::merge_identical(&mut d);
                 if d.trailer.get(b"ID").is_err() {
                     // The standard security handler derives keys from the file identifier.
                     let id = crate::pkcs12::random::<16>()?;
@@ -284,9 +292,72 @@ impl Pdf {
                 fix_encrypted(&mut d, enc.cipher);
                 d.save_to(w)?;
             }
-            None => self.doc.save_to(w)?,
+            None => self.write_compact(w)?,
         }
         Ok(())
+    }
+
+    /// Writes the document compactly (see [`Pdf::write_to`]), leaving it as it was: lopdf's
+    /// writer changes the version, the highest object number, the trailer and the kind of
+    /// cross-reference data, which are put back with the merged streams. A document of few
+    /// objects is written both ways in memory and the smaller kept: an object stream's own
+    /// entries can outweigh what packing a handful of objects saves.
+    fn write_compact<W: Write>(&mut self, w: &mut W) -> Result<()> {
+        let merged = crate::compact::merge_identical(&mut self.doc);
+        let kept = (
+            self.doc.version.clone(),
+            self.doc.max_id,
+            self.doc.trailer.clone(),
+            self.doc.reference_table.cross_reference_type,
+        );
+        let written = if crate::compact::claims_pdfa1(&self.doc) {
+            self.write_classic(w)
+        } else if crate::compact::few_to_pack(&self.doc) {
+            let mut packed = Vec::new();
+            self.write_packed(&mut packed).and_then(|()| {
+                // As saves wrote it before ENH-19, by the document's own kind of table.
+                self.put_header(&kept);
+                let mut plain = Vec::new();
+                self.doc.save_to(&mut plain)?;
+                let smaller = if plain.len() < packed.len() {
+                    plain
+                } else {
+                    packed
+                };
+                w.write_all(&smaller)
+            })
+        } else {
+            self.write_packed(w)
+        };
+        self.put_header(&kept);
+        crate::compact::put_back(&mut self.doc, merged);
+        written?;
+        Ok(())
+    }
+
+    /// The version, highest object number, trailer and kind of cross-reference data put back
+    /// after lopdf's writer changed them.
+    fn put_header(&mut self, kept: &(String, u32, Dictionary, lopdf::xref::XrefType)) {
+        self.doc.version = kept.0.clone();
+        self.doc.max_id = kept.1;
+        self.doc.trailer = kept.2.clone();
+        self.doc.reference_table.cross_reference_type = kept.3;
+    }
+
+    /// Writes every object on its own, with a cross-reference table (PDF 1.4's layout).
+    fn write_classic<W: Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.doc.reference_table.cross_reference_type = lopdf::xref::XrefType::CrossReferenceTable;
+        self.doc.save_to(w)
+    }
+
+    /// Writes the objects packed into object streams, with a cross-reference stream.
+    fn write_packed<W: Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        let options = lopdf::SaveOptions {
+            use_object_streams: true,
+            use_xref_streams: true,
+            ..Default::default()
+        };
+        self.doc.save_with_options(w, options)
     }
 
     /// Whether the document was read from an encrypted (password-protected) file, or is

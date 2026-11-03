@@ -33,7 +33,7 @@ pub(crate) struct Cut {
 
 /// How a picture is saved again.
 #[derive(Clone, Copy, PartialEq)]
-enum Codec {
+pub(crate) enum Codec {
     /// Flate, losslessly.
     Raw,
     /// JPEG at this quality.
@@ -44,13 +44,13 @@ enum Codec {
 
 /// A picture's decoded samples: `h` rows of `w × n` samples of `bpc` bits, each row
 /// starting on a byte.
-struct Samples {
-    w: usize,
-    h: usize,
-    n: usize,
-    bpc: usize,
-    data: Vec<u8>,
-    codec: Codec,
+pub(crate) struct Samples {
+    pub w: usize,
+    pub h: usize,
+    pub n: usize,
+    pub bpc: usize,
+    pub data: Vec<u8>,
+    pub codec: Codec,
 }
 
 impl Samples {
@@ -128,7 +128,12 @@ fn int(d: &Dictionary, key: &[u8]) -> Option<i64> {
 
 /// How many colour components a colour space has. Named spaces are looked up in
 /// `spaces` (the resources' `/ColorSpace`).
-fn components(doc: &Document, cs: &Object, spaces: &Dictionary, depth: usize) -> Option<usize> {
+pub(crate) fn components(
+    doc: &Document,
+    cs: &Object,
+    spaces: &Dictionary,
+    depth: usize,
+) -> Option<usize> {
     if depth > 8 {
         return None;
     }
@@ -159,7 +164,9 @@ fn components(doc: &Document, cs: &Object, spaces: &Dictionary, depth: usize) ->
 
 /// Decode a picture (or mask) to its samples. `mask` marks a stencil mask (`/Mask`
 /// given as a picture), which has one 1-bit component whatever it says.
-fn decode(doc: &Document, s: &Stream, spaces: &Dictionary, mask: bool) -> Res<Samples> {
+pub(crate) fn decode(doc: &Document, s: &Stream, spaces: &Dictionary, mask: bool) -> Res<Samples> {
+    let direct = crate::imgs::direct_parms(doc, s);
+    let s = direct.as_ref().unwrap_or(s);
     let d = &s.dict;
     let (w, h) = match (int(d, b"Width"), int(d, b"Height")) {
         (Some(w), Some(h)) if w > 0 && h > 0 && w <= 1 << 16 && h <= 1 << 16 => {
@@ -281,12 +288,14 @@ fn decode(doc: &Document, s: &Stream, spaces: &Dictionary, mask: bool) -> Res<Sa
     }
 }
 
-/// The picture `s` with its samples replaced.
-fn encode(s: &Stream, px: Samples) -> Res<Stream> {
+/// The picture `s` with its samples replaced, at their size.
+pub(crate) fn encode(s: &Stream, px: Samples) -> Res<Stream> {
     let mut dict = s.dict.clone();
     for k in [&b"Filter"[..], b"DecodeParms", b"Length"] {
         dict.remove(k);
     }
+    dict.set("Width", px.w as i64);
+    dict.set("Height", px.h as i64);
     match px.codec {
         Codec::Jpeg(quality) => {
             let mut out = Vec::new();

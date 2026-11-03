@@ -132,8 +132,9 @@ fn a_failed_report_says_whether_the_file_was_saved() {
         err.contains("the file was saved, but its report couldn't be written: "),
         "{err}"
     );
-    let saved = std::fs::read(dir.join("titled.pdf")).unwrap();
-    assert!(saved.windows(6).any(|w| w == b"Walrus"));
+    // The title is packed in an object stream, compressed, so the file is read.
+    let saved = limarepdf_core::Pdf::open(dir.join("titled.pdf"), None).unwrap();
+    assert_eq!(saved.info().title.as_deref(), Some("Walrus"));
 
     // Remove blank pages reports what it found before it saves.
     let out = run(

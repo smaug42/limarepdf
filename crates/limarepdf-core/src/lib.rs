@@ -13,6 +13,7 @@ mod blank;
 mod cms_check;
 mod cms_write;
 mod colour;
+mod compact;
 mod decorate;
 pub mod disk;
 mod display;
@@ -59,6 +60,7 @@ mod radicals;
 mod reading;
 mod redact;
 mod redact_img;
+mod reduce;
 pub mod render;
 mod repair;
 mod rewrap;
@@ -115,6 +117,7 @@ pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
 pub use redact::{PageRedaction, RedactReport};
+pub use reduce::{KeptWhy, Most, PictureQuality, ReduceOptions, Reduced};
 pub use rewrap::{
     DocWords, Hyphen, LineEndHyphen, Paragraph, ParagraphPiece, ParagraphSetting, SetLine,
     SetParagraph,

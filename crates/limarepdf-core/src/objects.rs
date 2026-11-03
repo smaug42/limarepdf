@@ -919,7 +919,7 @@ impl Pdf {
         ])
     }
 
-    fn matrix_of(&self, o: &Object) -> Option<M> {
+    pub(crate) fn matrix_of(&self, o: &Object) -> Option<M> {
         let (_, o) = self.doc.dereference(o).ok()?;
         let a = o.as_array().ok()?;
         if a.len() < 6 {

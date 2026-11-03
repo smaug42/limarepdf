@@ -166,6 +166,7 @@ Bookmarks are numbered from 1 in the order `list` shows them, each followed by t
 | `limarepdf-cli images scan.tif photo.jpg -o out.pdf` | One page per image (PNG, JPEG, TIFF; every page of a TIFF). `--dpi` overrides the resolution stored in the files |
 | `limarepdf-cli insert-images in.pdf -o out.pdf --after 2 --images a.png b.jpg` | Insert images as pages after page N |
 | `limarepdf-cli optimize-scans in.pdf -o out.pdf --mode auto --max-dpi 200 --quality 75` | Shrink and clean up scanned pages; also `--no-deskew`, `--no-despeckle` |
+| `limarepdf-cli reduce in.pdf -o out.pdf --quality web` | Make the file smaller, as Word's Compress Pictures does: pictures above the quality's resolution scaled down and saved again (`hd` 330 pixels per inch, `print` 220, the default, `web` 150, `email` 96; `high-fidelity` keeps them as they are). Says what was made smaller, what was left and why, and the sizes before and after. Also `--pages`, `--jpeg-quality`. Refuses a signed document |
 | `limarepdf-cli ocr in.pdf -o out.pdf --pages all` | Add a searchable text layer to pages without text (Latin script) |
 
 See [Scans and OCR](scanning-and-ocr.md) for what these do.

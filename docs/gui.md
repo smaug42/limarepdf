@@ -201,6 +201,11 @@ Close this tab; other tabs carry on.
 Save (Ctrl+S) writes the document over its file; Save As (Ctrl+Shift+S) writes a new file and leaves the original
 as it was. Your file is only changed when you save.
 
+Files are saved compactly: what the document no longer uses is left out, and a picture or font it holds twice
+(as merging files often leaves them) is kept once, so a saved file is often a little smaller than the one you
+opened, with nothing on its pages changed. To make pictures smaller too, use `limarepdf-cli reduce`
+([command line](cli.md#images-and-scans)).
+
 The file is written in the background: while it is, the status bar shows **Saving** with the file's name, and you
 can go on reading and editing. A change made meanwhile isn't in the saved file, so the document stays marked
 unsaved. Saving it again, closing it or quitting waits for the save to finish, and Reload and signing it are

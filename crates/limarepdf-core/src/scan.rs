@@ -397,6 +397,8 @@ fn components(doc: &Document, cs: &Object) -> Option<usize> {
 }
 
 fn decode(doc: &Document, s: &Stream) -> std::result::Result<Img, String> {
+    let direct = crate::imgs::direct_parms(doc, s);
+    let s = direct.as_ref().unwrap_or(s);
     let d = &s.dict;
     let truthy = |k: &[u8]| d.get(k).ok().and_then(|o| o.as_bool().ok()) == Some(true);
     if d.has(b"SMask") || d.has(b"Mask") || d.has(b"Decode") || truthy(b"ImageMask") {
@@ -879,6 +881,36 @@ fn jpeg(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture whose `/DecodeParms` is a reference is read with its PNG predictor undone,
+    /// as when the parameters are written in place.
+    #[test]
+    fn a_picture_whose_decode_parameters_are_a_reference_reads_in_its_colours() {
+        let mut doc = Document::with_version("1.7");
+        // Each row: PNG's "no filter" byte, then its pixels.
+        let row: Vec<u8> = [0u8].into_iter().chain([200, 30, 60].repeat(5)).collect();
+        let rows = row.repeat(4);
+        let parms = doc.add_object(dictionary! {
+            "Predictor" => 15, "Colors" => 3, "BitsPerComponent" => 8, "Columns" => 5,
+        });
+        let mut s = Stream::new(
+            dictionary! {
+                "Subtype" => "Image", "Width" => 5, "Height" => 4,
+                "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8,
+            },
+            rows,
+        );
+        s.compress().unwrap();
+        s.dict.set("DecodeParms", parms);
+        let Img::Rgb(img) = decode(&doc, &s).unwrap() else {
+            panic!("not read as colour");
+        };
+        assert!(
+            img.pixels().all(|p| p.0 == [200, 30, 60]),
+            "{:?}",
+            img.get_pixel(0, 0)
+        );
+    }
 
     /// A black-and-white scan wider than 16 bits can count is stored as CCITT and read
     /// back whole (fax 0.3 counts widths in 32 bits; 0.2's limit was refused, PB-13).

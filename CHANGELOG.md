@@ -178,6 +178,21 @@
   **Add a dictionary…** adds one for another language from a LibreOffice dictionary extension (`.oxt`) or a
   Hunspell `.dic` and `.aff`. On Linux the system's Hunspell dictionaries are listed too. The pages' own text
   isn't gone through by Review > Spelling.
+- **Saved files are smaller**: every Save and Save as packs the document's small objects together, compressed,
+  and keeps a picture or font that is in the file twice (as merging files often leaves them) only once. Nothing
+  on the page changes. Across 344 test files the saved files were 4.8% smaller, more for documents of text than
+  of pictures. A document saying it is PDF/A-1 (an archive format that doesn't allow this), a password-protected
+  one and a signed one (its changes added after what was signed) are saved as before, and a very small file is
+  saved whichever way is smaller.
+- `limarepdf-cli reduce` makes a file smaller as Word's Compress Pictures does: `--quality` HD (330 pixels per
+  inch), Print (220, the default), Web (150), Email (96) or `high-fidelity` (the pictures as they are). Each
+  picture is measured where the pages show it largest and, above the resolution, scaled down and saved again (a
+  photo as JPEG, a drawing or chart of few colours losslessly, a JPEG at no more than its own quality), with
+  its transparency; only when that makes it smaller. Text, fonts, form fields and comments stay as they are. It
+  says how many pictures were made smaller, which were left and why (already at the resolution, of a kind it
+  can't make smaller, shared with pages or comments not being reduced), and the file's size before and after.
+  `--pages` reduces some pages only, `--jpeg-quality` sets the JPEG quality. A signed document is refused:
+  "Signed documents keep exactly what was signed, so they can't be made smaller."
 
 ### Changed
 
@@ -233,6 +248,9 @@
 
 ### Fixed
 
+- A picture whose file keeps its decoding settings in a separate object (as some apps write it) came out
+  scrambled, its colours shifted and streaked, when part of it was redacted or when Optimise scanned pages
+  saved it again; its settings are now read wherever the file keeps them.
 - A link in pages added from another PDF that went to a place the file named could go nowhere, or to the wrong
   page when the document had a place of the same name; it now goes to its own page. So does one giving its page
   by number, as some apps write it.
