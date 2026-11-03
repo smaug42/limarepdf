@@ -1413,7 +1413,7 @@ fn previous_and_next_comment_say_when_none_is_past_the_page() {
 }
 
 /// Previous and Next comment are in the Review band's Comments group (as Previous and
-/// Next), in ☰'s View menu right after Comments, and in the command search; the band's
+/// Next), in ☰'s Review menu right after Comments, and in the command search; the band's
 /// Next and the command search's go to the next card.
 #[test]
 fn previous_and_next_comment_are_in_the_band_the_menu_and_the_command_search() {
@@ -1434,19 +1434,18 @@ fn previous_and_next_comment_are_in_the_band_the_menu_and_the_command_search() {
     for (act, label, short) in steps {
         let a = actions::get(act);
         assert_eq!(a.label, label);
-        assert_eq!(a.group, Group::View, "{label}");
-        let listed = a.menu && a.palette;
+        let listed = menu::path(act).is_some() && a.palette;
         assert!(listed, "{label}: not in ☰ or the command search");
         let there = buttons.contains(&(Some(act), short));
         assert!(there, "no {short} in the Comments group: {buttons:?}");
     }
-    let view: Vec<Act> = (ACTIONS.iter())
-        .filter(|a| a.group == Group::View && a.menu)
-        .map(|a| a.act)
+    // Under Review, as the band has them (ENH-49; View until then).
+    let review: Vec<Act> = (menu::order().into_iter())
+        .filter(|&a| menu::category(a) == "Review")
         .collect();
-    let i = view.iter().position(|&a| a == Act::Comments);
-    let i = i.expect("no Comments in ☰'s View");
-    let after = view.get(i + 1..i + 3);
+    let i = review.iter().position(|&a| a == Act::Comments);
+    let i = i.expect("no Comments in ☰'s Review");
+    let after = review.get(i + 1..i + 3);
     let both = [Act::PrevComment, Act::NextComment];
     assert_eq!(after, Some(&both[..]), "not right after Comments in ☰");
     // Used: the band's Next, then the command search's Next comment.

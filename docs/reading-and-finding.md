@@ -96,8 +96,8 @@ set them, even if the search is still running.
 
 The headings in Search results, like the page thumbnails, use the document's own page numbering when it has one
 (such as iii or A-1; see [Number pages your own way](organising-pages.md#number-pages-your-own-way)). To number the pages 1, 2, 3 from the first
-page instead, turn off View > Show > **Use the document's page labels** (also in ☰ > View). The status bar shows
-both.
+page instead, turn off View > Show > **Use the document's page labels** (also in ☰ > View > Show). The status bar
+shows both.
 
 On the command line, `limarepdf-cli search` lists the matches, one a line, as `page 3: …the words around it…`, then
 the count; `--boxes` also prints where each one is on its page, and `--match-case` and `--whole-words` work as the
@@ -218,7 +218,7 @@ the way of editing.
 
 ### Add a link
 
-**Link** is in **Insert > Navigation**, ☰ > Tools > **Link…**, the command palette, and Ctrl+K (⌘K on a Mac).
+**Link** is in **Insert > Navigation**, ☰ > Insert > **Link…**, the command search, and Ctrl+K (⌘K on a Mac).
 
 To link words:
 
@@ -303,8 +303,8 @@ by clicking there with the middle mouse button, without copying it first.
 
 ### Print or save just the selection
 
-Right-click the selection and choose **Print selected text…** or **Save selected text…** (also under ☰ > Edit).
-Both offer two layouts:
+Right-click the selection and choose **Print selected text…** or **Save selected text…** (also in ☰ and ☰ >
+Export). Both offer two layouts:
 
 - **As it looks (cropped pages):** each page with selected words, at its full width with its margins, cut down
   from the top and bottom to the selected lines. Fonts, pictures and layout stay as they are, but anything else

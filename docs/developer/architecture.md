@@ -436,7 +436,7 @@ end; the result is one `Action::Restyle` across lines and pages, nothing left se
 written as an empty `() Tj` in place of its first show (core's one-style in-place path): it reads and draws as
 nothing, saved too. Lines aren't joined (paragraph editing, NEW-01). `Act::EditObjectText` with words selected is
 `Editor::edit_words` (the moving end's line, its part selected). Shift with the arrows, Home and End is
-`Act::Extend(selection::Toward)` (☰ > Edit > Extend selected text, keys only, not in the palette):
+`Act::Extend(selection::Toward)` (keys only: not in ☰ since ENH-49, nor in the palette):
 `Editor::extend_by` moves the selection's moving end by a word, to the word on the line above or below nearest
 across (`editor::across`), or to the line's start or end, reading the next or previous page with words when it
 crosses one; `Tab::reveal` (from `Editor::words_end`) then scrolls the least that brings the end into view, against
@@ -625,7 +625,7 @@ turn it off; comments (`Drag::annot`), a line's ends and turns never snap, nor d
 (Word's Align, named by its tooltip so it isn't read as aligning text) is a menu button (`band::ALIGN_MENU`), the
 objects' right-click menu shows `actions::ALIGNS` as an Align objects submenu (`menu_of`), which `toolbar_items`
 leaves off the floating bar and the docked buttons (as word processors' bars do), and the band's menus draw the
-registry's separators (`actions::menu_list`). `Ctx::objects` counts the objects held,
+File menu's separators (`actions::menu_list`, `menu::line_before`). `Ctx::objects` counts the objects held,
 for Distribute's three (`why_not`: "Select three or more objects first.").
 
 Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a selection
@@ -1677,6 +1677,34 @@ In the desktop app, every command is defined once in `crates/limarepdf-gui/src/a
 row, the command band, the command palette, the right-click menus, the floating toolbar and the keyboard shortcuts
 are all built from that list.
 
+Where each command sits in the File menu (☰) is `crates/limarepdf-gui/src/menu.rs`'s alone (ENH-49): `menu::MENU`,
+a static tree of `Entry`s (`Cmd(Act)`, `Sub(name, entries)`, `Sep`, and `Recent` for Open recent), drawn by
+`menu::show`: File's own commands, then a `Sub` for each of the band's names in `band::Band::ALL`'s order and Help
+(`KINDS`), then Settings…, Close tab and Quit. Registry entries no longer carry a group, submenu, separator or
+"in the menu" flag. `menu::LEFT_OUT` lists the commands deliberately not in it, each with the kind the palette files
+it under: what keys alone do (`Escape`, `Nudge`, `Extend`, the regions), `JoinHyphen` and `KeepHyphen` (the typing
+right-click menu's), `DeleteObject` and `ToggleRecovery` (Settings'). From the tree come `menu::path` (the
+submenus' names and the label), `menu::way` (a message's "Protect > Password security…", "File > Properties…", so
+the messages that name a menu can't go stale), `menu::category` and `menu::submenu` (the palette's column and
+"Theme › Dark", and what `actions::matches` searches), and `menu::line_before`, which `actions::menu_list` uses so
+the band's menus and the right-click submenus divide their commands as ☰ does. The tests in `menu.rs` keep it
+honest: every registry entry in the tree once or left out, each submenu name once, no line at a submenu's ends,
+the submenus the band's names in order, each band command under its band's name (or another band's holding it,
+or File's own), and each band's groups in the band's order (`band::Group::acts`, test-only). Every shortcut
+shown is written by `actions::key_text`, not `Context::format_shortcut` directly: egui off a Mac writes a
+punctuation key by its name ("Ctrl+Comma"), which `key_text` turns into its sign ("Ctrl+,"), the arrows aside.
+
+The Settings window (`dialogs::settings`, `Dialog::Settings(Box<dlg::Prefs>)`, ENH-49) shows `dlg::Prefs`, built
+by `App::prefs` from the settings (the page layout and cover from the active tab, as View's). Each frame
+`App::apply_prefs` compares the window's choices with the settings as they are, and takes what differs, the name
+trimmed: through `toggle_recovery`, `Act::Theme`, `Act::Accent` and `set_paragraphs` where more than the setting
+changes, else by setting it directly and passing page labels and field highlights to the open tabs, because many
+of `App::act`'s handlers do nothing with no document open. A message a change gives (recovery copies that couldn't
+be removed) is shown first and the window put back in `waiting`. The documents folder is `Settings::folder`
+(`documents_folder` in `settings.txt`); `App::start_folder` gives the folder a chooser starts in: beside a
+recovered copy's original, else beside the document's file, else the documents folder, when it still exists.
+`App::pick_folder`, like `pick_dictionaries`, never opens the system's chooser in tests (`tests::FOLDER`).
+
 The floating toolbar (`Tab::floating_toolbar`, ENH-20) shows `actions::toolbar_items`: the right-click menu's
 commands that have icons, or, while a line is edited on the page (`Ctx::line_edit`), Bold, Italic | Cut, Copy,
 Paste. `actions::context_items` gives the right-click menu by what is selected: words (Cut, Copy, Paste, Select
@@ -1708,16 +1736,15 @@ version docked it at the view's top by a column heading with text all round it);
 only when neither is in view. Bold and Italic there change what is selected in the line editor
 (`Editor::switch_style` reads it with `page_text::held`, then sets the editor's `refocus`), and `App::act` doesn't
 keep the typing before them as it does for other commands that use the document.
-The menus show an entry's short `label` inside its `submenu`; the palette, which has no submenus, shows the
+The menus show an entry's short `label` inside its submenu; the palette, which has no submenus, shows the
 submenu's name before it in the weak colour ("Theme › Dark"), names the row `actions::spoken_title` for screen
-readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
+readers ("Theme: Dark") and searches the label, submenu and kind (`actions::matches`; BUG-34, audit A18). A test
 keeps every palette entry's name its own.
 
 The workspace (batch 39, ENH-38 and ENH-41; build plan 2.2's approved mockup, adjusted by the user's checks) is
 drawn by `App::ui` as panels from the top: the tabs (`tab_button`, the line under them broken under the tab shown),
 then the commands panel: one row of the document's commands (`quick`, icons named in words; the File menu,
-`App::menu`, lists File's commands then one submenu per `Group`, so every command is in it, with `band::FILE_PLANNED`
-greyed in place), the band's names (`band::names`) and, at the right in reading order (`dialogs::reading_order`, its
+`menu::show`, laid out as the band, above), the band's names (`band::names`) and, at the right in reading order (`dialogs::reading_order`, its
 width from the last frame in `App::commands_right`), Print and `band::compact_toggle`; under it `band::show`.
 `crates/limarepdf-gui/src/band.rs` holds the seven bands as static tables of groups of `Item`s: `Button` (a
 registered `Act` with the band's own short label and icon, and a `menu` of related `Act`s behind a caret; no `act`

@@ -391,7 +391,7 @@ impl Tab {
                     ];
                     for ((glyph, label), (key, step)) in moves.into_iter().zip(STEPS) {
                         let shortcut = egui::KeyboardShortcut::new(MOVE, key);
-                        let keys = ui.ctx().format_shortcut(&shortcut);
+                        let keys = crate::actions::key_text(ui.ctx(), &shortcut);
                         let can = bookmark_step(&read.items, i, step).is_some();
                         let b = egui::Button::new((theme::icon(glyph), label)).shortcut_text(&keys);
                         let r = ui.add_enabled(can, b).on_disabled_hover_text(cant(step));

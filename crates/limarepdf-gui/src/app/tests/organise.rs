@@ -88,9 +88,9 @@ fn organise_opens_from_the_band_the_view_menu_and_the_status_bar() {
     assert!(!app.tabs[0].organising(), "the page view button");
     click_as(&mut app, &ty, "Organise pages", egui::Modifiers::NONE);
     assert!(app.tabs[0].organising(), "the organise button");
-    // The View menu's command, on and off, ticked while on.
+    // The Pages menu's command, as the Pages band has it, on and off, ticked while on.
     let a = actions::get(Act::Organise);
-    assert_eq!(a.group, actions::Group::View);
+    assert_eq!(menu::path(Act::Organise).unwrap(), ["Pages", a.label]);
     let c = app.state(&ctx);
     assert!(a.checked.is_some_and(|on| on(&c)), "not ticked");
     app.act(&ctx, Act::Organise);
@@ -1018,8 +1018,8 @@ fn the_move_commands_are_in_the_menus_and_the_band() {
     ];
     for (to, label, key) in moves {
         let a = actions::get(Act::MovePages(to));
-        assert_eq!((a.label, a.submenu), (label, "Move pages"));
-        assert_eq!(a.group, actions::Group::Pages, "{label}");
+        let path = menu::path(Act::MovePages(to)).unwrap();
+        assert_eq!(path, ["Pages", "Move pages", label]);
         let keys = egui::KeyboardShortcut::new(ALT_SHIFT, key);
         assert!(a.keys.contains(&keys), "{label}: {:?}", a.keys);
     }

@@ -1981,6 +1981,183 @@ pub fn comment_name(ctx: &Context, name: &mut String) -> Outcome {
     })
 }
 
+/// The Settings window's choices (ENH-49): what is set for every document, in one place,
+/// each as the menus and the band set it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Prefs {
+    /// The name for comments, as typed.
+    pub name: String,
+    /// The folder Open and Save As start in; `None` for the one last used.
+    pub folder: Option<PathBuf>,
+    pub recovery: bool,
+    pub theme: egui::ThemePreference,
+    pub accent: crate::settings::Accent,
+    pub page_look: crate::settings::PageLook,
+    pub pictures_too: bool,
+    pub compact: bool,
+    pub planned: bool,
+    pub docked: bool,
+    pub layout: crate::settings::Layout,
+    pub cover: bool,
+    pub page_labels: bool,
+    pub fields: bool,
+    pub paragraphs: bool,
+    pub snap: bool,
+    pub spelling: bool,
+    pub stamp_name_date: bool,
+    /// The spelling languages' names, and which is chosen.
+    pub languages: Vec<String>,
+    pub language: usize,
+}
+
+/// What the Settings window asks of the app beyond its choices.
+#[derive(PartialEq, Eq, Debug)]
+pub enum SettingsOut {
+    Open,
+    Close,
+    /// Choose the documents folder.
+    ChooseFolder,
+    AddDictionary,
+}
+
+/// The menus' name for a command, so the window says what they say.
+fn named(act: crate::actions::Act) -> &'static str {
+    crate::actions::get(act).label
+}
+
+/// A drop-down list of `options` (commands of the menus, by their names) choosing `value`.
+fn pick<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut T,
+    options: &[(T, crate::actions::Act)],
+) {
+    let shown = options
+        .iter()
+        .find(|(v, _)| v == value)
+        .map(|(_, a)| named(*a));
+    let width = list_width(ui, options.iter().map(|(_, a)| named(*a)));
+    field(ui, label, |ui| {
+        egui::ComboBox::from_id_salt(label)
+            .width(width)
+            .selected_text(shown.unwrap_or_default())
+            .show_ui(ui, |ui| {
+                for (v, a) in options {
+                    ui.selectable_value(value, *v, named(*a));
+                }
+            })
+            .response
+    });
+}
+
+/// A tick box with a command's name from the menus.
+fn tick(ui: &mut Ui, on: &mut bool, act: crate::actions::Act) {
+    ui.checkbox(on, named(act));
+}
+
+/// Settings: General (your name, the documents folder, recovery copies), Appearance, Pages
+/// and Editing. Each change takes effect at once, as the menus' do, so there is only
+/// Close.
+pub fn settings(ctx: &Context, p: &mut Prefs) -> SettingsOut {
+    use crate::actions::Act;
+    use crate::settings::{Accent, Layout, PageLook};
+    use egui::ThemePreference as T;
+    use limarepdf_core::page_colours::PageColours as C;
+    let mut out = SettingsOut::Open;
+    let (shown, esc) = Shell::new("Settings").width(520.0).show(ctx, |ui| {
+        content(ui, |ui| {
+            group(ui, "General", |ui| {
+                field(ui, "Your name for comments", |ui| {
+                    let edit = egui::TextEdit::singleline(&mut p.name)
+                        .hint_text("No name")
+                        .desired_width(f32::INFINITY);
+                    ui.add(theme::field(edit))
+                });
+                ui.add_space(FIELD_GAP);
+                ui.label("Documents folder");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    let choose = ui.button("Choose…");
+                    set_name(&choose, "Choose the documents folder");
+                    if choose.clicked() {
+                        out = SettingsOut::ChooseFolder;
+                    }
+                    let last = ui.add_enabled(p.folder.is_some(), egui::Button::new("Clear"));
+                    set_name(&last, "Clear the documents folder");
+                    if last.clicked() {
+                        p.folder = None;
+                    }
+                    let text = match &p.folder {
+                        Some(f) => RichText::new(f.display().to_string()),
+                        None => RichText::new("The folder last used").weak(),
+                    };
+                    ui.add(egui::Label::new(text).truncate());
+                });
+                ui.add_space(FIELD_GAP);
+                tick(ui, &mut p.recovery, Act::ToggleRecovery);
+            });
+            group(ui, "Appearance", |ui| {
+                let themes = [T::System, T::Light, T::Dark].map(|t| (t, Act::Theme(t)));
+                pick(ui, "Theme", &mut p.theme, &themes);
+                ui.add_space(FIELD_GAP);
+                let accents = [Accent::Desktop, Accent::LimarePdf].map(|a| (a, Act::Accent(a)));
+                pick(ui, "Accent colour", &mut p.accent, &accents);
+                ui.add_space(FIELD_GAP);
+                let looks = [
+                    PageLook::Fixed(C::Normal),
+                    PageLook::Automatic,
+                    PageLook::Fixed(C::Dark),
+                    PageLook::Fixed(C::HighContrast),
+                    PageLook::Fixed(C::Sepia),
+                ]
+                .map(|l| (l, Act::PageColours(l)));
+                pick(ui, "Page colours", &mut p.page_look, &looks);
+                tick(ui, &mut p.pictures_too, Act::TogglePicturesToo);
+                ui.add_space(FIELD_GAP);
+                tick(ui, &mut p.compact, Act::ToggleCompact);
+                tick(ui, &mut p.planned, Act::TogglePlanned);
+                tick(ui, &mut p.docked, Act::ToggleDock);
+            });
+            group(ui, "Pages", |ui| {
+                let layouts = [Layout::Continuous, Layout::Facing, Layout::Single]
+                    .map(|l| (l, Act::Layout(l)));
+                pick(ui, "Page layout", &mut p.layout, &layouts);
+                tick(ui, &mut p.cover, Act::ToggleCover);
+                ui.add_space(FIELD_GAP);
+                tick(ui, &mut p.page_labels, Act::TogglePageLabels);
+                tick(ui, &mut p.fields, Act::ToggleFields);
+            });
+            group(ui, "Editing", |ui| {
+                ui.checkbox(&mut p.paragraphs, "Edit page text a paragraph at a time");
+                tick(ui, &mut p.snap, Act::ToggleSnap);
+                ui.checkbox(&mut p.stamp_name_date, "Add my name and the date to stamps");
+                ui.add_space(FIELD_GAP);
+                tick(ui, &mut p.spelling, Act::SpellAsYouType);
+                let chosen = p.languages.get(p.language).cloned().unwrap_or_default();
+                field(ui, "Spelling language", |ui| {
+                    egui::ComboBox::from_id_salt("spelling language")
+                        .selected_text(&chosen)
+                        .show_ui(ui, |ui| {
+                            for (i, l) in p.languages.iter().enumerate() {
+                                ui.selectable_value(&mut p.language, i, l);
+                            }
+                        })
+                        .response
+                });
+                ui.add_space(FIELD_GAP);
+                if ui.button(named(Act::AddDictionary)).clicked() {
+                    out = SettingsOut::AddDictionary;
+                }
+            });
+        });
+        footer(ui, None, &[Btn::primary("Close")]).is_some()
+    });
+    if shown || esc {
+        return SettingsOut::Close;
+    }
+    out
+}
+
 /// A message, with OK, and Copy for passing on what it says (an error's details, say).
 pub fn message(ctx: &Context, title: &str, text: &str) -> Outcome {
     let (out, esc) = Shell::new(title).show(ctx, |ui| {

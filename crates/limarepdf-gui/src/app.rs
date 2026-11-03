@@ -1,6 +1,6 @@
 use crate::about;
 use crate::accent;
-use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
+use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, ACTIONS};
 use crate::band::{self, Band};
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
@@ -10,6 +10,7 @@ use crate::icon;
 use crate::incoming::Incoming;
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
+use crate::menu;
 use crate::page_text;
 use crate::panels::{self, Panel};
 use crate::print_preview;
@@ -255,10 +256,11 @@ fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
     }
     let mut text = format!("Text added to {pages} page(s): {words} words.");
     if pages > 0 {
-        text.push_str(
-            "\n\nThe text is invisible. To see it, search for a word, or turn on \
-             View > Show recognised text; misread words can be corrected with the arrow tool.",
-        );
+        text.push_str(&format!(
+            "\n\nThe text is invisible. To see it, search for a word, or turn on {}; misread \
+             words can be corrected with the arrow tool.",
+            menu::way(Act::ToggleHidden)
+        ));
     }
     push_skipped(&mut text, &skipped);
     (pages > 0, text)
@@ -474,6 +476,8 @@ enum Dialog {
     Link(Asked, Box<dlg::LinkAsk>),
     /// The name for comments, being edited.
     CommentName(String),
+    /// Settings (ENH-49), as chosen so far.
+    Settings(Box<dlg::Prefs>),
     About(about::Page),
     /// A message about a recovery copy, with Show file for it (or its folder).
     RecoveryFile {
@@ -619,10 +623,14 @@ fn trust_unsure(why: Option<String>) -> String {
 
 /// Why a document set to be saved with a password isn't signed: the signed file would be
 /// written without it.
-const PASSWORD_NOT_SIGNED: &str = "You set a password that applies when you save, and \
-    LimarePDF can't sign password-protected documents, so the signed file would be saved \
-    without it. To sign, take the password off first (Document > Password security). To keep \
-    the password, save without signing.";
+fn password_not_signed() -> String {
+    format!(
+        "You set a password that applies when you save, and LimarePDF can't sign \
+         password-protected documents, so the signed file would be saved without it. To sign, \
+         take the password off first ({}). To keep the password, save without signing.",
+        menu::way(Act::Security)
+    )
+}
 
 /// A signed document with its edits added after what was signed, ready to write once the
 /// user agrees that the signatures will report changes they don't allow.
@@ -1579,7 +1587,7 @@ impl App {
                 anyhow::bail!("LimarePDF can't sign encrypted (password-protected) documents");
             }
             if t.encryption.is_some() {
-                anyhow::bail!(PASSWORD_NOT_SIGNED);
+                anyhow::bail!(password_not_signed());
             }
             // A document opened with signature fields kept its bytes: the signature is
             // added after them, with the edits made since. Any other document has no
@@ -1696,11 +1704,12 @@ impl App {
             text.push_str(&format!("\n\nThe document is signed, but {why}."));
         }
         if s.self_issued {
-            text.push_str(
+            text.push_str(&format!(
                 "\n\nOthers see you as an unknown signer until they trust your certificate: \
-                 send it to them from Document > Digital signatures > Digital IDs… (Export…, \
-                 Certificate only). LimarePDF shows the same until you trust it.",
-            );
+                 send it to them from {} (Export…, Certificate only). LimarePDF shows the same \
+                 until you trust it.",
+                menu::way(Act::DigitalIds)
+            ));
         }
         let bytes: Arc<[u8]> = Arc::from(s.bytes);
         match crate::guard(|| Pdf::from_bytes(&bytes, None)) {
@@ -2328,9 +2337,10 @@ impl App {
         if text.trim_matches(|c: char| c.is_whitespace()).is_empty() {
             self.dialog = Dialog::Message(
                 "Export text".into(),
-                "This document has no text to export. Scanned pages need \
-                 Document > Recognise text (OCR) first."
-                    .into(),
+                format!(
+                    "This document has no text to export. Scanned pages need {} first.",
+                    menu::way(Act::Ocr)
+                ),
             );
             return;
         }
@@ -2499,7 +2509,7 @@ impl App {
 
     /// Where to save the tab: its file, or one the user picks (for Save as, or a document
     /// with no file yet).
-    fn save_path(tab: &Tab, as_new: bool) -> Option<PathBuf> {
+    fn save_path(tab: &Tab, as_new: bool, folder: Option<&Path>) -> Option<PathBuf> {
         if !as_new {
             if let Some(p) = &tab.path {
                 return Some(p.clone());
@@ -2511,9 +2521,7 @@ impl App {
         } else if let Some(l) = &tab.label {
             d = d.set_file_name(format!("{l}.pdf"));
         }
-        // A recovered copy is suggested beside its original.
-        let original = tab.recovered.as_ref().and_then(|r| r.original.as_ref());
-        if let Some(dir) = original.and_then(|p| p.parent()).filter(|d| d.is_dir()) {
+        if let Some(dir) = Self::start_folder(Some(tab), folder) {
             d = d.set_directory(dir);
         }
         let mut p = Self::save_as(d)?;
@@ -2521,6 +2529,22 @@ impl App {
             p.set_extension("pdf");
         }
         Some(p)
+    }
+
+    /// The folder a file chooser starts in, as word processors start Save As: beside the
+    /// original of a recovered copy, else beside the document's own file, else in the
+    /// documents folder set in Settings (`folder`, ENH-49), which is where Open starts
+    /// (`tab` none); else the system chooser's own choice (`None`).
+    fn start_folder(tab: Option<&Tab>, folder: Option<&Path>) -> Option<PathBuf> {
+        let original = tab.and_then(|t| t.recovered.as_ref()?.original.as_deref());
+        let own = tab.and_then(|t| t.path.as_deref());
+        let beside = [original, own]
+            .into_iter()
+            .flatten()
+            .filter_map(Path::parent);
+        (beside.chain(folder))
+            .find(|d| d.is_dir())
+            .map(Path::to_path_buf)
     }
 
     /// The file the user picks in the save chooser `d`, if any.
@@ -2541,7 +2565,7 @@ impl App {
     /// read or saved it, until the user says to replace it (BUG-06).
     fn save_target(&mut self, as_new: bool) -> Option<PathBuf> {
         let t = self.tabs.get(self.active)?;
-        let path = Self::save_path(t, as_new)?;
+        let path = Self::save_path(t, as_new, self.settings.folder.as_deref())?;
         if let Some(why) = self.in_other_tab(&path, Some(t.id)) {
             self.dialog = Dialog::Message("Open in another tab".into(), why);
             return None;
@@ -2725,7 +2749,11 @@ impl App {
         }
         match a {
             Act::Open => {
-                if let Some(files) = Self::pdf_dialog().pick_files() {
+                let mut d = Self::pdf_dialog();
+                if let Some(dir) = Self::start_folder(None, self.settings.folder.as_deref()) {
+                    d = d.set_directory(dir);
+                }
+                if let Some(files) = d.pick_files() {
                     for f in files {
                         self.spawn_open(ctx, f, None, None);
                     }
@@ -2932,13 +2960,14 @@ impl App {
                 } else if t.pdf.encrypted() {
                     self.dialog = Dialog::Message(
                         title.into(),
-                        "LimarePDF can't sign encrypted (password-protected) documents. Save a copy \
-                         without the password (Document > Password security) and sign that \
-                         instead."
-                            .into(),
+                        format!(
+                            "LimarePDF can't sign encrypted (password-protected) documents. \
+                             Save a copy without the password ({}) and sign that instead.",
+                            menu::way(Act::Security)
+                        ),
                     );
                 } else if t.encryption.is_some() {
-                    self.dialog = Dialog::Message(title.into(), PASSWORD_NOT_SIGNED.into());
+                    self.dialog = Dialog::Message(title.into(), password_not_signed());
                 } else if certify && t.pdf.signature_count() > 0 {
                     self.dialog = Dialog::Message(
                         title.into(),
@@ -2963,6 +2992,9 @@ impl App {
             Act::ShowRecoveryFile => self.show_leftover(),
             Act::Quit => self.quit(ctx),
             Act::About => self.dialog = Dialog::About(about::Page::Main),
+            Act::Settings => self.dialog = Dialog::Settings(Box::new(self.prefs(ctx))),
+            Act::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(about::GUIDE)),
+            Act::ReportProblem => ctx.open_url(egui::OpenUrl::new_tab(about::ISSUES)),
             Act::Theme(p) => {
                 ctx.set_theme(p);
                 self.settings.theme = p;
@@ -3594,6 +3626,112 @@ impl App {
     /// Paragraph editing on or off (Edit > Text flow's Paragraph, the inspector's Editing
     /// row, the menus and the command search; NEW-01), for every tab and remembered between
     /// runs; the text being edited in the tab in front follows ([`Editor::set_paragraph`]).
+    /// What the Settings window shows: the settings as they are, the page layout the active
+    /// document's, as View's.
+    fn prefs(&self, ctx: &egui::Context) -> dlg::Prefs {
+        let s = &self.settings;
+        let tab = self.tabs.get(self.active);
+        let (languages, language) = language_names(ctx);
+        dlg::Prefs {
+            name: s.author(),
+            folder: s.folder.clone(),
+            recovery: s.recovery,
+            theme: s.theme,
+            accent: s.accent,
+            page_look: s.page_look,
+            pictures_too: s.pictures_too,
+            compact: s.compact_commands,
+            planned: s.show_planned,
+            docked: s.controls_docked,
+            layout: tab.map_or(s.layout, |t| t.layout),
+            cover: tab.map_or(s.cover, |t| t.cover),
+            page_labels: s.page_labels,
+            fields: s.fields_shown,
+            paragraphs: s.paragraphs,
+            snap: s.snap,
+            spelling: s.spelling,
+            stamp_name_date: s.stamp_name_date,
+            languages,
+            language,
+        }
+    }
+
+    /// Takes what differs in the Settings window's `p` from the settings as they are
+    /// (`was`), as the menus' commands take it, open documents included; with no document
+    /// open too. The name is taken without spaces around it.
+    fn apply_prefs(&mut self, ctx: &egui::Context, was: &dlg::Prefs, p: &dlg::Prefs) {
+        let name = p.name.trim();
+        let same = dlg::Prefs {
+            name: name.to_string(),
+            ..p.clone()
+        };
+        if same == *was {
+            return;
+        }
+        // Those that change more than the setting.
+        if p.recovery != was.recovery {
+            self.toggle_recovery();
+        }
+        if p.theme != was.theme {
+            self.act(ctx, Act::Theme(p.theme));
+        }
+        if p.accent != was.accent {
+            self.act(ctx, Act::Accent(p.accent));
+        }
+        if p.paragraphs != was.paragraphs {
+            self.set_paragraphs(p.paragraphs);
+        }
+        if (p.layout, p.cover) != (was.layout, was.cover) {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                (t.layout, t.cover) = (p.layout, p.cover);
+                t.go_to(t.current);
+            }
+        }
+        if p.language != was.language {
+            let (langs, _) = crate::spell::languages(ctx);
+            if let Some(l) = langs.get(p.language) {
+                self.settings.spelling_language = Some(l.key.clone());
+            }
+        }
+        let s = &mut self.settings;
+        if name != was.name {
+            s.author = Some(name.to_string());
+        }
+        s.folder.clone_from(&p.folder);
+        s.page_look = p.page_look;
+        s.pictures_too = p.pictures_too;
+        s.compact_commands = p.compact;
+        s.show_planned = p.planned;
+        s.controls_docked = p.docked;
+        (s.layout, s.cover) = (p.layout, p.cover);
+        s.page_labels = p.page_labels;
+        s.fields_shown = p.fields;
+        s.snap = p.snap;
+        s.spelling = p.spelling;
+        s.stamp_name_date = p.stamp_name_date;
+        for t in &mut self.tabs {
+            t.use_labels = p.page_labels;
+            t.ed.form.highlight = p.fields;
+        }
+        self.settings.save();
+    }
+
+    /// The documents folder the user picks, starting in `start`. Never the system's chooser
+    /// in tests.
+    #[cfg(not(test))]
+    fn pick_folder(start: Option<&Path>) -> Option<PathBuf> {
+        let mut d = rfd::FileDialog::new().set_title("Documents folder");
+        if let Some(dir) = start.filter(|d| d.is_dir()) {
+            d = d.set_directory(dir);
+        }
+        d.pick_folder()
+    }
+
+    #[cfg(test)]
+    fn pick_folder(_: Option<&Path>) -> Option<PathBuf> {
+        tests::FOLDER.with(std::cell::Cell::take)
+    }
+
     fn set_paragraphs(&mut self, on: bool) {
         self.settings.paragraphs = on;
         self.settings.save();
@@ -4367,6 +4505,33 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::Settings(p) => {
+                let out = dlg::settings(ctx, p);
+                match out {
+                    dlg::SettingsOut::ChooseFolder => {
+                        let start = p.folder.clone().or_else(|| self.settings.folder.clone());
+                        if let Some(dir) = Self::pick_folder(start.as_deref()) {
+                            p.folder = Some(dir);
+                        }
+                    }
+                    dlg::SettingsOut::AddDictionary => {
+                        if let Some(files) = Self::pick_dictionaries() {
+                            self.add_dictionaries(ctx, &files);
+                        }
+                        (p.languages, p.language) = language_names(ctx);
+                    }
+                    dlg::SettingsOut::Close => done = true,
+                    dlg::SettingsOut::Open => {}
+                }
+                let was = self.prefs(ctx);
+                self.apply_prefs(ctx, &was, p);
+                // A message the change gave (recovery copies left behind) shows first; the
+                // window comes back after it.
+                if !done && !matches!(self.dialog, Dialog::None) {
+                    self.waiting.push_front(Dialog::Settings(p.clone()));
+                    done = true;
+                }
+            }
             Dialog::OpenLink(url) => match dlg::confirm(
                 ctx,
                 Ask::new(
@@ -4718,9 +4883,10 @@ impl App {
                         &format!(
                             "This document has {} marked for redaction but not applied: \
                              nothing under the marks has been removed, and anyone can still \
-                             read it. Apply them first with Document > Apply redactions, or \
-                             save the marks to finish or review later.",
-                            plural(*n, "an area", "{n} areas")
+                             read it. Apply them first with {}, or save the marks to finish \
+                             or review later.",
+                            plural(*n, "an area", "{n} areas"),
+                            menu::way(Act::ApplyRedactions)
                         ),
                         Btn::danger("Save with marks"),
                     )
@@ -5157,52 +5323,6 @@ impl App {
             }
         }
         c
-    }
-
-    /// The File menu, built from the registry: File's commands, with Open recent from
-    /// `recent` (the recent files that still exist), then a submenu for each other group,
-    /// so that every command has a place in it.
-    fn menu(ui: &mut egui::Ui, c: &Ctx, recent: &[&PathBuf], acts: &mut Vec<Act>) {
-        Self::menu_group(ui, Group::File, c, recent, acts);
-        ui.separator();
-        for g in Group::MENUS.into_iter().filter(|&g| g != Group::File) {
-            ui.menu_button(g.name(), |ui| Self::menu_group(ui, g, c, recent, acts));
-        }
-    }
-
-    /// A group's commands in the menu, a run with the same submenu as one submenu; File's
-    /// with Open recent, and the planned ones where they will be.
-    fn menu_group(ui: &mut egui::Ui, g: Group, c: &Ctx, recent: &[&PathBuf], acts: &mut Vec<Act>) {
-        let items: Vec<&Action> = ACTIONS.iter().filter(|a| a.group == g && a.menu).collect();
-        let mut i = 0;
-        while i < items.len() {
-            let a = items[i];
-            if a.sep && i > 0 {
-                ui.separator();
-            }
-            if a.submenu.is_empty() {
-                menu_item(ui, a, c, acts);
-                if a.act == Act::Open {
-                    recent_menu(ui, recent, acts);
-                }
-                i += 1;
-                continue;
-            }
-            // A run of items with the same submenu becomes one submenu.
-            let n = items[i..]
-                .iter()
-                .take_while(|b| b.submenu == a.submenu)
-                .count();
-            ui.menu_button(a.submenu, |ui| {
-                for (j, b) in items[i..i + n].iter().enumerate() {
-                    if b.sep && j > 0 {
-                        ui.separator();
-                    }
-                    menu_item(ui, b, c, acts);
-                }
-            });
-            i += n;
-        }
     }
 
     /// The command palette (Ctrl+Shift+P): type to filter the commands, Up and Down to move,
@@ -6100,12 +6220,11 @@ fn zoom_menu(ui: &mut egui::Ui, zoom: f32, c: &Ctx, acts: &mut Vec<Act>) {
                     menu_item(ui, actions::get(act), c, acts);
                 }
                 ui.separator();
-                for a in ACTIONS.iter().filter(|a| a.submenu == "Page layout") {
-                    if a.sep {
-                        ui.separator();
-                    }
-                    menu_item(ui, a, c, acts);
+                for l in [Layout::Continuous, Layout::Facing, Layout::Single] {
+                    menu_item(ui, actions::get(Act::Layout(l)), c, acts);
                 }
+                ui.separator();
+                menu_item(ui, actions::get(Act::ToggleCover), c, acts);
             })
             .0
             .on_hover_text("Zoom and page layout")
@@ -6358,9 +6477,9 @@ fn palette_columns(ui: &egui::Ui, items: &[&Action]) -> (f32, f32) {
     };
     let mut columns = (0.0_f32, 0.0_f32);
     for a in items {
-        columns.0 = columns.0.max(width(a.group.name().to_string()));
+        columns.0 = columns.0.max(width(menu::category(a.act).to_string()));
         if let Some(k) = actions::shown_key(ui.ctx(), a) {
-            columns.1 = columns.1.max(width(ui.ctx().format_shortcut(&k)));
+            columns.1 = columns.1.max(width(actions::key_text(ui.ctx(), &k)));
         }
     }
     columns
@@ -6418,20 +6537,20 @@ fn palette_row(
     let key_left = rect.right() - pad - columns.1;
     if let Some(k) = actions::shown_key(ui.ctx(), a) {
         let at = egui::pos2(rect.right() - pad, y);
-        let key = ui.ctx().format_shortcut(&k);
+        let key = actions::key_text(ui.ctx(), &k);
         painter.text(at, egui::Align2::RIGHT_CENTER, key, font.clone(), weak);
     }
     let cat_left = key_left - if columns.1 > 0.0 { gap } else { 0.0 } - columns.0;
     let at = egui::pos2(cat_left, y);
-    let category = a.group.name();
+    let category = menu::category(a.act);
     painter.text(at, egui::Align2::LEFT_CENTER, category, font.clone(), weak);
     // The name after its submenu's, in the weak colour, cut short with … if it would reach
     // the category.
     let left = rect.left() + pad + 26.0;
     let mut job = egui::text::LayoutJob::default();
     let part = |colour| egui::TextFormat::simple(font.clone(), colour);
-    if !a.submenu.is_empty() {
-        job.append(&format!("{} › ", a.submenu), 0.0, part(weak));
+    if let Some(sub) = menu::submenu(a.act) {
+        job.append(&format!("{sub} › "), 0.0, part(weak));
     }
     job.append(a.label, 0.0, part(text));
     job.wrap = egui::text::TextWrapping::truncate_at_width((cat_left - gap - left).max(0.0));
@@ -6441,33 +6560,12 @@ fn palette_row(
     r
 }
 
-/// File > Open recent: the recent files that still exist, then Clear recent files.
-fn recent_menu(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
-    ui.add_enabled_ui(!recent.is_empty(), |ui| {
-        ui.menu_button("Open recent", |ui| {
-            for (i, path) in recent.iter().enumerate() {
-                let tip = path.display().to_string();
-                let row = egui::Button::new(file_name(path)).truncate();
-                if ui.add(row).on_hover_text(tip).clicked() {
-                    acts.push(Act::OpenRecent(i));
-                    ui.close();
-                }
-            }
-            ui.separator();
-            if ui.button("Clear recent files").clicked() {
-                acts.push(Act::ClearRecent);
-                ui.close();
-            }
-        });
-    });
-}
+use menu::file_name;
 
-/// A path's file name, or the whole path when it has none.
-fn file_name(path: &Path) -> String {
-    match path.file_name() {
-        Some(n) => n.to_string_lossy().into(),
-        None => path.display().to_string(),
-    }
+/// The spelling languages' names, in the Language menu's order, and which is chosen.
+fn language_names(ctx: &egui::Context) -> (Vec<String>, usize) {
+    let (langs, i) = crate::spell::languages(ctx);
+    (langs.into_iter().map(|l| l.name).collect(), i)
 }
 
 /// A tab whose document could not be shown: what happened, and ways out that don't
@@ -6573,7 +6671,7 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     ui.weak("or drop PDF and image files anywhere in this window");
     let keys = |a: Act| {
         let k = actions::get(a).keys[0];
-        ui.ctx().format_shortcut(&k)
+        actions::key_text(ui.ctx(), &k)
     };
     ui.weak(format!(
         "{} to open  ·  {} for all commands",
@@ -6887,7 +6985,7 @@ impl eframe::App for App {
                             .frame_when_inactive(false)
                             .min_size(egui::vec2(28.0, 28.0));
                         egui::containers::menu::MenuButton::from_button(file)
-                            .ui(ui, |ui| Self::menu(ui, &c, &recent, &mut acts))
+                            .ui(ui, |ui| menu::show(ui, &c, &recent, &mut acts))
                             .0
                             .on_hover_text("File: every command, by kind")
                             .widget_info(|| named("File"));
@@ -7455,11 +7553,11 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
             ));
         }
     }
-    out.push_str(
-        "\n\nTo also remove metadata, attachments and other hidden information, choose Document > \
-         Remove hidden information.\n\nSave the document to keep the changes; Undo brings \
-         everything back.",
-    );
+    out.push_str(&format!(
+        "\n\nTo also remove metadata, attachments and other hidden information, choose \
+         {}.\n\nSave the document to keep the changes; Undo brings everything back.",
+        menu::way(Act::RemoveHidden).trim_end_matches('…')
+    ));
     out
 }
 
@@ -7483,6 +7581,7 @@ mod tests {
     mod reduce;
     mod replace;
     mod review;
+    mod settings_window;
     mod sign;
     mod spelling;
     mod tabs;
@@ -7498,6 +7597,9 @@ mod tests {
     thread_local! {
         /// The file the save chooser gives next, once (see [`App::save_as`]).
         pub(super) static SAVE_AS: std::cell::Cell<Option<PathBuf>> =
+            const { std::cell::Cell::new(None) };
+        /// The folder the folder chooser gives next, once (see [`App::pick_folder`]).
+        pub(super) static FOLDER: std::cell::Cell<Option<PathBuf>> =
             const { std::cell::Cell::new(None) };
     }
 
@@ -7986,13 +8088,11 @@ mod tests {
             .flatten()
             .find(|n| n.to_lowercase().contains("digital") && *n != "Digital signatures");
         assert_eq!(digital, None);
-        // Signing and certifying are still in Document > Digital signatures.
+        // Signing and certifying are still in Forms and sign > Digital signatures.
         for act in [Act::SignDigital, Act::Certify] {
             let a = actions::get(act);
-            assert_eq!(
-                (a.group, a.submenu),
-                (Group::Document, "Digital signatures")
-            );
+            let path = menu::path(act).unwrap();
+            assert_eq!(path, ["Forms and sign", "Digital signatures", a.label]);
             app.act(&ctx, act);
             assert_eq!(app.tabs[0].ed.tool, Tool::DigitalSign);
             assert_eq!(app.tabs[0].ed.digital_certify, act == Act::Certify);
@@ -12791,7 +12891,7 @@ mod tests {
             let p = middle(&tree, name);
             ty.frame(&mut app, vec![egui::Event::PointerMoved(p)]);
             let tree = ty.pause(&mut app);
-            let key = ctx.format_shortcut(&actions::get(act).keys[0]);
+            let key = actions::key_text(&ctx, &actions::get(act).keys[0]);
             let why = format!("Not available now. Source Serif 4 has no {face}.");
             assert!(noted(&tree, &format!("{name} ({key})")), "{name}, {os:?}");
             assert!(noted(&tree, &why), "{name} on hover, {os:?}");
@@ -12901,7 +13001,7 @@ mod tests {
             let (r, _) = node(&tree, name).expect(name);
             ty.frame(&mut app, vec![egui::Event::PointerMoved(r.center())]);
             let tree = ty.pause(&mut app);
-            let key = ctx.format_shortcut(&actions::get(act).keys[0]);
+            let key = actions::key_text(&ctx, &actions::get(act).keys[0]);
             let tip = format!("{name} ({key})");
             assert!(says(&tree, &tip), "{name}'s tooltip, {os:?}");
             assert!(says(&tree, why), "{name}: no reason, {os:?}");
@@ -13413,6 +13513,15 @@ mod tests {
                     }),
                 ),
             ),
+            35 => (
+                "Settings".into(),
+                vec!["Close"],
+                Dialog::Settings(Box::new(dlg::Prefs {
+                    name: long.into(),
+                    folder: Some(PathBuf::from(format!("/home/sam/{long}"))),
+                    ..app.prefs(&egui::Context::default())
+                })),
+            ),
             _ => return None,
         };
         Some(q)
@@ -13568,7 +13677,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 35, "a question was left out");
+                assert_eq!(i, 36, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -13627,7 +13736,12 @@ mod tests {
                     assert!(!matches!(app.dialog, Dialog::None), "{at}: Enter answered");
                 }
                 let mut reached = Vec::new();
-                for _ in 0..buttons.len() + 12 {
+                // Settings' twenty choices come before its Close.
+                let presses = match app.dialog {
+                    Dialog::Settings(_) => 30,
+                    _ => buttons.len() + 12,
+                };
+                for _ in 0..presses {
                     let tree = dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Tab)]);
                     let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
                     reached.push(focus.and_then(|(_, n)| n.label()).map(str::to_string));
@@ -14493,7 +14607,9 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         app.tabs[0].set_encryption(password());
         app.act(&ctx, Act::SignDigital);
-        assert_eq!(message(&app), ("Sign with digital ID", PASSWORD_NOT_SIGNED));
+        let why = password_not_signed();
+        assert_eq!(message(&app), ("Sign with digital ID", why.as_str()));
+        assert!(why.contains("(Protect > Password security…)"), "{why}");
         assert!(app.tabs[0].ed.tool != Tool::DigitalSign);
         // Set after the place was chosen: refused when Sign is pressed, before asking where
         // to save the signed file.
@@ -14505,7 +14621,7 @@ mod tests {
         };
         let mut w = SignWindow::new(t.id, t.revision, place, "a box".into(), false, false);
         app.start_signing(&ctx, &mut w);
-        assert_eq!(w.error.as_deref(), Some(PASSWORD_NOT_SIGNED));
+        assert_eq!(w.error, Some(why));
         assert!(!w.busy());
         assert!(app.tabs[0].encryption.is_some());
     }
@@ -14577,8 +14693,7 @@ mod tests {
             ..signed_copy()
         };
         app.signed(&ctx, s, id, revision);
-        let ids = actions::get(Act::DigitalIds);
-        let way = format!("{} > {} > {}", ids.group.name(), ids.submenu, ids.label);
+        let way = menu::way(Act::DigitalIds);
         let text = message(&app).1;
         assert!(text.contains(&way), "{text}");
     }

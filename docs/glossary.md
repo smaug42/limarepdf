@@ -9,8 +9,8 @@ shape, drawing or stamp. Other apps can show, move or remove annotations. Flatte
 See [Comments and markup](comments-and-markup.md).
 
 **Arrow.** The tool for selecting, moving and resizing anything on the page, lines of page text and full-page
-scans included, one or several at a time; in Edit > Select (or ☰ > Tools > Select, move and resize objects). See
-[Editing text and pictures](content-editing.md#select-several-objects).
+scans included, one or several at a time; in Edit > Select (or ☰ > Edit > Select > Select, move and resize
+objects). See [Editing text and pictures](content-editing.md#select-several-objects).
 
 **Bates number.** A number stamped on every page of a set of documents, such as `ABC000123`, so that each page can
 be referred to exactly. Common in legal work.
@@ -31,7 +31,8 @@ form). A document can be certified only before anyone else signs it.
 and below them the buttons of the name chosen, in groups. This guide writes a button as name > button, such as
 Pages > Split. See [The command band](gui.md#the-command-band).
 
-**Command palette.** The list of every command, opened with Ctrl+Shift+P (⌘⇧P on a Mac): type to find one, Enter to run it.
+**Command search.** The list of every command, opened with Ctrl+Shift+P (⌘⇧P on a Mac) or ☰ > Help > Search
+commands…: type to find one, Enter to run it.
 
 **Compact commands.** The command band on one row of icons, which name themselves on hover. The small arrow at the
 right of the commands row, or View > Show > Compact commands, turns it on and off; windows under 600 points high

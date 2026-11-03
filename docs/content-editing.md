@@ -350,9 +350,9 @@ With the read tool:
 A picture or shape covering most of the page, such as a scanned page or a background, isn't selected by a click,
 so that clicking a scan doesn't pick it up. A drag that starts anywhere else still selects text.
 
-**The arrow** (**Edit > Select > Select, move and resize objects**, or ☰ > Tools > Select, move and resize objects)
-selects any object, page text and full-page pictures included: click to select, drag to move, drag a handle to
-resize (Shift keeps the proportions), and arrow keys to nudge.
+**The arrow** (**Edit > Select > Select, move and resize objects**, or ☰ > Edit > Select > Select, move and
+resize objects) selects any object, page text and full-page pictures included: click to select, drag to move,
+drag a handle to resize (Shift keeps the proportions), and arrow keys to nudge.
 
 Pictures, shapes and lines of text snap into line with the page and other objects as you drag them, a guide
 showing where; hold **Alt** (Option on a Mac) to place them freely (see [Line up objects](#line-up-objects)).

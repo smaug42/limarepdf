@@ -214,8 +214,8 @@ limarepdf-cli print report.pdf --booklet --booklet-sides backs
 
 ## Pages as images
 
-1. Select the pages to export (or none, for every page), and choose ☰ > **Export pages as images…**, which opens
-   **Export pages as images** in the inspector.
+1. Select the pages to export (or none, for every page), and choose ☰ > Export > **Export pages as images…**, which
+   opens **Export pages as images** in the inspector.
 2. Check the pages, and choose **PNG** or **JPEG** (and the JPEG quality), and the resolution.
 3. Press **Choose folder…** and pick where the files go.
 4. Close the tool with the × at the top of the inspector.
@@ -236,9 +236,9 @@ those fields.
 
 ## Text
 
-☰ > **Export text…** (or the command palette, Ctrl+Shift+P or ⌘⇧P) writes every page's text to a `.txt` file, with pages
-separated by form feeds, as pdftotext does. On the command line, `limarepdf-cli text` prints it. How the text is
-read, and its limits: [How text is read](reading-and-finding.md#how-text-is-read).
+☰ > Export > **Export text…** (or the command search, Ctrl+Shift+P or ⌘⇧P) writes every page's text to a
+`.txt` file, with pages separated by form feeds, as pdftotext does. On the command line, `limarepdf-cli text`
+prints it. How the text is read, and its limits: [How text is read](reading-and-finding.md#how-text-is-read).
 
 Word, Excel and CSV export are not available.
 

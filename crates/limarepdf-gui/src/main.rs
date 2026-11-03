@@ -19,6 +19,7 @@ mod inspector;
 #[cfg(target_os = "macos")]
 mod macos;
 mod markup;
+mod menu;
 mod page_text;
 mod panels;
 mod present;

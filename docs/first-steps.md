@@ -74,9 +74,10 @@ name, keeps it on). A tool's button clicked again turns it off, and Esc always r
 
 ## Find any command
 
-Press **Ctrl+Shift+P** to open the command palette. Type a few letters of what you want, such as "rotate", "watermark" or
-"split", and press Enter. The ☰ menu also has every command: File's own, then Edit, View, Tools, Pages, Document
-and Help.
+Press **Ctrl+Shift+P** to open the command search. Type a few letters of what you want, such as "rotate",
+"watermark" or "split", and press Enter. The ☰ menu also has every command: File's own, then one submenu for each
+name of the command band, in the same order (Edit, Insert, Review, Pages, Forms and sign, Protect, View), then
+Help and **Settings…**, where what is set for every document is in one place.
 
 ## Undo, save and keep your work safe
 

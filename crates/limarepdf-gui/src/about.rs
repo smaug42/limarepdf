@@ -7,7 +7,9 @@ use eframe::egui::{self, Align, Context, Layout, TextureHandle, TextureOptions, 
 
 const WEBSITE: &str = "https://github.com/smaug42/limarepdf";
 const LICENCE: &str = "https://github.com/smaug42/limarepdf/blob/main/docs/licence.md";
-const ISSUES: &str = "https://github.com/smaug42/limarepdf/issues";
+pub const ISSUES: &str = "https://github.com/smaug42/limarepdf/issues";
+/// The user guide's home page (Help > User guide).
+pub const GUIDE: &str = "https://github.com/smaug42/limarepdf/blob/main/docs/README.md";
 
 /// The people who made LimarePDF, and what they did.
 const CONTRIBUTORS: &[(&str, &str)] = &[

@@ -9,8 +9,8 @@ once. Every change here is one step to undo with Ctrl+Z. Shortcuts are written w
 
 ## See every page at once
 
-Choose **Pages > Organise**, or **Organise pages** at the right of the status bar (also ☰ > View > Organise pages
-and the command palette). The pages make way for a grid of cards, one for each page, as in a slide sorter: the
+Choose **Pages > Organise**, or **Organise pages** at the right of the status bar (also ☰ > Pages > Organise pages
+and the command search). The pages make way for a grid of cards, one for each page, as in a slide sorter: the
 page, with a checkbox and its name under it. The heading above the cards counts the pages and those selected,
 such as "12 pages · 4 selected", and so does the status bar ("4 of 12 pages selected"). The command band shows
 **Pages**, and the Pages view on the left folds away while you organise.
@@ -161,7 +161,7 @@ anything: **Replace** replaces them, **Cancel** writes no files at all.
 
 ## Remove blank pages
 
-**Pages > Delete ▾ > Remove blank pages** (or ☰ > Pages > Remove blank pages, or the command palette) deletes every
+**Pages > Delete ▾ > Remove blank pages** (or ☰ > Pages > Remove blank pages, or the command search) deletes every
 page that is one even colour, give or take scanner specks, faint show-through or a lone page number, and lists the
 pages it removed. Undo brings them back. A document whose pages are all blank is left alone.
 
@@ -204,8 +204,8 @@ the page has now. When a document has labels, the status bar shows the label wit
 stay with their pages when pages are deleted or moved.
 
 To have LimarePDF number every document's pages 1, 2, 3 from the first page instead, turn off View > Show > **Use
-the document's page labels** (also in ☰ > View). The labels stay in the document, and the status bar still shows
-them. The choice is remembered between runs.
+the document's page labels** (also in ☰ > View > Show). The labels stay in the document, and the status bar still
+shows them. The choice is remembered between runs.
 
 ## What removed pages leave behind
 

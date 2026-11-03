@@ -67,6 +67,48 @@ impl Band {
             Band::View => VIEW,
         }
     }
+
+    /// The commands its buttons and their menus run, in the band's order.
+    #[cfg(test)]
+    pub fn acts(self) -> Vec<Act> {
+        self.groups().iter().flat_map(Group::acts).collect()
+    }
+}
+
+impl Group {
+    /// The commands its buttons and their menus run, in order.
+    #[cfg(test)]
+    pub fn acts(&self) -> Vec<Act> {
+        let mut acts = Vec::new();
+        for i in self.items {
+            match i {
+                Item::Button(b) => acts.extend(b.act.iter().chain(b.menu)),
+                Item::Icons(a) => acts.extend(a.iter()),
+                Item::Font => {
+                    acts.extend([Act::Bold, Act::Italic, Act::Underline, Act::Strikethrough])
+                }
+                Item::Sign => acts.extend([
+                    Act::Tool(Tool::Sign),
+                    Act::CreateSign(SignRole::Signature),
+                    Act::CreateSign(SignRole::Initials),
+                ]),
+                Item::Marks => acts.extend(
+                    [
+                        Mark::Highlight,
+                        Mark::Underline,
+                        Mark::StrikeOut,
+                        Mark::Squiggly,
+                    ]
+                    .map(Act::Mark),
+                ),
+                Item::Spelling => {
+                    acts.extend([Act::Spelling, Act::SpellAsYouType, Act::AddDictionary])
+                }
+                Item::Planned(_) => {}
+            }
+        }
+        acts
+    }
 }
 
 /// A named group of commands in a band.
@@ -1265,23 +1307,7 @@ mod tests {
     /// openings, the band's name and a menu).
     #[test]
     fn everyday_commands_are_in_the_bands() {
-        let mut reach: Vec<Act> = Vec::new();
-        for band in Band::ALL {
-            for g in band.groups() {
-                for i in g.items {
-                    match i {
-                        Item::Button(b) => reach.extend(b.act.iter().chain(b.menu)),
-                        Item::Icons(acts) => reach.extend(acts.iter()),
-                        Item::Sign => reach.push(Act::Tool(Tool::Sign)),
-                        Item::Marks => reach.push(Act::Mark(Mark::Highlight)),
-                        Item::Spelling => {
-                            reach.extend([Act::Spelling, Act::SpellAsYouType, Act::AddDictionary])
-                        }
-                        Item::Font | Item::Planned(_) => {}
-                    }
-                }
-            }
-        }
+        let reach: Vec<Act> = Band::ALL.into_iter().flat_map(Band::acts).collect();
         // The rest: File's commands in the File menu, Undo and Redo beside it; the Font
         // group's styles; the marks and Create signature in Highlight's and Fill
         // and sign's own menus; what acts on a selection, or on a paragraph's marked
@@ -1289,7 +1315,7 @@ mod tests {
         // its field and its arrows (Find next and previous); and keys. Each is in the File
         // menu's groups too.
         let elsewhere = |a: Act| {
-            actions::get(a).group == actions::Group::File
+            crate::menu::category(a) == "File"
                 || matches!(
                     a,
                     Act::Undo
@@ -1332,6 +1358,8 @@ mod tests {
                         | Act::NextDocument
                         | Act::PrevDocument
                         | Act::Props
+                        | Act::UserGuide
+                        | Act::ReportProblem
                         | Act::About
                 )
         };

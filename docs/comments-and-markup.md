@@ -28,7 +28,7 @@ A selection across pages gets one highlight on each page, all in one undo step.
 ## Add a note or a text box
 
 **Review** in the command band holds the commenting tools: **Note**, **Text box**, **Draw** (the pen; its ▾ has
-rectangles, ellipses and lines) and **Stamp** (also in ☰ > Tools > Commenting).
+rectangles, ellipses and lines) and **Stamp** (also in ☰ > Review).
 
 **A note** (a sticky note with a comment):
 
@@ -131,7 +131,7 @@ Some things to know:
 ## See every comment, and reply
 
 The **Comments** view shows the document's annotations as cards under the name of their page, with replies
-indented under the comment they answer: click its icon on the left or **Review > Comments**, or choose ☰ > View >
+indented under the comment they answer: click its icon on the left or **Review > Comments**, or choose ☰ > Review >
 Comments. Each card shows who made it, what it is and when, and the first lines of its comment; a highlight or
 other text markup with no comment shows the words it marks. Hover over a card for the whole comment.
 
@@ -139,7 +139,7 @@ other text markup with no comment shows the words it marks. Hover over a card fo
 
 - **Click a card** to select its annotation and show it on the page. Selecting an annotation on the page selects its
   card too, and brings it into view.
-- **Previous and Next:** **Review > Previous** and **Review > Next** (or ☰ > View > Previous comment, Next comment)
+- **Previous and Next:** **Review > Previous** and **Review > Next** (or ☰ > Review > Previous comment, Next comment)
   select the comment before or after the one selected, in the order the Comments view shows them, and show it on
   the page. With nothing selected, Next starts from the page you are reading.
 - **Search** with the box at the top: the cards whose comment, replies or marked words hold what you type stay.
@@ -162,11 +162,12 @@ Replies are saved as standard reply comments, which aren't shown on the page or 
 ## Your name on comments
 
 New comments are saved with your name, which is the computer's user name until you set it with **Review >
-Comments ▾ > Your name for comments…** (or ☰ > Edit > Your name for comments…). Leave it empty to save no name.
+Comments ▾ > Your name for comments…** (or ☰ > Review > Your name for comments…, or ☰ > Settings…). Leave it
+empty to save no name.
 
 ## Flatten comments into the pages
 
-**Review > Flatten…** (or ☰ > Document > Flatten annotations…) draws all the annotations into the pages as they look
+**Review > Flatten…** (or ☰ > Review > Flatten annotations…) draws all the annotations into the pages as they look
 now and removes them, so they are no longer comments in any reader: they can't be changed or removed as comments.
 Their comment text is dropped. What was drawn is page content, so content editing can still move, resize or delete
 each as a whole ([Move, resize or delete](content-editing.md#move-resize-or-delete)). Links and form fields stay,

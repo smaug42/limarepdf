@@ -5,6 +5,7 @@
 use crate::editor::{Align, Aligns, Axis, TextAlign, Tool};
 use crate::icon;
 use crate::markup::{self, Mark};
+use crate::menu;
 use crate::selection::{ObjKind, Selection, Toward};
 use crate::settings::{Accent, Layout, PageLook};
 use crate::signing::SignPick;
@@ -270,6 +271,11 @@ pub enum Act {
     Watermark,
     Props,
     Security,
+    /// The Settings window (ENH-49): what is set for every document, in one place.
+    Settings,
+    /// Open the user guide, or the issues page to report a problem, in the browser.
+    UserGuide,
+    ReportProblem,
     About,
 }
 
@@ -432,43 +438,10 @@ impl Act {
             | Act::Security
             | Act::Scans
             | Act::Ocr
+            | Act::Settings
+            | Act::UserGuide
+            | Act::ReportProblem
             | Act::About => false,
-        }
-    }
-}
-
-/// Where a command is listed in the menu and the palette.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Group {
-    File,
-    Edit,
-    View,
-    Tools,
-    Pages,
-    Document,
-    Help,
-}
-
-impl Group {
-    pub const MENUS: [Group; 7] = [
-        Group::File,
-        Group::Edit,
-        Group::View,
-        Group::Tools,
-        Group::Pages,
-        Group::Document,
-        Group::Help,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Group::File => "File",
-            Group::Edit => "Edit",
-            Group::View => "View",
-            Group::Tools => "Tools",
-            Group::Pages => "Pages",
-            Group::Document => "Document",
-            Group::Help => "Help",
         }
     }
 }
@@ -596,7 +569,6 @@ pub struct Ctx {
 
 pub struct Action {
     pub act: Act,
-    pub group: Group,
     pub label: &'static str,
     /// Phosphor glyph, or "" for none.
     pub icon: &'static str,
@@ -607,14 +579,8 @@ pub struct Action {
     pub checked: Option<fn(&Ctx) -> bool>,
     /// Longer explanation, shown on hover.
     pub hint: &'static str,
-    /// Listed in the menu (otherwise only in the palette, the top bar or as a key).
-    pub menu: bool,
-    /// Listed in the command palette.
+    /// Listed in the command search. Where it is in the File menu is [`crate::menu`]'s.
     pub palette: bool,
-    /// Draw a separator above it in the menu.
-    pub sep: bool,
-    /// Submenu of its group's menu, or "".
-    pub submenu: &'static str,
 }
 
 fn always(_: &Ctx) -> bool {
@@ -799,25 +765,19 @@ const SPELLING_KEYS: &[KeyboardShortcut] = if cfg!(target_os = "macos") {
 /// shortcut, icon, hint or separator. Fields are overridden with struct update syntax.
 const BASE: Action = Action {
     act: Act::About,
-    group: Group::Help,
     label: "",
     icon: "",
     keys: &[],
     enabled: doc,
     checked: None,
     hint: "",
-    menu: true,
     palette: true,
-    sep: false,
-    submenu: "",
 };
 
-/// Menu order is table order within each group.
 pub static ACTIONS: &[Action] = &[
     // ---------------------------------------------------------------- File
     Action {
         act: Act::Open,
-        group: Group::File,
         label: "Open…",
         icon: icon::FOLDER_OPEN,
         keys: &[k(C, Key::O)],
@@ -826,7 +786,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::NewFromImages,
-        group: Group::File,
         label: "Make a PDF from images…",
         icon: icon::IMAGES,
         enabled: always,
@@ -834,7 +793,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Save,
-        group: Group::File,
         label: "Save",
         icon: icon::FLOPPY_DISK,
         keys: &[k(C, Key::S)],
@@ -842,14 +800,12 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::SaveAs,
-        group: Group::File,
         label: "Save As…",
         keys: &[k(CS, Key::S)],
         ..BASE
     },
     Action {
         act: Act::ReduceSize,
-        group: Group::File,
         label: "Reduce file size…",
         icon: icon::FILE_ARROW_UP,
         enabled: reducible,
@@ -858,7 +814,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Reload,
-        group: Group::File,
         label: "Reload from disk",
         icon: icon::ARROWS_CLOCKWISE,
         enabled: file,
@@ -868,23 +823,19 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ExportImages,
-        group: Group::File,
         label: "Export pages as images…",
         icon: icon::FILE_IMAGE,
         enabled: idle,
-        sep: true,
         ..BASE
     },
     Action {
         act: Act::ExportText,
-        group: Group::File,
         label: "Export text…",
         icon: icon::FILE_TEXT,
         ..BASE
     },
     Action {
         act: Act::Print,
-        group: Group::File,
         label: "Print…",
         icon: icon::PRINTER,
         keys: &[k(C, Key::P)],
@@ -893,7 +844,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::PrintPreview,
-        group: Group::File,
         label: "Print preview",
         icon: icon::PRINTER,
         keys: PREVIEW_KEYS,
@@ -903,16 +853,13 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::CloseTab,
-        group: Group::File,
         label: "Close tab",
         icon: icon::X,
         keys: &[k(C, Key::W)],
-        sep: true,
         ..BASE
     },
     Action {
         act: Act::ToggleRecovery,
-        group: Group::File,
         label: "Keep recovery copies of unsaved changes",
         icon: icon::LIFEBUOY,
         enabled: always,
@@ -921,22 +868,18 @@ pub static ACTIONS: &[Action] = &[
                behind, so that LimarePDF can offer it back if it stops without closing \
                normally. Your own files are never changed. Not for password-protected \
                documents.",
-        sep: true,
         ..BASE
     },
     Action {
         act: Act::Quit,
-        group: Group::File,
         label: "Quit",
         icon: icon::SIGN_OUT,
         enabled: always,
-        sep: true,
         ..BASE
     },
     // ---------------------------------------------------------------- Edit
     Action {
         act: Act::Undo,
-        group: Group::Edit,
         label: "Undo",
         icon: icon::ARROW_COUNTER_CLOCKWISE,
         keys: &[k(C, Key::Z)],
@@ -945,7 +888,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Redo,
-        group: Group::Edit,
         label: "Redo",
         icon: icon::ARROW_CLOCKWISE,
         keys: &[k(C, Key::Y), k(CS, Key::Z)],
@@ -954,12 +896,10 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Cut,
-        group: Group::Edit,
         label: "Cut",
         icon: icon::SCISSORS,
         keys: &[k(C, Key::X)],
         enabled: cuttable,
-        sep: true,
         hint: "Copy what is selected in the text being typed, else the selected words or \
                lines of text, and take it out. Undo brings it back. Pages selected are cut \
                to paste elsewhere in the document.",
@@ -967,7 +907,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Copy,
-        group: Group::Edit,
         label: "Copy text",
         icon: icon::COPY,
         keys: &[k(C, Key::C)],
@@ -978,7 +917,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Paste,
-        group: Group::Edit,
         label: "Paste",
         icon: icon::CLIPBOARD_TEXT,
         // Shown, not matched: the system sends the key as a paste (App::type_over).
@@ -991,7 +929,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::SelectAllText,
-        group: Group::Edit,
         label: "Select all text on the page",
         icon: icon::SELECTION_ALL,
         keys: &[k(C, Key::A)],
@@ -1000,7 +937,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::SelectAllObjects,
-        group: Group::Edit,
         label: "Select all on the page",
         icon: icon::SELECTION_ALL,
         keys: &[k(C, Key::A)],
@@ -1011,7 +947,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::SelectAllPages,
-        group: Group::Edit,
         label: "Select all pages",
         icon: icon::SELECTION_ALL,
         keys: &[k(C, Key::A)],
@@ -1020,17 +955,14 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Bold,
-        group: Group::Edit,
         label: "Bold",
         icon: icon::TEXT_B,
         keys: &[k(C, Key::B)],
         enabled: styleable,
-        sep: true,
         ..BASE
     },
     Action {
         act: Act::Italic,
-        group: Group::Edit,
         label: "Italic",
         icon: icon::TEXT_ITALIC,
         keys: &[k(C, Key::I)],
@@ -1039,7 +971,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Underline,
-        group: Group::Edit,
         label: "Underline",
         icon: icon::TEXT_UNDERLINE,
         keys: &[k(C, Key::U)],
@@ -1048,7 +979,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Strikethrough,
-        group: Group::Edit,
         label: "Strikethrough",
         icon: icon::TEXT_STRIKETHROUGH,
         keys: &[STRIKE_KEY],
@@ -1058,56 +988,46 @@ pub static ACTIONS: &[Action] = &[
     // Word's Paragraph group's alignments, with its keys (⌘ on a Mac, as Word for Mac).
     Action {
         act: Act::AlignText(TextAlign::Left),
-        group: Group::Edit,
         label: "Align left",
         icon: icon::TEXT_ALIGN_LEFT,
         keys: &[k(C, Key::L)],
         enabled: text_alignable,
         checked: Some(|c| c.text_align == Some(TextAlign::Left)),
-        sep: true,
         hint: "Line the paragraph's lines up along its left edge.",
-        submenu: "Align text",
         ..BASE
     },
     Action {
         act: Act::AlignText(TextAlign::Centre),
-        group: Group::Edit,
         label: "Centre",
         icon: icon::TEXT_ALIGN_CENTER,
         keys: &[k(C, Key::E)],
         enabled: text_alignable,
         checked: Some(|c| c.text_align == Some(TextAlign::Centre)),
         hint: "Centre the paragraph's lines between its edges.",
-        submenu: "Align text",
         ..BASE
     },
     Action {
         act: Act::AlignText(TextAlign::Right),
-        group: Group::Edit,
         label: "Align right",
         icon: icon::TEXT_ALIGN_RIGHT,
         keys: &[k(C, Key::R)],
         enabled: text_alignable,
         checked: Some(|c| c.text_align == Some(TextAlign::Right)),
         hint: "Line the paragraph's lines up along its right edge.",
-        submenu: "Align text",
         ..BASE
     },
     Action {
         act: Act::AlignText(TextAlign::Justified),
-        group: Group::Edit,
         label: "Justify",
         icon: icon::TEXT_ALIGN_JUSTIFY,
         keys: &[k(C, Key::J)],
         enabled: justifiable,
         checked: Some(|c| c.text_align == Some(TextAlign::Justified)),
         hint: "Spread the paragraph's lines from edge to edge, the last line left as it is.",
-        submenu: "Align text",
         ..BASE
     },
     Action {
         act: Act::PrintSelection,
-        group: Group::Edit,
         label: "Print selected text…",
         icon: icon::PRINTER,
         enabled: words_idle,
@@ -1115,7 +1035,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::SaveSelection,
-        group: Group::Edit,
         label: "Save selected text…",
         icon: icon::FLOPPY_DISK,
         enabled: words_idle,
@@ -1123,19 +1042,16 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Mark(Mark::Highlight),
-        group: Group::Edit,
         label: "Highlight",
         icon: icon::HIGHLIGHTER,
         keys: &[k(CS, Key::H)],
         enabled: words_idle,
-        sep: true,
         hint: "Highlight the selected text, in the colour last chosen.",
         ..BASE
     },
     // Comments marking the words, named apart from the Underline and Strikethrough styles.
     Action {
         act: Act::Mark(Mark::Underline),
-        group: Group::Edit,
         label: "Underline comment",
         icon: icon::TEXT_UNDERLINE,
         enabled: words_idle,
@@ -1145,7 +1061,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Mark(Mark::StrikeOut),
-        group: Group::Edit,
         label: "Strike-out comment",
         icon: icon::TEXT_STRIKETHROUGH,
         enabled: words_idle,
@@ -1155,7 +1070,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Mark(Mark::Squiggly),
-        group: Group::Edit,
         label: "Squiggly underline",
         icon: icon::WAVE_SINE,
         enabled: words_idle,
@@ -1163,17 +1077,14 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::MarkRedact,
-        group: Group::Edit,
         label: "Mark for redaction",
         icon: icon::EYE_SLASH,
         enabled: words_idle,
-        sep: true,
         hint: "Mark the selected text to be removed for good when the marks are applied.",
         ..BASE
     },
     Action {
         act: Act::MarkResultsRedact,
-        group: Group::Edit,
         label: "Mark all search results for redaction",
         icon: icon::EYE_SLASH,
         enabled: doc_idle,
@@ -1182,7 +1093,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::CommentName,
-        group: Group::Edit,
         label: "Your name for comments…",
         icon: icon::USER,
         enabled: always,
@@ -1191,18 +1101,15 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::EditObjectText,
-        group: Group::Edit,
         label: "Edit text",
         icon: icon::PENCIL_SIMPLE,
         enabled: doc_idle,
-        sep: true,
         hint: "Change the words of the selected line of page text. With none selected, click \
                a line to change it, or somewhere empty to add text.",
         ..BASE
     },
     Action {
         act: Act::MoveText,
-        group: Group::Edit,
         label: "Move or resize text",
         icon: icon::ARROWS_OUT_CARDINAL,
         enabled: fixed_text,
@@ -1212,7 +1119,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::EditParagraph,
-        group: Group::Edit,
         label: "Edit as paragraph",
         icon: icon::PARAGRAPH,
         enabled: doc_idle,
@@ -1223,7 +1129,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::JoinHyphen,
-        group: Group::Edit,
         label: "Join the hyphenated word",
         enabled: |c| c.hyphen,
         hint: "Take out the marked hyphen, which ended a line, making the word one.",
@@ -1231,7 +1136,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::KeepHyphen,
-        group: Group::Edit,
         label: "Keep the line-end hyphen",
         enabled: |c| c.hyphen,
         hint: "Keep the marked hyphen, which ended a line, as part of the word.",
@@ -1239,7 +1143,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ReplaceImage,
-        group: Group::Edit,
         label: "Replace image…",
         icon: icon::IMAGE,
         enabled: image_object,
@@ -1247,7 +1150,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::CopyObjectText,
-        group: Group::Edit,
         label: "Copy the selected text lines",
         icon: icon::COPY,
         enabled: lines_among,
@@ -1255,7 +1157,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::DeleteSelection,
-        group: Group::Edit,
         label: "Delete the selection",
         icon: icon::TRASH,
         keys: &[k(N, Key::Delete), k(N, Key::Backspace)],
@@ -1266,27 +1167,22 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::DeleteObject,
-        group: Group::Edit,
         label: "Delete the object",
         icon: icon::TRASH,
         enabled: object,
-        menu: false,
         palette: false,
         ..BASE
     },
     Action {
         act: Act::Find,
-        group: Group::Edit,
         label: "Find…",
         icon: icon::MAGNIFYING_GLASS,
         keys: &[k(C, Key::F)],
-        sep: true,
         ..BASE
     },
     // F3 as Windows and Linux apps have it, Ctrl+G (Cmd+G) as browsers and Mac apps do.
     Action {
         act: Act::FindNext,
-        group: Group::Edit,
         label: "Find next",
         icon: icon::CARET_DOWN,
         keys: &[k(N, Key::F3), k(C, Key::G)],
@@ -1295,7 +1191,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::FindPrevious,
-        group: Group::Edit,
         label: "Find previous",
         icon: icon::CARET_UP,
         keys: &[k(S, Key::F3), k(CS, Key::G)],
@@ -1304,7 +1199,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Replace,
-        group: Group::Edit,
         label: "Replace…",
         icon: icon::SWAP,
         // Ctrl on a Mac too, where Cmd+H hides the app, as Word for Mac has it.
@@ -1314,7 +1208,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ReplaceMatch,
-        group: Group::Edit,
         label: "Replace current match",
         icon: icon::SWAP,
         enabled: replaceable,
@@ -1323,7 +1216,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ReplaceAll,
-        group: Group::Edit,
         label: "Replace all matches…",
         icon: icon::SWAP,
         enabled: all_replaceable,
@@ -1332,7 +1224,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Escape,
-        group: Group::Edit,
         label: "Cancel or deselect",
         keys: &[k(N, Key::Escape)],
         enabled: any_tool,
@@ -1341,217 +1232,176 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Nudge(-1, 0),
-        group: Group::Edit,
         label: "Move left",
         keys: &[k(N, Key::ArrowLeft)],
         enabled: nudgeable,
         palette: false,
         hint: "One point; with Shift, ten.",
-        submenu: "Move selected object",
         ..BASE
     },
     Action {
         act: Act::Nudge(1, 0),
-        group: Group::Edit,
         label: "Move right",
         keys: &[k(N, Key::ArrowRight)],
         enabled: nudgeable,
         palette: false,
         hint: "One point; with Shift, ten.",
-        submenu: "Move selected object",
         ..BASE
     },
     Action {
         act: Act::Nudge(0, -1),
-        group: Group::Edit,
         label: "Move up",
         keys: &[k(N, Key::ArrowUp)],
         enabled: nudgeable,
         palette: false,
         hint: "One point; with Shift, ten.",
-        submenu: "Move selected object",
         ..BASE
     },
     Action {
         act: Act::Nudge(0, 1),
-        group: Group::Edit,
         label: "Move down",
         keys: &[k(N, Key::ArrowDown)],
         enabled: nudgeable,
         palette: false,
         hint: "One point; with Shift, ten.",
-        submenu: "Move selected object",
         ..BASE
     },
     // Word's Align menu, in its order: two or more objects line up by each other, one
     // alone by the page.
     Action {
         act: Act::Align(Align::Left),
-        group: Group::Edit,
         label: "Align left",
         icon: icon::ALIGN_LEFT,
         enabled: alignable,
         hint: "Line up the left edges of the selected objects, or put one alone at the \
                page's left edge.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::Align(Align::Centre),
-        group: Group::Edit,
         label: "Align centre",
         icon: icon::ALIGN_CENTER_HORIZONTAL,
         enabled: alignable,
         hint: "Line up the middles of the selected objects across, or centre one alone on \
                the page.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::Align(Align::Right),
-        group: Group::Edit,
         label: "Align right",
         icon: icon::ALIGN_RIGHT,
         enabled: alignable,
         hint: "Line up the right edges of the selected objects, or put one alone at the \
                page's right edge.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::Align(Align::Top),
-        group: Group::Edit,
         label: "Align top",
         icon: icon::ALIGN_TOP,
         enabled: alignable,
         hint: "Line up the tops of the selected objects, or put one alone at the top of \
                the page.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::Align(Align::Middle),
-        group: Group::Edit,
         label: "Align middle",
         icon: icon::ALIGN_CENTER_VERTICAL,
         enabled: alignable,
         hint: "Line up the middles of the selected objects down the page, or put one alone \
                halfway down it.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::Align(Align::Bottom),
-        group: Group::Edit,
         label: "Align bottom",
         icon: icon::ALIGN_BOTTOM,
         enabled: alignable,
         hint: "Line up the bottoms of the selected objects, or put one alone at the foot \
                of the page.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::Distribute(Axis::Across),
-        group: Group::Edit,
         label: "Distribute horizontally",
         icon: icon::COLUMNS,
         enabled: distributable,
-        sep: true,
         hint: "Space three or more selected objects evenly across, the outer two staying \
                where they are.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::Distribute(Axis::Down),
-        group: Group::Edit,
         label: "Distribute vertically",
         icon: icon::ROWS,
         enabled: distributable,
         hint: "Space three or more selected objects evenly down the page, the top and \
                bottom ones staying where they are.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::ToggleSnap,
-        group: Group::Edit,
         label: "Snap to objects",
         icon: icon::MAGNET,
         enabled: always,
         checked: Some(|c| c.snap),
-        sep: true,
         hint: "Pictures, shapes and text you move or resize line up with the edges and \
                middles of the page and of other objects, a guide showing. Hold Alt to place \
                them freely.",
-        submenu: "Align objects",
         ..BASE
     },
     Action {
         act: Act::Extend(Toward::Left),
-        group: Group::Edit,
         label: "To the word before",
         keys: &[k(S, Key::ArrowLeft)],
         enabled: words_selected,
         palette: false,
-        submenu: "Extend selected text",
         ..BASE
     },
     Action {
         act: Act::Extend(Toward::Right),
-        group: Group::Edit,
         label: "To the word after",
         keys: &[k(S, Key::ArrowRight)],
         enabled: words_selected,
         palette: false,
-        submenu: "Extend selected text",
         ..BASE
     },
     Action {
         act: Act::Extend(Toward::Up),
-        group: Group::Edit,
         label: "To the line above",
         keys: &[k(S, Key::ArrowUp)],
         enabled: words_selected,
         palette: false,
-        submenu: "Extend selected text",
         ..BASE
     },
     Action {
         act: Act::Extend(Toward::Down),
-        group: Group::Edit,
         label: "To the line below",
         keys: &[k(S, Key::ArrowDown)],
         enabled: words_selected,
         palette: false,
-        submenu: "Extend selected text",
         ..BASE
     },
     Action {
         act: Act::Extend(Toward::LineStart),
-        group: Group::Edit,
         label: "To the start of the line",
         keys: &[k(S, Key::Home)],
         enabled: words_selected,
         palette: false,
-        submenu: "Extend selected text",
         ..BASE
     },
     Action {
         act: Act::Extend(Toward::LineEnd),
-        group: Group::Edit,
         label: "To the end of the line",
         keys: &[k(S, Key::End)],
         enabled: words_selected,
         palette: false,
-        submenu: "Extend selected text",
         ..BASE
     },
     // ---------------------------------------------------------------- View
     Action {
         act: Act::ZoomIn,
-        group: Group::View,
         label: "Zoom in",
         icon: icon::MAGNIFYING_GLASS_PLUS,
         keys: &[k(C, Key::Equals)],
@@ -1559,7 +1409,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ZoomOut,
-        group: Group::View,
         label: "Zoom out",
         icon: icon::MAGNIFYING_GLASS_MINUS,
         keys: &[k(C, Key::Minus)],
@@ -1567,7 +1416,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::FitWidth,
-        group: Group::View,
         label: "Fit width",
         icon: icon::ARROWS_OUT,
         keys: &[k(C, Key::Num0)],
@@ -1578,17 +1426,14 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Actual,
-        group: Group::View,
         label: "Actual size",
         keys: &[k(C, Key::Num1)],
         ..BASE
     },
     Action {
         act: Act::Organise,
-        group: Group::View,
         label: "Organise pages",
         icon: icon::SQUARES_FOUR,
-        sep: true,
         checked: Some(|c| c.organise),
         hint: "Every page as a card, to select, move, turn, take out and delete pages; again \
                for the pages as they read.",
@@ -1596,117 +1441,92 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::NextPage,
-        group: Group::View,
         label: "Next page",
         keys: &[k(N, Key::PageDown)],
-        sep: true,
-        submenu: "Go to page",
         ..BASE
     },
     Action {
         act: Act::PrevPage,
-        group: Group::View,
         label: "Previous page",
         keys: &[k(N, Key::PageUp)],
-        submenu: "Go to page",
         ..BASE
     },
     Action {
         act: Act::FirstPage,
-        group: Group::View,
         label: "First page",
         keys: &[k(N, Key::Home)],
-        submenu: "Go to page",
         ..BASE
     },
     Action {
         act: Act::LastPage,
-        group: Group::View,
         label: "Last page",
         keys: &[k(N, Key::End)],
-        submenu: "Go to page",
         ..BASE
     },
     Action {
         act: Act::NextDocument,
-        group: Group::View,
         label: "Next document",
         keys: &[k(CT, Key::Tab), k(CT, Key::F6)],
         enabled: other_docs,
         hint: "Bring the open document after this one to the front, the first after the last.",
-        submenu: "Go to document",
         ..BASE
     },
     Action {
         act: Act::PrevDocument,
-        group: Group::View,
         label: "Previous document",
         keys: &[k(CTS, Key::Tab), k(CTS, Key::F6)],
         enabled: other_docs,
         hint: "Bring the open document before this one to the front, the last before the \
                first.",
-        submenu: "Go to document",
         ..BASE
     },
     Action {
         act: Act::Layout(Layout::Continuous),
-        group: Group::View,
         label: "Continuous pages",
         icon: icon::ROWS,
         enabled: always,
         checked: Some(|c| c.layout == Layout::Continuous),
         hint: "One column of pages, scrolling through the document.",
-        submenu: "Page layout",
         ..BASE
     },
     Action {
         act: Act::Layout(Layout::Facing),
-        group: Group::View,
         label: "Facing pages",
         icon: icon::BOOK_OPEN,
         enabled: always,
         checked: Some(|c| c.layout == Layout::Facing),
         hint: "Two pages side by side, scrolling through the document.",
-        submenu: "Page layout",
         ..BASE
     },
     Action {
         act: Act::Layout(Layout::Single),
-        group: Group::View,
         label: "Single page",
         icon: icon::FILE,
         enabled: always,
         checked: Some(|c| c.layout == Layout::Single),
         hint: "One page at a time. Scrolling past its top or bottom turns the page.",
-        submenu: "Page layout",
         ..BASE
     },
     Action {
         act: Act::ToggleCover,
-        group: Group::View,
         label: "Show cover page alone",
         enabled: |c| c.layout == Layout::Facing,
         checked: Some(|c| c.cover),
         hint: "In facing pages, show the first page on its own, as in a book, so even \
                pages are on the left. Off pairs the first page with the second.",
-        sep: true,
-        submenu: "Page layout",
         ..BASE
     },
     Action {
         act: Act::ToggleSide,
-        group: Group::View,
         label: "Navigation panel",
         icon: icon::SIDEBAR_SIMPLE,
         enabled: always,
         checked: Some(|c| c.side),
-        sep: true,
         hint: "The panel on the left: pages, search results, bookmarks and comments.",
         ..BASE
     },
     Action {
         act: Act::PagesView,
-        group: Group::View,
         label: "Pages",
         icon: icon::FILES,
         hint: "Show the page thumbnails in the navigation panel.",
@@ -1714,7 +1534,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::SearchView,
-        group: Group::View,
         label: "Search results",
         icon: icon::LIST_MAGNIFYING_GLASS,
         hint: "Show the results of the last search in the navigation panel.",
@@ -1722,7 +1541,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Bookmarks,
-        group: Group::View,
         label: "Bookmarks",
         icon: icon::BOOKMARK_SIMPLE,
         hint: "Show the document's outline in the navigation panel.",
@@ -1730,7 +1548,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Comments,
-        group: Group::View,
         label: "Comments",
         icon: icon::CHAT_TEXT,
         hint: "List the document's comments, notes and markup in the navigation panel.",
@@ -1738,7 +1555,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Spelling,
-        group: Group::Tools,
         label: "Spelling",
         icon: icon::TEXT_AA,
         keys: SPELLING_KEYS,
@@ -1749,7 +1565,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::SpellAsYouType,
-        group: Group::Tools,
         label: "Check spelling as you type",
         checked: Some(|c| c.spelling),
         hint: "Mark the words spelt wrongly in the text you type.",
@@ -1757,7 +1572,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::AddDictionary,
-        group: Group::Tools,
         label: "Add a dictionary…",
         hint: "Add a spelling dictionary for another language: a LibreOffice dictionary \
                extension (.oxt), or a Hunspell dictionary's two files (.dic and .aff).",
@@ -1765,7 +1579,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::PrevComment,
-        group: Group::View,
         label: "Previous comment",
         icon: icon::CARET_UP,
         hint: "Select the comment before this one, as the Comments view lists them, and \
@@ -1774,7 +1587,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::NextComment,
-        group: Group::View,
         label: "Next comment",
         icon: icon::CARET_DOWN,
         hint: "Select the comment after this one, as the Comments view lists them, and \
@@ -1783,7 +1595,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ToggleInspector,
-        group: Group::View,
         label: "Inspector",
         icon: icon::SLIDERS_HORIZONTAL,
         enabled: always,
@@ -1794,7 +1605,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ToggleDock,
-        group: Group::View,
         label: "Selection controls on the right",
         icon: icon::SIDEBAR_SIMPLE,
         enabled: always,
@@ -1805,7 +1615,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ToggleHidden,
-        group: Group::View,
         label: "Show recognised text",
         checked: Some(|c| c.hidden_text),
         hint: "Outline the invisible text added by OCR. Hover to read it; select it with \
@@ -1814,7 +1623,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::TogglePageLabels,
-        group: Group::View,
         label: "Use the document's page labels",
         enabled: always,
         checked: Some(|c| c.page_labels),
@@ -1825,7 +1633,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::TogglePlanned,
-        group: Group::View,
         label: "Show planned features",
         icon: icon::EYE,
         enabled: always,
@@ -1835,7 +1642,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ToggleCompact,
-        group: Group::View,
         label: "Compact commands",
         icon: icon::CARET_UP,
         enabled: always,
@@ -1846,7 +1652,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ToggleFields,
-        group: Group::View,
         label: "Highlight fields",
         enabled: |c| c.form,
         checked: Some(|c| c.fields_shown),
@@ -1855,156 +1660,125 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::NextField,
-        group: Group::View,
         label: "Next field",
         enabled: |c| c.form,
         hint: "Tab also moves to the next field.",
-        submenu: "Form fields",
         ..BASE
     },
     Action {
         act: Act::PrevField,
-        group: Group::View,
         label: "Previous field",
         enabled: |c| c.form,
         hint: "Shift+Tab also moves to the previous field.",
-        submenu: "Form fields",
         ..BASE
     },
     Action {
         act: Act::ClearField,
-        group: Group::Edit,
         label: "Clear field",
         enabled: |c| c.field,
-        sep: true,
         hint: "Empty the form field being filled in.",
         ..BASE
     },
     Action {
         act: Act::Theme(ThemePreference::System),
-        group: Group::View,
         label: "System",
         enabled: always,
         checked: Some(|c| c.theme == ThemePreference::System),
-        submenu: "Theme",
         ..BASE
     },
     Action {
         act: Act::Theme(ThemePreference::Light),
-        group: Group::View,
         label: "Light",
         enabled: always,
         checked: Some(|c| c.theme == ThemePreference::Light),
-        submenu: "Theme",
         ..BASE
     },
     Action {
         act: Act::Theme(ThemePreference::Dark),
-        group: Group::View,
         label: "Dark",
         enabled: always,
         checked: Some(|c| c.theme == ThemePreference::Dark),
-        submenu: "Theme",
         ..BASE
     },
     Action {
         act: Act::Accent(Accent::Desktop),
-        group: Group::View,
         label: "Desktop",
         enabled: always,
         checked: Some(|c| c.accent == Accent::Desktop),
         hint: "The accent colour your desktop uses, where it says one; else LimarePDF's.",
-        submenu: "Accent colour",
         ..BASE
     },
     Action {
         act: Act::Accent(Accent::LimarePdf),
-        group: Group::View,
         label: "LimarePDF",
         enabled: always,
         checked: Some(|c| c.accent == Accent::LimarePdf),
         hint: "LimarePDF's own teal.",
-        submenu: "Accent colour",
         ..BASE
     },
     Action {
         act: Act::PageColours(PageLook::Fixed(PageColours::Normal)),
-        group: Group::View,
         label: "Normal",
         enabled: always,
         checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Normal)),
         hint: "Pages in their own colours.",
-        submenu: "Page colours",
         ..BASE
     },
     Action {
         act: Act::PageColours(PageLook::Automatic),
-        group: Group::View,
         label: "Automatic",
         enabled: always,
         checked: Some(|c| c.page_look == PageLook::Automatic),
         hint: "Dark pages while the app's theme is dark, normal pages while it is light.",
-        submenu: "Page colours",
         ..BASE
     },
     Action {
         act: Act::PageColours(PageLook::Fixed(PageColours::Dark)),
-        group: Group::View,
         label: "Dark",
         enabled: always,
         checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Dark)),
         hint: "Dark grey paper and light text, colours kept. Only how pages look on \
                screen: the file, printing and exports keep their colours.",
-        submenu: "Page colours",
         ..BASE
     },
     Action {
         act: Act::PageColours(PageLook::Fixed(PageColours::HighContrast)),
-        group: Group::View,
         label: "High contrast",
         enabled: always,
         checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::HighContrast)),
         hint: "White text on black, in greys. Only how pages look on screen.",
-        submenu: "Page colours",
         ..BASE
     },
     Action {
         act: Act::PageColours(PageLook::Fixed(PageColours::Sepia)),
-        group: Group::View,
         label: "Sepia",
         enabled: always,
         checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Sepia)),
         hint: "Warm paper and dark brown text. Only how pages look on screen.",
-        submenu: "Page colours",
         ..BASE
     },
     Action {
         act: Act::TogglePicturesToo,
-        group: Group::View,
         label: "Recolour pictures too",
         enabled: always,
         checked: Some(|c| c.pictures_too),
         hint: "Off leaves photos and other pictures in their own colours. A scanned page \
                is one picture, so turn this on to recolour scans.",
-        sep: true,
-        submenu: "Page colours",
         ..BASE
     },
     Action {
         act: Act::Palette,
-        group: Group::View,
-        label: "Command palette…",
+        // As the guide calls it.
+        label: "Search commands…",
         icon: icon::COMMAND,
         // Ctrl+K inserts a link, as in word processors (ENH-17's Q1).
         keys: &[k(CS, Key::P)],
         enabled: always,
         palette: false,
-        sep: true,
         ..BASE
     },
     Action {
         act: Act::NextRegion,
-        group: Group::View,
         label: "Next region",
         keys: &[k(N, Key::F6)],
         enabled: always,
@@ -2015,7 +1789,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::PrevRegion,
-        group: Group::View,
         label: "Previous region",
         keys: &[k(Modifiers::SHIFT, Key::F6)],
         enabled: always,
@@ -2026,7 +1799,6 @@ pub static ACTIONS: &[Action] = &[
     // --------------------------------------------------------------- Tools
     Action {
         act: Act::Tool(Tool::Read),
-        group: Group::Tools,
         label: "Read and select text",
         icon: icon::CURSOR_TEXT,
         hint: "Select and copy text, fill in forms and follow links; double-click page text to \
@@ -2035,7 +1807,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Tool(Tool::Select),
-        group: Group::Tools,
         label: "Select, move and resize objects",
         icon: icon::CURSOR,
         hint: "Click an object to select it. Drag to move, drag the handles to resize (Shift \
@@ -2044,16 +1815,13 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Tool(Tool::Text),
-        group: Group::Tools,
         label: "Add text",
         icon: icon::TEXT_T,
-        sep: true,
         hint: "Click on the page where the text should start, and type.",
         ..BASE
     },
     Action {
         act: Act::Tool(Tool::Image),
-        group: Group::Tools,
         label: "Add image…",
         icon: icon::IMAGE,
         hint: "Choose a picture, then drag a box on the page or click to place it.",
@@ -2062,7 +1830,6 @@ pub static ACTIONS: &[Action] = &[
     // Links (ENH-17): Ctrl+K, as in Word, LibreOffice and Google Docs.
     Action {
         act: Act::Link,
-        group: Group::Tools,
         label: "Link…",
         icon: icon::LINK,
         keys: &[k(C, Key::K)],
@@ -2073,47 +1840,38 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::EditLink,
-        group: Group::Tools,
         label: "Edit link…",
         icon: icon::PENCIL_SIMPLE,
         enabled: |c| c.link && !c.busy,
-        submenu: "Selected link",
         hint: "Change where the selected link goes, or how it looks.",
         ..BASE
     },
     Action {
         act: Act::OpenLink,
-        group: Group::Tools,
         label: "Open link",
         icon: icon::ARROW_SQUARE_OUT,
         enabled: |c| c.link && c.link_opens,
-        submenu: "Selected link",
         hint: "Go where the selected link goes. A web or email address is asked about first.",
         ..BASE
     },
     Action {
         act: Act::CopyLinkAddress,
-        group: Group::Tools,
         label: "Copy link address",
         icon: icon::COPY,
         enabled: |c| c.link && c.link_address,
-        submenu: "Selected link",
         hint: "Copy the selected link's web or email address.",
         ..BASE
     },
     Action {
         act: Act::RemoveLink,
-        group: Group::Tools,
         label: "Remove link",
         icon: icon::TRASH,
         enabled: |c| c.link && !c.busy,
-        submenu: "Selected link",
         hint: "Remove the selected link. The page itself stays as it is.",
         ..BASE
     },
     Action {
         act: Act::Tool(Tool::Redact),
-        group: Group::Tools,
         label: "Mark areas for redaction",
         icon: icon::EYE_SLASH,
         hint: "Drag a box over anything to remove. Nothing is removed until the marks are \
@@ -2122,7 +1880,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Tool(Tool::Sign),
-        group: Group::Tools,
         label: "Fill and sign",
         icon: icon::SIGNATURE,
         hint: "Put your signature, initials, the date or a tick on the page: click to put it \
@@ -2131,7 +1888,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::CreateSign(SignRole::Signature),
-        group: Group::Tools,
         label: "Create signature…",
         hint: "Draw, type or pick a picture of your signature, then put it on the page \
                with Fill and sign.",
@@ -2139,7 +1895,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::CreateSign(SignRole::Initials),
-        group: Group::Tools,
         label: "Create initials…",
         hint: "Draw, type or pick a picture of your initials, then put them on the page \
                with Fill and sign.",
@@ -2147,86 +1902,68 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Tool(Tool::Note),
-        group: Group::Tools,
         label: "Add a note",
         icon: icon::NOTE,
-        sep: true,
-        submenu: "Commenting",
         hint: "Click on the page to place a note and type its comment.",
         ..BASE
     },
     Action {
         act: Act::Tool(Tool::TextBox),
-        group: Group::Tools,
         label: "Add a text box",
         icon: icon::TEXTBOX,
-        submenu: "Commenting",
         hint: "Drag a box on the page, or click for a default size, then type.",
         ..BASE
     },
     Action {
         act: Act::Tool(Tool::Rect),
-        group: Group::Tools,
         label: "Add a rectangle",
         icon: icon::SQUARE,
-        submenu: "Commenting",
         hint: "Drag on the page, or click for a default size. Shift keeps squares.",
         ..BASE
     },
     Action {
         act: Act::Tool(Tool::Ellipse),
-        group: Group::Tools,
         label: "Add an ellipse",
         icon: icon::CIRCLE,
-        submenu: "Commenting",
         hint: "Drag on the page, or click for a default size. Shift keeps circles.",
         ..BASE
     },
     Action {
         act: Act::Tool(Tool::Line),
-        group: Group::Tools,
         label: "Add a line or arrow",
         icon: icon::LINE_SEGMENT,
-        submenu: "Commenting",
         hint: "Drag on the page, or click for a default length. Shift keeps 45° steps.",
         ..BASE
     },
     Action {
         act: Act::Tool(Tool::Pen),
-        group: Group::Tools,
         label: "Draw with the pen",
         icon: icon::SCRIBBLE,
-        submenu: "Commenting",
         hint: "Drag to draw. Strokes made close together become one drawing.",
         ..BASE
     },
     Action {
         act: Act::Tool(Tool::Stamp),
-        group: Group::Tools,
         label: "Add a stamp",
         icon: icon::STAMP,
-        submenu: "Commenting",
         hint: "Click on the page to put the stamp down, or drag a box to size it.",
         ..BASE
     },
     // ------------------------------------------------------------ Document
     Action {
         act: Act::RotR,
-        group: Group::Pages,
         label: "Rotate clockwise",
         icon: icon::ARROW_CLOCKWISE,
         ..BASE
     },
     Action {
         act: Act::RotL,
-        group: Group::Pages,
         label: "Rotate counter-clockwise",
         icon: icon::ARROW_COUNTER_CLOCKWISE,
         ..BASE
     },
     Action {
         act: Act::Crop,
-        group: Group::Pages,
         label: "Crop pages…",
         icon: icon::CROP,
         hint: "Trim the margins of the selected pages, or all pages.",
@@ -2234,7 +1971,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Delete,
-        group: Group::Pages,
         label: "Delete pages",
         icon: icon::TRASH,
         hint: "The selected pages, or the current page. Undo brings them back.",
@@ -2242,7 +1978,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::RemoveBlank,
-        group: Group::Pages,
         label: "Remove blank pages",
         icon: icon::BROOM,
         hint: "Pages of one even colour, give or take specks or a lone page number. Undo brings them back.",
@@ -2251,7 +1986,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Extract,
-        group: Group::Pages,
         label: "Extract pages to a new tab",
         icon: icon::ARROW_SQUARE_OUT,
         hint: "The selected pages, or the current page.",
@@ -2259,8 +1993,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Blank,
-        group: Group::Pages,
-        sep: true,
         label: "Insert blank page",
         icon: icon::FILE_PLUS,
         hint: "Where the insertion bar is in Organise, else after the selected pages or the \
@@ -2269,7 +2001,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::InsertImages,
-        group: Group::Pages,
         label: "Insert images…",
         icon: icon::IMAGES,
         hint: "Where the insertion bar is in Organise, else after the selected pages or the \
@@ -2278,7 +2009,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::InsertPdf,
-        group: Group::Pages,
         label: "Insert PDF pages…",
         icon: icon::FILE_PDF,
         hint: "The pages of other PDFs, where the insertion bar is in Organise, else after \
@@ -2289,83 +2019,66 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::MovePages(PageMove::Earlier),
-        group: Group::Pages,
         label: "Earlier",
         keys: &[k(AS, Key::ArrowLeft)],
         enabled: pages_selected,
         hint: "The selected pages, one place earlier.",
-        submenu: "Move pages",
-        sep: true,
         ..BASE
     },
     Action {
         act: Act::MovePages(PageMove::Later),
-        group: Group::Pages,
         label: "Later",
         keys: &[k(AS, Key::ArrowRight)],
         enabled: pages_selected,
         hint: "The selected pages, one place later.",
-        submenu: "Move pages",
         ..BASE
     },
     Action {
         act: Act::MovePages(PageMove::Up),
-        group: Group::Pages,
         label: "Up a row",
         keys: &[k(AS, Key::ArrowUp)],
         enabled: pages_selected,
         hint: "The selected pages, a row up in Organise; one place earlier in the thumbnails.",
-        submenu: "Move pages",
         ..BASE
     },
     Action {
         act: Act::MovePages(PageMove::Down),
-        group: Group::Pages,
         label: "Down a row",
         keys: &[k(AS, Key::ArrowDown)],
         enabled: pages_selected,
         hint: "The selected pages, a row down in Organise; one place later in the thumbnails.",
-        submenu: "Move pages",
         ..BASE
     },
     Action {
         act: Act::MovePages(PageMove::Start),
-        group: Group::Pages,
         label: "To the start",
         keys: &[k(AS, Key::Home)],
         enabled: pages_selected,
         hint: "The selected pages, before the first page.",
-        submenu: "Move pages",
         ..BASE
     },
     Action {
         act: Act::MovePages(PageMove::End),
-        group: Group::Pages,
         label: "To the end",
         keys: &[k(AS, Key::End)],
         enabled: pages_selected,
         hint: "The selected pages, after the last page.",
-        submenu: "Move pages",
         ..BASE
     },
     Action {
         act: Act::Scans,
-        group: Group::Document,
         label: "Optimise scanned pages…",
         enabled: idle,
         ..BASE
     },
     Action {
         act: Act::Ocr,
-        group: Group::Document,
         label: "Recognise text (OCR)…",
         enabled: idle,
         ..BASE
     },
     Action {
         act: Act::Merge,
-        group: Group::Pages,
-        sep: true,
         label: "Append PDFs…",
         icon: icon::STACK_PLUS,
         // Files are read in the background, one append at a time.
@@ -2374,42 +2087,33 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Split,
-        group: Group::Pages,
         label: "Split into files…",
         ..BASE
     },
     Action {
         act: Act::PageLabels,
-        group: Group::Pages,
         label: "Page labels…",
-        sep: true,
         hint: "Number pages your own way, such as i, ii, iii then 1, 2, 3, from the selected \
                pages or the current one.",
         ..BASE
     },
     Action {
         act: Act::HeaderFooter,
-        group: Group::Document,
         label: "Headers, footers, Bates…",
-        sep: true,
         ..BASE
     },
     Action {
         act: Act::Watermark,
-        group: Group::Document,
         label: "Watermark…",
         ..BASE
     },
     Action {
         act: Act::Props,
-        group: Group::Document,
         label: "Properties…",
-        sep: true,
         ..BASE
     },
     Action {
         act: Act::ResetForm,
-        group: Group::Document,
         label: "Reset form",
         enabled: |c| c.form && !c.busy,
         hint: "Put every field back to its default value. Can be undone.",
@@ -2417,7 +2121,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::FlattenForm,
-        group: Group::Document,
         label: "Flatten form…",
         enabled: |c| c.form && !c.busy,
         hint: "Make the fields part of the pages, as they look now, so they can't be \
@@ -2426,7 +2129,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::FlattenAnnots,
-        group: Group::Document,
         label: "Flatten annotations…",
         enabled: |c| c.doc && !c.busy,
         hint: "Make comments, notes, highlights and drawings part of the pages, as they \
@@ -2435,7 +2137,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::ApplyRedactions,
-        group: Group::Document,
         label: "Apply redactions…",
         icon: icon::EYE_SLASH,
         enabled: marked,
@@ -2445,7 +2146,6 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::FinishSigning,
-        group: Group::Document,
         label: "Finish signing…",
         icon: icon::SIGNATURE,
         enabled: signing,
@@ -2455,80 +2155,88 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::RemoveHidden,
-        group: Group::Document,
         label: "Remove hidden information…",
         icon: icon::BROOM,
         enabled: doc_idle,
-        sep: true,
         hint: "Remove metadata, scripts, attachments, hidden layers and other information that \
                travels with the file but isn't on its pages.",
         ..BASE
     },
     Action {
         act: Act::Security,
-        group: Group::Document,
         label: "Password security…",
         ..BASE
     },
     Action {
         act: Act::Signatures,
-        group: Group::Document,
         label: "Signatures in this document",
         icon: icon::SEAL_CHECK,
-        sep: true,
         hint: "List the document's digital signatures and whether they are valid.",
-        submenu: "Digital signatures",
         ..BASE
     },
     Action {
         act: Act::SignDigital,
-        group: Group::Document,
         label: "Sign with digital ID…",
         icon: icon::SEAL_CHECK,
         enabled: signable,
-        sep: true,
         hint: "Sign so that others can check who signed and whether anything changed \
                afterwards. The signed document is saved as a new file.",
-        submenu: "Digital signatures",
         ..BASE
     },
     Action {
         act: Act::Certify,
-        group: Group::Document,
         label: "Certify…",
         icon: icon::CERTIFICATE,
         enabled: signable,
         hint: "Sign as the document's author, choosing what others may change afterwards. \
                Only before anyone has signed it.",
-        submenu: "Digital signatures",
         ..BASE
     },
     Action {
         act: Act::DigitalIds,
-        group: Group::Document,
         label: "Digital IDs…",
         icon: icon::IDENTIFICATION_CARD,
         enabled: always,
-        sep: true,
         hint: "Create, import, export or remove the digital IDs you sign documents with.",
-        submenu: "Digital signatures",
         ..BASE
     },
     Action {
         act: Act::TrustedCertificates,
-        group: Group::Document,
         label: "Trusted certificates…",
         icon: icon::CERTIFICATE,
         enabled: always,
         hint: "The signers and certificate authorities you trust when LimarePDF checks digital \
                signatures.",
-        submenu: "Digital signatures",
+        ..BASE
+    },
+    Action {
+        act: Act::Settings,
+        label: "Settings…",
+        icon: icon::GEAR_SIX,
+        // As in Firefox, Chrome, VS Code and macOS apps.
+        keys: &[k(C, Key::Comma)],
+        enabled: always,
         ..BASE
     },
     // ---------------------------------------------------------------- Help
     Action {
+        act: Act::UserGuide,
+        label: "User guide",
+        icon: icon::BOOK_OPEN_TEXT,
+        hint: "Opens LimarePDF's guide in your browser.",
+        enabled: always,
+        ..BASE
+    },
+    Action {
+        act: Act::ReportProblem,
+        label: "Report a problem",
+        icon: icon::BUG,
+        hint: "Opens LimarePDF's issues page in your browser.",
+        enabled: always,
+        ..BASE
+    },
+    Action {
         act: Act::About,
-        group: Group::Help,
         label: "About",
         enabled: always,
         ..BASE
@@ -2566,15 +2274,17 @@ pub fn shortcuts() -> Vec<(&'static Action, KeyboardShortcut)> {
 /// name, if it has one ("Theme: Dark", "Page colours: Dark"), so commands of the same
 /// label tell apart. The palette shows it as "Theme › Dark".
 pub fn spoken_title(a: &Action) -> String {
-    match a.submenu {
-        "" => a.label.to_string(),
-        sub => format!("{sub}: {}", a.label),
+    match menu::submenu(a.act) {
+        None => a.label.to_string(),
+        Some(sub) => format!("{sub}: {}", a.label),
     }
 }
 
-/// Whether every word of `query` appears in the command's label, submenu or group name.
+/// Whether every word of `query` appears in the command's label, or the names of the menu
+/// and submenu it is in.
 pub fn matches(a: &Action, query: &str) -> bool {
-    let hay = format!("{} {} {}", a.label, a.submenu, a.group.name()).to_lowercase();
+    let sub = menu::submenu(a.act).unwrap_or_default();
+    let hay = format!("{} {sub} {}", a.label, menu::category(a.act)).to_lowercase();
     query
         .to_lowercase()
         .split_whitespace()
@@ -2669,6 +2379,12 @@ const TYPING: &[&[Act]] = &[
     STYLES,
     &[Act::EditParagraph],
 ];
+
+/// The commands of the right-click menu of text being typed.
+#[cfg(test)]
+pub fn typing_items() -> Vec<Act> {
+    TYPING.iter().flat_map(|g| g.iter().copied()).collect()
+}
 
 /// Fill the right-click menu of what is selected: only the commands that are available now.
 pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<Act>) {
@@ -2888,6 +2604,22 @@ pub fn greyed_ui(ui: &mut egui::Ui, title: Option<&str>, why: &str, hint: &str) 
 /// The shortcut a command's menus and tooltips show: its first, but on a Mac one with Cmd
 /// before a plain function key, as Mac apps show Find next as ⌘G. A key a command has only on
 /// a Mac (Strikethrough's) isn't shown elsewhere.
+/// How shortcut `k` is written: as egui writes it, but a punctuation key as its sign, as
+/// menus write it ("Ctrl+,", "Ctrl+="), where egui off a Mac writes its name ("Ctrl+Comma").
+/// The arrows keep their names, which every font has.
+pub fn key_text(ctx: &egui::Context, k: &KeyboardShortcut) -> String {
+    let text = ctx.format_shortcut(k);
+    let key = k.logical_key;
+    let arrow = matches!(
+        key,
+        Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp
+    );
+    match text.strip_suffix(key.name()) {
+        Some(head) if !arrow => format!("{head}{}", key.symbol_or_name()),
+        _ => text,
+    }
+}
+
 pub fn shown_key(ctx: &egui::Context, a: &Action) -> Option<KeyboardShortcut> {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     let first = a
@@ -2907,7 +2639,7 @@ pub fn shown_key(ctx: &egui::Context, a: &Action) -> Option<KeyboardShortcut> {
 /// A command's label and the shortcut it shows ([`shown_key`]): its tooltip's first line.
 fn titled(ctx: &egui::Context, a: &Action) -> String {
     match shown_key(ctx, a) {
-        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(&k)),
+        Some(k) => format!("{} ({})", a.label, key_text(ctx, &k)),
         None => a.label.to_string(),
     }
 }
@@ -3023,7 +2755,7 @@ pub fn menu_list<'a>(
     acts: &mut Vec<Act>,
 ) {
     for (j, a) in list.into_iter().enumerate() {
-        if a.sep && j > 0 {
+        if j > 0 && menu::line_before(a.act) {
             ui.separator();
         }
         menu_item(ui, a, c, acts);
@@ -3036,7 +2768,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     let one_of = matches!(a.act, Act::AlignText(_));
     let r = match (a.checked, a.act) {
         (Some(on), _) if one_of => {
-            let key = shown_key(ui.ctx(), a).map(|k| ui.ctx().format_shortcut(&k));
+            let key = shown_key(ui.ctx(), a).map(|k| key_text(ui.ctx(), &k));
             let b = egui::Button::new(a.label)
                 .shortcut_text(key.unwrap_or_default())
                 .selected(on(c));
@@ -3052,7 +2784,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
             ui.add_enabled(enabled, egui::RadioButton::new(on, a.label))
         }
         (None, _) => {
-            let key = shown_key(ui.ctx(), a).map(|k| ui.ctx().format_shortcut(&k));
+            let key = shown_key(ui.ctx(), a).map(|k| key_text(ui.ctx(), &k));
             let b = egui::Button::new(a.label).shortcut_text(key.unwrap_or_default());
             ui.add_enabled(enabled, b)
         }
@@ -3339,37 +3071,18 @@ mod tests {
         assert!(both, "{bar:?}");
     }
 
-    /// Every command has a route in the menu, so nothing is reachable only by an icon, a
-    /// key or a right-click. Delete the object is Delete the selection, for objects.
+    /// ENH-49: shortcuts with a punctuation key are written with its sign, as menus write
+    /// them ("Ctrl+,", "Ctrl+="), not its name, which egui writes off a Mac ("Ctrl+Comma").
     #[test]
-    fn every_command_is_in_the_menu() {
-        for a in ACTIONS {
-            if a.act != Act::DeleteObject {
-                assert!(a.menu, "{:?} is not in the menu", a.act);
-                assert!(
-                    Group::MENUS.contains(&a.group),
-                    "{:?}'s menu isn't shown",
-                    a.act
-                );
-            }
-        }
-    }
-
-    /// A submenu is one run of entries, or its later entries would make a second
-    /// submenu of the same name.
-    #[test]
-    fn submenus_are_unbroken() {
-        for g in Group::MENUS {
-            let items: Vec<_> = ACTIONS.iter().filter(|a| a.group == g && a.menu).collect();
-            let mut seen: Vec<&str> = Vec::new();
-            for (i, a) in items.iter().enumerate() {
-                let starts = i == 0 || items[i - 1].submenu != a.submenu;
-                if !a.submenu.is_empty() && starts {
-                    assert!(!seen.contains(&a.submenu), "{} is split", a.submenu);
-                    seen.push(a.submenu);
-                }
-            }
-        }
+    fn punctuation_keys_are_written_as_signs() {
+        let ctx = egui::Context::default();
+        let text = |act| key_text(&ctx, &get(act).keys[0]);
+        assert_eq!(text(Act::Settings), "Ctrl+,");
+        assert_eq!(text(Act::ZoomIn), "Ctrl+=");
+        assert_eq!(text(Act::Save), "Ctrl+S");
+        assert_eq!(text(Act::NextPage), "PageDown");
+        // Arrows keep their names, which every font has.
+        assert_eq!(text(Act::MovePages(PageMove::Earlier)), "Alt+Shift+Left");
     }
 
     #[test]

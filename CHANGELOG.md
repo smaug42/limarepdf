@@ -200,8 +200,28 @@
   can't make smaller, shared with pages or comments not being reduced), and the file's size before and after.
   `--pages` reduces some pages only, `--jpeg-quality` sets the JPEG quality. A signed document is refused:
   "Signed documents keep exactly what was signed, so they can't be made smaller."
+- **Settings** (☰ > Settings…, Ctrl+,) gathers in one window what is set for every document, as Word's Options
+  do: your name for comments, a **documents folder** that Open, and Save As for a new document, start in, recovery
+  copies, the theme, accent colour and page colours, Compact commands, planned features, where the selection's
+  controls go, the page layout and cover page, page labels, field highlights, paragraph editing, Snap to objects,
+  your name and the date on stamps, spell checking and its language, and Add a dictionary…. Each change takes
+  effect at once, with no document open too, and is remembered.
+- ☰ > Help > **User guide** and **Report a problem** open the guide and the issue tracker in your browser.
 
 ### Changed
+
+- The ☰ menu is laid out as the command band: File's own commands first, in word processors' order (Make a PDF
+  from images, Open, Open recent, Save, Save As, Reload, Export ▸, Reduce file size, Print preview, Print, Print
+  selected text, Properties), then one submenu for each of the band's names, in the band's order and laid out as
+  its groups (Edit, Insert, Review, Pages, Forms and sign, Protect, View), then Help, Settings…, Close tab and Quit
+  last. A command is now under the same name in both: Watermark and Headers, footers, Bates are under Insert, the
+  comments and markup, Spelling and Flatten annotations under Review, Organise pages, Recognise text and Optimise
+  scanned pages under Pages, the form, fill-and-sign and digital signature commands under Forms and sign, and
+  redaction, Password security and Remove hidden information under Protect. Tools and Document are gone. What
+  only keys do (moving and extending the selection, Esc, F6) is no longer listed, as word processors leave it out,
+  and the line-end hyphens' commands are in the right-click menu where they act. Messages that name a menu say the
+  new way there. The command palette's menu item is now Help > Search commands…, as the guide calls it.
+- Save As starts beside the document's file, as word processors do.
 
 - The command palette is now Ctrl+Shift+P (⌘⇧P on a Mac): Ctrl+K is Link, as in Word, LibreOffice and Google
   Docs.
@@ -255,6 +275,8 @@
 
 ### Fixed
 
+- Shortcuts with a punctuation key were written with its name off a Mac (Zoom in "Ctrl+Equals"); menus,
+  tooltips, the command search and the start screen now write its sign, as menus do ("Ctrl+=", "Ctrl+,").
 - A picture whose file keeps its decoding settings in a separate object (as some apps write it) came out
   scrambled, its colours shifted and streaked, when part of it was redacted or when Optimise scanned pages
   saved it again; its settings are now read wherever the file keeps them.

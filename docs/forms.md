@@ -31,9 +31,9 @@ Each value you change is one undo step. Hovering over a field shows its descript
 ## Highlighted fields
 
 Fields are highlighted from the start: a light tint on every field, stronger under the pointer, and a red outline
-on required ones. **Forms and sign > Fill fields ▾ > Highlight fields** (or ☰ > View > Highlight fields), or the
-switch on the form's notice, turns this off or on again for every document, and the choice is remembered between
-runs.
+on required ones. **Forms and sign > Fill fields ▾ > Highlight fields** (or ☰ > Forms and sign > Highlight
+fields), or the switch on the form's notice, turns this off or on again for every document, and the choice is
+remembered between runs.
 
 ## The Form section
 
@@ -44,9 +44,9 @@ shows the field you are in: its name, its description and whether it is required
 - **Clear field**, which empties the field you are in.
 - **Highlight fields**, the same switch as above.
 - **Reset form**, which puts every field back to its default.
-- **Flatten form…** (also in ☰ > Document and the command palette), which makes the fields part of the pages as
-  they look now, so nobody can change the values, here or in other readers. It asks first, and Undo brings the
-  fields back until you close the document.
+- **Flatten form…** (also in ☰ > Forms and sign and the command search), which makes the fields part of the
+  pages as they look now, so nobody can change the values, here or in other readers. It asks first, and Undo
+  brings the fields back until you close the document.
 
 ## Signature fields
 

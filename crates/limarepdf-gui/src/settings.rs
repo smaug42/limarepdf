@@ -262,6 +262,9 @@ pub struct Settings {
     /// The picture quality Reduce file size last used (ENH-19), as Word remembers it.
     pub reduce_quality: limarepdf_core::PictureQuality,
     pub accent: Accent,
+    /// The folder Open and Save As start in, set in Settings (ENH-49), as Word's default
+    /// file location; `None` for the one the system's chooser last used.
+    pub folder: Option<PathBuf>,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
     pub window: [f32; 2],
@@ -344,6 +347,7 @@ impl Settings {
             print_binding: Binding::Left,
             reduce_quality: limarepdf_core::PictureQuality::Print,
             accent: Accent::Desktop,
+            folder: None,
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
@@ -430,6 +434,7 @@ impl Settings {
                     }
                 }
                 "print_printer" if !value.is_empty() => s.print_printer = Some(value.into()),
+                "documents_folder" if !value.is_empty() => s.folder = Some(value.into()),
                 "print_paper" => {
                     if let Some((paper, printer)) = value.split_once(' ') {
                         let printer = printer.trim();
@@ -714,6 +719,9 @@ impl Settings {
             }
         };
         text += &format!("reduce_quality = {quality}\n");
+        if let Some(folder) = &self.folder {
+            text += &format!("documents_folder = {}\n", folder.display());
+        }
         if let Some(printer) = &self.print_printer {
             let printer = printer.lines().next().unwrap_or("").trim();
             if !printer.is_empty() {
@@ -1081,6 +1089,21 @@ mod tests {
         }
         std::fs::write(&f, "reduce_quality = tiny\n").unwrap();
         assert_eq!(Settings::from_file(Some(f)).reduce_quality, Q::Print);
+    }
+
+    /// ENH-49: the documents folder set in Settings is kept, spaces and all; none set, or an
+    /// empty one read, is the folder last used.
+    #[test]
+    fn the_documents_folder_is_remembered() {
+        let f = file("folder");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.folder, None);
+        s.folder = Some("/home/me/My documents".into());
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.folder, Some(PathBuf::from("/home/me/My documents")));
+        std::fs::write(&f, "documents_folder = \n").unwrap();
+        assert_eq!(Settings::from_file(Some(f)).folder, None);
     }
 
     #[test]

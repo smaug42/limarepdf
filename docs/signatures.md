@@ -37,11 +37,11 @@ depth](signatures-in-depth.md#checking-a-signed-pdf).
 
 ## Sign with a digital ID
 
-1. The first time, make a digital ID: **Forms and sign > Digital signature > Digital IDs…** (or ☰ > Document >
-   Digital signatures > Digital IDs…), then **Create…** (or **Import…** one you have). See
+1. The first time, make a digital ID: **Forms and sign > Digital signature > Digital IDs…** (or ☰ >
+   Forms and sign > Digital signatures > Digital IDs…), then **Create…** (or **Import…** one you have). See
    [Digital IDs](#digital-ids).
-2. Choose **Forms and sign > Digital signature > Sign with digital ID…** (or ☰ > Document > Digital signatures >
-   Sign with digital ID…).
+2. Choose **Forms and sign > Digital signature > Sign with digital ID…** (or ☰ > Forms and sign >
+   Digital signatures > Sign with digital ID…).
 3. Click an empty signature field, or drag a box where the signature goes.
 4. Pick your digital ID, type its password, and press **Sign…**.
 5. Choose where to save the signed copy. It opens in place of the document.
@@ -82,9 +82,9 @@ Every open document is judged again as soon as the list changes.
   signature carries (choose one when there are several). Trust the most specific authority that covers the signers
   you mean.
 - **A certificate someone sent you** (`.cer`, `.crt`, `.pem`, or `.p7c` as Acrobat exports it): choose **Forms and
-  sign > Digital signature > Trusted certificates…** (also ☰ > Document > Digital signatures > Trusted
-  certificates…, and at the bottom of the Digital signatures view), then **Add certificate file…**. It is added as
-  a signer unless you choose certificate authority, which only an authority's certificate allows.
+  sign > Digital signature > Trusted certificates…** (also ☰ > Forms and sign > Digital signatures >
+  Trusted certificates…, and at the bottom of the Digital signatures view), then **Add certificate file…**.
+  It is added as a signer unless you choose certificate authority, which only an authority's certificate allows.
 - **Stop trusting:** in **Trusted certificates…**, press **Remove…** beside the entry, then **Stop trusting**.
 
 Trust settings affect LimarePDF only: trusting someone in LimarePDF doesn't change Acrobat or any other program.
@@ -101,8 +101,8 @@ depth](signatures-in-depth.md#trusting-signers-in-detail).
 A digital ID is what you sign with: a private key, which stays secret, and a certificate naming you, which goes
 into every signature you make. LimarePDF keeps your IDs, each protected by its own password. You make, import,
 export and remove them in the **Digital IDs** window: **Forms and sign > Digital signature > Digital IDs…** (or ☰ >
-Document > Digital signatures > Digital IDs…). Pick an ID there to see its certificate, key, validity and SHA-256
-fingerprint.
+Forms and sign > Digital signatures > Digital IDs…). Pick an ID there to see its certificate, key, validity
+and SHA-256 fingerprint.
 
 ### Making a digital ID
 
@@ -156,9 +156,9 @@ Signing needs a [digital ID](#digital-ids) and its password. The ID must be vali
 computer's clock, and the document must not be encrypted, nor set to get a password when saved (the signed file
 would be written without it).
 
-1. Choose **Forms and sign > Digital signature > Sign with digital ID…** (or ☰ > Document > Digital signatures >
-   Sign with digital ID…), or **Certify…** in the same menus to [certify](#certifying) the document (only
-   before anyone has signed it).
+1. Choose **Forms and sign > Digital signature > Sign with digital ID…** (or ☰ > Forms and sign >
+   Digital signatures > Sign with digital ID…), or **Certify…** in the same menus to [certify](#certifying) the
+   document (only before anyone has signed it).
 2. Click an empty signature field on the page, or drag a box where the signature goes (at least 12 points each
    way). The pane also lists the document's empty signature fields to pick from. Esc, or another tool, stops.
 3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password (leave

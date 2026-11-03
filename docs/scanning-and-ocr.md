@@ -70,10 +70,10 @@ pages or all. It runs in the background and can be undone. On the command line: 
 
 ### Seeing and correcting recognised text
 
-**View > Show > Show recognised text** (or ☰ > View > Show recognised text) outlines each recognised line and shows
-its text on hover. With the arrow tool, select a line and choose **Edit > Edit text** to correct its text on the
-page; it stays invisible and in place, and clearing it removes the line. `limarepdf-cli objects` lists these lines
-as "(hidden)".
+**View > Show > Show recognised text** (or ☰ > View > Show > Show recognised text) outlines each recognised
+line and shows its text on hover. With the arrow tool, select a line and choose **Edit > Edit text** to correct
+its text on the page; it stays invisible and in place, and clearing it removes the line. `limarepdf-cli objects`
+lists these lines as "(hidden)".
 
 ### Accuracy and speed
 
