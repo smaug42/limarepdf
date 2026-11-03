@@ -9919,14 +9919,16 @@ mod tests {
     }
 
     /// Draw the window 1400 by [`TEST_HEIGHT`] with `events`, at `time` moved on a twentieth
-    /// of a second (as double-clicks need), and return its AccessKit tree.
+    /// of a second (as double-clicks need), and return its AccessKit tree. Frames drawn
+    /// without a time (`click`'s) move egui's clock on by themselves, so `time` first catches
+    /// up with it: egui's pointer history panics on a time earlier than the last (PB-80).
     fn timed_frame(
         app: &mut App,
         ctx: &egui::Context,
         time: &std::cell::Cell<f64>,
         events: Vec<egui::Event>,
     ) -> egui::accesskit::TreeUpdate {
-        time.set(time.get() + 0.05);
+        time.set(time.get().max(ctx.input(|i| i.time)) + 0.05);
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -14940,6 +14942,27 @@ mod tests {
             let at = egui::vec2((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
             self.click(app, min + at * k);
         }
+    }
+
+    /// PB-80: a typist's frame after frames drawn without a time (as `click` draws a dialog)
+    /// moves the clock on, never back, so egui's pointer history keeps its order.
+    #[test]
+    fn a_typists_frame_after_untimed_frames_moves_the_clock_on() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let ty = Typist::new(&ctx);
+        ty.frame(&mut app, vec![]);
+        // A third of a second on egui's own clock, more than a typist's step.
+        for _ in 0..20 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.dialogs(ui.ctx()));
+            out.textures_delta.clear();
+        }
+        let before = ctx.input(|i| i.time);
+        ty.frame(&mut app, vec![]);
+        let after = ctx.input(|i| i.time);
+        assert!(after > before, "the clock went from {before} to {after}");
     }
 
     /// A 40 x 20 JPEG, red on the left and blue on the right, whose EXIF orientation 6
