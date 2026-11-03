@@ -207,6 +207,14 @@
   your name and the date on stamps, spell checking and its language, and Add a dictionary…. Each change takes
   effect at once, with no document open too, and is remembered.
 - ☰ > Help > **User guide** and **Report a problem** open the guide and the issue tracker in your browser.
+- Pages can be copied, and pasted into another document: select pages in Organise or the thumbnails and press
+  Ctrl+C (or **Edit > Copy**, or **Copy** in the right-click menu), then paste in this document or another tab
+  where the insertion bar is, or after the pages selected; each paste adds another copy, selected, in one step.
+  Pages cut and pasted in another tab move there, taken out of their own document, a step to undo in each (every
+  page of a document cut is copied instead, as a document needs a page). Copying or cutting text or pages
+  replaces the pages copied, as in a word processor. Pages of a password-protected document make the document
+  pasted into protected, and pages with form fields are asked about first, as when adding pages from a file.
+  ☰ > Edit > Copy text is now **Copy**.
 
 ### Changed
 

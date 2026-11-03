@@ -616,6 +616,12 @@ impl Tab {
             .unwrap_or_else(|| "Untitled".into())
     }
 
+    /// The document is password-protected, or holds pages of one: pages taken from it into
+    /// another document make that one protected too, with no recovery copies.
+    pub fn is_protected(&self) -> bool {
+        self.copy.protected || self.encryption.is_some() || self.pdf.encrypted()
+    }
+
     /// The name, marked when there is work to save: typing counts from the first key.
     pub fn title(&self) -> String {
         let name = self.name();

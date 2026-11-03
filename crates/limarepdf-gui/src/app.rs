@@ -107,6 +107,28 @@ struct AppendForms {
     docs: Vec<Pdf>,
     /// The names of the files with form fields.
     names: Vec<String>,
+    /// The pages come from a password-protected document (pages copied from one).
+    protected: bool,
+    /// Where the pages were cut from (PF-48), to take them out of once added.
+    cut_from: Option<CutFrom>,
+}
+
+/// Pages cut in one tab and pasted in another (PF-48): taken out of their own tab once
+/// added to the other, as text cut in one document and pasted in another moves.
+struct CutFrom {
+    tab: u64,
+    /// The pages, by object, as they were cut.
+    pages: Vec<(u32, u16)>,
+}
+
+/// Pages copied to paste in any tab (PF-48): a document of them, as Extract makes, kept
+/// while nothing else is copied or cut in LimarePDF.
+struct CopiedPages {
+    doc: Pdf,
+    /// The name of the document they were copied from, for the questions about them.
+    name: String,
+    /// They come from a password-protected document.
+    protected: bool,
 }
 
 /// Replace all's review (NEW-04b), with the copies of the document it offers: every match
@@ -782,6 +804,9 @@ pub struct App {
     /// Copy, Cut or Paste clicked in the band for the text being typed (its box's id),
     /// waiting for that box to have the keyboard back.
     clip: Option<(Clip, egui::Id)>,
+    /// Pages copied, to paste in any tab (PF-48). Pages cut wait in their tab
+    /// ([`Tab::cut_pages`]); one or the other, never both.
+    copied_pages: Option<CopiedPages>,
     /// The Undo and Redo buttons, as last drawn: a click on them leaves the keyboard in
     /// the text box that has it.
     undo_buttons: Vec<egui::Rect>,
@@ -932,6 +957,7 @@ impl App {
             resizing: Vec::new(),
             band: Band::default(),
             clip: None,
+            copied_pages: None,
             undo_buttons: Vec::new(),
             undo_held: false,
             undo_in_box: None,
@@ -3254,12 +3280,17 @@ impl App {
             Act::Undo => self.tabs[self.active].undo(ctx),
             Act::Redo => self.redo(ctx),
             Act::Copy | Act::Cut | Act::Paste => {
-                let t = &mut self.tabs[self.active];
                 let clip = match a {
                     Act::Copy => Clip::Copy,
                     Act::Cut => Clip::Cut,
                     _ => Clip::Paste,
                 };
+                // The clipboard holds one thing, as a word processor's: what is copied or cut
+                // now replaces the pages copied or cut before.
+                if clip != Clip::Paste {
+                    self.let_go_of_pages();
+                }
+                let t = &mut self.tabs[self.active];
                 match (t.ed.typing_id(), clip) {
                     // The typing takes the keyboard back, and then the system copies or cuts
                     // what is selected in it, or pastes at its caret.
@@ -3272,29 +3303,23 @@ impl App {
                     (None, Clip::Paste) if t.ed.selection.words().is_some() => {
                         ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
                     }
-                    // Pages cut move to where pages go: the insertion bar, else after the
+                    // Pages cut or copied go where pages go: the insertion bar, else after the
                     // pages selected.
-                    (None, Clip::Paste) => {
-                        if let Some(said) = t.has_cut().then(|| t.paste_pages(ctx)).flatten() {
-                            t.info = Some(said.into());
-                        }
-                    }
+                    (None, Clip::Paste) => self.paste_pages(ctx),
                     // Pages are cut to paste elsewhere; the system's clipboard gets their
                     // names, so that the paste keys work wherever the clipboard was empty.
                     (None, Clip::Cut) if t.ed.selection.pages().is_some() => {
                         let chosen = t.ed.selection.pages().cloned().unwrap_or_default();
-                        let names: Vec<String> = chosen.iter().map(|&p| t.page_name(p)).collect();
+                        let chosen: Vec<usize> = chosen.into_iter().collect();
+                        ctx.copy_text(pages_named(t, &chosen));
                         let n = t.cut_selected_pages();
-                        let what = match n {
-                            1 => "1 page".to_string(),
-                            n => format!("{n} pages"),
-                        };
-                        ctx.copy_text(format!("Pages {} of {}", names.join(", "), t.name()));
                         self.status = format!(
-                            "Cut {what}: paste to put them where the insertion bar is, or after \
-                             the pages selected."
+                            "Cut {}: paste to put them where the insertion bar is, or after the \
+                             pages selected, in this document or another.",
+                            pages_said(n)
                         );
                     }
+                    (None, Clip::Copy) if t.ed.selection.pages().is_some() => self.copy_pages(ctx),
                     (None, Clip::Copy) => match t.ed.selected_text() {
                         Some(text) => {
                             ctx.copy_text(text);
@@ -3444,7 +3469,7 @@ impl App {
             Act::Extract => {
                 let t = &mut self.tabs[self.active];
                 // Pages from a password-protected document get no recovery copies either.
-                let protected = t.copy.protected || t.encryption.is_some() || t.pdf.encrypted();
+                let protected = t.is_protected();
                 match t.pdf.extract(&t.targets()) {
                     Ok(p) => {
                         if self.add_tab(ctx, p, None, None, true) {
@@ -4092,21 +4117,8 @@ impl App {
             if !d.form_fields().is_empty() {
                 let name = f.file_name().unwrap_or(f.as_os_str());
                 let name = name.to_string_lossy().into_owned();
-                // An answer that couldn't be drawn would be lost: nothing is added.
-                let lost = d.undrawable_fields();
-                if !lost.is_empty() {
-                    let (what, them) = match lost.len() {
-                        1 => ("the answer of the field", "it"),
-                        _ => ("the answers of these fields:", "them"),
-                    };
-                    self.show(Dialog::Message(
-                        "Pages not added".into(),
-                        format!(
-                            "LimarePDF can't draw {what} {} in “{name}”, so adding its pages \
-                             would lose {them}. Nothing was added.",
-                            limarepdf_core::quoted_list(&lost)
-                        ),
-                    ));
+                if let Some(stop) = undrawable(&d, &name) {
+                    self.show(stop);
                     return;
                 }
                 names.push(name);
@@ -4123,21 +4135,32 @@ impl App {
                 to: a.to,
                 docs,
                 names,
+                protected: false,
+                cut_from: None,
             })));
             return;
         }
-        self.add_pages(ctx, i, docs, a.to);
+        self.add_pages(ctx, i, docs, a.to, false);
     }
 
     /// Adds the pages of `docs` to tab `i`'s document where they go, in one step: after the
-    /// page named, first, or at the end (also when that page has gone since).
-    fn add_pages(&mut self, ctx: &egui::Context, i: usize, docs: Vec<Pdf>, to: PagesGo) {
-        let protected = docs.iter().any(Pdf::encrypted);
+    /// page named, first, or at the end (also when that page has gone since). Pages of a
+    /// password-protected document (or `protected`, from one) make the tab protected.
+    /// Whether they were added.
+    fn add_pages(
+        &mut self,
+        ctx: &egui::Context,
+        i: usize,
+        docs: Vec<Pdf>,
+        to: PagesGo,
+        protected: bool,
+    ) -> bool {
+        let protected = protected || docs.iter().any(Pdf::encrypted);
         if protected {
             let done = "added the pages of the password-protected document";
             if let Err(stop) = self.withdraw_copies(i, done) {
                 self.show(stop);
-                return;
+                return false;
             }
         }
         let t = &mut self.tabs[i];
@@ -4147,11 +4170,141 @@ impl App {
             PagesGo::After(None) => 0,
             PagesGo::After(Some(id)) => t.page_of(id).map_or(n, |p| p + 1),
         };
-        if t.arrange(ctx, &[], |p| p.insert_pages(at, docs)) {
+        let added = t.arrange(ctx, &[], |p| p.insert_pages(at, docs));
+        if added {
             t.copy.protected |= protected;
             if to != PagesGo::End {
                 t.placed(at, t.page_count() - n);
             }
+        }
+        added
+    }
+
+    /// Pages copied or cut, waiting to be pasted (PF-48).
+    fn pages_to_paste(&self) -> bool {
+        self.copied_pages.is_some() || self.tabs.iter().any(Tab::has_cut)
+    }
+
+    /// Lets go of the pages copied or cut: the clipboard holds one thing, so what is copied
+    /// or cut next replaces them. Pages cut stay where they are, no longer cut.
+    fn let_go_of_pages(&mut self) {
+        self.copied_pages = None;
+        for t in &mut self.tabs {
+            t.take_back_cut();
+        }
+    }
+
+    /// Copies the pages selected in the tab in front (PF-48): a document of them is kept to
+    /// paste in any tab, and the system's clipboard gets their names, as Cut gives it.
+    fn copy_pages(&mut self, ctx: &egui::Context) {
+        let t = &mut self.tabs[self.active];
+        let chosen: Vec<usize> =
+            (t.ed.selection.pages()).map_or(Vec::new(), |s| s.iter().copied().collect());
+        let doc = match t.pdf.extract(&chosen) {
+            Ok(doc) => doc,
+            Err(e) => {
+                t.error = Some(format!("{e:#}"));
+                return;
+            }
+        };
+        ctx.copy_text(pages_named(t, &chosen));
+        let (name, protected) = (t.name(), t.is_protected());
+        self.copied_pages = Some(CopiedPages {
+            doc,
+            name,
+            protected,
+        });
+        self.status = format!(
+            "Copied {}: paste to put a copy where the insertion bar is, or after the pages \
+             selected, in this document or another.",
+            pages_said(chosen.len())
+        );
+    }
+
+    /// Pastes the pages cut or copied into the tab in front, where pages go there
+    /// ([`Tab::insert_at`]), in one step, selected (PF-48): pages cut in it move; pages cut
+    /// in another tab are added, then taken out of their own, as text cut in one document
+    /// and pasted in another moves; pages copied are added, each time. Pages with form
+    /// fields are asked about first, as Append PDFs asks.
+    fn paste_pages(&mut self, ctx: &egui::Context) {
+        let i = self.active;
+        let t = &mut self.tabs[i];
+        if t.has_cut() {
+            if let Some(said) = t.paste_pages(ctx) {
+                t.info = Some(said.into());
+            }
+            return;
+        }
+        let (doc, name, protected, cut_from) = match self.tabs.iter().find(|t| t.has_cut()) {
+            Some(s) => {
+                let pages: Vec<usize> = s.cut_pages().into_iter().collect();
+                let from = CutFrom {
+                    tab: s.id,
+                    pages: s.cut_ids().to_vec(),
+                };
+                match s.pdf.extract(&pages) {
+                    Ok(doc) => (doc, s.name(), s.is_protected(), Some(from)),
+                    Err(e) => {
+                        self.tabs[i].error = Some(format!("{e:#}"));
+                        return;
+                    }
+                }
+            }
+            None => match &self.copied_pages {
+                Some(c) => (c.doc.clone(), c.name.clone(), c.protected, None),
+                None => return,
+            },
+        };
+        let t = &self.tabs[i];
+        let at = t.insert_at();
+        let to = PagesGo::After(at.checked_sub(1).and_then(|p| t.page_id(p)));
+        if !doc.form_fields().is_empty() {
+            if let Some(stop) = undrawable(&doc, &name) {
+                self.show(stop);
+                return;
+            }
+            let asked = Asked::of(t);
+            self.show(Dialog::ConfirmAppendForms(Box::new(AppendForms {
+                asked,
+                to,
+                docs: vec![doc],
+                names: vec![name],
+                protected,
+                cut_from,
+            })));
+            return;
+        }
+        if self.add_pages(ctx, i, vec![doc], to, protected) {
+            self.take_out_cut(ctx, cut_from);
+        }
+    }
+
+    /// Takes pages cut in one tab out of it once they are pasted in another (PF-48), in
+    /// one step there. When they are all its pages it keeps them, as a document needs at
+    /// least one: the paste was a copy, and the tab in front says so.
+    fn take_out_cut(&mut self, ctx: &egui::Context, from: Option<CutFrom>) {
+        let Some(from) = from else {
+            return;
+        };
+        let Some(s) = self.tabs.iter().position(|t| t.id == from.tab) else {
+            return;
+        };
+        let src = &mut self.tabs[s];
+        if src.cut_ids() == from.pages {
+            src.take_back_cut();
+        }
+        let pages: Vec<usize> = (from.pages.iter())
+            .filter_map(|&id| src.page_of(id))
+            .collect();
+        let name = src.name();
+        if pages.len() == src.page_count() {
+            self.tabs[self.active].info = Some(format!(
+                "Pasted a copy: “{name}” keeps its pages, as a document needs at least one"
+            ));
+            return;
+        }
+        if !pages.is_empty() && src.arrange(ctx, &[], |p| p.delete_pages(&pages)) {
+            self.status = format!("Moved {} from “{name}”.", pages_said(pages.len()));
         }
     }
 
@@ -5189,7 +5342,12 @@ impl App {
                                 .filter(|d| !d.form_fields().is_empty())
                                 .try_for_each(|d| d.flatten_form(None).map(|_| ()));
                             match drawn {
-                                Ok(()) => self.add_pages(ctx, self.active, docs, q.to),
+                                Ok(()) => {
+                                    let (i, to) = (self.active, q.to);
+                                    if self.add_pages(ctx, i, docs, to, q.protected) {
+                                        self.take_out_cut(ctx, q.cut_from.take());
+                                    }
+                                }
                                 Err(e) => self.show(Dialog::Message(
                                     "Pages not added".into(),
                                     format!("{e:#}\n\nNothing was added."),
@@ -5310,6 +5468,8 @@ impl App {
         };
         if let Some(t) = self.tabs.get(self.active) {
             t.fill_ctx(&mut c);
+            // Pages cut in another tab, or copied, are pasted here too (PF-48).
+            c.cut = self.pages_to_paste();
             // In a text box with the keyboard, Undo and Redo are its typing's, as the keys;
             // on a paragraph's frame's handle, the paragraph's.
             let focused = ctx.memory(|m| m.focused());
@@ -5548,6 +5708,7 @@ impl App {
         if self.palette.is_some() || dlg::any_open(ctx) {
             return;
         }
+        let held = self.pages_to_paste();
         let Some(t) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -5571,16 +5732,19 @@ impl App {
                 .collect()
         });
         let paste = typed.iter().any(|e| matches!(e, egui::Event::Paste(_)));
-        // Pages cut go where pages are selected, or in Organise where the bar is; with
-        // nothing selected or typed, after the current page, as the band's Paste puts them.
+        // Pages cut or copied, in this tab or another, go where pages are selected, or in
+        // Organise where the bar is; with nothing selected or typed, after the current page,
+        // as the band's Paste puts them.
         let none = matches!(t.ed.selection, Selection::None) && t.ed.typing_id().is_none();
         let pages = t.organising() || t.ed.selection.pages().is_some() || none;
-        if paste && pages && t.has_cut() {
+        if paste && pages && held {
             self.act(ctx, Act::Paste);
         } else if !typed.is_empty() && t.ed.type_over(ctx, &t.pdf, typed) {
             ctx.request_repaint();
         } else if paste && t.organising() {
-            t.info = Some("To move pages, cut them, then paste them where they go".into());
+            t.info = Some(
+                "To move or copy pages, cut or copy them, then paste them where they go".into(),
+            );
         } else if paste && t.ed.typing_id().is_none() {
             // Nowhere to paste: where to click.
             t.info = Some(
@@ -5589,6 +5753,42 @@ impl App {
                     .into(),
             );
         }
+    }
+}
+
+/// Why the pages of `d` (from `name`) can't be added to a document: an answer in its form
+/// fields that LimarePDF can't draw would be lost, so nothing is added.
+fn undrawable(d: &Pdf, name: &str) -> Option<Dialog> {
+    let lost = d.undrawable_fields();
+    if lost.is_empty() {
+        return None;
+    }
+    let (what, them) = match lost.len() {
+        1 => ("the answer of the field", "it"),
+        _ => ("the answers of these fields:", "them"),
+    };
+    Some(Dialog::Message(
+        "Pages not added".into(),
+        format!(
+            "LimarePDF can't draw {what} {} in “{name}”, so adding its pages would lose \
+             {them}. Nothing was added.",
+            limarepdf_core::quoted_list(&lost)
+        ),
+    ))
+}
+
+/// What the system's clipboard gets for pages cut or copied: their names, so that the
+/// paste keys work wherever the clipboard was empty.
+fn pages_named(t: &Tab, pages: &[usize]) -> String {
+    let names: Vec<String> = pages.iter().map(|&p| t.page_name(p)).collect();
+    format!("Pages {} of {}", names.join(", "), t.name())
+}
+
+/// "1 page", "3 pages".
+fn pages_said(n: usize) -> String {
+    match n {
+        1 => "1 page".into(),
+        n => format!("{n} pages"),
     }
 }
 
@@ -13439,6 +13639,8 @@ mod tests {
                     to: PagesGo::End,
                     docs: Vec::new(),
                     names: vec![format!("{long}.pdf"), "form.pdf".into()],
+                    protected: false,
+                    cut_from: None,
                 })),
             ),
             // Replace all's review (NEW-04b), its query and replacement the user's.

@@ -1898,9 +1898,20 @@ pages selected (grid or thumbnails) keeps their objects in `Tab::cut` and puts "
 clipboard: egui-winit sends Ctrl+V as a paste only when the clipboard holds text or an image, and the page names
 make sure it does. Paste (`Act::Paste`, never matched as a key: the paste arrives through `App::type_over`, which
 gives it to the pages cut while organising, with pages selected, or with nothing selected or typed, as the band's
-Paste does) is `Tab::paste_pages`, a move to
-`Tab::insert_at`; with nowhere else for them it says so. `Ctx::cut` enables Paste; `why_not` tries "Cut pages first."
-and "Select pages first." before the page view's reasons while organising. A click on the background between cards
+Paste does) is `App::paste_pages`: pages cut in the tab in front are `Tab::paste_pages`, a move to
+`Tab::insert_at` (with nowhere else for them it says so). PF-48: Copy with pages selected (`App::copy_pages`)
+keeps a document of them (`Pdf::extract`, as Extract makes) in `App::copied_pages` with the source's name and
+whether it is protected (`Tab::is_protected`), the clipboard getting their names as for Cut; pages cut in another
+tab are extracted from it at the paste, with a `CutFrom` (the tab, the pages by object as cut). Either goes in
+through Append PDFs' path: `undrawable` refuses pages whose form answers can't be drawn, form fields go through
+`Dialog::ConfirmAppendForms` (`AppendForms` now carries `protected` and `cut_from`), and `App::add_pages` (taking
+`protected`, saying whether it added) inserts them at a `PagesGo` naming the page before `insert_at`. Once added,
+`App::take_out_cut` deletes the cut pages still in their tab by object (its own `Tab::arrange` step), unless they
+are all its pages, which stay (the paste was a copy, said in the tab in front). The clipboard holds one thing:
+Copy and Cut of anything first `App::let_go_of_pages` (the copy dropped, every tab's cut taken back), so at most
+one tab has pages cut and never with a copy. `Ctx::cut` (`App::pages_to_paste`: a copy, or any tab's cut) enables
+Paste; `why_not` tries "Cut or copy pages first." and "Select pages first." before the page view's reasons while
+organising. A click on the background between cards
 puts the insertion bar there (`Organise::bar`, the place and whether it is drawn after the card before it) and lets
 go of the selection, as a slide sorter; `Tab::insert_at` is the bar, else after the selected pages, else after the
 current page, for Insert blank page (at the page before's size), Insert images…, Paste and Insert PDF pages…

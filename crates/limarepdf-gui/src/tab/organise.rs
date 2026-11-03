@@ -978,6 +978,16 @@ impl Tab {
         !self.cut.is_empty()
     }
 
+    /// The pages cut, by object.
+    pub fn cut_ids(&self) -> &[(u32, u16)] {
+        &self.cut
+    }
+
+    /// The pages cut are no longer cut, staying where they are, as Esc leaves them.
+    pub fn take_back_cut(&mut self) {
+        self.cut.clear();
+    }
+
     /// Paste the pages cut: they move, in their order, to where pages go
     /// ([`Tab::insert_at`]), in one step, and are selected there. With nowhere else for
     /// them, nothing moves, and what to do is returned to say.

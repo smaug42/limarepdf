@@ -228,7 +228,13 @@ fn spelling_turned_off_marks_nothing_and_the_language_is_kept() {
     assert_eq!(marks_of(&mut app, &ty, id), one(0..3));
 }
 
-/// Review > Spelling (F7) goes through the comments' words spelt wrongly; Change all changes
+/// Press Spelling's key: F7, Option+Cmd+L on a Mac.
+fn press_spelling(app: &mut App, ty: &Typist) {
+    let k = actions::get(Act::Spelling).keys[0];
+    ty.key(app, k.logical_key, k.modifiers);
+}
+
+/// Review > Spelling (its key) goes through the comments' words spelt wrongly; Change all changes
 /// every one alike, as one step to undo, and the view then says there are none.
 #[test]
 fn review_spelling_changes_every_word_alike_as_one_step() {
@@ -250,7 +256,7 @@ fn review_spelling_changes_every_word_alike_as_one_step() {
     .unwrap();
     assert!(app.add_tab(&ctx, pdf, None, None, false));
     ty.pause(&mut app);
-    ty.key(&mut app, Key::F7, egui::Modifiers::NONE);
+    press_spelling(&mut app, &ty);
     assert_eq!(app.tabs[0].side, Side::Spelling);
     let mut tree = ty.pause(&mut app);
     for _ in 0..400 {
@@ -286,7 +292,8 @@ fn review_spelling_changes_every_word_alike_as_one_step() {
     );
 }
 
-/// F7 from text being typed opens Spelling, the text still being typed, as in Word.
+/// Spelling's key from text being typed opens Spelling, the text still being typed, as in
+/// Word.
 #[test]
 fn f7_while_typing_opens_spelling() {
     let ctx = test_ctx();
@@ -296,7 +303,7 @@ fn f7_while_typing_opens_spelling() {
     start_typing(&mut app, &ty, "new text", note);
     ty.text(&mut app, "Seal");
     let id = app.tabs[0].ed.typing_id().expect("not typing");
-    ty.key(&mut app, Key::F7, egui::Modifiers::NONE);
+    press_spelling(&mut app, &ty);
     assert_eq!(app.tabs[0].side, Side::Spelling);
     assert_eq!(app.tabs[0].ed.typing_id(), Some(id), "the typing ended");
 }

@@ -1147,7 +1147,7 @@ fn paste_says_to_cut_pages_first_on(os: egui::os::OperatingSystem) {
     let paste = actions::get(Act::Paste);
     organise(&mut app, &ty);
     let why = actions::why_not(&app.state(&ctx), paste);
-    assert_eq!(why, "Cut pages first.", "{os:?}: organising");
+    assert_eq!(why, "Cut or copy pages first.", "{os:?}: organising");
     app.act(&ctx, Act::Organise);
     ty.pause(&mut app);
     let why = actions::why_not(&app.state(&ctx), paste);
@@ -1157,6 +1157,201 @@ fn paste_says_to_cut_pages_first_on(os: egui::os::OperatingSystem) {
     let tip = actions::tooltip(&ctx, paste);
     assert!(tip.contains(&ctx.format_shortcut(&key)), "{os:?}: {tip}");
     assert!(!paste.hint.contains("Ctrl+V"), "{}", paste.hint);
+}
+
+/// The active tab's pages, each by its width: `grid_tab`'s page `i` is 400 + `i` points
+/// wide, so a copy shows as the page it was copied from.
+fn page_widths(app: &App) -> Vec<usize> {
+    let sizes = app.tabs[app.active].pdf.page_sizes();
+    (sizes.iter())
+        .map(|&(w, _)| (w - 400.0).round() as usize)
+        .collect()
+}
+
+/// A second tab of `n` pages in front, page `i` 500 + `i` points wide.
+fn second_tab(app: &mut App, ctx: &egui::Context, n: usize) {
+    let mut pdf = Pdf::new();
+    for i in 0..n {
+        pdf.insert_blank(i, 500.0 + i as f32, 600.0).unwrap();
+    }
+    assert!(app.add_tab(ctx, pdf, None, None, false));
+    assert_eq!(app.active, app.tabs.len() - 1, "not in front");
+}
+
+/// Paste with the keys, as the system sends Ctrl+V.
+fn paste_keys(app: &mut App, ty: &Typist) {
+    ty.frame(app, vec![egui::Event::Paste("x".into())]);
+    ty.pause(app);
+}
+
+/// PF-48: Ctrl+C copies the pages selected, the document, its pages and the selection as
+/// they were; Ctrl+V with another page selected puts a copy after it, in order and
+/// selected, in one step, and again each time it is pasted, as a word processor pastes.
+#[test]
+fn copy_and_paste_copy_pages() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 6);
+    organise(&mut app, &ty);
+    app.tabs[0].ed.selection = Selection::pages_from([1, 2].into());
+    let copied = copied_by(&mut app, &ctx, vec![egui::Event::Copy]);
+    ty.pause(&mut app);
+    assert!(!copied.is_empty(), "nothing on the clipboard");
+    assert_eq!(cut(&app), [0usize; 0], "Copy cut them");
+    let t = &app.tabs[0];
+    assert!(!t.dirty && t.revision == 0, "Copy changed the document");
+    assert_eq!(chosen(&app), [1, 2], "Copy changed the selection");
+    click_as(&mut app, &ty, "Page 5", egui::Modifiers::NONE);
+    paste_keys(&mut app, &ty);
+    assert_eq!(page_widths(&app), [0, 1, 2, 3, 4, 1, 2, 5]);
+    assert_eq!(chosen(&app), [5, 6], "not the pages pasted");
+    assert_eq!(steps(&app), 1, "not one step");
+    paste_keys(&mut app, &ty);
+    assert_eq!(page_widths(&app), [0, 1, 2, 3, 4, 1, 2, 1, 2, 5]);
+    app.act(&ctx, Act::Undo);
+    app.act(&ctx, Act::Undo);
+    assert_eq!(page_widths(&app), [0, 1, 2, 3, 4, 5]);
+}
+
+/// PF-48: pages copied in one tab are pasted into another where pages go there, selected,
+/// in one step; the tab they came from is unchanged.
+#[test]
+fn pages_copied_are_pasted_into_another_tab() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 4);
+    organise(&mut app, &ty);
+    app.tabs[0].ed.selection = Selection::pages_from([2, 3].into());
+    copied_by(&mut app, &ctx, vec![egui::Event::Copy]);
+    second_tab(&mut app, &ctx, 3);
+    organise(&mut app, &ty);
+    click_as(&mut app, &ty, "Page 1", egui::Modifiers::NONE);
+    paste_keys(&mut app, &ty);
+    assert_eq!(page_widths(&app), [100, 2, 3, 101, 102]);
+    assert_eq!(chosen(&app), [1, 2], "not the pages pasted");
+    assert_eq!(steps(&app), 1, "not one step");
+    app.active = 0;
+    assert_eq!(page_widths(&app), [0, 1, 2, 3]);
+    assert!(!app.tabs[0].can_undo(), "the first tab changed");
+}
+
+/// PF-48: pages cut in one tab and pasted in another move there, as text cut in one
+/// document and pasted in another does: added to the other tab, taken out of their own,
+/// a step to undo in each, and nothing is left to paste.
+#[test]
+fn pages_cut_in_one_tab_move_to_another() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 4);
+    organise(&mut app, &ty);
+    app.tabs[0].ed.selection = Selection::pages_from([0, 1].into());
+    copied_by(&mut app, &ctx, vec![egui::Event::Cut]);
+    second_tab(&mut app, &ctx, 3);
+    organise(&mut app, &ty);
+    click_as(&mut app, &ty, "Page 3", egui::Modifiers::NONE);
+    paste_keys(&mut app, &ty);
+    assert_eq!(page_widths(&app), [100, 101, 102, 0, 1]);
+    assert_eq!(chosen(&app), [3, 4], "not the pages pasted");
+    assert_eq!(steps(&app), 1, "not one step");
+    assert!(!app.state(&ctx).cut, "still something to paste");
+    app.active = 0;
+    assert_eq!(page_widths(&app), [2, 3]);
+    assert_eq!(cut(&app), [0usize; 0], "still cut");
+    assert_eq!(steps(&app), 1, "not one step in their own tab");
+    app.act(&ctx, Act::Undo);
+    assert_eq!(page_widths(&app), [0, 1, 2, 3]);
+}
+
+/// PF-48: every page of a document cut and pasted in another tab is copied there, the
+/// document keeping its pages (it can't be left with none), and the paste says so.
+#[test]
+fn every_page_cut_to_another_tab_stays_in_its_own_too() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 2);
+    app.tabs[0].ed.selection = Selection::pages_from([0, 1].into());
+    copied_by(&mut app, &ctx, vec![egui::Event::Cut]);
+    second_tab(&mut app, &ctx, 1);
+    paste_keys(&mut app, &ty);
+    assert_eq!(page_widths(&app), [100, 0, 1]);
+    let said = toast(&app).expect("nothing said");
+    assert!(said.contains("keeps its pages"), "{said}");
+    app.active = 0;
+    assert_eq!(page_widths(&app), [0, 1]);
+    assert!(!app.tabs[0].can_undo(), "the first tab changed");
+}
+
+/// PF-48: Copy and Cut replace the pages copied, of text too, as a word processor's
+/// clipboard holds one thing: pages cut in one tab, then pages copied in another, leave
+/// the cut pages where they were, no longer cut, and the copy is pasted.
+#[test]
+fn a_later_copy_replaces_the_pages_cut() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 3);
+    app.tabs[0].ed.selection = Selection::pages_from([0].into());
+    copied_by(&mut app, &ctx, vec![egui::Event::Cut]);
+    assert_eq!(cut(&app), [0]);
+    second_tab(&mut app, &ctx, 2);
+    app.tabs[1].ed.selection = Selection::pages_from([1].into());
+    copied_by(&mut app, &ctx, vec![egui::Event::Copy]);
+    app.active = 0;
+    assert_eq!(cut(&app), [0usize; 0], "still cut");
+    app.tabs[0].ed.selection = Selection::pages_from([2].into());
+    paste_keys(&mut app, &ty);
+    assert_eq!(page_widths(&app), [0, 1, 2, 101]);
+}
+
+/// PF-48: pages copied from a password-protected document make the tab they are pasted
+/// into protected, as Append PDFs does.
+#[test]
+fn pages_of_a_protected_document_make_the_tab_protected() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 2);
+    app.tabs[0].copy.protected = true;
+    app.tabs[0].ed.selection = Selection::pages_from([1].into());
+    copied_by(&mut app, &ctx, vec![egui::Event::Copy]);
+    second_tab(&mut app, &ctx, 1);
+    assert!(!app.tabs[1].copy.protected);
+    paste_keys(&mut app, &ty);
+    assert_eq!(page_widths(&app), [100, 1]);
+    assert!(app.tabs[1].copy.protected, "not protected");
+}
+
+/// PF-48: pages with form fields pasted into another tab are asked about first, as Append
+/// PDFs asks, their answers drawn onto them once agreed; Cancel adds nothing.
+#[test]
+fn pages_with_form_fields_are_asked_about_when_pasted() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = grid_tab(&ctx, 1);
+    let mut form = form_doc(&[("Name", 1)]);
+    form.set_field("Name", limarepdf_core::FieldValue::Text("Grace".into()))
+        .unwrap();
+    assert!(app.add_tab(&ctx, form, None, None, false));
+    app.tabs[1].label = Some("form.pdf".into());
+    app.tabs[1].ed.selection = Selection::pages_from([0].into());
+    copied_by(&mut app, &ctx, vec![egui::Event::Copy]);
+    app.active = 0;
+    paste_keys(&mut app, &ty);
+    let Dialog::ConfirmAppendForms(q) = &app.dialog else {
+        panic!("not asked");
+    };
+    assert_eq!(q.names, ["form.pdf"]);
+    click(&mut app, &ctx, "Cancel");
+    assert_eq!(page_widths(&app), [0], "Cancel added them");
+    ty.pause(&mut app);
+    paste_keys(&mut app, &ty);
+    assert!(
+        matches!(app.dialog, Dialog::ConfirmAppendForms(_)),
+        "not asked again"
+    );
+    click(&mut app, &ctx, "Add pages");
+    let t = &app.tabs[0];
+    assert_eq!(t.page_count(), 2);
+    assert!(t.pdf.page_text(1).contains("Grace"), "answer not drawn");
+    assert!(t.pdf.form_fields().is_empty(), "the fields came too");
 }
 
 /// A click between cards puts the insertion bar there, as a slide sorter's, letting go of

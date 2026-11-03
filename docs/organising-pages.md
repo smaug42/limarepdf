@@ -74,9 +74,9 @@ Tab to the thumbnails: they take the same keys, in a column, and the page view g
 Moved a place or a row, pages that are apart stay apart, each going as far as it can; moved to the start or the
 end, they go together. The pages moved stay selected, and each move is one step for Undo.
 
-### Cut and paste pages
+### Cut, copy and paste pages
 
-To move pages a long way, cut them and paste them where they go:
+To move pages a long way, or into another document, cut them and paste them where they go:
 
 1. Select the pages and press Ctrl+X (or **Edit > Cut**, or **Cut** in the right-click menu). They stay where
    they are, faint, until you paste them.
@@ -87,9 +87,25 @@ To move pages a long way, cut them and paste them where they go:
    selected, in one step that Undo takes back.
 
 Esc takes the cut back, and the pages stay selected; Esc again lets go of them. Pasting with no new place chosen
-changes nothing, and a message says what to do. The clipboard gets the pages' names, such as "Pages 2, 3 of
-report.pdf", not the pages themselves. Pages can't be copied yet (to have them twice), nor pasted into another
-document.
+changes nothing, and a message says what to do.
+
+To paste them into another document, go to its tab and paste there: the pages are added there and taken out of
+the document they were cut from, each change one step for Undo in its own document. Cutting every page of a
+document copies them instead, because a document needs at least one page, and a message says so.
+
+To have pages twice, copy them: select them and press Ctrl+C (or **Edit > Copy**, or **Copy** in the right-click
+menu), then paste in this document or another as above. The pages you copied stay as they are. Each paste adds
+another copy, selected, in one step that Undo takes back.
+
+Copying or cutting something else in LimarePDF, text or pages, replaces the pages copied or cut, as in a word
+processor; pages that were cut stay where they are. Copying in another app doesn't replace them. The clipboard
+gets the pages' names, such as "Pages 2, 3 of report.pdf", not the pages themselves, so pages can't be pasted
+into another app.
+
+Pasting pages that come from a password-protected document makes the document you paste into protected too:
+LimarePDF keeps no recovery copies of it. Pages with form fields are asked about first, as when you
+[add pages from a file](#when-the-files-added-have-form-fields): the fields are drawn onto the pages with their
+answers and can't be filled in afterwards.
 
 ## Rotate, delete and extract pages
 

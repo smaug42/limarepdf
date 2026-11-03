@@ -485,7 +485,7 @@ pub struct Ctx {
     pub pages: bool,
     /// The active tab shows its pages as Organise's grid (NEW-14).
     pub organise: bool,
-    /// Pages are cut, waiting to be pasted.
+    /// Pages are cut or copied, in this tab or another, waiting to be pasted.
     pub cut: bool,
     pub tool: Option<Tool>,
     /// The Annotate button's tool, the one last used.
@@ -617,17 +617,18 @@ fn redo(c: &Ctx) -> bool {
 fn words_idle(c: &Ctx) -> bool {
     c.words && !c.busy
 }
-/// Something to copy: the text being typed (what is selected in it), words or lines.
+/// Something to copy: the text being typed (what is selected in it), words or lines, or
+/// pages, to paste in this document or another.
 fn copyable(c: &Ctx) -> bool {
-    c.typing || c.words || lines_among(c)
+    c.typing || c.words || lines_among(c) || (c.pages && !c.busy)
 }
 /// Something to cut: what is selected in the text being typed, words, lines of page text
 /// with nothing else selected, whose text Cut copies, or pages, to paste elsewhere.
 fn cuttable(c: &Ctx) -> bool {
     c.typing || ((c.words || (c.object && c.obj_only_text) || c.pages) && !c.busy)
 }
-/// Somewhere to paste: the text being typed, words to type over, or pages cut to put
-/// elsewhere.
+/// Somewhere to paste: the text being typed, words to type over, or pages cut or copied to
+/// put here.
 fn pasteable(c: &Ctx) -> bool {
     c.typing || ((c.words || c.cut) && !c.busy)
 }
@@ -902,17 +903,17 @@ pub static ACTIONS: &[Action] = &[
         enabled: cuttable,
         hint: "Copy what is selected in the text being typed, else the selected words or \
                lines of text, and take it out. Undo brings it back. Pages selected are cut \
-               to paste elsewhere in the document.",
+               to move them where you paste them, in this document or another.",
         ..BASE
     },
     Action {
         act: Act::Copy,
-        label: "Copy text",
+        label: "Copy",
         icon: icon::COPY,
         keys: &[k(C, Key::C)],
         enabled: copyable,
         hint: "Copy what is selected in the text being typed, else the selected words or \
-               lines of text.",
+               lines of text, or the pages selected, to paste in this document or another.",
         ..BASE
     },
     Action {
@@ -923,8 +924,8 @@ pub static ACTIONS: &[Action] = &[
         keys: &[k(C, Key::V)],
         enabled: pasteable,
         hint: "Paste into the text being typed, at its caret, or in place of the words \
-               selected. Pages cut go where the insertion bar is in Organise, else after the \
-               selected pages.",
+               selected. Pages cut or copied go where the insertion bar is in Organise, else \
+               after the selected pages.",
         ..BASE
     },
     Action {
@@ -2332,7 +2333,7 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
         }
         Selection::Objects { .. } => &[&[Act::ReplaceImage], &ALIGNS, &[Act::DeleteObject]],
         Selection::None | Selection::Pages(_) => &[
-            &[Act::Cut, Act::Paste],
+            &[Act::Cut, Act::Copy, Act::Paste],
             &[Act::RotR, Act::RotL, Act::Crop],
             &MOVES,
             &[
@@ -2479,7 +2480,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         (|d| d.can_undo = true, "Nothing to undo."),
         (|d| d.can_redo = true, "Nothing to redo."),
         // In Organise's grid, where nothing is typed or selected but pages, these first.
-        (|d| d.cut |= d.organise, "Cut pages first."),
+        (|d| d.cut |= d.organise, "Cut or copy pages first."),
         (|d| d.pages |= d.organise, "Select pages first."),
         (|d| d.words = true, SELECT_TEXT),
         (
@@ -3076,7 +3077,16 @@ mod tests {
     #[test]
     fn punctuation_keys_are_written_as_signs() {
         let ctx = egui::Context::default();
+        // On a Mac egui writes the signs (⌘) only in fonts that have them: a frame first.
+        crate::theme::install(&ctx);
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
         let text = |act| key_text(&ctx, &get(act).keys[0]);
+        ctx.set_os(egui::os::OperatingSystem::Mac);
+        assert_eq!(text(Act::Settings), "⌘,");
+        assert_eq!(text(Act::ZoomIn), "⌘=");
+        ctx.set_os(egui::os::OperatingSystem::Nix);
         assert_eq!(text(Act::Settings), "Ctrl+,");
         assert_eq!(text(Act::ZoomIn), "Ctrl+=");
         assert_eq!(text(Act::Save), "Ctrl+S");
