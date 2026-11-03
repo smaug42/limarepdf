@@ -159,6 +159,12 @@
 - The Bookmarks list works from the keyboard: it is one stop for Tab, where Up and Down go through the bookmarks
   showing their pages, Home and End go to the first and last, Right and Left show and hide the bookmarks inside
   one and go in and out, F2 renames, Delete deletes and Esc goes back to the page.
+- **Merging keeps the bookmarks of the files added**, as Word keeps the headings of a file inserted into a
+  document. **Insert PDF pages…** puts each file's bookmarks at the top level among the document's own, in page
+  order, and **Append PDFs…** and `limarepdf-cli merge` put them after the document's own, each file's arranged
+  as it was. The places a file names for its links (named destinations) come with it too; one whose name the
+  document already uses is renamed (`intro` becomes `intro-2`), with the links and bookmarks that go to it. Undo
+  takes them away with the pages.
 
 ### Changed
 
@@ -214,6 +220,9 @@
 
 ### Fixed
 
+- A link in pages added from another PDF that went to a place the file named could go nowhere, or to the wrong
+  page when the document had a place of the same name; it now goes to its own page. So does one giving its page
+  by number, as some apps write it.
 - Bookmarks shown or hidden in the Bookmarks list went back to how the file had them after any change to the
   document (renaming a bookmark, say); they now stay as you left them while the document is open.
 - Hovering over a web link showed its address as the file gave it, with any direction-changing or invisible

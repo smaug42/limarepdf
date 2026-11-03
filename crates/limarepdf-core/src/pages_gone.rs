@@ -287,56 +287,13 @@ impl Pdf {
     }
 
     /// The named destinations (in the catalog's `/Dests` and the `/Names /Dests` tree) that
-    /// go to pages that went. The whole tree is read, each node once, however deep it is.
+    /// go to pages that went.
     fn dead_names(&self, gone: &Gone) -> HashSet<Vec<u8>> {
-        let mut out = HashSet::new();
-        let resolve = |o: &Object| -> Object {
-            self.doc
-                .dereference(o)
-                .map_or_else(|_| o.clone(), |(_, o)| o.clone())
-        };
-        let catalog = self.doc.catalog().ok();
-        let old = catalog
-            .and_then(|c| c.get(b"Dests").ok())
-            .map(|o| self.resolved_dict(Some(o)))
-            .unwrap_or_default();
-        for (k, v) in old.iter() {
-            if gone.dead_dest(&resolve(v)) {
-                out.insert(k.clone());
-            }
-        }
-        let tree = catalog
-            .and_then(|c| c.get(b"Names").ok())
-            .map(|o| self.resolved_dict(Some(o)))
-            .and_then(|n| n.get(b"Dests").ok().cloned());
-        // Nodes are taken from a list, not by recursion, so depth costs no stack; nodes that
-        // are objects are read once, so loops end, and direct ones can't loop.
-        let mut todo: Vec<Object> = tree.into_iter().collect();
-        let mut seen = HashSet::new();
-        while let Some(node) = todo.pop() {
-            if node.as_reference().is_ok_and(|id| !seen.insert(id)) {
-                continue;
-            }
-            let node = self.resolved_dict(Some(&node));
-            if let Ok(names) = node.get(b"Names").map(resolve) {
-                for pair in names
-                    .as_array()
-                    .map(Vec::as_slice)
-                    .unwrap_or_default()
-                    .chunks(2)
-                {
-                    if let [k, v] = pair {
-                        if let (Ok(k), true) = (k.as_str(), gone.dead_dest(&resolve(v))) {
-                            out.insert(k.to_vec());
-                        }
-                    }
-                }
-            }
-            if let Ok(Object::Array(kids)) = node.get(b"Kids").map(resolve) {
-                todo.extend(kids);
-            }
-        }
-        out
+        let named = self.named_dests().into_iter();
+        named
+            .filter(|(_, v)| gone.dead_dest(v))
+            .map(|(k, _)| k)
+            .collect()
     }
 
     /// Take the alternative text off the structure elements with content on a page that went,

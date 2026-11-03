@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 /// Limits that keep a malformed or hostile file from running away.
-const MAX_ITEMS: usize = 100_000;
+pub(crate) const MAX_ITEMS: usize = 100_000;
 const MAX_DEPTH: usize = 64;
 
 /// One bookmark. [`Pdf::outline`] lists them in reading order, each followed by its
@@ -263,7 +263,7 @@ impl Pdf {
     }
 
     /// Link `kids` in order as `parent`'s children, both ways.
-    fn relink(&mut self, parent: ObjectId, kids: &[ObjectId]) -> Result<()> {
+    pub(crate) fn relink(&mut self, parent: ObjectId, kids: &[ObjectId]) -> Result<()> {
         let d = self.doc.get_dictionary_mut(parent)?;
         match (kids.first(), kids.last()) {
             (Some(&first), Some(&last)) => {
@@ -308,7 +308,7 @@ impl Pdf {
     }
 
     /// The outline root's object, made (or moved out of the catalog) when needed.
-    fn outline_root(&mut self) -> Result<ObjectId> {
+    pub(crate) fn outline_root(&mut self) -> Result<ObjectId> {
         let current = self.doc.catalog()?.get(b"Outlines").ok().cloned();
         if let Some(Object::Reference(id)) = current {
             if self.doc.get_dictionary(id).is_ok() {
@@ -343,7 +343,7 @@ impl Pdf {
 
     /// Set every `Count` from the tree as it now is: the number of descendants shown,
     /// negative for a closed bookmark.
-    fn fix_outline_counts(&mut self) -> Result<()> {
+    pub(crate) fn fix_outline_counts(&mut self) -> Result<()> {
         let root = self.outline_root()?;
         let shown = self.fix_counts(root, 0, &mut HashSet::new())?;
         let d = self.doc.get_dictionary_mut(root)?;
@@ -521,6 +521,64 @@ impl Pdf {
         let tree = names.as_dict().ok()?.get(b"Dests").ok()?;
         // A tree too deep or too large to look through is a destination that can't be followed.
         trees::name(&self.doc, tree, name).found()
+    }
+
+    /// Every named destination with its value (read through a reference once): those of the
+    /// catalog's `Dests` dictionary, then those of the `Dests` name tree
+    /// ([`Pdf::tree_dests`]); a name in both is listed twice.
+    pub(crate) fn named_dests(&self) -> Vec<(Vec<u8>, Object)> {
+        let catalog = self.doc.catalog().ok();
+        let old = catalog
+            .and_then(|c| c.get(b"Dests").ok())
+            .map(|o| self.resolved_dict(Some(o)))
+            .unwrap_or_default();
+        let old = old.iter().map(|(k, v)| (k.clone(), self.resolved(v)));
+        let mut out: Vec<_> = old.collect();
+        out.extend(self.tree_dests());
+        out
+    }
+
+    fn resolved(&self, o: &Object) -> Object {
+        self.doc
+            .dereference(o)
+            .map_or_else(|_| o.clone(), |(_, o)| o.clone())
+    }
+
+    /// The named destinations of the `Dests` name tree, in its order, with their values
+    /// (read through a reference once). The whole tree is read, each node once, however
+    /// deep it is.
+    pub(crate) fn tree_dests(&self) -> Vec<(Vec<u8>, Object)> {
+        let mut out = Vec::new();
+        let resolve = |o: &Object| self.resolved(o);
+        let tree = (self.doc.catalog().ok())
+            .and_then(|c| c.get(b"Names").ok())
+            .map(|o| self.resolved_dict(Some(o)))
+            .and_then(|n| n.get(b"Dests").ok().cloned());
+        // Nodes are taken from a list, not by recursion, so depth costs no stack; nodes that
+        // are objects are read once, so loops end, and direct ones can't loop. Kids are taken
+        // in their order, so the names come in the tree's.
+        let mut todo: Vec<Object> = tree.into_iter().collect();
+        let mut seen = HashSet::new();
+        while let Some(node) = todo.pop() {
+            if node.as_reference().is_ok_and(|id| !seen.insert(id)) {
+                continue;
+            }
+            let node = self.resolved_dict(Some(&node));
+            if let Ok(names) = node.get(b"Names").map(resolve) {
+                let pairs = names.as_array().map(Vec::as_slice).unwrap_or_default();
+                for pair in pairs.chunks(2) {
+                    if let [k, v] = pair {
+                        if let Ok(k) = k.as_str() {
+                            out.push((k.to_vec(), resolve(v)));
+                        }
+                    }
+                }
+            }
+            if let Ok(Object::Array(kids)) = node.get(b"Kids").map(resolve) {
+                todo.extend(kids.into_iter().rev());
+            }
+        }
+        out
     }
 
     /// Each page object's zero-based index.

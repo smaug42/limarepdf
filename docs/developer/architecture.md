@@ -992,6 +992,22 @@ such document with `flatten_form` before `App::add_pages` adds them in one step.
 for its second and later inputs with `--flatten-forms`, and refuses them without it; the first input's form is
 the result's.
 
+The added files' bookmarks and named destinations come with their pages (ENH-18, `merge.rs`).
+`Pdf::insert_pages` starts with `carrying(at)`: where the bookmarks go among the document's top-level ones (after
+the last going to a page before `at`, first when none does, after all of them when the pages go at the end), how
+much room the outline has left (`outline::MAX_ITEMS`), and the names taken (`named_dests`: the catalog's `Dests`,
+then the name tree, `tree_dests`, which `pages_gone`'s `dead_names` reads too). Each file, once renumbered and
+before its objects join, goes through `carry`: each name gets one not taken (its own, else `-2`, `-3` and so on, in
+UTF-16 for a name written in it; the catalog's `Dests` first, as `named_dest` looks there first); `Fix` walks every
+object's direct values and changes each `Dest`, and each `GoTo` action's `D`, that gives a name (now always a
+string, as the name tree holds it, renamed where taken) or a page number from 0 (to the file's page itself, or
+null when it has none, so it can't land on the document's page of that number); then the bookmarks are linked
+again as `outline_nodes` reads them (`relink` on each), so a loop or nesting past the limits is left out rather
+than joined. `put_carried`, after `set_page_order`, splices the files' top-level bookmarks into the root's list and
+fixes the counts, and writes one sorted name tree of a single node holding the document's tree names and the
+carried ones (the catalog's own `Dests` stays as it is), into the catalog's `Names` whether direct or an object.
+Undo needs nothing of its own: the history compares the whole document.
+
 Fill-and-sign signatures (`crates/limarepdf-core/src/sign.rs`) are stamp annotations whose artwork LimarePDF draws once:
 pen strokes smoothed into curves, typed names as the glyph outlines of a bundled handwriting font (read with the
 `skrifa` crate, so no font goes into the PDF), or a picture with its paper made transparent. Finish signing

@@ -29,7 +29,8 @@ source.
   with the page and each other as you drag.
 - **Comment and mark up:** highlights, notes, text boxes, shapes, arrows, freehand drawing and replies.
 - **Organise pages:** see every page at once, as in a slide sorter, and drag or cut and paste pages into a new
-  order; rotate, insert, delete and extract them; merge files into one or split one into several.
+  order; rotate, insert, delete and extract them; merge files into one, keeping their bookmarks, or split one
+  into several.
 - **Fill in forms:** text fields, checkboxes, radio buttons and lists, ready to save, print or send.
 - **Fill and sign any document:** add your signature (drawn, typed or from a picture), your initials, the date and
   ticks, even where the document has no form fields.

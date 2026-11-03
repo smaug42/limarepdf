@@ -120,9 +120,13 @@ The files are added in the order chosen, in one step that Ctrl+Z takes back. A p
 password: **Add pages** adds its pages, **Skip this file** leaves it out and adds the others, and **Cancel** adds
 nothing. A file that can't be read adds nothing either, and a message names it.
 
-Inserting or appending PDFs adds the pages only: the bookmarks and named destinations of the files added aren't
-carried over. Pages from a password-protected file make the whole document count as protected, so it gets no
-[recovery copies](gui.md#recovery-copies) while it is open.
+The bookmarks of the files added come with their pages, as Word keeps the headings of a file inserted into a
+document. In the [Bookmarks](reading-and-finding.md#bookmarks) view they go at the top level, among the
+document's own in page order (after all of them when you append), each file's arranged as it was. Links in the
+pages added keep going where they went: the places a file names for its links (named destinations) come with it,
+and one whose name the document already uses is renamed (`intro` becomes `intro-2`), with the links and
+bookmarks that go to it. Pages from a password-protected file make the whole document count as protected, so it
+gets no [recovery copies](gui.md#recovery-copies) while it is open.
 
 ### When the files added have form fields
 

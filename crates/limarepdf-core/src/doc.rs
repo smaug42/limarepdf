@@ -803,34 +803,40 @@ impl Pdf {
         self.set_page_order(&new)
     }
 
-    /// Append the pages of `others` to this document. Their forms aren't merged into this
-    /// one's, so their fields can't be filled in here, and values without a drawing of their
-    /// own show blank: callers first ask to draw them onto the pages with
+    /// Append the pages of `others` to this document, with their bookmarks after its own
+    /// and their named destinations (see [`Pdf::insert_pages`]). Their forms aren't merged
+    /// into this one's, so their fields can't be filled in here, and values without a
+    /// drawing of their own show blank: callers first ask to draw them onto the pages with
     /// [`Pdf::flatten_form`] ([`Pdf::undrawable_fields`] names what it would refuse).
     pub fn append(&mut self, others: Vec<Pdf>) -> Result<()> {
         self.insert_pages(self.page_count(), others)
     }
 
     /// Insert the pages of `others`, in order, so that the first becomes page `at`
-    /// (0-based; the page count puts them at the end). Their forms aren't merged, as for
-    /// [`Pdf::append`].
+    /// (0-based; the page count puts them at the end). Their bookmarks come too, at the top
+    /// level in page order: after the last bookmark there going to a page before `at`. So
+    /// do their named destinations, one taken already renamed (`intro-2`) along with what
+    /// goes to it. Their forms aren't merged, as for [`Pdf::append`].
     pub fn insert_pages(&mut self, at: usize, others: Vec<Pdf>) -> Result<()> {
         if at > self.page_count() {
             bail!("position {at} is beyond the end of the document");
         }
         self.flatten()?;
         let mut ids = self.page_ids();
+        let mut carried = self.carrying(at);
         let mut added = Vec::new();
         for mut o in others {
             o.flatten()?;
             o.doc.renumber_objects_with(self.doc.max_id + 1);
+            o.carry(&mut carried)?;
             let new_ids = o.page_ids();
             self.doc.max_id = self.doc.max_id.max(o.doc.max_id);
             self.doc.objects.extend(o.doc.objects);
             added.extend(new_ids);
         }
         ids.splice(at..at, added);
-        self.set_page_order(&ids)
+        self.set_page_order(&ids)?;
+        self.put_carried(carried)
     }
 
     /// Merge documents in order into a new one.

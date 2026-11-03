@@ -159,6 +159,22 @@ fn linked_pages() -> Pdf {
     p
 }
 
+/// [`linked_pages`] with a named destination, "second", to its second page.
+fn named_pages() -> Pdf {
+    let mut p = linked_pages();
+    let ids = p.page_ids();
+    let second = Object::String(b"second".to_vec(), StringFormat::Literal);
+    let fit = vec![Object::Reference(ids[1]), "Fit".into()];
+    let tree = p
+        .doc
+        .add_object(dictionary! { "Names" => vec![second, fit.into()] });
+    p.doc
+        .catalog_mut()
+        .unwrap()
+        .set("Names", dictionary! { "Dests" => tree });
+    p
+}
+
 /// A PNG of noise, `w` by `h`, which compresses poorly: a large picture.
 fn noise_png(w: u32, h: u32) -> Vec<u8> {
     let mut seed = 0x2545_f491_u32;
@@ -351,6 +367,11 @@ fn each_kind_of_edit_is_undone_and_redone_byte_for_byte() {
             "another document's pages inserted",
             three,
             Box::new(|p| p.insert_pages(1, vec![pages(2)]).unwrap()),
+        ),
+        (
+            "another document's pages inserted, with its bookmarks and named destinations",
+            named_pages,
+            Box::new(|p| p.insert_pages(1, vec![named_pages()]).unwrap()),
         ),
         (
             "a page cropped",

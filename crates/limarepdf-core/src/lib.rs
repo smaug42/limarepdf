@@ -36,6 +36,7 @@ mod labels;
 mod layout;
 mod links;
 mod matrix;
+mod merge;
 mod objects;
 mod ocr;
 mod outline;

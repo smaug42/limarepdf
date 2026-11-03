@@ -328,3 +328,33 @@ fn f2_renames_and_delete_deletes_from_the_list() {
     assert_eq!(toast(&app).as_deref(), Some("Deleted the bookmark"));
     assert!(node(&tree, "Pups").is_none());
 }
+
+/// ENH-18: Append PDFs… brings the files' bookmarks after the document's, shown in the
+/// view, and Undo takes them away with the pages.
+#[test]
+fn appended_files_bring_their_bookmarks_and_undo_takes_them_away() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = bookmarks_tab(&ctx);
+    let mut added = Pdf::new();
+    added.insert_blank(0, 400.0, 600.0).unwrap();
+    added
+        .add_bookmark("Walruses abroad", 0, BookmarkPlace::End)
+        .unwrap();
+    let a = Appending {
+        tab: app.tabs[0].id,
+        to: PagesGo::End,
+        files: vec![PathBuf::from("abroad.pdf")],
+        read: vec![Some(added)],
+    };
+    app.append_read(&ctx, a);
+    let all = "Walrus .Calves .Tusks Otter Seal .Pups";
+    assert_eq!(tree_of(&app), format!("{all} Walruses abroad"));
+    assert_eq!(app.tabs[0].pdf.outline()[6].page, Some(4));
+    let tree = ty.pause(&mut app);
+    assert!(node(&tree, "Walruses abroad").is_some(), "not in the view");
+    app.act(&ctx, Act::Undo);
+    assert_eq!(tree_of(&app), all);
+    let tree = ty.pause(&mut app);
+    assert!(node(&tree, "Walruses abroad").is_none(), "kept");
+}
