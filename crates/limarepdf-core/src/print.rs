@@ -20,7 +20,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-pub use crate::paper::{Paper, PaperList};
+pub use crate::paper::{new_document_size, Paper, PaperList};
 pub use crate::sheets::{
     place, sheets, Binding, Booklet, BookletSides, Orientation, PageOrder, PageSetup, PerSheet,
     Placed, Scale, SheetPlan, ASSUMED_MARGIN, MAX_PERCENT, PAGES_PER_SHEET,

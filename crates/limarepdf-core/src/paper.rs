@@ -311,6 +311,34 @@ fn ppd_paper(name: &str) -> Option<(String, (f32, f32))> {
     (w > 0.0 && h > 0.0).then(|| (dims(w, h), (w, h)))
 }
 
+/// The regions whose everyday paper is Letter (CLDR's paper sizes); everywhere else uses A4.
+const LETTER_REGIONS: [&str; 14] = [
+    "BZ", "CA", "CL", "CO", "CR", "GT", "MX", "NI", "PA", "PH", "PR", "SV", "US", "VE",
+];
+
+/// The size in points of a new blank document's page for the system's locale (`en-CA`,
+/// `fr_CA.UTF-8`, `zh-Hans-CN`): Letter in the regions that use it, as Word's new
+/// documents take the region's paper, else A4, also when no locale or region is known
+/// (NEW-09).
+pub fn new_document_size(locale: Option<&str>) -> (f32, f32) {
+    let region = locale.and_then(region);
+    if region.is_some_and(|r| LETTER_REGIONS.contains(&r.as_str())) {
+        (612.0, 792.0)
+    } else {
+        (Unit::Mm.points(210.0), Unit::Mm.points(297.0))
+    }
+}
+
+/// The region a locale names, in capitals: its first subtag of two letters after the
+/// language and before any extension ("CA" of `fr_CA.UTF-8`, "CN" of `zh-Hans-CN`).
+fn region(locale: &str) -> Option<String> {
+    let tag = locale.split(['.', '@']).next()?;
+    (tag.split(['-', '_']).skip(1))
+        .take_while(|s| s.len() != 1)
+        .find(|s| s.len() == 2 && s.chars().all(|c| c.is_ascii_alphabetic()))
+        .map(|s| s.to_ascii_uppercase())
+}
+
 /// A standard paper size by its PPD name or its name for people, in any case ("A4",
 /// "letter", "Foolscap"), named to CUPS by its PPD name, margins unknown.
 pub(crate) fn standard(name: &str) -> Option<Paper> {
@@ -679,5 +707,35 @@ mod tests {
         assert_eq!(standard("Foolscap").unwrap().id, "FLSA");
         assert_eq!(standard("Letter").unwrap().size, (612.0, 792.0));
         assert_eq!(standard("Brochure"), None);
+    }
+
+    /// NEW-09: a new document's page is Letter in the regions whose paper it is, A4
+    /// elsewhere and when the system names no region.
+    #[test]
+    fn new_documents_take_the_regions_paper() {
+        let a4 = standard("A4").unwrap().size;
+        let letter = (612.0, 792.0);
+        let cases = [
+            ("en-US", letter),
+            ("en_CA.UTF-8", letter),
+            ("fr-CA", letter),
+            ("es_MX.UTF-8@euro", letter),
+            ("en-Latn-US", letter),
+            ("fil-PH", letter),
+            ("en-GB", a4),
+            ("de_DE.UTF-8", a4),
+            ("zh-Hans-CN", a4),
+            ("es-419", a4),
+            ("en", a4),
+            // "ca" is a calendar here, not Canada.
+            ("en-u-ca-gregory", a4),
+            ("C", a4),
+            ("POSIX", a4),
+            ("", a4),
+        ];
+        for (locale, want) in cases {
+            assert_eq!(new_document_size(Some(locale)), want, "{locale}");
+        }
+        assert_eq!(new_document_size(None), a4);
     }
 }

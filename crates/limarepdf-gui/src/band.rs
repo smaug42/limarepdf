@@ -268,12 +268,6 @@ const TEXT_ALIGNS: [Act; 4] = [
 ];
 
 // The planned features, each with the build plan's item that builds it.
-const BLANK_DOCUMENT: Planned = Planned {
-    label: "Blank document",
-    icon: icon::FILE_PLUS,
-    item: "NEW-09",
-    what: "Start a new, empty document.",
-};
 const EXPORT_COMMENTS: Planned = Planned {
     label: "Export comments",
     icon: icon::FILE_ARROW_UP,
@@ -354,7 +348,8 @@ static INSERT: &[Group] = &[
     group(
         "Document",
         &[
-            Item::Planned(&BLANK_DOCUMENT),
+            // Word's New > Blank document.
+            b(Act::NewBlank, "Blank document", icon::FILE_PLUS),
             b(Act::NewFromImages, "From images", icon::IMAGES),
         ],
     ),
@@ -1223,11 +1218,13 @@ mod tests {
     #[test]
     fn planned_features_name_their_plan_items() {
         let all = all_planned();
-        assert!(all.len() >= 4);
+        assert!(all.len() >= 3);
         // Built: Underline (NEW-07, batch 46's 4b), Align (NEW-08, its stage 5), Print
-        // preview (ENH-14, batch 30's stage 3), Link (ENH-17's stage 2), Spelling (NEW-06)
-        // and Reduce file size (ENH-19's stage 2).
-        let built = ["NEW-07", "NEW-08", "ENH-14", "ENH-17", "NEW-06", "ENH-19"];
+        // preview (ENH-14, batch 30's stage 3), Link (ENH-17's stage 2), Spelling (NEW-06),
+        // Reduce file size (ENH-19's stage 2) and Blank document (NEW-09's stage 1).
+        let built = [
+            "NEW-07", "NEW-08", "ENH-14", "ENH-17", "NEW-06", "ENH-19", "NEW-09",
+        ];
         assert!(!all.iter().any(|p| built.contains(&p.item)));
         for p in &all {
             let id = p.item;

@@ -23,6 +23,8 @@ pub enum Act {
     OpenRecent(usize),
     /// Empty the recent-files list. Shown with the list, so not in [`ACTIONS`].
     ClearRecent,
+    /// Open a new document of one blank page, on the region's paper (NEW-09).
+    NewBlank,
     NewFromImages,
     Save,
     SaveAs,
@@ -352,6 +354,7 @@ impl Act {
             Act::Open
             | Act::OpenRecent(_)
             | Act::ClearRecent
+            | Act::NewBlank
             | Act::NewFromImages
             | Act::ExportImages
             | Act::CloseTab
@@ -783,6 +786,15 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::FOLDER_OPEN,
         keys: &[k(C, Key::O)],
         enabled: always,
+        ..BASE
+    },
+    Action {
+        act: Act::NewBlank,
+        label: "New blank document",
+        icon: icon::FILE_PLUS,
+        keys: &[k(C, Key::N)],
+        enabled: always,
+        hint: "Starts a new document of one blank page",
         ..BASE
     },
     Action {

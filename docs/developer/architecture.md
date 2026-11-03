@@ -1580,6 +1580,15 @@ sender, so the thread ends after what it is doing. Reduce goes through `App::spa
 `reduce_pictures` and `saved_size` on the tab's copy, applied as one undo step when a picture changed, and
 `reduce_size::reduced_text` as the job's message; nothing changed, nothing is applied.
 
+**A new blank document** (NEW-09's stage 1): `Act::NewBlank` (Ctrl+N; Insert > Blank document, ☰ first, the start
+screen's `empty_state`) runs `App::new_blank`: `Pdf::new` with one page of core's `print::new_document_size` (the
+`paper.rs` part: Letter for CLDR's `LETTER_REGIONS`, else A4, the region read from the locale's first two-letter
+subtag before any extension), added by `add_tab` with no path and `dirty` false, so `Tab::unsaved` is false and
+`close_asking` closes it at once until it is changed; its Save goes to the chooser as any tab without a file does.
+The locale is app.rs's `paper_locale`: on Linux and the BSDs `LC_ALL`, `LC_PAPER`, then `LANG` (POSIX's order for
+the paper; `sys-locale` reads `LC_MESSAGES` instead), else `sys_locale::get_locale` (Windows and macOS name the
+region there).
+
 **Decoding parameters given as a reference**: lopdf's `decompressed_content` reads `/DecodeParms` only when it is
 written in place (a dictionary, or an array of them); given as a reference (pdf.js's `issue17906`) it decodes as
 if there were none, leaving a PNG predictor's byte at the start of every row, so the samples read shifted.

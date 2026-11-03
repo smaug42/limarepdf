@@ -117,7 +117,7 @@ Small or medium additions that build on what LimarePDF already has:
 - Export to HTML, Markdown and CSV tables (M–L)
 - Create a PDF from Markdown, text, CSV, the clipboard or a web page (M each; web pages are L)
 - Create a PDF from JSON describing tables and image boxes (M)
-- New blank PDF (S); a virtual PDF printer (L, per operating system)
+- A virtual PDF printer (L, per operating system); the new blank document is built (NEW-09's stage 1)
 - Convert from Office formats (L, very large)
 
 ## OCR and scanning

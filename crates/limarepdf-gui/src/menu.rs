@@ -40,6 +40,7 @@ const KINDS: [&str; 8] = [
 ];
 
 pub static MENU: &[Entry] = &[
+    Cmd(Act::NewBlank),
     Cmd(Act::NewFromImages),
     Cmd(Act::Open),
     Recent,

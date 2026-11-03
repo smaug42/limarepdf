@@ -14,7 +14,8 @@ change and saving it. Shortcuts are written with Ctrl; on a Mac, use ⌘ (Comman
 3. The document opens in a tab of its own. Open more and switch between them with the tabs, or with Ctrl+Tab.
 
 Photos and scans (PNG, JPEG or TIFF) open as a new document, one page per picture. The start screen's **Make a PDF
-from images…** does the same.
+from images…** does the same. To start from nothing, **New blank document** (Ctrl+N) opens a document of one blank
+page ([A new document](gui.md#a-new-document)).
 
 From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 

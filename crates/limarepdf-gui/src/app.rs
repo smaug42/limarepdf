@@ -2440,6 +2440,23 @@ impl App {
         }
     }
 
+    /// Opens an untitled document of one blank page, on the paper of the system's region,
+    /// in front. Nothing is unsaved until it is changed, so an untouched one closes without
+    /// asking, as Word's does (NEW-09).
+    fn new_blank(&mut self, ctx: &egui::Context) {
+        let (w, h) = limarepdf_core::print::new_document_size(paper_locale().as_deref());
+        let mut pdf = Pdf::new();
+        match pdf.insert_blank(0, w, h) {
+            Ok(()) => {
+                self.add_tab(ctx, pdf, None, None, false);
+            }
+            Err(e) => self.show(Dialog::Message(
+                "Cannot make a new document".into(),
+                format!("{e:#}"),
+            )),
+        }
+    }
+
     fn new_from_images(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
         let Some(data) = self.read_images(files) else {
             return;
@@ -2791,6 +2808,7 @@ impl App {
                 }
             }
             Act::ClearRecent => self.recent.clear(),
+            Act::NewBlank => self.new_blank(ctx),
             Act::NewFromImages => {
                 if let Some(files) = Self::pick_images() {
                     self.new_from_images(ctx, &files);
@@ -6790,6 +6808,19 @@ fn broken_state(ui: &mut egui::Ui, why: &str, acts: &mut Vec<Act>) {
 /// The window with no document: a card to open a PDF or start from images. The card
 /// is a drop target and is clickable as a whole; it lights up while files are dragged
 /// over the window.
+/// The locale whose region sets a new document's paper: on Linux and the BSDs the paper's
+/// own setting, in POSIX's order (`LC_ALL`, `LC_PAPER`, `LANG`); elsewhere, and when none
+/// is set, the system's language setting, which names the region on Windows and macOS.
+fn paper_locale() -> Option<String> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    for name in ["LC_ALL", "LC_PAPER", "LANG"] {
+        if let Some(v) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
+            return Some(v);
+        }
+    }
+    sys_locale::get_locale()
+}
+
 fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     let dragging = ui.input(|i| !i.raw.hovered_files.is_empty());
     let room = ui.max_rect();
@@ -6800,7 +6831,7 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     } else {
         0.0
     };
-    let size = egui::vec2(440.0, 310.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
+    let size = egui::vec2(440.0, 342.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
     let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
     let id = egui::Id::unique("empty-card");
     // A click anywhere on it opens a file; the keyboard has Open PDF… for that, so the
@@ -6836,6 +6867,12 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     let open = theme::primary_button("Open PDF…").min_size(egui::vec2(180.0, 32.0));
     if ui.add(open).clicked() {
         acts.push(Act::Open);
+    }
+    ui.add_space(4.0);
+    // As Word's start screen offers Blank document.
+    let blank = egui::Button::new("New blank document").min_size(egui::vec2(180.0, 28.0));
+    if ui.add(blank).clicked() {
+        acts.push(Act::NewBlank);
     }
     ui.add_space(4.0);
     let images = egui::Button::new("Make a PDF from images…").min_size(egui::vec2(180.0, 28.0));
@@ -7774,6 +7811,7 @@ mod tests {
     mod history;
     mod input_methods;
     mod links;
+    mod new_document;
     mod organise;
     mod overflow;
     mod paragraphs;
@@ -9117,13 +9155,13 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
-        app.band = Band::Insert;
+        app.band = Band::Review;
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        let name = "Blank document — Planned";
-        let (at, _) = node(&tree, name).expect("Blank document");
+        let name = "Export comments — Planned";
+        let (at, _) = node(&tree, name).expect("Export comments");
         let link = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
         assert!(link.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
-        let before = "Header and footer";
+        let before = "Stamp";
         let (marks, _) = node(&tree, before).expect(before);
         let undo = app.tabs[0].can_undo();
         window(&mut app, &ctx, 1400.0, click_at(at.center()));
@@ -9145,7 +9183,7 @@ mod tests {
             let shown = (tree.nodes.iter()).find(|(_, n)| planned(&n.label().map(str::to_string)));
             assert!(shown.is_none(), "{}: {shown:?}", band.name());
         }
-        app.band = Band::Insert;
+        app.band = Band::Review;
         let tree = settled_at(&mut app, &ctx, 1400.0);
         // Those before the planned ones stay where they were.
         let now = node(&tree, before).map(|(r, _)| r);

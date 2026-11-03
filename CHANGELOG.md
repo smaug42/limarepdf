@@ -215,12 +215,17 @@
   replaces the pages copied, as in a word processor. Pages of a password-protected document make the document
   pasted into protected, and pages with form fields are asked about first, as when adding pages from a file.
   ☰ > Edit > Copy text is now **Copy**.
+- **New blank document**: Insert > Blank document (no longer marked Planned), ☰ > New blank document, the start
+  screen, the command search or Ctrl+N (⌘N on a Mac) opens an "Untitled" document of one blank page, as Word's
+  Blank document does. The page is Letter in the United States, Canada and the other countries that use Letter,
+  and A4 elsewhere, by your system's region (on Linux, its paper setting). One you haven't changed closes without
+  asking; once changed, Save asks where to save it.
 
 ### Changed
 
-- The ☰ menu is laid out as the command band: File's own commands first, in word processors' order (Make a PDF
-  from images, Open, Open recent, Save, Save As, Reload, Export ▸, Reduce file size, Print preview, Print, Print
-  selected text, Properties), then one submenu for each of the band's names, in the band's order and laid out as
+- The ☰ menu is laid out as the command band: File's own commands first, in word processors' order (New blank
+  document, Make a PDF from images, Open, Open recent, Save, Save As, Reload, Export ▸, Reduce file size, Print
+  preview, Print, Print selected text, Properties), then one submenu for each of the band's names, in the band's order and laid out as
   its groups (Edit, Insert, Review, Pages, Forms and sign, Protect, View), then Help, Settings…, Close tab and Quit
   last. A command is now under the same name in both: Watermark and Headers, footers, Bates are under Insert, the
   comments and markup, Spelling and Flatten annotations under Review, Organise pages, Recognise text and Optimise

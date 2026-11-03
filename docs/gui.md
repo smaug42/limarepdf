@@ -18,9 +18,9 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
   **Forms and sign**, **Protect** and **View**; at the right **Print**, and a small arrow that makes the commands
-  compact. The File menu has File's own commands, as word processors order them (Make a PDF from images, Open,
-  Open recent, Save, Save As, Reload, Export ▸, Reduce file size, Print preview, Print, Print selected text,
-  Properties), then one submenu for each name of the command band, with the same names in the same order and
+  compact. The File menu has File's own commands, as word processors order them (New blank document, Make a PDF
+  from images, Open, Open recent, Save, Save As, Reload, Export ▸, Reduce file size, Print preview, Print, Print
+  selected text, Properties), then one submenu for each name of the command band, with the same names in the same order and
   laid out as the band's groups (Edit, Insert, Review, Pages, Forms and sign, Protect, View), then Help (Search
   commands, User guide, Report a problem, About), [Settings…](#settings), Close tab and Quit. A command is under
   the same name in both. What only keys do (moving or extending the selection with the arrow keys, Esc, F6) isn't
@@ -99,7 +99,7 @@ Click in a form field first.", then what it does.
 | Name | Groups and buttons |
 | --- | --- |
 | Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); the **Alignment** group: Align left, Centre, Align right and Justify for the paragraph or line being edited, or the paragraphs of the words or lines selected, and the first three for new text and text boxes, its own pressed ([Align text](content-editing.md#align-text)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
-| Insert | Text and Image; Header and footer, Watermark; Link ([add or change a link](reading-and-finding.md#add-a-link)); From images (a new PDF from pictures) |
+| Insert | Text and Image; Header and footer, Watermark; Link ([add or change a link](reading-and-finding.md#add-a-link)); Blank document ([a new document](#a-new-document)), From images (a new PDF from pictures) |
 | Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Spelling ▾ (the [spelling](spelling.md) language, Check spelling as you type, Add a dictionary…); Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
 | Forms and sign | Fill fields ▾ (next and previous field, highlight fields, clear, reset or flatten the form), Fill and sign ▾ (saved signatures and initials, Create signature…, the date, your name, text, marks); Digital signature ▾ (sign, certify, the signatures in this document, digital IDs, trusted certificates) |
@@ -107,8 +107,7 @@ Click in a form field first.", then what it does.
 | View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
-Blank document in Insert; Export comments in Review; Create fields in Forms and sign; Your
-AI in View. They do nothing, and Tab passes them by. Turn
+Export comments in Review; Create fields in Forms and sign; Your AI in View. They do nothing, and Tab passes them by. Turn
 off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is remembered.
 
 **Compact commands.** The small arrow at the right of the commands row (or View > Show > Compact commands) puts the
@@ -200,6 +199,14 @@ first; closing the tab in front takes you to the next one, or the one before whe
 
 If a damaged file makes LimarePDF fail while showing a document, that tab shows an error page with Save a copy and
 Close this tab; other tabs carry on.
+
+### A new document
+
+**Insert > Blank document**, ☰ > New blank document, the start screen's **New blank document** or Ctrl+N opens an
+**Untitled** tab of one blank page, to add text, pictures or other documents' pages to. The page is Letter in the
+United States, Canada and the other countries that use Letter, and A4 elsewhere, as your system's region says (on
+Linux, its paper setting). A new document you haven't changed closes without asking; once changed, Save asks where
+to save it, as Save As does.
 
 ## Saving
 
@@ -532,6 +539,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 
 | Keys | Action |
 | --- | --- |
+| Ctrl+N | [New blank document](#a-new-document) |
 | Ctrl+O | Open |
 | Ctrl+S, Ctrl+Shift+S | Save, Save As |
 | Ctrl+W | Close the tab |
