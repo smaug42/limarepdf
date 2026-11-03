@@ -294,9 +294,10 @@ impl Preview {
             return Some(plan.len());
         }
         let ask = self.ask.as_ref()?;
-        match &ask.what {
-            What::Pages(p) => Some(p.len().div_ceil(ask.setup.per_sheet.count())),
-            What::Selection(_) => None,
+        match (&ask.what, ask.setup.booklet) {
+            (What::Pages(p), Some(b)) => Some(b.sides_printed(p.len())),
+            (What::Pages(p), None) => Some(p.len().div_ceil(ask.setup.per_sheet.count())),
+            (What::Selection(_), _) => None,
         }
     }
 
@@ -478,9 +479,15 @@ impl Preview {
         self.sheet(&mut col, room, waiting);
     }
 
-    /// The sheet's number and the arrows either side of it, centred.
+    /// The sheet's number and the arrows either side of it, centred; for a booklet, the
+    /// side's number, which side of which sheet it is above them.
     fn counter(&mut self, ui: &mut egui::Ui) {
         let n = self.sheets();
+        let booklet = self.ask.as_ref().and_then(|a| a.setup.booklet);
+        let (before, after) = match booklet {
+            Some(_) => ("Previous side", "Next side"),
+            None => ("Previous sheet", "Next sheet"),
+        };
         let id = ui.scope_id().with("sheet number");
         let last: Option<f32> = ui.data(|d| d.get_temp(id));
         let size = Vec2::new(last.unwrap_or(0.0), theme::DIALOG_CONTROL);
@@ -492,14 +499,14 @@ impl Preview {
                 set_name(&r, name);
                 r
             };
-            let prev = arrow(ui, self.at > 0, icon::CARET_LEFT, "Previous sheet");
+            let prev = arrow(ui, self.at > 0, icon::CARET_LEFT, before);
             let shown = match n {
                 Some(n) => format!("{} of {n}", self.at + 1),
                 None => format!("{}", self.at + 1),
             };
             ui.label(shown);
             let more = n.is_some_and(|n| self.at + 1 < n);
-            let next = arrow(ui, more, icon::CARET_RIGHT, "Next sheet");
+            let next = arrow(ui, more, icon::CARET_RIGHT, after);
             if prev.clicked() {
                 self.at -= 1;
                 // A greyed button can't keep the keyboard: it goes on to the other.
@@ -518,6 +525,12 @@ impl Preview {
         if last != Some(width) {
             ui.data_mut(|d| d.insert_temp(id, width));
             ui.ctx().request_discard("sheet number measured");
+        }
+        // Added after the row, above it, as the column is laid out from the bottom.
+        if let Some(b) = booklet {
+            let (sheet, front) = b.side(self.at);
+            let side = if front { "Front" } else { "Back" };
+            ui.label(format!("{side} of sheet {}", sheet + 1));
         }
     }
 
@@ -579,7 +592,7 @@ impl Preview {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use limarepdf_core::print::{Orientation, Paper, PerSheet, Scale};
+    use limarepdf_core::print::{Booklet, BookletSides, Orientation, Paper, PerSheet, Scale};
     use std::time::{Duration, Instant};
 
     fn letter(margins: Option<[f32; 4]>) -> Paper {
@@ -597,6 +610,7 @@ mod tests {
             orientation,
             scale,
             per_sheet: PerSheet::default(),
+            booklet: None,
         }
     }
 
@@ -731,6 +745,39 @@ mod tests {
         assert_eq!(p.sheets(), Some(1));
         assert_eq!(p.plan().unwrap()[0].pages.len(), 3);
         assert!(p.notes().is_empty(), "{:?}", p.notes());
+    }
+
+    /// NEW-05: a booklet's sides are counted before the pages' sizes are known, each held
+    /// sideways, and a blank side is drawn as a blank sheet: one page makes one sheet, its
+    /// back blank; the fronts alone, one side.
+    #[test]
+    fn a_booklets_sides_are_shown_as_planned() {
+        let ctx = egui::Context::default();
+        let mut p = Preview::spawn(&ctx, Source::Pages(doc()));
+        let ask = |sides| {
+            let mut s = setup(Orientation::Automatic, Scale::ShrinkOversized);
+            s.booklet = Some(Booklet {
+                sides,
+                ..Default::default()
+            });
+            Ask {
+                what: What::Pages(vec![0]),
+                setup: s,
+            }
+        };
+        p.set(Some(ask(BookletSides::Both)));
+        assert_eq!(p.sheets(), Some(2), "counted before the sizes come");
+        let size = Vec2::new(420.0, 330.0);
+        shown_until(&ctx, &mut p, size, |p| {
+            drawing(p, 0).is_some() && drawing(p, 1).is_some()
+        });
+        let plan = p.plan().unwrap();
+        assert!(plan.iter().all(|s| s.sideways), "{plan:?}");
+        assert!(plan[1].pages.is_empty(), "{plan:?}");
+        let [w, h] = drawing(&p, 1).expect("the blank back drawn");
+        assert!(w > h, "held sideways: {w} x {h}");
+        p.set(Some(ask(BookletSides::Fronts)));
+        assert_eq!(p.sheets(), Some(1));
     }
 
     /// A change of page setup drops the sheets drawn for the old one: what is shown is

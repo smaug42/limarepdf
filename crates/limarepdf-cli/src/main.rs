@@ -552,16 +552,17 @@ enum Cmd {
         pages: String,
         #[arg(long, default_value_t = 1)]
         copies: u32,
-        #[arg(long, value_enum, default_value_t = SidesArg::One)]
-        sides: SidesArg,
+        /// One side or both; default: one
+        #[arg(long, value_enum)]
+        sides: Option<SidesArg>,
         /// Paper size from `limarepdf-cli printers --paper`, such as A4 or Letter; default: the
         /// printer's
         #[arg(long)]
         paper: Option<String>,
-        /// Which way the pages go on the paper: auto turns pages wider than they are tall, or
-        /// with several pages a sheet holds each sheet the way they print largest
-        #[arg(long, value_enum, default_value_t = OrientationArg::Auto)]
-        orientation: OrientationArg,
+        /// Which way the pages go on the paper: auto (the default) turns pages wider than they
+        /// are tall, or with several pages a sheet holds each sheet the way they print largest
+        #[arg(long, value_enum)]
+        orientation: Option<OrientationArg>,
         /// How big the pages are printed: shrink (the default: pages larger than the
         /// printable area only), fit (to the printable area), actual, or a percentage from 1
         /// to 400. With several pages a sheet, each is fitted to its place instead
@@ -576,6 +577,17 @@ enum Cmd {
         /// Draw a thin line around each page, with several pages a sheet
         #[arg(long)]
         borders: bool,
+        /// Print as a booklet: two pages a side, in the order that reads straight through once
+        /// the sheets are folded in half and stacked, both sides flipped on the short edge
+        #[arg(long)]
+        booklet: bool,
+        /// The edge a booklet is bound along; default: left
+        #[arg(long, value_enum)]
+        binding: Option<BindingArg>,
+        /// Which sides of a booklet's sheets print: both (the default), or for a printer that
+        /// prints one side, fronts, then backs once the sheets are put back in
+        #[arg(long, value_enum)]
+        booklet_sides: Option<BookletSidesArg>,
         /// Send sheets rendered by LimarePDF (300 dpi images) instead of a PDF of them. Windows
         /// always prints sheets rendered by LimarePDF
         #[arg(long)]
@@ -804,6 +816,24 @@ enum PageOrderArg {
     Down,
     /// Top to bottom, right to left
     DownFromRight,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum BindingArg {
+    /// Bound on the left, read left to right
+    Left,
+    /// Bound on the right, read right to left
+    Right,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum BookletSidesArg {
+    /// Both sides, on a printer that prints both
+    Both,
+    /// The fronts alone
+    Fronts,
+    /// The backs alone, on the sheets whose fronts are printed
+    Backs,
 }
 
 fn parse_pages_per_sheet(s: &str) -> std::result::Result<u8, String> {
@@ -3973,9 +4003,39 @@ fn run(cmd: Cmd) -> Result<()> {
             pages_per_sheet,
             page_order,
             borders,
+            booklet,
+            binding,
+            booklet_sides,
             as_image,
             password,
         } => {
+            let own = [
+                (binding.is_some(), "--binding"),
+                (booklet_sides.is_some(), "--booklet-sides"),
+            ];
+            if let Some((_, flag)) = own.iter().find(|(given, _)| *given && !booklet) {
+                bail!("{flag} is for a booklet: add --booklet");
+            }
+            let set = [
+                (pages_per_sheet > 1, "--pages-per-sheet"),
+                (page_order.is_some(), "--page-order"),
+                (borders, "--borders"),
+                (scale.is_some(), "--scale"),
+                (orientation.is_some(), "--orientation"),
+            ];
+            if let Some((_, flag)) = set.iter().find(|(given, _)| *given && booklet) {
+                bail!(
+                    "{flag} doesn't go with --booklet: a booklet sets this itself, two pages a \
+                     side in folding order, each fitted to its half of the sheet"
+                );
+            }
+            if booklet && sides.is_some() {
+                bail!(
+                    "--sides doesn't go with --booklet: a booklet prints both sides flipped on \
+                     the short edge. For a printer that prints one side, print with \
+                     --booklet-sides fronts, put the sheets back in, then --booklet-sides backs"
+                );
+            }
             if pages_per_sheet > 1 && scale.is_some() {
                 bail!(
                     "--scale is for one page a sheet: with --pages-per-sheet {pages_per_sheet} \
@@ -4017,7 +4077,7 @@ fn run(cmd: Cmd) -> Result<()> {
             };
             let setup = print::PageSetup {
                 paper,
-                orientation: match orientation {
+                orientation: match orientation.unwrap_or(OrientationArg::Auto) {
                     OrientationArg::Auto => print::Orientation::Automatic,
                     OrientationArg::Portrait => print::Orientation::Portrait,
                     OrientationArg::Landscape => print::Orientation::Landscape,
@@ -4033,6 +4093,17 @@ fn run(cmd: Cmd) -> Result<()> {
                     },
                     borders,
                 },
+                booklet: booklet.then(|| print::Booklet {
+                    binding: match binding.unwrap_or(BindingArg::Left) {
+                        BindingArg::Left => print::Binding::Left,
+                        BindingArg::Right => print::Binding::Right,
+                    },
+                    sides: match booklet_sides.unwrap_or(BookletSidesArg::Both) {
+                        BookletSidesArg::Both => print::BookletSides::Both,
+                        BookletSidesArg::Fronts => print::BookletSides::Fronts,
+                        BookletSidesArg::Backs => print::BookletSides::Backs,
+                    },
+                }),
             };
             let sizes = p.page_sizes();
             let sizes: Vec<(f32, f32)> = idx.iter().map(|&i| sizes[i]).collect();
@@ -4058,7 +4129,7 @@ fn run(cmd: Cmd) -> Result<()> {
             let opts = print::PrintOptions {
                 printer,
                 copies,
-                sides: match sides {
+                sides: match sides.unwrap_or(SidesArg::One) {
                     SidesArg::One => print::Sides::One,
                     SidesArg::LongEdge => print::Sides::LongEdge,
                     SidesArg::ShortEdge => print::Sides::ShortEdge,
@@ -4072,6 +4143,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 orientation: setup.orientation,
                 scale: setup.scale,
                 per_sheet: setup.per_sheet,
+                booklet: setup.booklet,
             };
             out!("{}", p.print(&idx, &opts)?);
         }

@@ -335,6 +335,80 @@ fn print_puts_several_pages_on_a_sheet() {
     }
 }
 
+/// NEW-05: `--booklet` prints the pages in folding order, two a side, both sides flipped on
+/// the short edge; `--booklet-sides` prints the fronts or backs alone on one side, and
+/// `--binding` binds on the right. The choices a booklet sets itself, and the booklet's own
+/// without it, are refused before anything is sent.
+#[test]
+fn print_makes_a_booklet() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-booklet");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, socket) = fake_printing(&dir);
+    let file = two_pages(&dir);
+    let run = |args: &[&str]| {
+        let _ = std::fs::remove_file(dir.join("job.pdf"));
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("print")
+            .args(args)
+            .arg(&file)
+            .env("PATH", &path)
+            .env("CUPS_SERVER", &socket)
+            .output()
+            .unwrap()
+    };
+    let err = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).to_string();
+    let sheets = || {
+        let job = limarepdf_core::Pdf::open(dir.join("job.pdf"), None).unwrap();
+        let objects = |i| job.page_objects(i).unwrap().len();
+        (0..job.page_count()).map(objects).collect::<Vec<_>>()
+    };
+    let sides = || {
+        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+        let sides = args.lines().find(|l| l.starts_with("sides="));
+        sides.unwrap_or_default().to_string()
+    };
+
+    // Two pages: the first on the front, the second on the back, the rest blank.
+    let out = run(&["--booklet"]);
+    assert!(out.status.success(), "{}", err(&out));
+    assert_eq!(sheets(), [1, 1]);
+    assert_eq!(sides(), "sides=two-sided-short-edge");
+    for (subset, binding) in [("fronts", "left"), ("backs", "right")] {
+        let args = ["--booklet", "--booklet-sides", subset, "--binding", binding];
+        let out = run(&args);
+        assert!(out.status.success(), "{subset}: {}", err(&out));
+        assert_eq!(sheets(), [1], "{subset}");
+        assert_eq!(sides(), "sides=one-sided", "{subset}");
+    }
+
+    let set = "a booklet sets this itself";
+    for (args, said) in [
+        (&["--booklet", "--pages-per-sheet", "2"][..], set),
+        (&["--booklet", "--page-order", "down"], set),
+        (&["--booklet", "--borders"], set),
+        (&["--booklet", "--scale", "fit"], set),
+        (&["--booklet", "--orientation", "portrait"], set),
+        (
+            &["--booklet", "--sides", "long-edge"],
+            "--booklet-sides fronts",
+        ),
+        (
+            &["--binding", "right"],
+            "--binding is for a booklet: add --booklet",
+        ),
+        (
+            &["--booklet-sides", "backs"],
+            "--booklet-sides is for a booklet: add --booklet",
+        ),
+    ] {
+        let out = run(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(err(&out).contains(said), "{args:?}: {}", err(&out));
+        assert!(!dir.join("job.pdf").exists(), "{args:?}: a job reached lp");
+    }
+}
+
 #[test]
 fn fields_that_would_print_empty_stop_printing() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-fields");

@@ -7,7 +7,8 @@ use crate::spin::Spin;
 use crate::theme;
 use eframe::egui::{self, Align, Context, Key, Margin, RichText, Ui};
 use limarepdf_core::print::{
-    Orientation, PageOrder, PageSetup, PaperList, PerSheet, Printer, Scale, Sides, PAGES_PER_SHEET,
+    Binding, Booklet, BookletSides, Orientation, PageOrder, PageSetup, PaperList, PerSheet,
+    Printer, Scale, Sides, PAGES_PER_SHEET,
 };
 use std::hash::Hash;
 use std::path::PathBuf;
@@ -868,6 +869,11 @@ pub struct Print {
     /// The percentage a custom scale is, kept while another scale is chosen.
     pub percent: u16,
     pub per_sheet: PerSheet,
+    /// Printing as a booklet (NEW-05), bound on [`Print::binding`] and printing
+    /// [`Print::booklet_sides`]; both kept while it isn't.
+    pub booklet: bool,
+    pub binding: Binding,
+    pub booklet_sides: BookletSides,
     pub preview: Preview,
 }
 impl Print {
@@ -894,6 +900,9 @@ impl Print {
             scale: Scale::ShrinkOversized,
             percent: 100,
             per_sheet: PerSheet::default(),
+            booklet: false,
+            binding: Binding::Left,
+            booklet_sides: BookletSides::Both,
             preview: Preview::default(),
         }
     }
@@ -994,7 +1003,19 @@ impl Print {
             orientation: self.orientation,
             scale: self.scale,
             per_sheet: self.per_sheet,
+            booklet: self.booklet_chosen(),
         })
+    }
+    /// The booklet chosen, if printing as one.
+    fn booklet_chosen(&self) -> Option<Booklet> {
+        self.booklet.then_some(Booklet {
+            binding: self.binding,
+            sides: self.booklet_sides,
+        })
+    }
+    /// How the printer prints the sides: a booklet's own, else as Print on says.
+    pub fn sides_used(&self) -> Sides {
+        self.booklet_chosen().map_or(self.sides, |b| b.sides_used())
     }
     /// For tests: Print with `printers`, the first one's paper sizes found: Letter, its
     /// default, and A4, each with the margins the user's HP reports.
@@ -1276,18 +1297,23 @@ fn copies_and_sides(ui: &mut Ui, s: &mut Print) {
             ui.add(spin.width(copies_width))
         });
     };
+    // A booklet sets the sides itself: shown greyed, Print on's own choice kept.
     let sides = |ui: &mut Ui, s: &mut Print, width: f32| {
-        let shown = SIDES.iter().find(|(x, _)| *x == s.sides).map(|(_, l)| *l);
-        field(ui, "Print on", |ui| {
-            egui::ComboBox::from_id_salt("sides")
-                .width(width)
-                .selected_text(shown.unwrap_or_default())
-                .show_ui(ui, |ui| {
-                    for (x, label) in SIDES {
-                        ui.selectable_value(&mut s.sides, x, label);
-                    }
-                })
-                .response
+        let used = s.sides_used();
+        let shown = SIDES.iter().find(|(x, _)| *x == used).map(|(_, l)| *l);
+        ui.add_enabled_ui(!s.booklet, |ui| {
+            field(ui, "Print on", |ui| {
+                egui::ComboBox::from_id_salt("sides")
+                    .width(width)
+                    .selected_text(shown.unwrap_or_default())
+                    .show_ui(ui, |ui| {
+                        for (x, label) in SIDES {
+                            ui.selectable_value(&mut s.sides, x, label);
+                        }
+                    })
+                    .response
+                    .on_disabled_hover_text(BOOKLET_SIDES)
+            });
         });
     };
     columns(ui, s, copies_width, need, copies, sides);
@@ -1380,21 +1406,25 @@ fn page_setup(ui: &mut Ui, s: &mut Print) {
     let need = list_width(ui, scales.map(scale_name)) + beside;
     let orientation = |ui: &mut Ui, s: &mut Print, width: f32| {
         let shown = ORIENTATIONS.iter().find(|(o, _)| *o == s.orientation);
-        field(ui, "Orientation", |ui| {
-            egui::ComboBox::from_id_salt("orientation")
-                .width(width)
-                .selected_text(shown.map(|(_, l)| *l).unwrap_or_default())
-                .show_ui(ui, |ui| {
-                    for (o, label) in ORIENTATIONS {
-                        ui.selectable_value(&mut s.orientation, o, label);
-                    }
-                })
-                .response
+        ui.add_enabled_ui(!s.booklet, |ui| {
+            field(ui, "Orientation", |ui| {
+                egui::ComboBox::from_id_salt("orientation")
+                    .width(width)
+                    .selected_text(shown.map(|(_, l)| *l).unwrap_or_default())
+                    .show_ui(ui, |ui| {
+                        for (o, label) in ORIENTATIONS {
+                            ui.selectable_value(&mut s.orientation, o, label);
+                        }
+                    })
+                    .response
+                    .on_disabled_hover_text(BOOKLET_SETS)
+            });
         });
     };
     let scale = |ui: &mut Ui, s: &mut Print, width: f32| {
-        // With several pages a sheet, each is fitted to its place.
-        let one = s.per_sheet.pages <= 1;
+        // With several pages a sheet, or a booklet, each is fitted to its place.
+        let one = s.per_sheet.pages <= 1 && !s.booklet;
+        let why = if s.booklet { BOOKLET_SETS } else { FITTED };
         ui.add_enabled_ui(one, |ui| {
             ui.label("Scale");
             ui.add_space(2.0);
@@ -1408,7 +1438,7 @@ fn page_setup(ui: &mut Ui, s: &mut Print) {
                         }
                     })
                     .response
-                    .on_disabled_hover_text(FITTED);
+                    .on_disabled_hover_text(why);
                 set_name(&list, "Scale");
                 if let Scale::Custom(_) = s.scale {
                     let max = limarepdf_core::print::MAX_PERCENT;
@@ -1417,7 +1447,7 @@ fn page_setup(ui: &mut Ui, s: &mut Print) {
                         .name("Scale percentage")
                         .width(PERCENT);
                     let tip = format!("1 to {max}% of each page's own size");
-                    ui.add(n).on_hover_text(tip).on_disabled_hover_text(FITTED);
+                    ui.add(n).on_hover_text(tip).on_disabled_hover_text(why);
                     s.scale = Scale::Custom(s.percent);
                 }
             });
@@ -1432,6 +1462,24 @@ const FITTED: &str = "With more than one page a sheet, each page is fitted to it
 /// Why Page order and borders are greyed with one page a sheet.
 const SEVERAL_ONLY: &str = "For more than one page a sheet.";
 
+/// Why Orientation, Scale, Pages per sheet and borders are greyed for a booklet.
+const BOOKLET_SETS: &str =
+    "A booklet sets this itself: two pages a side, each fitted to its half of the sheet.";
+
+/// Why Print on is greyed for a booklet.
+const BOOKLET_SIDES: &str = "A booklet prints both sides, flipped on the short edge, or one \
+                             side when printing its fronts or backs alone.";
+
+/// The edges a booklet can be bound along.
+const BINDINGS: [(Binding, &str); 2] = [(Binding::Left, "Left"), (Binding::Right, "Right")];
+
+/// Which sides of a booklet's sheets can print.
+const BOOKLET_SIDE_CHOICES: [(BookletSides, &str); 3] = [
+    (BookletSides::Both, "Both sides"),
+    (BookletSides::Fronts, "Front sides only"),
+    (BookletSides::Backs, "Back sides only"),
+];
+
 /// The orders pages can fill a sheet in.
 const PAGE_ORDERS: [(PageOrder, &str); 4] = [
     (PageOrder::Across, "Left to right, top to bottom"),
@@ -1440,13 +1488,17 @@ const PAGE_ORDERS: [(PageOrder, &str); 4] = [
     (PageOrder::DownFromRight, "Top to bottom, right to left"),
 ];
 
-/// Layout: printing selected text, how it is laid out; then Pages per sheet beside Page
-/// order, and Borders around pages under them, the last two greyed with one page a sheet.
+/// Layout: printing selected text, how it is laid out; then Print as a booklet; Pages per
+/// sheet beside Page order, and Borders around pages under them, the last two greyed with
+/// one page a sheet. As a booklet, Pages per sheet and the borders are greyed, Binding is
+/// in Page order's place and Sides to print under them.
 fn print_layout(ui: &mut Ui, s: &mut Print) {
     if let Some(layout) = &mut s.selection {
         layout_radios(ui, layout, &[Layout::Original, Layout::Plain]);
         ui.add_space(FIELD_GAP);
     }
+    ui.checkbox(&mut s.booklet, "Print as a booklet");
+    ui.add_space(FIELD_GAP);
     let label = "Pages per sheet";
     let font = egui::TextStyle::Body.resolve(ui.style());
     let galley = ui
@@ -1456,19 +1508,39 @@ fn print_layout(ui: &mut Ui, s: &mut Print) {
     let count_width = galley.size().x.max(list_width(ui, ["16"]));
     let need = list_width(ui, PAGE_ORDERS.map(|(_, l)| l));
     let count = |ui: &mut Ui, s: &mut Print, width: f32| {
-        field(ui, label, |ui| {
-            egui::ComboBox::from_id_salt("pages per sheet")
+        ui.add_enabled_ui(!s.booklet, |ui| {
+            field(ui, label, |ui| {
+                egui::ComboBox::from_id_salt("pages per sheet")
+                    .width(width)
+                    .selected_text(s.per_sheet.pages.to_string())
+                    .show_ui(ui, |ui| {
+                        for n in PAGES_PER_SHEET {
+                            ui.selectable_value(&mut s.per_sheet.pages, n, n.to_string());
+                        }
+                    })
+                    .response
+                    .on_disabled_hover_text(BOOKLET_SETS)
+            });
+        });
+    };
+    let binding = |ui: &mut Ui, s: &mut Print, width: f32| {
+        let shown = BINDINGS.iter().find(|(b, _)| *b == s.binding);
+        field(ui, "Binding", |ui| {
+            egui::ComboBox::from_id_salt("binding")
                 .width(width)
-                .selected_text(s.per_sheet.pages.to_string())
+                .selected_text(shown.map(|(_, l)| *l).unwrap_or_default())
                 .show_ui(ui, |ui| {
-                    for n in PAGES_PER_SHEET {
-                        ui.selectable_value(&mut s.per_sheet.pages, n, n.to_string());
+                    for (b, label) in BINDINGS {
+                        ui.selectable_value(&mut s.binding, b, label);
                     }
                 })
                 .response
         });
     };
     let order = |ui: &mut Ui, s: &mut Print, width: f32| {
+        if s.booklet {
+            return binding(ui, s, width);
+        }
         let shown = PAGE_ORDERS.iter().find(|(o, _)| *o == s.per_sheet.order);
         ui.add_enabled_ui(s.per_sheet.pages > 1, |ui| {
             field(ui, "Page order", |ui| {
@@ -1486,10 +1558,34 @@ fn print_layout(ui: &mut Ui, s: &mut Print) {
         });
     };
     columns(ui, s, count_width, need, count, order);
+    if s.booklet {
+        ui.add_space(FIELD_GAP);
+        let labels = BOOKLET_SIDE_CHOICES.map(|(_, l)| l);
+        let width = list_width(ui, labels).min(ui.available_width());
+        let shown = BOOKLET_SIDE_CHOICES
+            .iter()
+            .find(|(b, _)| *b == s.booklet_sides);
+        field(ui, "Sides to print", |ui| {
+            egui::ComboBox::from_id_salt("booklet sides")
+                .width(width)
+                .selected_text(shown.map(|(_, l)| *l).unwrap_or_default())
+                .show_ui(ui, |ui| {
+                    for (b, label) in BOOKLET_SIDE_CHOICES {
+                        ui.selectable_value(&mut s.booklet_sides, b, label);
+                    }
+                })
+                .response
+        });
+    }
     ui.add_space(8.0);
-    ui.add_enabled_ui(s.per_sheet.pages > 1, |ui| {
+    let why = if s.booklet {
+        BOOKLET_SETS
+    } else {
+        SEVERAL_ONLY
+    };
+    ui.add_enabled_ui(s.per_sheet.pages > 1 && !s.booklet, |ui| {
         ui.checkbox(&mut s.per_sheet.borders, "Borders around pages")
-            .on_disabled_hover_text(SEVERAL_ONLY);
+            .on_disabled_hover_text(why);
     });
 }
 
@@ -2315,6 +2411,86 @@ mod tests {
             // The preview counts the sheets: one, of the document's one page.
             let tree = w.settled();
             assert!(text(&tree, "1 of 1").is_some(), "{at}");
+        }
+    }
+
+    /// NEW-05: Print as a booklet at the top of Layout. Ticked, Pages per sheet is greyed
+    /// with Binding beside it in Page order's place where they fit, Sides to print under
+    /// them; Borders, Orientation and Scale are greyed, and Print on greyed showing the
+    /// booklet's sides, the choice made there kept for when it is unticked. The preview
+    /// counts the sides printed.
+    #[test]
+    fn layout_prints_a_booklet() {
+        let greyed = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let (_, n) = (tree.nodes.iter())
+                .find(|(_, n)| n.label() == Some(name))
+                .expect(name);
+            n.is_disabled()
+        };
+        for size in [(1200.0, 1200.0), (400.0, 1200.0)] {
+            let at = format!("{size:?}");
+            let mut w = PrintWin::new(size, 1.0);
+            w.click("Print on");
+            w.click("Both sides, flip on long edge");
+            let tree = w.settled();
+            assert!(named(&tree, "Binding").is_none(), "{at}");
+            assert!(named(&tree, "Sides to print").is_none(), "{at}");
+            let tree = w.click("Print as a booklet");
+            assert!(w.s.booklet, "{at}");
+            let get = |label: &str| named(&tree, label).expect(label);
+            for f in ["Pages per sheet", "Binding", "Sides to print"] {
+                label_above(&tree, f).unwrap();
+            }
+            assert!(named(&tree, "Page order").is_none(), "{at}");
+            let (count, binding) = (get("Pages per sheet"), get("Binding"));
+            assert!(count.top() > get("Print as a booklet").bottom(), "{at}");
+            let beside =
+                (count.top() - binding.top()).abs() < 1.0 && binding.left() > count.right();
+            if size.0 >= 800.0 {
+                assert!(beside, "{at}: {count:?} {binding:?}");
+            } else {
+                assert!(
+                    binding.top() > count.bottom(),
+                    "{at}: {count:?} {binding:?}"
+                );
+            }
+            let sides = get("Sides to print");
+            assert!(sides.top() > binding.bottom(), "{at}");
+            assert!(get("Borders around pages").top() > sides.bottom(), "{at}");
+            assert!(w.window().contains_rect(sides), "{at}");
+            for name in [
+                "Pages per sheet",
+                "Borders around pages",
+                "Orientation",
+                "Scale",
+                "Print on",
+            ] {
+                assert!(greyed(&tree, name), "{at}: {name} isn't greyed");
+            }
+            assert!(!greyed(&tree, "Binding") && !greyed(&tree, "Sides to print"));
+            assert!(unclear_names(&tree).is_empty(), "{at}");
+            assert_eq!(w.s.sides_used(), Sides::ShortEdge, "{at}");
+            w.click("Binding");
+            w.click("Right");
+            w.click("Sides to print");
+            w.click("Back sides only");
+            let b = w.s.setup().unwrap().booklet.expect("a booklet");
+            assert_eq!(b.binding, Binding::Right, "{at}");
+            assert_eq!(b.sides, BookletSides::Backs, "{at}");
+            assert_eq!(w.s.sides_used(), Sides::One, "{at}");
+            // The document's one page: the back of its one sheet, blank.
+            let tree = w.settled();
+            assert!(text(&tree, "1 of 1").is_some(), "{at}");
+            assert!(text(&tree, "Back of sheet 1").is_some(), "{at}");
+            // Unticked, Print on is as it was chosen.
+            let tree = w.click("Print as a booklet");
+            assert!(w.s.setup().unwrap().booklet.is_none(), "{at}");
+            assert_eq!(w.s.sides_used(), Sides::LongEdge, "{at}");
+            assert!(
+                !greyed(&tree, "Print on") && !greyed(&tree, "Orientation"),
+                "{at}"
+            );
+            assert!(named(&tree, "Binding").is_none(), "{at}");
         }
     }
 

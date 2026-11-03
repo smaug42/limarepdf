@@ -10,10 +10,10 @@ Print a document, save its pages as pictures, or save its text.
 2. Choose the printer, the pages (**All pages**, or **Page range**, which starts as the selected pages when there
    are any), the copies, and **Print on** one side or both sides (flipped on the long or the short edge).
 3. Under **Page setup**, choose the paper, the orientation and the scale, and under **Layout** how many pages go
-   on each sheet (below); check the preview.
+   on each sheet, or a booklet (below); check the preview.
 4. Press **Print**.
 
-<img src="images/print.png" width="802" alt="The Print dialog: the printer, All pages or Page range, Copies and Print on; Page setup with the paper size (Letter), the orientation (Automatic) and the scale, greyed; Layout with 2 pages per sheet, Left to right, top to bottom, and Borders around pages ticked; beside them the preview of the first sheet, held sideways, a report's first two pages side by side with a border around each, and 1 of 2 between the arrows under it; Print and Cancel at the bottom">
+<img src="images/print.png" width="802" alt="The Print dialog: the printer, All pages or Page range, Copies and Print on, greyed at Both sides, flip on short edge; Page setup with the paper size (Letter) and the orientation and scale, greyed; Layout with Print as a booklet ticked, Pages per sheet greyed, Binding Left beside it, Sides to print Both sides under them and Borders around pages greyed; beside them the preview of the first sheet's front, held sideways, an eight-page report's last page and first page side by side, Front of sheet 1 above the arrows and 1 of 4 between them; Print and Cancel at the bottom">
 
 **Print preview** in the ☰ menu opens the same dialog, as in Word: Ctrl+F2 (⌘F2 on a Mac). On Linux it is also
 Ctrl+Shift+O, as in LibreOffice, since some desktops (KDE's) keep Ctrl+F2 for themselves.
@@ -64,6 +64,37 @@ Pages per sheet, the order and the borders are remembered for next time when you
 Printing selected text, the choice of how it is laid out (as it looks, or plain text) is at the top of the same
 group.
 
+### Booklets
+
+**Print as a booklet**, at the top of Layout, prints the pages two to a side, in the order that reads straight
+through once the printed sheets are folded in half and stacked: the first sheet has the last page and page 1 on
+its front, and page 2 and the second-last page on its back. Each page is made as large as fits in its half of the
+sheet, larger or smaller, centred and never turned; the fold is in the middle of the paper. When the number of
+pages isn't a multiple of four, blank pages are added at the end, so the last pages of the booklet may be blank.
+
+With it ticked, Pages per sheet is greyed, and beside it:
+
+- **Binding:** **Left** (the usual choice) for a document read left to right; **Right** for one read right to
+  left, which mirrors each side.
+- **Sides to print** (under them): **Both sides** (the usual choice), **Front sides only** or **Back sides
+  only**, for a printer that prints only one side (below).
+
+A booklet sets the rest itself, so Borders around pages, Orientation and Scale are greyed, and **Print on** is
+greyed showing what the booklet uses: "Both sides, flip on short edge", or "One side" for front or back sides
+only. Unticking Print as a booklet brings back the Print on choice you made before. Print as a booklet and
+Binding are remembered for next time when you print; Sides to print always starts at Both sides, so a later
+printout never prints only the backs unasked.
+
+On a printer that prints only one side:
+
+1. Choose **Front sides only** and press **Print**.
+2. Put the printed stack back in the printer, to print on the other side of the sheets.
+3. Choose **Back sides only** and press **Print**.
+
+The backs print in sheet order, the first sheet's back first. How the stack goes back in depends on the
+printer: which way up, which edge first, and on some printers in the reverse order. Print a single sheet as a
+test first (a **Page range** of four pages makes one sheet).
+
 ### The preview
 
 Beside the settings (under them in a narrow window), the preview shows each sheet of paper as it will print: the
@@ -73,8 +104,10 @@ where each page goes, its size and its turn are as they will be on paper (on Lin
 draws the pages' content itself, which can differ slightly, as said below). A sheet with its page turned onto it,
 or with pages side by side on a sheet held sideways, is shown held sideways, so the pages read the right way up.
 With several pages a sheet, the preview shows each sheet with its pages and counts the sheets, not the pages.
-**‹** and **›** go to the sheet before and after, with the sheet's number between them ("1 of 12"). The preview
-follows each change at once, the page range too.
+**‹** and **›** go to the sheet before and after, with the sheet's number between them ("1 of 12"). As a booklet,
+the preview steps through the sides of the sheets instead, saying which it is above the count ("Front of sheet
+1", "Back of sheet 1"); with front or back sides only, it shows only the sides that print. A blank side shows
+blank. The preview follows each change at once, the page range too.
 
 Under the preview, a line says when the printer doesn't say how near the edges it can print (anything near them
 may be cut off), and which pages reach past the printable area at the scale chosen (their edges won't print).
@@ -87,12 +120,14 @@ some text, select it and right-click > Print selected text… (see
 [Reading and finding](reading-and-finding.md#print-or-save-just-the-selection)).
 
 LimarePDF lays out what is printed itself, the same way on every system. Each page goes on a sheet of the paper
-chosen, centred, as the orientation and scale say, or with several pages a sheet in its place on the sheet. When
-the printer doesn't say how near the edges it can print, a quarter of an inch is kept clear. Comments and form
-fields meant for printing are drawn in and the others left out; pop-up notes aren't printed. The open document
-isn't changed.
+chosen, centred, as the orientation and scale say, or with several pages a sheet (or as a booklet) in its place on
+the sheet. When the printer doesn't say how near the edges it can print, a quarter of an inch is kept clear.
+Comments and form fields meant for printing are drawn in and the others left out; pop-up notes aren't printed.
+The open document isn't changed.
 
-Not yet available: booklets, colour and printer-specific options.
+Not yet available: colour and printer-specific options; pages per sheet in a grid of your own; and for booklets,
+binding along the top (for landscape documents), splitting a long booklet into several folded sections, and
+printing in reverse order.
 
 **Linux and macOS** print through CUPS. LimarePDF asks CUPS for the printer's paper sizes and margins, and sends
 the laid-out pages to `lp` as an unencrypted PDF that names its paper, with CUPS's own scaling turned off so the
@@ -142,6 +177,24 @@ limarepdf-cli print report.pdf --paper A4 --orientation landscape --scale fit
 
 ```
 limarepdf-cli print slides.pdf --pages-per-sheet 4 --page-order down --borders
+```
+
+- `--booklet`: print as a booklet, as in the app's [Booklets](#booklets): two pages a side in folding order, on
+  both sides flipped on the short edge. `--binding`: `left` (the default) or `right`, for a document read right to
+  left. `--booklet-sides`: `both` (the default), `fronts` or `backs`, for a printer that prints only one side.
+  A booklet sets the layout itself, so `--pages-per-sheet` above 1, `--page-order`, `--borders`, `--scale`,
+  `--orientation` and `--sides` can't be given with it, and `--binding` and `--booklet-sides` need it: the command
+  says why and prints nothing.
+
+```
+limarepdf-cli print report.pdf --booklet
+```
+
+On a printer that prints only one side, print the fronts, put the printed stack back in, then print the backs:
+
+```
+limarepdf-cli print report.pdf --booklet --booklet-sides fronts
+limarepdf-cli print report.pdf --booklet --booklet-sides backs
 ```
 
 ## Pages as images

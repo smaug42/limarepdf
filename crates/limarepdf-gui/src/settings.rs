@@ -14,7 +14,7 @@ use anyhow::Context as _;
 use eframe::egui::ThemePreference;
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::print::{
-    Orientation, PageOrder, PerSheet, Scale, MAX_PERCENT, PAGES_PER_SHEET,
+    Binding, Orientation, PageOrder, PerSheet, Scale, MAX_PERCENT, PAGES_PER_SHEET,
 };
 pub use limarepdf_core::settings_dir;
 use limarepdf_core::{OpenLayout, StampColor};
@@ -249,6 +249,10 @@ pub struct Settings {
     pub print_scale: Scale,
     /// The pages a sheet last printed with, their order and borders (NEW-05).
     pub print_per_sheet: PerSheet,
+    /// Whether the last printout was a booklet, and the binding last chosen; which sides it
+    /// printed isn't kept, so that a later printout never prints the backs alone unasked.
+    pub print_booklet: bool,
+    pub print_binding: Binding,
     pub accent: Accent,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
@@ -326,6 +330,8 @@ impl Settings {
             print_orientation: Orientation::Automatic,
             print_scale: Scale::ShrinkOversized,
             print_per_sheet: PerSheet::default(),
+            print_booklet: false,
+            print_binding: Binding::Left,
             accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
             window_maximized: false,
@@ -449,6 +455,13 @@ impl Settings {
                     };
                 }
                 "print_borders" => s.print_per_sheet.borders = value == "true",
+                "print_booklet" => s.print_booklet = value == "true",
+                "print_binding" => {
+                    s.print_binding = match value {
+                        "right" => Binding::Right,
+                        _ => Binding::Left,
+                    };
+                }
                 "accent_colour" => {
                     s.accent = match value {
                         "limarepdf" => Accent::LimarePdf,
@@ -623,6 +636,14 @@ impl Settings {
         text += &format!(
             "print_pages_per_sheet = {}\nprint_page_order = {order}\nprint_borders = {}\n",
             per.pages, per.borders
+        );
+        let binding = match self.print_binding {
+            Binding::Left => "left",
+            Binding::Right => "right",
+        };
+        text += &format!(
+            "print_booklet = {}\nprint_binding = {binding}\n",
+            self.print_booklet
         );
         if let Some(printer) = &self.print_printer {
             let printer = printer.lines().next().unwrap_or("").trim();
@@ -942,8 +963,19 @@ mod tests {
         assert!(s.print_per_sheet.borders);
         let odd = "print_pages_per_sheet = 5\nprint_page_order = sideways\nprint_borders = 1\n";
         std::fs::write(&f, odd).unwrap();
-        let s = Settings::from_file(Some(f));
+        let s = Settings::from_file(Some(f.clone()));
         assert_eq!(s.print_per_sheet, PerSheet::default());
+        // The booklet and its binding; anything else read is no booklet, bound on the left.
+        let mut s = s;
+        assert!(!s.print_booklet && s.print_binding == Binding::Left);
+        s.print_booklet = true;
+        s.print_binding = Binding::Right;
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.print_booklet && s.print_binding == Binding::Right);
+        std::fs::write(&f, "print_booklet = yes\nprint_binding = top\n").unwrap();
+        let s = Settings::from_file(Some(f));
+        assert!(!s.print_booklet && s.print_binding == Binding::Left);
     }
 
     #[test]

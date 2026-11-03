@@ -1,5 +1,6 @@
 //! Laying pages out on sheets of paper for printing: which pages go on each sheet and where
-//! (the placement model: [`sheets`], with [`place`] for one page a sheet), and the sheets
+//! (the placement model: [`sheets`], with [`place`] for one page a sheet and the booklet's
+//! folding order), and the sheets
 //! themselves ([`Pdf::print_sheets`]), each a sheet of the paper with its pages placed on it
 //! whole, each a drawing of its own (a form XObject, so text stays text), the comments and
 //! form fields meant for print drawn in. Every printout is made of these sheets, on every
@@ -8,6 +9,7 @@
 use crate::form_flatten::Flat;
 use crate::matrix::{self as mx, M};
 use crate::paper::Paper;
+use crate::print::Sides;
 use crate::{Pdf, Result};
 use anyhow::anyhow;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
@@ -107,6 +109,67 @@ impl PerSheet {
     }
 }
 
+/// The edge a booklet is bound along, as it is read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Binding {
+    /// On the left, read left to right.
+    #[default]
+    Left,
+    /// On the right, read right to left.
+    Right,
+}
+
+/// Which sides of a booklet's sheets print.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BookletSides {
+    /// Both, on a printer that prints both sides.
+    #[default]
+    Both,
+    /// The fronts alone, for a printer that prints one side: the backs follow once the
+    /// sheets are put back in.
+    Fronts,
+    /// The backs alone, on the sheets whose fronts are printed.
+    Backs,
+}
+
+/// Printing as a booklet: the sheets folded in half and stacked, two pages a side, in the
+/// order that reads straight through once folded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Booklet {
+    pub binding: Binding,
+    pub sides: BookletSides,
+}
+
+impl Booklet {
+    /// How many sides print for `pages` pages: four pages a sheet, two a side.
+    pub fn sides_printed(&self, pages: usize) -> usize {
+        let sheets = pages.div_ceil(4);
+        match self.sides {
+            BookletSides::Both => sheets * 2,
+            BookletSides::Fronts | BookletSides::Backs => sheets,
+        }
+    }
+
+    /// The sheet (from 0) the side printed `i`th (from 0) is on, and whether it is its
+    /// front.
+    pub fn side(&self, i: usize) -> (usize, bool) {
+        match self.sides {
+            BookletSides::Both => (i / 2, i.is_multiple_of(2)),
+            BookletSides::Fronts => (i, true),
+            BookletSides::Backs => (i, false),
+        }
+    }
+
+    /// How the printer prints the sides: both sides flipped on the short edge, as the
+    /// sheets are held sideways, or one side for the fronts or backs alone.
+    pub fn sides_used(&self) -> Sides {
+        match self.sides {
+            BookletSides::Both => Sides::ShortEdge,
+            BookletSides::Fronts | BookletSides::Backs => Sides::One,
+        }
+    }
+}
+
 /// The paper, and how the pages go on it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageSetup {
@@ -116,6 +179,10 @@ pub struct PageSetup {
     /// its place.
     pub scale: Scale,
     pub per_sheet: PerSheet,
+    /// Printed as a booklet, which sets the order, the holding and the size of the pages
+    /// itself, in place of [`PageSetup::orientation`], [`PageSetup::scale`] and
+    /// [`PageSetup::per_sheet`].
+    pub booklet: Option<Booklet>,
 }
 
 /// Where a page goes on its sheet.
@@ -227,8 +294,12 @@ const BORDER: f32 = 0.5;
 /// [`PerSheet::order`] as the sheet is held, each fitted to its place, larger or smaller,
 /// and centred in it; one whose shape is the other way round from its place's is turned in
 /// it. Automatic holds each sheet the way that prints its pages, upright, largest; Portrait
-/// and Landscape hold it as they say.
+/// and Landscape hold it as they say. A booklet ([`PageSetup::booklet`]) gives its sides
+/// instead, a sheet each, in folding order, a side with no pages left blank.
 pub fn sheets(sizes: &[(f32, f32)], setup: &PageSetup) -> Vec<SheetPlan> {
+    if let Some(b) = setup.booklet {
+        return booklet(sizes, &setup.paper, b);
+    }
     let per = setup.per_sheet;
     let n = per.count();
     if n == 1 {
@@ -267,17 +338,11 @@ pub fn sheets(sizes: &[(f32, f32)], setup: &PageSetup) -> Vec<SheetPlan> {
             .enumerate()
             .map(|(j, (at, &size))| {
                 let (rect, scale, turned) = fit(size, at, true);
-                // As held sideways, the paper's left edge is at the top.
-                let rect = match sideways {
-                    true => [paper.0 - rect[3], rect[0], paper.0 - rect[1], rect[2]],
-                    false => rect,
-                };
-                let turns = turned as u8 + sideways as u8;
                 let p = Placed {
                     sheet: paper,
-                    turns,
+                    turns: turned as u8 + sideways as u8,
                     scale,
-                    rect,
+                    rect: onto_paper(rect, paper, sideways),
                     cut: false,
                 };
                 (k * n + j, p)
@@ -296,13 +361,7 @@ pub fn sheets(sizes: &[(f32, f32)], setup: &PageSetup) -> Vec<SheetPlan> {
 /// they are filled: each a box (left, bottom, right, top) on the sheet as held, its
 /// bottom-left corner the origin. The grid's longer side is along the sheet's longer side.
 fn places(paper: &Paper, sideways: bool, per: &PerSheet) -> Vec<[f32; 4]> {
-    let (pw, ph) = (paper.size.0.max(1.0), paper.size.1.max(1.0));
-    let [t, r, b, l] = paper.margins_or_assumed();
-    // Held sideways, the paper's left edge is at the top, its top at the right.
-    let ((w, h), [top, right, bottom, left]) = match sideways {
-        true => ((ph, pw), [l, t, r, b]),
-        false => ((pw, ph), [t, r, b, l]),
-    };
+    let ((w, h), [top, right, bottom, left]) = held(paper, sideways);
     let (long, short) = per.grid();
     let (cols, rows) = if w >= h { (long, short) } else { (short, long) };
     let (aw, ah) = ((w - left - right).max(1.0), (h - top - bottom).max(1.0));
@@ -320,6 +379,83 @@ fn places(paper: &Paper, sideways: bool, per: &PerSheet) -> Vec<[f32; 4]> {
         [x, y, x + cw, y + ch]
     };
     (0..cols * rows).map(place).collect()
+}
+
+/// `paper` held sideways or not: its width and height as held, and how near each edge as
+/// held (top, right, bottom and left) the printer can't print.
+fn held(paper: &Paper, sideways: bool) -> ((f32, f32), [f32; 4]) {
+    let (pw, ph) = (paper.size.0.max(1.0), paper.size.1.max(1.0));
+    let [t, r, b, l] = paper.margins_or_assumed();
+    // Held sideways, the paper's left edge is at the top, its top at the right.
+    match sideways {
+        true => ((ph, pw), [l, t, r, b]),
+        false => ((pw, ph), [t, r, b, l]),
+    }
+}
+
+/// A box on the sheet as held, sideways or not, as a box on the paper `paper` points large.
+fn onto_paper(rect: [f32; 4], paper: (f32, f32), sideways: bool) -> [f32; 4] {
+    // As held sideways, the paper's left edge is at the top.
+    match sideways {
+        true => [paper.0 - rect[3], rect[0], paper.0 - rect[1], rect[2]],
+        false => rect,
+    }
+}
+
+/// The sides of a booklet of pages `sizes` points large on `paper`, in the order printed.
+/// The pages are padded with blank places to a multiple of four; sheet `k`'s front holds
+/// the last page but `2k` and page `2k`, its back the next and the one before, so that the
+/// sheets folded and stacked read straight through; bound on the right, each side is
+/// mirrored. Each sheet is held with its longer side across, a page each side of the fold
+/// in the paper's middle, fitted to its half, larger or smaller, and centred in it, never
+/// turned. The halves are as wide as the narrower side's margin allows, so that the fold
+/// stays in the middle.
+fn booklet(sizes: &[(f32, f32)], paper: &Paper, b: Booklet) -> Vec<SheetPlan> {
+    let size = (paper.size.0.max(1.0), paper.size.1.max(1.0));
+    let sideways = size.0 < size.1;
+    let ((w, h), [top, right, bottom, left]) = held(paper, sideways);
+    let middle = w / 2.0;
+    let half = (middle - left).min(w - right - middle).max(0.5);
+    let (y0, y1) = (bottom, (h - top).max(bottom + 1.0));
+    let halves = [
+        [middle - half, y0, middle, y1],
+        [middle, y0, middle + half, y1],
+    ];
+    let side = |mut pages: [usize; 2]| {
+        if b.binding == Binding::Right {
+            pages.reverse();
+        }
+        let placed = pages.into_iter().zip(halves).filter_map(|(i, at)| {
+            let (rect, scale, _) = fit(*sizes.get(i)?, at, false);
+            let p = Placed {
+                sheet: size,
+                turns: sideways as u8,
+                scale,
+                rect: onto_paper(rect, size, sideways),
+                cut: false,
+            };
+            Some((i, p))
+        });
+        SheetPlan {
+            size,
+            sideways,
+            pages: placed.collect(),
+            borders: false,
+        }
+    };
+    let last = sizes.len().div_ceil(4) * 4;
+    let mut out = Vec::new();
+    for k in 0..last / 4 {
+        let front = [last - 1 - 2 * k, 2 * k];
+        let back = [2 * k + 1, last - 2 - 2 * k];
+        if b.sides != BookletSides::Backs {
+            out.push(side(front));
+        }
+        if b.sides != BookletSides::Fronts {
+            out.push(side(back));
+        }
+    }
+    out
 }
 
 /// A page `size` points large fitted to the box `at`, larger or smaller, and centred in
@@ -373,6 +509,9 @@ impl Pdf {
     /// unencrypted. A field whose value LimarePDF can't draw prints empty
     /// ([`Pdf::unprintable_fields`] names them first). The document itself is unchanged.
     pub fn print_sheets(&self, pages: &[usize], setup: &PageSetup) -> Result<Pdf> {
+        if pages.is_empty() {
+            return Err(anyhow!("no pages selected"));
+        }
         let all = self.page_sizes();
         let sizes = pages.iter().map(|&i| match all.get(i) {
             Some(&s) => Ok(s),
@@ -388,9 +527,12 @@ impl Pdf {
 
     /// The sheets `plan` makes of `pages` (zero-based), as [`Pdf::print_sheets`] makes
     /// them: the pages each sheet names are `pages`' by their place in it. The preview
-    /// makes one sheet at a time with it.
+    /// makes one sheet at a time with it, a booklet's blank side from no pages.
     pub fn print_planned(&self, pages: &[usize], plan: &[SheetPlan]) -> Result<Pdf> {
-        let mut out = self.extract(pages)?;
+        let mut out = match pages {
+            [] => Pdf::new(),
+            _ => self.extract(pages)?,
+        };
         out.encryption = None;
         out.flatten_form_for_print()?;
         let ids = out.page_ids();
@@ -539,6 +681,7 @@ mod tests {
             orientation,
             scale,
             per_sheet: PerSheet::default(),
+            booklet: None,
         }
     }
 
@@ -964,5 +1107,193 @@ mod tests {
         assert!(!sheets(&[LETTER], &s)[0].borders);
         s.per_sheet.pages = 4;
         assert!(sheets(&[LETTER], &s)[0].borders);
+    }
+
+    fn booklet(paper: Paper, binding: Binding, sides: BookletSides) -> PageSetup {
+        PageSetup {
+            booklet: Some(Booklet { binding, sides }),
+            ..setup(paper, Orientation::Automatic, Scale::ShrinkOversized)
+        }
+    }
+
+    /// Each side's pages as it is held, left to right: up the paper on a sheet held
+    /// sideways, across it otherwise.
+    fn read_across(plan: &[SheetPlan]) -> Vec<Vec<usize>> {
+        let side = |s: &SheetPlan| {
+            let mut v: Vec<(f32, usize)> = (s.pages.iter())
+                .map(|&(i, p)| match s.sideways {
+                    true => (p.rect[1], i),
+                    false => (p.rect[0], i),
+                })
+                .collect();
+            v.sort_by(|a, b| a.0.total_cmp(&b.0));
+            v.into_iter().map(|(_, i)| i).collect()
+        };
+        plan.iter().map(side).collect()
+    }
+
+    /// NEW-05: eight pages bound on the left: the first sheet's front the last page and
+    /// the first, its back the second and the second-last; the second sheet the middle
+    /// ones, so that the sheets folded and stacked read straight through.
+    #[test]
+    fn a_booklet_puts_its_pages_in_folding_order() {
+        let s = booklet(letter(HP), Binding::Left, BookletSides::Both);
+        let plan = sheets(&[LETTER; 8], &s);
+        let want: [&[usize]; 4] = [&[7, 0], &[1, 6], &[5, 2], &[3, 4]];
+        assert_eq!(read_across(&plan), want);
+        assert!(plan.iter().all(|s| s.sideways && !s.borders));
+        // Bound on the right, read from the right: each side mirrored.
+        let s = booklet(letter(HP), Binding::Right, BookletSides::Both);
+        let want: [&[usize]; 4] = [&[0, 7], &[6, 1], &[2, 5], &[4, 3]];
+        assert_eq!(read_across(&sheets(&[LETTER; 8], &s)), want);
+    }
+
+    /// A booklet's pages are padded with blank places to a whole number of sheets: the
+    /// blanks come last, so a side can be left with one page or none.
+    #[test]
+    fn a_booklet_is_padded_to_whole_sheets_with_blanks_at_the_end() {
+        let s = booklet(letter(HP), Binding::Left, BookletSides::Both);
+        let five: [&[usize]; 4] = [&[0], &[1], &[2], &[3, 4]];
+        assert_eq!(read_across(&sheets(&[LETTER; 5], &s)), five);
+        // One page: its front on the right half, the back blank.
+        let one = sheets(&[LETTER], &s);
+        assert_eq!(one.len(), 2);
+        assert_eq!(read_across(&one), [vec![0], vec![]]);
+        assert!(one[1].sideways && one[1].size == LETTER);
+        let [(0, p)] = one[0].pages[..] else {
+            panic!("{one:?}");
+        };
+        // The right half as held is the paper's top half.
+        assert!(p.rect[1] >= 396.0 - 0.01, "{p:?}");
+        assert!(sheets(&[], &s).is_empty());
+    }
+
+    /// For a printer that prints one side: the fronts alone, then the backs alone, each
+    /// in the sheets' order.
+    #[test]
+    fn a_booklets_fronts_and_backs_print_alone() {
+        let fronts = booklet(letter(HP), Binding::Left, BookletSides::Fronts);
+        let want: [&[usize]; 2] = [&[7, 0], &[5, 2]];
+        assert_eq!(read_across(&sheets(&[LETTER; 8], &fronts)), want);
+        let backs = booklet(letter(HP), Binding::Left, BookletSides::Backs);
+        let want: [&[usize]; 2] = [&[1, 6], &[3, 4]];
+        assert_eq!(read_across(&sheets(&[LETTER; 8], &backs)), want);
+        // Counted before the pages' sizes are known, and each side named.
+        let b = fronts.booklet.unwrap();
+        assert_eq!(b.sides_printed(8), 2);
+        assert_eq!(b.side(1), (1, true));
+        let b = backs.booklet.unwrap();
+        assert_eq!(b.sides_printed(9), 3);
+        assert_eq!(b.side(2), (2, false));
+        let both = Booklet::default();
+        assert_eq!(both.sides_printed(9), 6);
+        assert_eq!(both.sides_printed(0), 0);
+        assert_eq!((both.side(2), both.side(3)), ((1, true), (1, false)));
+    }
+
+    /// Both sides print flipped on the short edge, as the sheets are held sideways; the
+    /// fronts or backs alone on one side.
+    #[test]
+    fn a_booklet_prints_both_sides_flipped_on_the_short_edge() {
+        let mut b = Booklet::default();
+        assert_eq!(b.sides_used(), Sides::ShortEdge);
+        b.sides = BookletSides::Fronts;
+        assert_eq!(b.sides_used(), Sides::One);
+        b.sides = BookletSides::Backs;
+        assert_eq!(b.sides_used(), Sides::One);
+    }
+
+    /// Each page is fitted to half the sheet, larger or smaller, the two halves meeting at
+    /// the fold in the paper's middle.
+    #[test]
+    fn a_booklets_pages_meet_at_the_fold() {
+        let s = booklet(letter(HP), Binding::Left, BookletSides::Both);
+        let plan = sheets(&[LETTER, LETTER, (100.0, 100.0), (2384.0, 3370.0)], &s);
+        // Held sideways, 792 by 612, 12 points clear: each half 384 by 588.
+        let k = 384.0 / 612.0;
+        let [(3, left), (0, right)] = plan[0].pages[..] else {
+            panic!("{:?}", plan[0]);
+        };
+        assert!((right.scale - k).abs() < 1e-5, "{right:?}");
+        assert!(right.turns == 1 && !right.cut);
+        assert!((right.rect[1] - 396.0).abs() < 0.01, "{right:?}");
+        assert!((left.rect[3] - 396.0).abs() < 0.01, "{left:?}");
+        // A small page is enlarged to its half.
+        let [(1, _), (2, small)] = plan[1].pages[..] else {
+            panic!("{:?}", plan[1]);
+        };
+        assert!((small.scale - 3.84).abs() < 1e-4, "{small:?}");
+    }
+
+    /// Uneven margins: the halves are as wide as the narrower side allows, so the fold
+    /// stays in the paper's middle.
+    #[test]
+    fn uneven_margins_keep_a_booklets_fold_in_the_middle() {
+        // Held sideways, the paper's bottom is at the left (12 clear), its top at the
+        // right (30 clear): each half 366 wide.
+        let paper = letter(Some([30.0, 12.0, 12.0, 50.0]));
+        let s = booklet(paper, Binding::Left, BookletSides::Both);
+        // Two pages: the first on the front's right half, the second on the back's left.
+        let plan = sheets(&[LETTER; 2], &s);
+        let [(0, right)] = plan[0].pages[..] else {
+            panic!("{:?}", plan[0]);
+        };
+        let [(1, left)] = plan[1].pages[..] else {
+            panic!("{:?}", plan[1]);
+        };
+        assert!((right.rect[1] - 396.0).abs() < 0.01, "{right:?}");
+        assert!(right.rect[3] <= 792.0 - 30.0 + 0.01, "{right:?}");
+        assert!((left.rect[3] - 396.0).abs() < 0.01, "{left:?}");
+        assert!((left.scale - right.scale).abs() < 1e-5);
+        assert!(
+            (left.rect[1] - (792.0 - right.rect[3])).abs() < 0.01,
+            "{left:?}"
+        );
+    }
+
+    /// A page is never turned in its half: a wide page is fitted upright, as Acrobat does
+    /// (bindings along the top are for later).
+    #[test]
+    fn a_booklets_pages_are_not_turned_in_their_halves() {
+        let s = booklet(letter(HP), Binding::Left, BookletSides::Both);
+        let plan = sheets(&[(792.0, 612.0); 4], &s);
+        for (_, p) in plan.iter().flat_map(|s| &s.pages) {
+            assert_eq!(p.turns, 1, "{p:?}");
+            assert!((p.scale - 384.0 / 792.0).abs() < 1e-5, "{p:?}");
+        }
+    }
+
+    /// The booklet sets the holding and the size itself: the orientation, the scale and
+    /// pages per sheet change nothing. Paper listed wider than it is tall is held as it
+    /// comes.
+    #[test]
+    fn a_booklet_ignores_orientation_scale_and_pages_per_sheet() {
+        let plain = booklet(letter(HP), Binding::Left, BookletSides::Both);
+        let other = PageSetup {
+            orientation: Orientation::Portrait,
+            scale: Scale::ActualSize,
+            per_sheet: PerSheet {
+                pages: 4,
+                order: PageOrder::DownFromRight,
+                borders: true,
+            },
+            ..plain.clone()
+        };
+        let sizes = [LETTER; 6];
+        assert_eq!(sheets(&sizes, &plain), sheets(&sizes, &other));
+        let ledger = Paper {
+            id: "Ledger".into(),
+            label: "Ledger (17 × 11 in)".into(),
+            size: (1224.0, 792.0),
+            margins: HP,
+        };
+        let plan = sheets(&sizes, &booklet(ledger, Binding::Left, BookletSides::Both));
+        assert!(plan.iter().all(|s| !s.sideways));
+        // Six pages: the first sheet's front the first page alone, on the right half.
+        let [(0, p)] = plan[0].pages[..] else {
+            panic!("{:?}", plan[0]);
+        };
+        assert!(p.turns == 0 && p.rect[0] >= 612.0 - 0.01, "{p:?}");
+        assert!(p.rect[2] <= 1224.0 - 12.0 + 0.01, "{p:?}");
     }
 }

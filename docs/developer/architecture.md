@@ -1224,9 +1224,35 @@ a sheet. A box on a sheet held sideways goes onto the paper as (x, y) to (paper 
 its turn in its place plus one, so a page turned in its place on a sheet held sideways is turned twice
 (`Placed::matrix` handles 0 to 3 turns). Nothing is `cut`; `borders` only with more than one page a sheet.
 
-`Pdf::print_sheets(pages, &setup)` plans the sheets from `page_sizes` (one walk) and makes them with
-`Pdf::print_planned(pages, &plan)`, the plan's pages by their place in `pages`; the preview makes one sheet at a time
-with it, from only that sheet's pages. It works on a copy: `extract`, unencrypted;
+**A booklet** (NEW-05's stage 2) is `PageSetup::booklet`, an `Option<Booklet>` (`binding`, a `Binding` Left or
+Right; `sides`, a `BookletSides` Both, Fronts or Backs). Set, `sheets` gives `booklet`'s plan instead, and
+`orientation`, `scale` and `per_sheet` aren't used. The pages are padded with blank places to a multiple of four,
+the blanks at the end (`last`, the count so padded); sheet k's front holds pages last − 1 − 2k and 2k (as it is
+held, left to right), its back 2k + 1 and last − 2 − 2k, so the sheets folded in half and stacked read straight
+through; bound on the right, each side is mirrored. The sides are planned in the order printed, a `SheetPlan` each:
+Both a sheet's front then its back, sheet by sheet; Fronts the fronts alone and Backs the backs alone, each in the
+sheets' order (Acrobat's "Booklet subset": the fronts printed, the stack put back in, then the backs; Acrobat's
+manual says the stack may need turning and reordering, by printer, and there is no option to print in reverse
+order yet). A side with no pages (a blank back) is still a sheet. `Booklet::sides_printed(pages)` counts the sides
+from the page count alone and `Booklet::side(i)` names the sheet and whether it is the front, so the preview can
+count and name them before the sizes come. Each sheet is held with its longer side across: sideways for portrait
+paper, as it comes for paper listed wider than it is tall (Ledger, as some printers list it). `held` (shared with
+`places`) gives the sheet's size and margins as held; the two halves meet at the fold in the paper's middle, each
+as wide as the narrower side's margin allows (`(middle − left).min(w − right − middle)`), so with uneven margins
+the fold stays in the middle and the side with the smaller margin has room to spare. Each page is `fit` to its half,
+larger or smaller, centred, and never turned in it, as Acrobat does (bindings along the top, Acrobat's Tall
+bindings, are left for later, PF-56); `onto_paper` (shared with the grid) puts its box on the paper, its `turns` 1
+on a sheet held sideways. No borders, nothing `cut`. `Booklet::sides_used` is how the printer prints the sides:
+Both two-sided flipped on the short edge (`Sides::ShortEdge`), Fronts and Backs one-sided (`Sides::One`). Short
+edge because the sheets are sent portrait with their pages laid out sideways: turning a sheet held sideways over
+like a book's page is a flip about the paper's short edge, so both sides laid out the same way read the right way
+up. `PrintOptions::sides_used` gives it for a booklet, whatever `PrintOptions::sides` says, and `sides` otherwise.
+
+`Pdf::print_sheets(pages, &setup)` refuses no pages ("no pages selected"), plans the sheets from `page_sizes` (one
+walk) and makes them with `Pdf::print_planned(pages, &plan)`, the plan's pages by their place in `pages`; the
+preview makes one sheet at a time with it, from only that sheet's pages. Given no pages (a booklet's blank side made
+alone), `print_planned` starts from `Pdf::new()` in place of `extract`, so the side is still a sheet of the paper.
+It works on a copy: `extract`, unencrypted;
 `flatten_form_for_print` (Print-flagged widgets drawn, the others and the form removed); the annotations without a
 drawing given LimarePDF's (`missing_appearances`, `draw_annotations`); then for each page `flatten_page` with
 `print_annot` (an annotation with the Print flag drawn into the content, pop-ups and the rest dropped) and
@@ -1247,12 +1273,17 @@ and says why. `print::paper_named` finds the command line's `--paper` by id, lab
 (`paper::named`, refusing a name several sizes share and naming them), and when the printer's list can't be read,
 on CUPS only, a standard size by its PPD name or its name for people (`paper::standard`). CUPS gets
 `Pdf::print_data`'s sheets (with `as_image` their pictures at `IMAGE_DPI`, through `Pdf::from_images`), `lp_args`
-naming `media=` the paper's id and `print-scaling=none`. Windows (`print_win::print`) gets the sheets written out
-and their count, sets the paper's number and portrait in the printer's settings (`settings`, a DEVMODE), draws
+naming `media=` the paper's id and `print-scaling=none`, and `sides=` from `PrintOptions::sides_used`. Windows
+(`print_win::print`) gets the sheets written out and their count, sets the paper's number, portrait and the sides
+(`dmDuplex`, from `PrintOptions::sides_used`) in the printer's settings (`settings`, a DEVMODE), draws
 each sheet at `print::sheet_scale` (the printer's resolution, at most 600 dpi and `render::MAX_PIXELS`), and
 `print::printable_part` finds the part of the picture on the printable area, the sheet's top-left on the paper's,
 pixels straddling its edges kept whole, and where it goes there; `print::to_bgra` turns that part into BGRA for
-`StretchDIBits`. The command line warns of the pages `place` says are `cut` at the scale chosen.
+`StretchDIBits`. The command line warns of the pages `place` says are `cut` at the scale chosen. Its `--booklet`,
+`--binding` and `--booklet-sides` set `PageSetup::booklet`; `run` refuses, before anything is sent,
+`--pages-per-sheet`, `--page-order`, `--borders`, `--scale`, `--orientation` or `--sides` with `--booklet`, and
+`--binding` or `--booklet-sides` without it. `--sides` and `--orientation` are `Option`s, their defaults (one side,
+auto) applied in `run`, so that one given explicitly can be refused.
 
 Print's page setup and preview (ENH-14's stage 3). `dialogs.rs`'s `Print` holds `papers: Papers` for the printer
 chosen (`Unasked`, `Asking(search, printer)`, `Found(printer, PaperList)`, `Failed(printer, why)`), the paper
@@ -1294,6 +1325,17 @@ window still scrolls them with the buttons in view) and the preview as tall as t
 spacing is set to nothing and put back inside each column, as the columns' own controls need it. Otherwise the
 preview is under the settings in the scrolling content, `PREVIEW_UNDER` (300) tall.
 
+Print as a booklet (NEW-05's stage 2) is at the top of Layout (`print_layout`): `Print::booklet`, with `binding` and
+`booklet_sides`, both kept while it is unticked. Ticked, Pages per sheet is greyed and Binding (Left, Right) takes
+Page order's place as `columns`' second column (beside it when wide, under it when narrow); "Sides to print" (Both
+sides, Front sides only, Back sides only) is under them, named so rather than "Print", which would clash with the
+Print button's name. Borders around pages, Orientation and Scale are greyed with `BOOKLET_SETS` as their tooltip,
+and Print on is greyed showing `Print::sides_used` (the booklet's sides, tooltip `BOOKLET_SIDES`), its own choice
+kept for when the booklet is unticked. `Print::booklet_chosen` gives `Print::setup`'s `booklet`, and on Print
+`PrintOptions::booklet` carries it. The booklet and binding are kept in `Settings::print_booklet` and
+`print_binding` and saved (`print_booklet = true|false`, `print_binding = left|right`; anything else read as no
+booklet, bound on the left); the sides to print aren't, so a later printout never prints the backs alone unasked.
+
 The preview is `print_preview.rs`. Opening Print spawns a `Preview` with a `Source`: a copy of the document
 (`Source::Pages(Box<Pdf>)`, cloned on the window's thread as a print job's copy is), or for selected text a
 `Make` closure holding the copy and both layouts' `Excerpt`s, which makes the selection's document on the
@@ -1303,7 +1345,8 @@ in its layout) and the `PageSetup`. A different `Ask` starts a new generation: t
 dropped, and the thread skips jobs of earlier generations; a selection whose document isn't made yet sets
 `Queue::make`, so it is made and its sheets counted before any is asked for. The thread sends each document's
 page sizes first (`Came::Sizes`); with them `Preview::replan` plans the sheets (`print::sheets`), which give the
-sheet count (before the sizes come, the pages over `PerSheet::count`, rounded up), whether each sheet is held
+sheet count (before the sizes come, the pages over `PerSheet::count`, rounded up, or a booklet's sides,
+`Booklet::sides_printed`), whether each sheet is held
 sideways (shown so, the paper's sides swapped) and the notes: the margins unknown, and the pages the plan says are
 `cut`, named with `format_page_range` (sheets for a selection). A sheet's `Job` carries its own pages and its
 plan, renumbered to them, and is drawn by `print_planned`, `to_bytes`, `render::load` and `Renderer::render` at a
@@ -1312,8 +1355,10 @@ turn clockwise when the sheet is held sideways, so it reads upright. Jobs are ta
 asked for, then the sheet shown, so it is drawn first; sheets more than two from the one shown, and drawings at
 another step once the step shown has come, are dropped (a drawing at another step stands in meanwhile). Drawing
 failures show on the sheet. ‹ and › ("Previous sheet", "Next sheet") page through; one greyed as it is clicked
-hands the keyboard to the other. Dropping the `Preview` (the dialog closed) stops its thread after the sheet it is
-drawing.
+hands the keyboard to the other. For a booklet each side is a sheet (a blank side's `Job` has no pages), the arrows
+are "Previous side" and "Next side", and `counter` names the side, "Front of sheet 2" or "Back of sheet 2"
+(`Booklet::side`), above "3 of 4": added after the row, as the column is laid out from the bottom. Dropping the
+`Preview` (the dialog closed) stops its thread after the sheet it is drawing.
 
 Closing and quitting (ENH-01) ask `Dialog::ConfirmClose(asked, quitting)`, Save (Save as… for a tab with no file) /
 Discard / Cancel; quitting with several unsaved documents asks `Dialog::ConfirmQuit` first, Review… / Discard all /

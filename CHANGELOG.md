@@ -122,6 +122,17 @@
   sheet turned sideways. The preview shows and counts the sheets as they will print. The choices are remembered
   when you print. Printing selected text, its layout is chosen in the same group. `limarepdf-cli print` takes
   `--pages-per-sheet`, `--page-order across|across-from-right|down|down-from-right` and `--borders`.
+- **Print as a booklet**, at the top of Print's Layout group: the pages go two to a side, in the order that reads
+  straight through once the printed sheets are folded in half and stacked, each fitted to its half of the sheet,
+  with blank pages added at the end to make a multiple of four. **Binding** (Left, or Right for documents read
+  right to left) takes Page order's place, and **Sides to print** (Both sides, Front sides only, Back sides only)
+  lets a printer that prints only one side print the fronts, then the backs once the stack is put back in. A
+  booklet sets the rest itself, so Pages per sheet, Borders around pages, Orientation and Scale are greyed, and
+  Print on is greyed showing the sides it uses (both, flipped on the short edge, or one); unticking brings back
+  the Print on chosen before. The preview steps through the sides ("Front of sheet 1", "Back of sheet 1").
+  Print as a booklet and Binding are remembered when you print; Sides to print always starts at Both sides.
+  `limarepdf-cli print` takes `--booklet`, `--binding left|right` and `--booklet-sides both|fronts|backs`, and
+  says why when an option that a booklet sets itself is given with it.
 
 ### Changed
 

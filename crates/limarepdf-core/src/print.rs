@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 pub use crate::paper::{Paper, PaperList};
 pub use crate::sheets::{
-    place, sheets, Orientation, PageOrder, PageSetup, PerSheet, Placed, Scale, SheetPlan,
-    ASSUMED_MARGIN, MAX_PERCENT, PAGES_PER_SHEET,
+    place, sheets, Binding, Booklet, BookletSides, Orientation, PageOrder, PageSetup, PerSheet,
+    Placed, Scale, SheetPlan, ASSUMED_MARGIN, MAX_PERCENT, PAGES_PER_SHEET,
 };
 
 /// Resolution of pages printed as images.
@@ -75,6 +75,15 @@ pub struct PrintOptions {
     pub orientation: Orientation,
     pub scale: Scale,
     pub per_sheet: PerSheet,
+    pub booklet: Option<Booklet>,
+}
+
+impl PrintOptions {
+    /// How the printer prints the sides: a booklet's own ([`Booklet::sides_used`]), else
+    /// [`PrintOptions::sides`].
+    pub fn sides_used(&self) -> Sides {
+        self.booklet.map_or(self.sides, |b| b.sides_used())
+    }
 }
 
 impl Default for PrintOptions {
@@ -89,6 +98,7 @@ impl Default for PrintOptions {
             orientation: Orientation::Automatic,
             scale: Scale::ShrinkOversized,
             per_sheet: PerSheet::default(),
+            booklet: None,
         }
     }
 }
@@ -393,7 +403,7 @@ pub fn lp_args(o: &PrintOptions, paper: &str) -> Vec<String> {
     if o.copies > 1 {
         a.extend(["-o".into(), "collate=true".into()]);
     }
-    a.extend(["-o".into(), format!("sides={}", o.sides.keyword())]);
+    a.extend(["-o".into(), format!("sides={}", o.sides_used().keyword())]);
     let title = crate::display_line(&o.title, 100);
     if !title.is_empty() {
         a.extend(["-t".into(), title]);
@@ -516,6 +526,7 @@ impl Pdf {
             orientation: opts.orientation,
             scale: opts.scale,
             per_sheet: opts.per_sheet,
+            booklet: opts.booklet,
         };
         #[cfg(windows)]
         {

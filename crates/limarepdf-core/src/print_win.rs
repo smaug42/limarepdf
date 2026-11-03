@@ -135,7 +135,7 @@ fn settings(name: &[u16], o: &PrintOptions, paper: &Paper) -> Result<Vec<u64>> {
             dm.dmFields |= DM_PAPERSIZE;
         }
         dm.dmCollate = DMCOLLATE_TRUE;
-        dm.dmDuplex = match o.sides {
+        dm.dmDuplex = match o.sides_used() {
             Sides::One => DMDUP_SIMPLEX,
             Sides::LongEdge => DMDUP_VERTICAL,
             Sides::ShortEdge => DMDUP_HORIZONTAL,

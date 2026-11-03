@@ -1007,6 +1007,48 @@ blocks fewer, the run sharing the machine with the test suite. Its timings aren'
   `print_preview.rs`'s `several_pages_a_sheet_are_shown_as_planned`, `settings.rs`'s `print_choices_are_remembered`
   (the count, order and borders; a count that can't be printed read as one). Not run: deferred to the RC cycle:
   pages per sheet on paper against the preview, Windows and macOS.
+- Booklets (NEW-05's stage 2). `sheets.rs`'s unit tests: `a_booklet_puts_its_pages_in_folding_order` (eight pages
+  as each side is held, left to right: 7 and 0, 1 and 6, 5 and 2, 3 and 4, every side held sideways with no
+  borders; bound on the right, each side mirrored), `a_booklet_is_padded_to_whole_sheets_with_blanks_at_the_end`
+  (five pages: one on each of the first three sides, two on the last; one page on the front's right half, the
+  paper's top, its back blank but still a Letter sheet held sideways; no pages, no sides),
+  `a_booklets_fronts_and_backs_print_alone` (the fronts alone, then the backs alone, each in the sheets' order;
+  `sides_printed` and `side` counted and named from the page count alone),
+  `a_booklet_prints_both_sides_flipped_on_the_short_edge` (`sides_used`: short edge for both, one side for the
+  fronts or backs), `a_booklets_pages_meet_at_the_fold` (Letter on Letter: halves 384 by 588, each page at 384/612
+  meeting the paper's middle; a small page enlarged to its half), `uneven_margins_keep_a_booklets_fold_in_the_middle`
+  (12 and 30 points clear at the ends as held: halves 366 wide, the two pages at the same scale, mirror images about
+  the middle), `a_booklets_pages_are_not_turned_in_their_halves` (wide pages fitted upright) and
+  `a_booklet_ignores_orientation_scale_and_pages_per_sheet` (the same plan with Portrait, Actual size and four a
+  sheet down from the right with borders; Ledger listed wider than tall held as it comes, the first page alone on
+  its right half). Core's `tests/print.rs`: `a_booklet_sets_the_sides_lp_is_given` (`sides=two-sided-short-edge`
+  with Print on's long edge, `one-sided` for the backs alone, long edge again without a booklet),
+  `a_booklets_blank_back_is_a_sheet` (one page makes two Letter sheets; the back, planned with no pages and held
+  sideways, made alone by `print_planned` with no pages, blank and drawn as the back among all), and four booklet
+  setups added to `setups()` (both bindings with both sides, the fronts bound on the left, the backs on the right),
+  so `each_page_is_on_its_sheet_where_the_model_places_it` checks them by hayro's pixels;
+  `sends_the_chosen_pages_unencrypted` still finds no pages refused (`print_sheets`' "no pages selected", through
+  `print_data`). The opt-in cross-checks, run 2026-11-02 on Linux with this machine's CUPS, passed:
+  `cross_check_sheets_with_poppler` with the booklet setups, and `cross_check_sheets_pass_cupsfilter_unscaled` with a
+  booklet's first front sent with `sides=two-sided-short-edge` (its two pages' corners where the plan puts them,
+  meeting at the fold, after `cupsfilter`). The CLI's `print_makes_a_booklet` (two pages: two sheets of one page
+  each, `sides=two-sided-short-edge`; the fronts bound on the left and the backs on the right, one sheet each,
+  `sides=one-sided`; and the refusals, nothing reaching `lp`: `--pages-per-sheet`, `--page-order`, `--borders`,
+  `--scale`, `--orientation` and `--sides` with `--booklet`, the last naming `--booklet-sides fronts`, and
+  `--binding` or `--booklet-sides` without it). The app's `print_sends_a_booklet` (stand-in CUPS, through
+  `booklet_with_stand_in_cups`: Print on set to long edge and a booklet bound on the right give two sheets of one
+  drawing each and `sides=two-sided-short-edge`; the booklet and binding remembered and chosen again, the sides to
+  print back to Both), and the named controls test covers Print with "Print as a booklet" ticked. `dialogs.rs`'s
+  `layout_prints_a_booklet` (wide and narrow: Binding and Sides to print only for a booklet; ticked, Pages per sheet
+  under the tick box with Binding beside it when wide and under it when narrow, Page order gone, Sides to print
+  under them and Borders under that, inside the window; Pages per sheet, Borders, Orientation, Scale and Print on
+  greyed, Binding and Sides to print not, every name clear; Right and Back sides only picked into the page setup,
+  Print on then one side; the preview "1 of 1" and "Back of sheet 1"; unticked, no booklet, Print on long edge as
+  chosen and not greyed), `print_preview.rs`'s `a_booklets_sides_are_shown_as_planned` (one page: two sides counted
+  before the sizes come, both held sideways, the blank back drawn wider than tall; the fronts alone, one side),
+  `settings.rs`'s `print_choices_are_remembered` (the booklet and binding saved and read back; anything else read as
+  no booklet, bound on the left). Not run: deferred to the RC cycle: a booklet on a duplex printer, folded, reading
+  in order; fronts then backs on a one-sided printer; a Right binding; Windows' duplex setting.
 - Print opening ready (ENH-47). Core's `ipp.rs` `the_printers_are_listed_with_their_default` (a stand-in service
   answering CUPS-Get-Printers with a group for each of two printers, one name with a space, and CUPS-Get-Default;
   each request posted to `/` with its operation and no printer named; no printers and no default said so). The
@@ -1301,6 +1343,7 @@ before this table had a Status column, and wasn't run again on the date given.
 | Every printout laid out on the paper (ENH-14, stage 2) | `sheets.rs`'s unit tests, core's `print.rs` (the sheets against the model's placements), the CLI's `print_lays_the_pages_out_on_the_paper`, the app's stand-in CUPS print; the opt-in `cross_check_sheets_with_poppler` and `cross_check_sheets_pass_cupsfilter_unscaled` (run 2026-11-02 on Linux, the HP queue: passed); Windows and macOS by cross-compiled clippy and PR CI | On Linux (CUPS), Windows and macOS, print a file with Letter and A4 pages, a small page, a landscape page, a page turned by its own rotation, a cropped page, comments (one not meant for print) and filled fields: each on the printer's default paper, the small page at its own size and centred, the landscape page turned with its top to the left, nothing cut off, only the printable comments and the field values printed. Then `limarepdf-cli print --paper A4 --scale fit`, `--orientation portrait` and `--scale actual` (the warning, and edges lost evenly); and the same file with Print as image | Not run: deferred to the RC cycle |
 | Print's page setup and preview (ENH-14, stage 3) | `print_preview.rs`'s unit tests, `dialogs.rs`'s page setup tests, the app's `print_sends_the_page_setup_chosen` with stand-ins for `lpstat`, `lpoptions` and `lp`, `settings.rs`'s `print_choices_are_remembered`; Windows and macOS by cross-compiled clippy and PR CI | On Linux (CUPS), Windows and macOS, open Print (and Print preview, Ctrl+F2 or Ctrl+Shift+O on Linux): the printer's sizes listed with its default chosen; page through the preview of the same mixed file, then print at each scale and orientation on Letter and A4 and lay each printout on its preview: the same placement, turn and size; a page reaching past the printable area named under the preview, and the margins line on a printer that doesn't say them; Print opened again starting with the paper, orientation and scale last printed with; with a screen reader, Page setup's lists and the preview's arrows named | Not run: deferred to the RC cycle |
 | Pages per sheet (NEW-05, stage 1) | `sheets.rs`'s unit tests, core's `print.rs` (the sheets against the plan, borders, a sheet made alone), the CLI's `print_puts_several_pages_on_a_sheet`, the app's `print_sends_several_pages_a_sheet` with stand-in CUPS, `dialogs.rs`'s Layout tests, `print_preview.rs`'s `several_pages_a_sheet_are_shown_as_planned`; the opt-in Poppler and `cupsfilter` cross-checks (run 2026-11-02 on Linux, the HP queue: passed); Windows and macOS by cross-compiled clippy and PR CI | On Linux (CUPS), Windows and macOS, print the mixed file at 2, 4, 6, 9 and 16 pages a sheet, each order, with and without borders, Automatic, Portrait and Landscape, and lay each printout on its preview: the same places, order and turns; then `limarepdf-cli print --pages-per-sheet 4 --page-order down --borders` | Not run: deferred to the RC cycle |
+| Booklets (NEW-05, stage 2) | `sheets.rs`'s unit tests, core's `print.rs` (four booklet setups against the plan, the blank back as a sheet, the sides `lp` is given), the CLI's `print_makes_a_booklet`, the app's `print_sends_a_booklet` with stand-in CUPS, `dialogs.rs`'s `layout_prints_a_booklet`, `print_preview.rs`'s `a_booklets_sides_are_shown_as_planned`, `settings.rs`'s `print_choices_are_remembered`; the opt-in Poppler and `cupsfilter` cross-checks (run 2026-11-02 on Linux, this machine's CUPS: passed); Windows and macOS by cross-compiled clippy, and PR CI once committed | On a printer that prints both sides, print an eight-page and a five-page file as a booklet, fold the sheets in half and stack them: the pages read in order, the blanks at the end, the fold in the paper's middle, each page as the preview showed it. On a printer that prints one side, Front sides only, put the sheets back in, then Back sides only: the same (note how the stack had to be turned or reordered). Binding Right reads from the right. On Windows, the job's duplex setting short edge for both sides and one-sided for the fronts or backs alone. Then `limarepdf-cli print --booklet`, and `--booklet-sides fronts` then `backs` | Not run: deferred to the RC cycle |
 | Digital signatures | `signatures.rs`, `signing.rs`, `signature_changes.rs`, pdfsig and OpenSSL | Check a signed sample; sign, certify, add a comment and save; reopen and check; then the Acrobat round trips below | Pass (earlier run), Linux |
 | Redaction, removing hidden information | `redact.rs`, `sanitise.rs`, the after-check | Redact a phrase and part of a picture, save, then search the output with `pdftotext` and another reader's search; remove hidden information and check `pdfinfo -meta` | Pass (earlier run), Linux |
 | Damaged files | `repair.rs`, the corpus | Open a damaged file: the notice shows; Save asks; Save as writes a new file; the original's checksum is unchanged | Pass (earlier run), Linux |

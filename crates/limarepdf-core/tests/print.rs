@@ -4,8 +4,8 @@
 //! placements the model gives.
 
 use limarepdf_core::print::{
-    lp_args, send, sheets as plan, Orientation, PageOrder, PageSetup, Paper, PerSheet,
-    PrintOptions, Scale, Sides,
+    lp_args, send, sheets as plan, Binding, Booklet, BookletSides, Orientation, PageOrder,
+    PageSetup, Paper, PerSheet, PrintOptions, Scale, Sides,
 };
 use limarepdf_core::{render, Cipher, Encryption, FieldValue, ObjectKind, Pdf, Restrictions};
 use lopdf::{dictionary, Dictionary, Object, Stream};
@@ -28,6 +28,7 @@ fn setup(paper: Paper, orientation: Orientation, scale: Scale) -> PageSetup {
         orientation,
         scale,
         per_sheet: PerSheet::default(),
+        booklet: None,
     }
 }
 
@@ -303,6 +304,17 @@ fn setups() -> Vec<PageSetup> {
         };
         v.push(s);
     }
+    // NEW-05: booklets, both bindings, and the fronts and backs alone.
+    for (binding, sides) in [
+        (Binding::Left, BookletSides::Both),
+        (Binding::Right, BookletSides::Both),
+        (Binding::Left, BookletSides::Fronts),
+        (Binding::Right, BookletSides::Backs),
+    ] {
+        let mut s = setup(letter(), Orientation::Automatic, Scale::ShrinkOversized);
+        s.booklet = Some(Booklet { binding, sides });
+        v.push(s);
+    }
     v
 }
 
@@ -359,6 +371,26 @@ fn a_sheet_made_alone_is_drawn_as_among_all() {
             k + 1
         );
     }
+}
+
+/// NEW-05: a one-page booklet's back is blank, and is still a sheet: among all the sheets,
+/// and made alone for the preview, with no pages of its own.
+#[test]
+fn a_booklets_blank_back_is_a_sheet() {
+    let doc = marked_pages();
+    let mut s = setup(letter(), Orientation::Automatic, Scale::ShrinkOversized);
+    s.booklet = Some(Booklet::default());
+    let mut sheets = doc.print_sheets(&[2], &s).unwrap();
+    assert_eq!(widths(&sheets), [612.0, 612.0]);
+    let all = sheets.to_bytes().unwrap();
+    let back = plan(&[doc.page_size(2).unwrap()], &s).remove(1);
+    assert!(back.pages.is_empty() && back.sideways);
+    let mut alone = doc.print_planned(&[], &[back]).unwrap();
+    assert_eq!(widths(&alone), [612.0]);
+    let alone = alone.to_bytes().unwrap();
+    let any = |c: [u8; 3]| c != [255, 255, 255];
+    assert_eq!(drawn(&alone, 0).inked(any), None);
+    assert!(drawn(&alone, 0).rgb == drawn(&all, 1).rgb);
 }
 
 /// With borders, a line is drawn along each page's edges; without, nothing is.
@@ -715,6 +747,26 @@ fn lp_arguments() {
     );
 }
 
+/// NEW-05: a booklet prints both sides flipped on the short edge, whatever Print on says,
+/// and its fronts or backs alone on one side.
+#[test]
+fn a_booklet_sets_the_sides_lp_is_given() {
+    let mut o = PrintOptions {
+        sides: Sides::LongEdge,
+        booklet: Some(Booklet::default()),
+        ..Default::default()
+    };
+    let sides = |o: &PrintOptions| lp_args(o, "A4").last().cloned().unwrap();
+    assert_eq!(sides(&o), "sides=two-sided-short-edge");
+    o.booklet = Some(Booklet {
+        sides: BookletSides::Backs,
+        ..Default::default()
+    });
+    assert_eq!(sides(&o), "sides=one-sided");
+    o.booklet = None;
+    assert_eq!(sides(&o), "sides=two-sided-long-edge");
+}
+
 /// A stand-in for `lp`: saves its arguments and input next to itself, prints a reply,
 /// and fails when its first argument is `-d Missing`.
 #[cfg(unix)]
@@ -868,10 +920,10 @@ fn cross_check_sheets_pass_cupsfilter_unscaled() {
     paper.id = "Letter".into();
     let mut s = setup(paper, Orientation::Automatic, Scale::ActualSize);
     // The sheet `data` after CUPS's filter, as Poppler draws it.
-    let filtered = |name: &str, data: Vec<u8>| {
+    let filtered_with = |name: &str, data: Vec<u8>, o: &PrintOptions| {
         let sheet = dir.join(format!("{name}.pdf"));
         std::fs::write(&sheet, data).unwrap();
-        let args = lp_args(&PrintOptions::default(), "Letter");
+        let args = lp_args(o, "Letter");
         let options: Vec<&String> = args.iter().filter(|a| a.contains('=')).collect();
         let mut cmd = std::process::Command::new("cupsfilter");
         cmd.arg("-p").arg(dir.join("queue.ppd"));
@@ -886,6 +938,7 @@ fn cross_check_sheets_pass_cupsfilter_unscaled() {
         std::fs::write(&filtered, out.stdout).unwrap();
         poppler(&filtered, 0)
     };
+    let filtered = |name: &str, data| filtered_with(name, data, &PrintOptions::default());
     let dark = |c: [u8; 3]| c.iter().all(|&v| v < 128);
     let pic = filtered("sheet", p.print_data(&[0], &s, false).unwrap());
     let ink = pic.inked(dark).expect("the corners");
@@ -906,6 +959,22 @@ fn cross_check_sheets_pass_cupsfilter_unscaled() {
     };
     let want = rects.reduce(both).unwrap();
     let pic = filtered("four", p.print_data(&[0, 1, 2, 3], &s, false).unwrap());
+    let ink = pic.inked(dark).expect("the corners");
+    assert!(near(ink, want), "the corners at {ink:?}, not {want:?}");
+    // NEW-05: a booklet's first side, sent flipped on the short edge: its two pages where
+    // the plan puts them, meeting at the fold.
+    s.per_sheet.pages = 1;
+    s.booklet = Some(Booklet::default());
+    let o = PrintOptions {
+        booklet: s.booklet,
+        ..Default::default()
+    };
+    let front = &plan(&[(612.0, 792.0); 4], &s)[0];
+    let want = (front.pages.iter().map(|(_, p)| p.rect))
+        .reduce(both)
+        .unwrap();
+    let data = p.print_data(&[0, 1, 2, 3], &s, false).unwrap();
+    let pic = filtered_with("booklet", data, &o);
     let ink = pic.inked(dark).expect("the corners");
     assert!(near(ink, want), "the corners at {ink:?}, not {want:?}");
     std::fs::remove_dir_all(dir).unwrap();

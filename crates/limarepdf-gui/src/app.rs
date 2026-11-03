@@ -2640,6 +2640,8 @@ impl App {
                     scale,
                     percent,
                     per_sheet: self.settings.print_per_sheet,
+                    booklet: self.settings.print_booklet,
+                    binding: self.settings.print_binding,
                     preview: print_preview::Preview::spawn(ctx, source),
                     ..dlg::Print::looking(search, file)
                 });
@@ -4669,6 +4671,8 @@ impl App {
                     self.settings.print_orientation = s.orientation;
                     self.settings.print_scale = s.scale;
                     self.settings.print_per_sheet = s.per_sheet;
+                    self.settings.print_booklet = s.booklet;
+                    self.settings.print_binding = s.binding;
                     self.settings.save();
                     let t = &mut self.tabs[self.active];
                     let opts = print::PrintOptions {
@@ -4681,6 +4685,7 @@ impl App {
                         orientation: setup.orientation,
                         scale: setup.scale,
                         per_sheet: setup.per_sheet,
+                        booklet: setup.booklet,
                     };
                     if let Some(layout) = s.selection {
                         let ex = Excerpt::new(t, layout);
@@ -7509,7 +7514,7 @@ mod tests {
         window(&mut app, &ctx, 1400.0, esc.clone());
 
         // Print with all pages, with a page range it can't print, with its Print on list
-        // open, and for the selected text.
+        // open, for the selected text, and as a booklet.
         let printer = print::Printer {
             name: "limarepdf-test-no-such-printer".into(),
             default: true,
@@ -7535,6 +7540,10 @@ mod tests {
         selected.selection = Some(dlg::Layout::Original);
         app.dialog = Dialog::Print(app.asked(), selected);
         clear_names(&mut app, &ctx, "Print selected text", &mut bad);
+        let mut booklet = print();
+        booklet.booklet = true;
+        app.dialog = Dialog::Print(app.asked(), booklet);
+        clear_names(&mut app, &ctx, "Print as a booklet", &mut bad);
         app.dialog = Dialog::None;
 
         app.act(&ctx, Act::Palette);
@@ -12718,6 +12727,7 @@ mod tests {
             "Paper size",
             "Orientation",
             "Scale",
+            "Print as a booklet",
             // Page order and Borders around pages are greyed with one page a sheet.
             "Pages per sheet",
         ];
@@ -15843,6 +15853,77 @@ mod tests {
         let form = limarepdf_core::ObjectKind::Form;
         assert_eq!(objects.iter().filter(|o| o.kind == form).count(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// NEW-05: a booklet chosen in Print reaches the sheets sent, both sides flipped on the
+    /// short edge whatever Print on says; the booklet and its binding are remembered, the
+    /// sides to print not. Run with stand-ins for `lpstat`, `lpoptions` and `lp`, which
+    /// keeps the job and its arguments.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_sends_a_booklet() {
+        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+        let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *Letter A4'\n";
+        let lp = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args.txt\"\n\
+                  cat > \"$(dirname \"$0\")/job.pdf\"\n\
+                  echo 'request id is limarepdf-test-5 (1 file(s))'\n";
+        let dir = stand_in_cups(
+            "booklet",
+            &[("lpstat", lpstat), ("lpoptions", lpoptions), ("lp", lp)],
+        );
+        rerun_with_cups(&dir, "app::tests::booklet_with_stand_in_cups");
+        let printed = Pdf::open(dir.join("job.pdf"), None).expect("the job sent to lp");
+        // Two pages: the first on the front, the second on the back, the rest blank.
+        assert_eq!(printed.page_count(), 2);
+        let form = limarepdf_core::ObjectKind::Form;
+        for i in 0..2 {
+            let objects = printed.page_objects(i).unwrap();
+            assert_eq!(objects.iter().filter(|o| o.kind == form).count(), 1, "{i}");
+        }
+        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+        assert!(args.contains("sides=two-sided-short-edge\n"), "{args}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`print_sends_a_booklet`] run with the stand-ins first on PATH; without
+    /// them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_sends_a_booklet"]
+    fn booklet_with_stand_in_cups() {
+        if std::env::var_os(STAND_IN_CUPS).is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, papers_found);
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.sides = print::Sides::LongEdge;
+            s.booklet = true;
+            s.binding = print::Binding::Right;
+        }
+        click(&mut app, &ctx, "Print");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_loads(&ctx);
+        }
+        assert!(app.settings.print_booklet);
+        assert_eq!(app.settings.print_binding, print::Binding::Right);
+        app.dialog = Dialog::None;
+        app.act(&ctx, Act::Print);
+        match &app.dialog {
+            Dialog::Print(_, s) => {
+                assert!(s.booklet && s.binding == print::Binding::Right);
+                assert_eq!(s.booklet_sides, print::BookletSides::Both);
+            }
+            _ => panic!("Print isn't open"),
+        }
     }
 
     /// The part of [`print_sends_several_pages_a_sheet`] run with the stand-ins first on
