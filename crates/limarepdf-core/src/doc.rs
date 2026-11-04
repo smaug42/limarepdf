@@ -23,6 +23,8 @@ pub struct Pdf {
     /// The fonts LimarePDF embedded since the document was opened: in a signed document,
     /// only these are grown (see `embed.rs`).
     pub(crate) made_fonts: HashSet<ObjectId>,
+    /// Streams the copies pages are drawn from found fine (`unfillable.rs`).
+    pub(crate) checked: crate::unfillable::Checked,
 }
 
 /// The document's pages in order: the page tree's entries whose object is a page. lopdf also
@@ -208,6 +210,7 @@ impl Pdf {
             repaired: false,
             password_needed,
             made_fonts: Default::default(),
+            checked: Default::default(),
         };
         pdf.differs = pdf.match_other_readers(read);
         Ok(pdf)
@@ -263,6 +266,7 @@ impl Pdf {
             repaired: false,
             password_needed: false,
             made_fonts: Default::default(),
+            checked: Default::default(),
         }
     }
 
@@ -380,6 +384,20 @@ impl Pdf {
         Ok(out)
     }
 
+    /// Like [`Pdf::snapshot`], for drawing: a picture whose stated size its data can't come
+    /// near filling, which would make the renderer ask for gigabytes, is left out of the
+    /// copy, and reported as a picture that can't be decoded when the page is drawn (PB-81).
+    /// The document itself is not changed.
+    pub fn drawing_snapshot(&mut self) -> Result<Vec<u8>> {
+        let swaps = crate::unfillable::swaps(&self.doc, &mut self.checked);
+        if swaps.is_empty() {
+            return self.snapshot();
+        }
+        let mut copy = self.clone();
+        crate::unfillable::put(&mut copy.doc, swaps);
+        copy.snapshot()
+    }
+
     /// Like [`Pdf::snapshot`], with unused objects removed first, as a save removes them:
     /// for copies written to disk. Redacting and removing hidden information leave what
     /// they took out in objects nothing uses any more, which only pruning drops.
@@ -392,7 +410,8 @@ impl Pdf {
     /// render`). hayro honours the Hidden annotation flag but not NoView, so annotations
     /// flagged NoView are marked Hidden in the copy that is serialised. Form fields are drawn
     /// as [`Pdf::refresh_appearances`] would draw them, as the app draws them when opening a
-    /// file ([`Pdf::unshown_fields`] names those it can't draw). The document itself is not
+    /// file ([`Pdf::unshown_fields`] names those it can't draw). Pictures their data can't
+    /// fill are left out, as in [`Pdf::drawing_snapshot`]. The document itself is not
     /// changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
         self.snapshot_hiding(|flags, _| flags & 32 != 0, true)
@@ -433,7 +452,8 @@ impl Pdf {
     /// none). In a signed document, or in any with `all_fields`, form fields are drawn this
     /// way too, as [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a
     /// signed document's fields into it when opening it, so that saving adds only the edits
-    /// made to what was signed.
+    /// made to what was signed. Pictures their data can't fill are left out, as in
+    /// [`Pdf::drawing_snapshot`].
     fn snapshot_hiding(
         &mut self,
         hide: impl Fn(i64, &[u8]) -> bool,
@@ -443,10 +463,12 @@ impl Pdf {
         let missing = self.missing_appearances(&self.page_ids());
         let fields =
             (all_fields || self.signature_count() > 0) && !self.appearances_to_draw().is_empty();
-        if ids.is_empty() && missing.is_empty() && !fields {
+        let swaps = crate::unfillable::swaps(&self.doc, &mut self.checked);
+        if ids.is_empty() && missing.is_empty() && !fields && swaps.is_empty() {
             return self.snapshot();
         }
         let mut copy = self.clone();
+        crate::unfillable::put(&mut copy.doc, swaps);
         if fields {
             copy.refresh_appearances();
         }
@@ -767,6 +789,7 @@ impl Pdf {
             repaired: self.repaired,
             password_needed: self.password_needed,
             made_fonts: self.made_fonts.clone(),
+            checked: self.checked.clone(),
         }
     }
 

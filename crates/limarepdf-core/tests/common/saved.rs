@@ -835,10 +835,8 @@ fn each_dict(o: &Object, path: &str, depth: usize, f: &mut dyn FnMut(&str, &Dict
 
 /// Outside readers, for the opt-in `cross_check` tests.
 pub mod tools {
+    use super::super::tool::{self, Scratch};
     use std::process::Command;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static N: AtomicUsize = AtomicUsize::new(0);
 
     /// The standard output of `tool` run on `bytes` written to a file; `{}` in `args` is the
     /// file's path.
@@ -847,25 +845,22 @@ pub mod tools {
     }
 
     /// As [`run`], with the files `tool` wrote beside the input (`{dir}` in `args` is their
-    /// folder): (name, contents), by name.
+    /// folder): (name, contents), by name. The folder is the call's own ([`Scratch`]), and
+    /// `tool` has [`tool::TIMEOUT`] to finish.
     #[allow(clippy::type_complexity)]
     fn run_with_files(tool: &str, args: &[&str], bytes: &[u8]) -> (String, Vec<(String, Vec<u8>)>) {
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("limarepdf-saved-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = Scratch::new("saved");
         let path = dir.join("saved.pdf");
         std::fs::write(&path, bytes).unwrap();
         let p = path.to_str().unwrap();
-        let d = dir.to_str().unwrap();
+        let d = dir.path().to_str().unwrap();
         let args: Vec<String> = args
             .iter()
             .map(|a| a.replace("{dir}", d).replace("{}", p))
             .collect();
-        let out = Command::new(tool)
-            .args(&args)
-            .output()
+        let out = tool::output(Command::new(tool).args(&args))
             .unwrap_or_else(|e| panic!("{tool} installed: {e}"));
-        let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
+        let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().path())
             .filter(|f| *f != path)
@@ -875,7 +870,6 @@ pub mod tools {
             })
             .collect();
         files.sort();
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(
             out.status.success(),
             "{tool} failed: {}",

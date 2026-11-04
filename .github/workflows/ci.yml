@@ -29,19 +29,50 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
-  # Known security advisories (RustSec) against every crate in Cargo.lock. Ignored, with
-  # the reason in docs/signatures-in-depth.md: RUSTSEC-2023-0071, an RSA timing leak in `rsa` with
-  # no fixed version, which needs someone timing many signings on the signer's machine.
-  # The release job waits for it: a release never ships with a known advisory.
-  audit:
+  # cargo deny (deny.toml) against every crate in Cargo.lock, for every platform: known
+  # security advisories (RustSec), licences, crates.io as the only source, duplicate versions
+  # (reported only). The advisories set aside are in deny.toml, each with its reason. The
+  # release job waits for it: a release never ships with a known advisory.
+  deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - name: cargo audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # A set version, so a new cargo-deny can't change the check unseen; releasing.md says
+      # when to move it.
+      - name: cargo deny
         run: |
-          cargo install cargo-audit --locked
-          cargo audit --ignore RUSTSEC-2023-0071
+          cargo install cargo-deny --locked --version 0.20.2
+          cargo deny --locked check
+
+  # Formatting, and clippy with warnings refused, on every target (tests and examples too),
+  # for the code of all three platforms. Clippy checks without linking, so one Linux runner
+  # covers Windows (the GNU target: LimarePDF's code has no cfg on the toolchain kind) and the
+  # Macs (one target: no cfg on the architecture), without waiting for scarce Mac runners.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rustfmt
+          targets: x86_64-pc-windows-gnu, aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Formatting
+        run: cargo fmt --all --check
+      # Each platform in turn, all of them reported even when one fails.
+      - name: Clippy
+        run: |
+          failed=""
+          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu aarch64-apple-darwin; do
+            echo "::group::clippy $target"
+            cargo clippy --workspace --all-targets --locked --target "$target" -- -D warnings \
+              || failed="$failed $target"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::clippy found problems on:$failed"; exit 1
+          fi
 
   build:
     strategy:
@@ -54,16 +85,27 @@ jobs:
           - { os: macos-15-intel, name: macos-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Optimised as released, without link-time optimisation (Cargo.toml's ci-test profile).
-      # --locked here and below: built from Cargo.lock exactly, the versions the audit job
+      # --locked here and below: built from Cargo.lock exactly, the versions the deny job
       # checked, failing if it is out of date rather than updating it.
       - name: Test
         run: cargo test --workspace --profile ci-test --locked
       - name: Build
         run: cargo build --workspace --release --locked
+      # Core's test seam (REL-10, the `test-seams` feature) is for tests only: the programs
+      # released must not have it. Its variable's name is in every program built with it.
+      - name: No test seam
+        shell: bash
+        run: |
+          ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          for bin in limarepdf limarepdf-cli; do
+            if grep -q LIMAREPDF_TEST_SYNC_FAILS "target/release/$bin$ext"; then
+              echo "::error::target/release/$bin$ext was built with the test seam"; exit 1
+            fi
+          done
       # One archive per platform, made here because artifacts lose Unix file permissions:
       # a folder limarepdf-<version>-<platform> holding the binaries, the docs and the licences.
       - name: Package
@@ -192,7 +234,7 @@ jobs:
           Expect $desktop $false; Expect $menu $true
           Run "/x `"$env:RUNNER_TEMP\upgrade-2.msi`""
           Expect $folder $false; Expect $menu $false; Expect $desktop $false
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: limarepdf-${{ matrix.name }}
           path: |
@@ -207,13 +249,21 @@ jobs:
   macos-dmg:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build
         run: cargo build --workspace --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+      # As in the build job: no test seam in the programs released.
+      - name: No test seam
+        run: |
+          for bin in target/*-apple-darwin/release/limarepdf target/*-apple-darwin/release/limarepdf-cli; do
+            if grep -q LIMAREPDF_TEST_SYNC_FAILS "$bin"; then
+              echo "::error::$bin was built with the test seam"; exit 1
+            fi
+          done
       - name: Make the dmg
         run: bash packaging/macos/make-dmg.sh dist
       # The app as it comes out of the dmg: its files and their links, and macOS 11 as the oldest
@@ -232,7 +282,7 @@ jobs:
             done
           done
           hdiutil detach "$RUNNER_TEMP/dmg"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: limarepdf-macos-dmg
           path: dist/*.dmg
@@ -240,10 +290,12 @@ jobs:
   # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
   # GPG signatures, build attestations and this version's section of CHANGELOG.md.
   # Publish it on GitHub. A dry run (workflow_dispatch) does everything but the release
-  # and uploads the signed files as an artifact instead. Both wait for the audit job, so
-  # neither starts after a known advisory.
+  # and uploads the signed files as an artifact instead. Without the signing key (a fork),
+  # a dry run only checksums the files, with no signatures or attestations, and says so; a
+  # tag run always needs the key. Both wait for the deny job, so neither starts after a
+  # known advisory.
   release:
-    needs: [audit, build, macos-dmg]
+    needs: [deny, build, macos-dmg]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run
     runs-on: ubuntu-latest
     permissions:
@@ -251,24 +303,35 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # All tags, to find the previous release for the compare link.
           fetch-depth: 0
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: assets
           merge-multiple: true
+      # Signed whenever the key is there; a tag run without it stops here.
+      - name: Signing key
+        id: key
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+        run: |
+          if [ -n "$GPG_SIGNING_KEY" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "The GPG_SIGNING_KEY secret is not set"; exit 1
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
       # SHA256SUMS, then a detached signature (.asc) for it and for every file, made with
       # the signing subkey in secrets and checked against the published key in docs/.
       - name: Checksums and signatures
+        if: steps.key.outputs.signed == 'true'
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          if [ -z "$GPG_SIGNING_KEY" ]; then
-            echo "The GPG_SIGNING_KEY secret is not set"; exit 1
-          fi
           echo "$GPG_SIGNING_KEY" | gpg --batch --import
           gpg --dearmor < docs/limarepdf-signing-key.asc > "$RUNNER_TEMP/limarepdf.gpg"
           # The rpm carries its own signature, checked by rpm and dnf against the published key.
@@ -290,14 +353,25 @@ jobs:
               --armor --detach-sign "$f"
             gpgv --keyring "$RUNNER_TEMP/limarepdf.gpg" "$f.asc" "$f"
           done
-      - uses: actions/attest-build-provenance@v4
+      # A dry run without the key: the files and SHA256SUMS only, with a warning on the run.
+      - name: Checksums only (unsigned dry run)
+        if: steps.key.outputs.signed == 'false'
+        run: |
+          cd assets
+          sha256sum * > SHA256SUMS
+          note="Unsigned dry run: the GPG_SIGNING_KEY secret is not set, so the files have checksums only, with no GPG or rpm signatures and no attestations. A release needs the key."
+          echo "::warning::$note"
+          echo "$note" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: steps.key.outputs.signed == 'true'
         with:
           subject-path: assets/*
+      # Unsigned files get their own name, so packages.yml never takes them for signed ones.
       - name: Upload the dry run
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-dry-run
+          name: ${{ steps.key.outputs.signed == 'true' && 'release-dry-run' || 'release-dry-run-unsigned' }}
           path: assets
       - name: Draft the release
         if: startsWith(github.ref, 'refs/tags/v')

@@ -3,6 +3,7 @@ name = "limarepdf-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "limarepdf-cli"
@@ -17,3 +18,8 @@ serde_json.workspace = true
 # Asking for digital ID passwords without showing them; wiping them after use.
 rpassword = "7.5.4"
 zeroize = "1.9"
+
+[dev-dependencies]
+# Tests only: a folder sync that fails, for "saved, not confirmed" (REL-10). The program the
+# tests run is built with it; a release build isn't.
+limarepdf-core = { path = "../limarepdf-core", features = ["test-seams"] }

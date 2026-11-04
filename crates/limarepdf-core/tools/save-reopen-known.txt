@@ -1,6 +1,8 @@
-# Known limits of the save-and-reopen check (tests/save_reopen.rs): files that differ after
-# saving and opening again, for a reason recorded in the build plan. The check lists them but
-# doesn't fail on them.
+# Known limits of the save-and-reopen check (tests/save_reopen.rs): differences after saving
+# and opening again, for a reason recorded in the build plan. The check lists them but doesn't
+# fail on them; any other difference in the same file still fails it.
 #
-# Columns: name (as in summary.txt, such as pdfjs/issue1234), then the reason.
-pdfbox/3728 D13: hayro draws the added comment's icon a pixel differently once its drawing is compressed
+# Columns, separated by " | ": the file's name (as in summary.txt, such as pdfjs/issue1234),
+# text the difference contains (as summary.txt says it, without figures that may change), and
+# the reason. A file with several known differences has a line for each.
+pdfbox/3728 | edited: page 1 draws differently | D13: hayro draws the added comment's icon a pixel differently once its drawing is compressed

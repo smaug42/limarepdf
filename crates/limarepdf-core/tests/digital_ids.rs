@@ -4,6 +4,9 @@
 //! password is "mpe-test-password" unless noted.
 
 mod sigkit;
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
 
 use limarepdf_core::{
     password_problem, verify_signatures, DigitalId, IdStore, NewId, SigStatus, Trust, TrustList,
@@ -399,7 +402,7 @@ fn export_and_import_elsewhere() {
 #[test]
 #[ignore]
 fn cross_check_with_openssl() {
-    let dir = scratch("openssl");
+    let dir = tool::Scratch::new("ids-openssl");
     let s = IdStore::new(dir.join("ids"));
     let id = s.create(&jane(), "correct horse").unwrap().id;
     let unlocked = s.unlock(&id, "correct horse").unwrap();
@@ -407,10 +410,7 @@ fn cross_check_with_openssl() {
     let out = dir.join("exported.p12");
     std::fs::write(&out, &exported).unwrap();
     let openssl = |args: &[&str]| {
-        let o = std::process::Command::new("openssl")
-            .args(args)
-            .output()
-            .expect("openssl");
+        let o = tool::output(std::process::Command::new("openssl").args(args)).expect("openssl");
         assert!(
             o.status.success(),
             "openssl {args:?}: {}",

@@ -1,11 +1,18 @@
 """Time limarepdf-cli and record its peak memory on large generated files and named corpus files.
 
 Usage, from the repository: python3 crates/limarepdf-core/tools/measure.py [--runs N] [--only TEXT]
+[--timeout SECONDS]
 
-Builds the release CLI, makes the test files in target/tmp/measure (a 1,000-page text file and a
-200-page colour scan at 300 dpi), runs each task N times (3 by default) and prints a Markdown table
-for docs/developer/performance.md: the median time and the largest peak memory (resident set size) of the
-runs, with the machine and commit. --only runs the tasks whose name contains TEXT.
+Builds the release CLI, makes the test files the chosen tasks need in target/tmp/measure (a 1,000-page
+text file and a 200-page colour scan at 300 dpi, each made once and kept), runs each task N times (3 by
+default) and prints a Markdown table for docs/developer/performance.md: the median time and the largest
+peak memory (resident set size) of the runs, with the machine and commit. --only runs the tasks whose
+name contains TEXT, and makes only the files those tasks use.
+
+A run that takes longer than SECONDS (600 by default) is stopped. A task that fails or runs out of
+time shows as such in the table, the other tasks still run, and the script then exits with an error
+naming them. A run's error output goes to a temporary file, so a program that writes a lot of it
+can't stall.
 
 The corpus rows use files from tools/fetch-render-samples.sh and are skipped if those aren't
 fetched. Peak memory comes from the operating system through os.wait4, as `/usr/bin/time -v`
@@ -18,10 +25,13 @@ import argparse
 import os
 import platform
 import random
+import signal
 import statistics
 import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -36,6 +46,10 @@ SCAN_PAGES = 200
 # US Letter at 300 dpi.
 SCAN_WIDTH = 2550
 SCAN_HEIGHT = 3300
+# Seconds a run may take before it's stopped. The slowest row took about a minute.
+TIMEOUT = 600
+# Bytes of a failed run's error output shown, from its end.
+ERROR_TAIL = 2000
 
 WORDS = (
     "the of and to in is that for it as with was on be by this are or from at which an have not "
@@ -148,22 +162,59 @@ def cli(*args):
     subprocess.run([CLI, *map(str, args)], check=True, stdout=subprocess.DEVNULL)
 
 
-def measure(args, program=CLI):
+class Failed(Exception):
+    """A run that exited with an error or was stopped for taking too long."""
+
+    def __init__(self, message, timed_out=False):
+        super().__init__(message)
+        self.timed_out = timed_out
+
+
+def tail(file):
+    """The end of a failed run's error output, which usually says what went wrong."""
+    length = file.seek(0, os.SEEK_END)
+    file.seek(max(0, length - ERROR_TAIL))
+    text = file.read().decode(errors="replace").strip()
+    if length > ERROR_TAIL:
+        return f"[the last {ERROR_TAIL:,} of {length:,} bytes] ...{text}"
+    return text
+
+
+def measure(args, program=CLI, timeout=TIMEOUT):
     """Run the CLI once; return the seconds it took and its peak memory in bytes.
 
-    On Linux a child's peak starts at what this process had resident when it forked, so
-    the files are made in a separate process and the floor is measured (see main)."""
-    start = time.perf_counter()
-    process = subprocess.Popen(
-        [program, *map(str, args)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-    )
-    _, status, usage = os.wait4(process.pid, 0)
-    seconds = time.perf_counter() - start
-    process.returncode = os.waitstatus_to_exitcode(status)
-    error = process.stderr.read().decode(errors="replace").strip()
-    process.stderr.close()
-    if process.returncode != 0:
-        raise SystemExit(f"{program} {' '.join(map(str, args))} failed: {error}")
+    Raises Failed if it exits with an error, or if it runs longer than timeout seconds, when
+    it's killed. Its error output goes to a temporary file rather than a pipe, which a program
+    that writes a lot would fill and then wait on. On Linux a child's peak starts at what this
+    process had resident when it forked, so the files are made in a separate process and the
+    floor is measured (see main)."""
+    command = f"{program} {' '.join(map(str, args))}"
+    with tempfile.TemporaryFile() as errors:
+        start = time.perf_counter()
+        process = subprocess.Popen(
+            [program, *map(str, args)], stdout=subprocess.DEVNULL, stderr=errors
+        )
+        expired = threading.Event()
+
+        def stop():
+            expired.set()
+            os.kill(process.pid, signal.SIGKILL)
+
+        timer = threading.Timer(timeout, stop)
+        timer.daemon = True
+        timer.start()
+        # Wait for it to end without reaping it, so its process ID can't be reused while the
+        # timer might still kill it. Then stop the timer and reap it with its resource usage.
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+        seconds = time.perf_counter() - start
+        timer.cancel()
+        timer.join()
+        _, status, usage = os.wait4(process.pid, 0)
+        process.returncode = os.waitstatus_to_exitcode(status)
+        if expired.is_set() and process.returncode == -signal.SIGKILL:
+            raise Failed(f"{command} timed out after {timeout:g} s", timed_out=True)
+        if process.returncode != 0:
+            raise Failed(f"{command} failed: {tail(errors)}")
     # Kilobytes on Linux, bytes on macOS.
     peak = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024
     return seconds, peak
@@ -206,6 +257,15 @@ def tasks(text, scan):
     return rows
 
 
+def inputs(rows, text, scan):
+    """The generated files the given tasks read, by name: "text", "scan", both or neither."""
+    return [
+        kind
+        for kind, path in (("text", text), ("scan", scan))
+        if any(path in args for _, args in rows)
+    ]
+
+
 def size(path):
     return f"{path.stat().st_size / 1e6:.1f} MB"
 
@@ -243,44 +303,64 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--only", default="")
-    parser.add_argument("--make", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--timeout", type=float, default=TIMEOUT)
+    parser.add_argument("--make", nargs="+", choices=("text", "scan"), help=argparse.SUPPRESS)
     options = parser.parse_args()
     text = WORK / f"text-{TEXT_PAGES}.pdf"
     scan = WORK / f"scan-{SCAN_PAGES}.pdf"
     if options.make:
-        if not text.exists():
+        if "text" in options.make and not text.exists():
             print("making the text file", file=sys.stderr)
             text_file(text)
-        if not scan.exists():
+        if "scan" in options.make and not scan.exists():
             print("making the scan", file=sys.stderr)
             scan_file(scan)
         return
-    if not hasattr(os, "wait4"):
-        raise SystemExit("needs os.wait4 (Linux or macOS)")
+    if not hasattr(os, "wait4") or not hasattr(os, "waitid"):
+        raise SystemExit("needs os.wait4 and os.waitid (Linux or macOS)")
 
     subprocess.run(
         ["cargo", "build", "--release", "-p", "limarepdf-cli"], cwd=ROOT, check=True
     )
     (WORK / "out").mkdir(parents=True, exist_ok=True)
-    subprocess.run([sys.executable, __file__, "--make"], check=True)
+    chosen = [(name, args) for name, args in tasks(text, scan) if options.only in name]
+    needed = inputs(chosen, text, scan)
+    if needed:
+        subprocess.run([sys.executable, __file__, "--make", *needed], check=True)
     floor = max(measure([], "true")[1] for _ in range(3))
 
     print(f"Machine: {machine()}. Release build; median of {options.runs} runs.\n")
-    print(f"Files: {text.name} ({size(text)}), {scan.name} ({size(scan)}).\n")
+    files = [path for kind, path in (("text", text), ("scan", scan)) if kind in needed]
+    if files:
+        print(f"Files: {', '.join(f'{path.name} ({size(path)})' for path in files)}.\n")
     print(
         f"Peak memory can't be measured below {floor / 1e6:.0f} MB here (the measuring "
         "process's own), so ≤ marks a reading at that floor.\n"
     )
     print("| Task | Time | Peak memory |")
     print("| --- | --- | --- |")
-    for name, args in tasks(text, scan):
-        if options.only not in name:
+    unfinished = []
+    for name, args in chosen:
+        # A task's remaining runs are skipped once one fails or runs out of time.
+        try:
+            results = [measure(args, timeout=options.timeout) for _ in range(options.runs)]
+        except Failed as error:
+            print(error, file=sys.stderr, flush=True)
+            if error.timed_out:
+                print(f"| {name} | timed out after {options.timeout:g} s | – |", flush=True)
+                unfinished.append(f"{name} (timed out)")
+            else:
+                print(f"| {name} | failed | – |", flush=True)
+                unfinished.append(f"{name} (failed)")
             continue
-        results = [measure(args) for _ in range(options.runs)]
         seconds = statistics.median(r[0] for r in results)
         peak = max(r[1] for r in results)
         shown = f"≤ {floor / 1e6:.0f} MB" if peak <= floor * 1.1 else f"{peak / 1e6:.0f} MB"
         print(f"| {name} | {seconds:.2f} s | {shown} |", flush=True)
+    if unfinished:
+        raise SystemExit(
+            f"{len(unfinished)} of {len(chosen)} tasks didn't finish: {'; '.join(unfinished)}"
+        )
 
 
 if __name__ == "__main__":

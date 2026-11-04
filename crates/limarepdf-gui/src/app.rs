@@ -19203,6 +19203,41 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// REL-10, decision D7: Save where the system can't confirm the file is on disk (the
+    /// folder sync failing, through core's test seam) writes the new file all the same, says
+    /// "Saved, not confirmed" and leaves the document marked unsaved, so saving again is one
+    /// click; closing with Save keeps the document open. Once the disk confirms, Save marks
+    /// it saved.
+    #[test]
+    fn a_save_not_confirmed_on_disk_stays_unsaved() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("not-confirmed");
+        let path = dir.join("a.pdf");
+        let id = unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        limarepdf_core::sync_seam::fail_in(&dir);
+        app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
+        assert_eq!(message(&app), ("Saved, not confirmed", NOT_CONFIRMED));
+        assert_eq!(pages_in(&path), 2, "the new file isn't in place");
+        assert!(app.tabs[0].dirty, "marked saved");
+        click(&mut app, &ctx, "OK");
+        // Closing with Save: the document stays open, with its changes.
+        app.close_asking(0);
+        click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
+        assert_eq!(message(&app).0, "Saved, not confirmed");
+        click(&mut app, &ctx, "OK");
+        assert_eq!(ids(&app), [id], "closed though not confirmed");
+        assert!(app.tabs[0].dirty && app.closing.is_none());
+        limarepdf_core::sync_seam::stop_failing_in(&dir);
+        app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
+        assert!(!app.tabs[0].dirty, "confirmed, still marked unsaved");
+        assert!(!matches!(app.dialog, Dialog::Message(..)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// ENH-01: quitting with several documents unsaved asks about each in turn; Cancel part
     /// way quits nothing and closes nothing, the documents saved stay saved and the rest
     /// keep their changes; once every one is saved or discarded, the app quits. Discard all

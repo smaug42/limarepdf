@@ -1,0 +1,55 @@
+# cargo deny check: run by CI's deny job on every change, and before each release
+# (docs/developer/releasing.md). Every platform's dependencies are checked, with every feature.
+[graph]
+all-features = true
+
+# Known advisories (RustSec). Each one set aside has its reason; releasing.md's step 1 looks for
+# fixes before each release.
+[advisories]
+ignore = [
+    # A timing leak in `rsa` with no fixed version, which needs someone timing many signings on
+    # the signer's machine: docs/signatures-in-depth.md.
+    { id = "RUSTSEC-2023-0071", reason = "rsa timing leak, no fixed version; see docs/signatures-in-depth.md" },
+    # Unmaintained, with no known vulnerability, and reached only through eframe: ttf-parser
+    # through winit's window decorations on Wayland, the zbus ones through AccessKit on Linux.
+    # They go when those move on.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, no vulnerability; only through eframe" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained as a standalone crate; only through eframe" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained as a standalone crate; only through eframe" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained as a standalone crate; only through eframe" },
+]
+
+# The licences of what LimarePDF builds and ships. A crate under any other licence fails the check
+# until it is looked at and added here.
+[licenses]
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+# Two versions of one crate are reported, not refused: most come from upstream crates.
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace's own crates use each other by path; none is published (publish = false).
+allow-wildcard-paths = true
+
+# Crates from crates.io only.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

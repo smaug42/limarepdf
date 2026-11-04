@@ -108,6 +108,51 @@ pub(crate) fn replace(
     }
 }
 
+/// A test seam (REL-10): folder syncs fail, on every thread, for files in folders a test
+/// chooses, so the tests of the app and the CLI reach their "saved, not confirmed" paths
+/// (decision D7) through the real writes. Built only for tests: core's own, and the app's and
+/// the CLI's through the `test-seams` feature, which only their dev-dependencies turn on, so
+/// a release build never has it (CI checks the release binaries for [`sync_seam::VAR`]).
+#[cfg(any(test, feature = "test-seams"))]
+pub mod sync_seam {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    /// Names a folder in which every folder sync fails, for a program a test runs (the CLI).
+    pub const VAR: &str = "LIMAREPDF_TEST_SYNC_FAILS";
+
+    static FOLDERS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    /// From now on, folder syncs fail for files in `dir` or a folder inside it.
+    pub fn fail_in(dir: &Path) {
+        lock().push(canonical(dir));
+    }
+
+    /// Folder syncs in `dir` work again.
+    pub fn stop_failing_in(dir: &Path) {
+        let dir = canonical(dir);
+        lock().retain(|d| *d != dir);
+    }
+
+    fn lock() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+        FOLDERS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn canonical(dir: &Path) -> PathBuf {
+        std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
+    }
+
+    /// Whether the folder sync after replacing the file `path` is to fail.
+    pub(super) fn fails(path: &Path) -> bool {
+        let folder = canonical(path.parent().unwrap_or(Path::new(".")));
+        let named = std::env::var_os(VAR).map(|d| canonical(Path::new(&d)));
+        lock()
+            .iter()
+            .chain(named.as_ref())
+            .any(|d| folder.starts_with(d))
+    }
+}
+
 /// Syncs the folder holding `path`, which makes its rename durable (Unix). Windows has no
 /// call for it: there the file is synced before the rename, and a power cut just after it
 /// can still lose the rename (the platform note in docs/developer/architecture.md).
@@ -115,6 +160,10 @@ fn sync_folder(path: &Path) -> std::io::Result<()> {
     #[cfg(test)]
     if let Some(r) = tests::folder_sync(path) {
         return r;
+    }
+    #[cfg(any(test, feature = "test-seams"))]
+    if sync_seam::fails(path) {
+        return Err(std::io::Error::other("a test made the folder sync fail"));
     }
     #[cfg(unix)]
     {
@@ -627,6 +676,33 @@ pub(crate) mod tests {
         on_folder_sync(|_| Err(std::io::ErrorKind::Unsupported.into()));
         crate::write_file(&doc, b"unsupported").unwrap();
         unwatch();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// REL-10: a split whose parts are written on rayon's threads, each folder sync failing
+    /// (the seam reaches every thread): every part is written all the same, and the error is
+    /// one part's "not confirmed", not a failure saying how many were written before it.
+    #[test]
+    fn a_split_not_confirmed_writes_every_part() {
+        let dir = folder("split-unconfirmed");
+        let mut p = crate::Pdf::new();
+        for i in 0..6 {
+            p.insert_blank(i, 300.0, 200.0).unwrap();
+        }
+        let part = |n: usize, _: Option<&str>| dir.join(format!("part-{n}.pdf"));
+        super::sync_seam::fail_in(&dir);
+        let e = p.split(crate::SplitBy::Every(1), part).unwrap_err();
+        super::sync_seam::stop_failing_in(&dir);
+        let n = e.downcast_ref::<NotConfirmed>().expect("not confirmed");
+        assert!(n.path.starts_with(dir.canonicalize().unwrap()), "{e:#}");
+        assert!(!format!("{e:#}").contains("were written before"), "{e:#}");
+        for n in 1..=6 {
+            let part = std::fs::read(dir.join(format!("part-{n}.pdf"))).unwrap();
+            assert!(part.starts_with(b"%PDF"), "part {n}");
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 6);
+        // Working again, the same split is done.
+        assert_eq!(p.split(crate::SplitBy::Every(1), part).unwrap(), 6);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

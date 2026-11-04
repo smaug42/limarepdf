@@ -1763,6 +1763,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// REL-10, decision D7: a signed file the system can't confirm on disk (the folder sync
+    /// failing, through core's test seam) is signed and written all the same, and comes back
+    /// not confirmed, which the app says (`a_signed_file_not_confirmed_on_disk`). The ID's
+    /// folder failing too: the ID made the default is said not confirmed as well.
+    #[test]
+    fn a_signed_file_not_confirmed_is_written() {
+        let (mut w, dir) = window("not-confirmed");
+        let mut doc = Pdf::from_text("Hello", (612.0, 792.0)).unwrap();
+        let base = doc.to_bytes().unwrap();
+        let folder = dir.join("out");
+        std::fs::create_dir_all(&folder).unwrap();
+        let out = folder.join("signed.pdf");
+        limarepdf_core::sync_seam::fail_in(&folder);
+        let SignOut::Done(s) = sign(&mut w, &base, None, &out) else {
+            panic!("not signed: {:?}", w.error);
+        };
+        assert!(!s.confirmed);
+        assert_eq!(s.default_unsaved, None);
+        assert_eq!(std::fs::read(&out).unwrap(), s.bytes);
+        limarepdf_core::sync_seam::fail_in(&dir);
+        let SignOut::Done(s) = sign(&mut w, &base, None, &out) else {
+            panic!("not signed: {:?}", w.error);
+        };
+        limarepdf_core::sync_seam::stop_failing_in(&dir);
+        limarepdf_core::sync_seam::stop_failing_in(&folder);
+        assert!(!s.confirmed);
+        let why = s.default_unsaved.expect("the default not confirmed");
+        assert!(why.contains("couldn't confirm"), "{why}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn wrong_passwords_and_disallowed_changes_are_said() {
         let (mut w, dir) = window("refused");

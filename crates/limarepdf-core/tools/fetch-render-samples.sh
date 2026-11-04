@@ -6,6 +6,8 @@
 # download doesn't match its SHA-256 is deleted and reported.
 #
 # Usage, from crates/limarepdf-core: sh tools/fetch-render-samples.sh
+# Exits with 2 when some listed files couldn't be downloaded (each named, then a count), so a
+# caller can carry on with the rest; with 1 on any other error.
 set -eu
 cd "$(dirname "$0")/.."
 list=tools/render-samples.txt
@@ -45,10 +47,16 @@ if [ -s "$cfg" ]; then
     curl -sfL --retry 2 --parallel --parallel-max 8 -K "$cfg" || true
 fi
 
-files | while read -r url path sum; do
+listed=$(files | wc -l)
+missing=$(files | while read -r url path sum; do
     if [ ! -f "$path" ] || [ "$(sha "$path")" != "$sum" ]; then
         rm -f "$path"
         echo "failed: $url" >&2
+        echo "$path"
     fi
-done
-echo "$(find "$out" -name '*.pdf' | wc -l) files in $out"
+done | wc -l)
+echo "$((listed - missing)) of $listed listed files in $out"
+if [ "$missing" -gt 0 ]; then
+    echo "$missing listed files missing: their downloads failed (above)" >&2
+    exit 2
+fi

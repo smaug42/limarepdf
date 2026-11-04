@@ -4,6 +4,8 @@ use super::model::{Faulty, Kind, Model};
 use super::*;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{RwLock, RwLockReadGuard};
+use std::thread::JoinHandle;
+use std::time::Instant;
 
 const T1: TabId = TabId(1);
 const T2: TabId = TabId(2);
@@ -84,8 +86,42 @@ fn clear_hook(s: &Store) {
     *lock(&s.hook) = None;
 }
 
+/// How long a test waits for another thread or process before it fails. Generous, so a slow
+/// machine never trips it; a regression then fails the test instead of hanging the run.
+const DEADLINE: Duration = Duration::from_secs(30);
+
+/// Whether `done` comes true within [`DEADLINE`], asked every few milliseconds.
+fn in_time(mut done: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    loop {
+        if done() {
+            return true;
+        }
+        if start.elapsed() > DEADLINE {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Waits for `done` to come true; fails the test, naming `what`, if it doesn't in time.
+fn wait_until(what: &str, done: impl FnMut() -> bool) {
+    assert!(in_time(done), "waited {DEADLINE:?} for {what}");
+}
+
+/// Joins the thread, failing the test, naming `what`, if it doesn't end in time or panics.
+fn join_within<T>(h: JoinHandle<T>, what: &str) -> T {
+    wait_until(what, || h.is_finished());
+    h.join().unwrap_or_else(|_| panic!("{what} panicked"))
+}
+
+/// Runs `f` on another thread and waits for it as [`join_within`] does.
+fn within<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    join_within(std::thread::spawn(f), what)
+}
+
 /// Stops the thread that reaches `at` until the test sends on the returned sender; the
-/// receiver hears when it got there.
+/// receiver hears when it got there. A thread never let go fails after [`DEADLINE`].
 fn gate(s: &Store, at: Point) -> (Receiver<()>, Sender<()>) {
     let (reached_tx, reached) = mpsc::channel();
     let (go, go_rx) = mpsc::channel::<()>();
@@ -93,7 +129,15 @@ fn gate(s: &Store, at: Point) -> (Receiver<()>, Sender<()>) {
     set_hook(s, move |p| {
         if p == at {
             reached_tx.send(()).unwrap();
-            go_rx.lock().unwrap().recv().unwrap();
+            match go_rx.lock().unwrap().recv_timeout(DEADLINE) {
+                Ok(()) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("the thread stopped at {at:?} wasn't let go within {DEADLINE:?}")
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the test ended without letting the thread stopped at {at:?} go")
+                }
+            }
         }
     });
     (reached, go)
@@ -750,6 +794,13 @@ fn child_session() {
     std::process::abort();
 }
 
+/// Kills the child and fails the test with `why`, so no process is left behind.
+fn kill(child: &mut std::process::Child, why: &str) -> ! {
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("{why}");
+}
+
 /// A session whose lock another process holds isn't offered; once that process stops
 /// abnormally, it is.
 #[test]
@@ -772,17 +823,40 @@ fn a_running_session_is_not_offered() {
         .unwrap();
     drop(spawning);
     let out = std::io::BufReader::new(child.stdout.take().unwrap());
-    let mut lines = out.lines();
-    // The test harness may print the test's name on the same line first.
-    assert!(
-        lines.any(|l| l.unwrap().ends_with("ready")),
-        "the child didn't start"
-    );
+    // Read on another thread, so a child that never says it is ready can't hold the test up;
+    // the rest of its output is read too, keeping the pipe open until it stops.
+    let (ready_tx, ready) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut lines = out.lines().map_while(Result::ok);
+        // The test harness may print the test's name on the same line first.
+        let _ = ready_tx.send(lines.any(|l| l.ends_with("ready")));
+        lines.for_each(drop);
+    });
+    match ready.recv_timeout(DEADLINE) {
+        Ok(true) => {}
+        Ok(false) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+            kill(&mut child, "the child didn't start")
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => kill(
+            &mut child,
+            &format!("the child didn't say it was ready within {DEADLINE:?}"),
+        ),
+    }
     let fs: Arc<dyn Fs> = Arc::new(RealFs);
     assert!(find_crashed(&fs, &base, now()).is_empty());
     assert_eq!(std::fs::read_dir(&base).unwrap().count(), 1);
     writeln!(child.stdin.take().unwrap()).unwrap();
-    assert!(!child.wait().unwrap().success());
+    let mut status = None;
+    if !in_time(|| {
+        status = child.try_wait().unwrap();
+        status.is_some()
+    }) {
+        kill(
+            &mut child,
+            &format!("the child didn't stop within {DEADLINE:?}"),
+        );
+    }
+    assert!(!status.unwrap().success());
     let found = find_crashed(&fs, &base, now());
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].read(0).unwrap(), pdf(1));
@@ -871,23 +945,21 @@ fn after_a_content_removal() {
 }
 
 /// Starts a write of `tab` on another thread, stopped at `at`.
-fn stopped_writer(
-    s: &Arc<Store>,
-    tab: TabId,
-    at: Point,
-) -> (std::thread::JoinHandle<Published>, Sender<()>) {
+fn stopped_writer(s: &Arc<Store>, tab: TabId, at: Point) -> (JoinHandle<Published>, Sender<()>) {
     let (reached, go) = gate(s, at);
     let t = s.ticket(tab, 9).unwrap();
     let s2 = s.clone();
     let h = std::thread::spawn(move || s2.publish(&t, &info("racing"), &pdf(9)).unwrap());
-    reached.recv().unwrap();
+    if reached.recv_timeout(DEADLINE).is_err() {
+        panic!("the write didn't reach {at:?} within {DEADLINE:?}");
+    }
     (h, go)
 }
 
 /// Runs `f` on another thread; returns its handle and whether it finished within a moment.
 fn finishes_alone<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
-) -> (std::thread::JoinHandle<T>, bool) {
+) -> (JoinHandle<T>, bool) {
     let (tx, rx) = mpsc::channel();
     let h = std::thread::spawn(move || {
         let r = f();
@@ -913,7 +985,7 @@ fn a_write_racing_a_withdrawal() {
         // it returns); one that hasn't taken it yet doesn't hold it up.
         assert_eq!(done, before_lock, "{at:?}");
         go.send(()).unwrap();
-        let p = writer.join().unwrap();
+        let p = join_within(writer, &format!("the write stopped at {at:?} to end"));
         assert_eq!(
             p,
             if before_lock {
@@ -923,7 +995,8 @@ fn a_write_racing_a_withdrawal() {
             },
             "{at:?}"
         );
-        assert_eq!(withdrawal.join().unwrap(), Withdrawal::Confirmed, "{at:?}");
+        let w = join_within(withdrawal, &format!("the withdrawal racing {at:?} to end"));
+        assert_eq!(w, Withdrawal::Confirmed, "{at:?}");
         clear_hook(&s);
         assert!(copies(&m, &s).is_empty(), "{at:?}: {:?}", copies(&m, &s));
         for cut in std::iter::once(m.crash()).chain(m.power_cuts()) {
@@ -951,8 +1024,8 @@ fn a_write_racing_turning_off() {
         assert!(!s.is_on());
         assert!(s.ticket(T1, 5).is_none());
         go.send(()).unwrap();
-        writer.join().unwrap();
-        let off = off.join().unwrap();
+        join_within(writer, &format!("the write stopped at {at:?} to end"));
+        let off = join_within(off, &format!("turning off racing {at:?} to end"));
         assert_eq!(
             off,
             [
@@ -1260,7 +1333,7 @@ fn the_recovery_thread() {
     let t = s.ticket(T2, 3).unwrap();
     q.write(t, info("panics"), Box::new(|| panic!("bad object")));
     q.retry();
-    let s = q.finish();
+    let s = within("the recovery thread to finish its jobs", move || q.finish());
     assert_eq!(copies(&m, &s), ["t2-1-1.pdf", "t2.txt"]);
     s.end().unwrap();
 }
@@ -1287,17 +1360,17 @@ fn the_recovery_thread_reports() {
     q.remove(T1);
     let mut reports = Vec::new();
     let wait = |reports: &mut Vec<Report>, n| {
-        while reports.len() < n {
+        wait_until(&format!("report {n} from the recovery thread"), || {
             reports.extend(q.reports());
-            std::thread::sleep(Duration::from_millis(5));
-        }
+            reports.len() >= n
+        });
     };
     wait(&mut reports, 3);
     // A write whose ticket a withdrawal outdated is refused.
     assert_eq!(s.withdraw(T1), Withdrawal::Confirmed);
     q.write(outdated, info("c"), Box::new(|| Ok(pdf(2))));
     wait(&mut reports, 4);
-    q.finish();
+    within("the recovery thread to finish its jobs", move || q.finish());
     assert_eq!(woken.load(Ordering::SeqCst), 4);
     let got: Vec<String> = reports.iter().map(|r| format!("{:?}", r.outcome)).collect();
     assert_eq!(got[0], "Written(1)");

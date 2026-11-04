@@ -3,6 +3,10 @@
 //! `ipptool`, and asks the printing service, never the printer itself.
 #![cfg(not(windows))]
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::print;
 use std::process::Command;
 
@@ -42,9 +46,11 @@ fn cross_check_paper_sizes_with_ipptool() {
         }
         let queue = p.name.split('/').next().unwrap();
         let uri = format!("ipp://localhost/printers/{queue}");
-        let out = Command::new("ipptool")
-            .args(["-tv", &uri, "get-printer-attributes.test"])
-            .output();
+        let out = tool::output(Command::new("ipptool").args([
+            "-tv",
+            &uri,
+            "get-printer-attributes.test",
+        ]));
         let Ok(out) = out else {
             eprintln!("ipptool isn't installed: the list above isn't checked");
             continue;

@@ -15,10 +15,17 @@
 //! differences side by side. `summary.txt` beside it lists every page's share, to compare
 //! runs. `RENDER_COMPARE_ONLY` limits the run to files whose name contains it.
 //!
+//! Each file is compared in a process of its own (this test run again for that file, through
+//! `common/apart.rs`), two at a time (`RENDER_COMPARE_JOBS` changes it), with at most
+//! [`MEMORY_MB`] of memory on Linux, so a file that takes longer than [`TIMEOUT`] or needs
+//! more memory is stopped, alone, and listed with the reason. The counts of pages, files
+//! listed, files stopped and listed files not downloaded are printed and on the page.
+//!
 //! The test fails only when it can't run at all; the differences are for a person to judge.
 
 mod common;
 
+use common::apart;
 use common::compare::{differences, side_by_side, Image};
 use common::corpus::{samples, Sample};
 use limarepdf_core::render::{self, Missing, Renderer};
@@ -28,7 +35,6 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// How far, in any channel, a pixel may be outside the colours around it in the other image.
@@ -37,8 +43,13 @@ const TOLERANCE: u8 = 64;
 const FLAG: f64 = 0.005;
 /// Size difference in pixels allowed for rounding.
 const SIZE_SLACK: usize = 2;
-/// Time allowed for one file on each side.
-const TIMEOUT: Duration = Duration::from_secs(60);
+/// Time allowed for one file, both sides; `pdftoppm` has it for each page too.
+const TIMEOUT: Duration = Duration::from_secs(180);
+/// The memory each file's comparison may use, in MiB (on Linux; `RENDER_COMPARE_MEMORY`
+/// changes it).
+const MEMORY_MB: u64 = 2048;
+/// Marks the lines a child process reports its rows in.
+const REPORT: &str = "render-compare|";
 
 /// What one side made of one page.
 enum Drawn {
@@ -46,48 +57,28 @@ enum Drawn {
     Failed(String),
 }
 
-/// The listed pages of `s` drawn by LimarePDF, or why none could be. Runs on its own
-/// thread with a large stack, given up after [`TIMEOUT`].
+/// The listed pages of `s` drawn by LimarePDF, or why none could be. Runs in the file's
+/// child process, on a thread with a large stack.
 fn ours(path: &Path, s: &Sample, scale: f32) -> Result<Vec<(usize, Drawn)>, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let pw = s.password.clone();
-    let (first, last) = (s.first, s.last);
-    let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .stack_size(256 << 20)
-        .spawn(move || {
-            let pw = pw.as_deref();
-            // As `limarepdf-cli render` does: the app's view of the file, or the file as
-            // it is when the document reader can't open it.
-            let loaded = match Pdf::from_bytes(&bytes, pw).and_then(|mut p| p.render_snapshot()) {
-                Ok(b) => render::load(b, None),
-                Err(_) => render::load(bytes, pw),
+    let pw = s.password.as_deref();
+    // As `limarepdf-cli render` does: the app's view of the file, or the file as it is when
+    // the document reader can't open it.
+    let loaded = match Pdf::from_bytes(&bytes, pw).and_then(|mut p| p.render_snapshot()) {
+        Ok(b) => render::load(b, None),
+        Err(_) => render::load(bytes, pw),
+    };
+    let hp = loaded.map_err(|e| e.to_string())?;
+    let r = Renderer::new(&hp);
+    Ok((s.first..=s.last.min(r.page_count()))
+        .map(|n| {
+            let d = match r.render(n - 1, scale) {
+                Ok(b) => Drawn::Ok(Image::from_bitmap(&b), r.take_missing()),
+                Err(e) => Drawn::Failed(e.to_string()),
             };
-            let hp = match loaded {
-                Ok(hp) => hp,
-                Err(e) => {
-                    let _ = tx.send(Err(e.to_string()));
-                    return;
-                }
-            };
-            let r = Renderer::new(&hp);
-            let pages = (first..=last.min(r.page_count()))
-                .map(|n| {
-                    let d = match r.render(n - 1, scale) {
-                        Ok(b) => Drawn::Ok(Image::from_bitmap(&b), r.take_missing()),
-                        Err(e) => Drawn::Failed(e.to_string()),
-                    };
-                    (n, d)
-                })
-                .collect();
-            let _ = tx.send(Ok(pages));
+            (n, d)
         })
-        .map_err(|e| e.to_string())?;
-    match rx.recv_timeout(TIMEOUT) {
-        Ok(r) => r,
-        Err(mpsc::RecvTimeoutError::Timeout) => Err("timed out".into()),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err("panicked".into()),
-    }
+        .collect())
 }
 
 /// Page `n` of `path` drawn by `pdftoppm`.
@@ -150,11 +141,17 @@ struct Row {
     share: Option<f64>,
     note: String,
     picture: Option<String>,
+    /// The file's child process was stopped (or never started): nothing was compared.
+    stopped: bool,
 }
 
 impl Row {
     fn flagged(&self) -> bool {
         self.share.is_none_or(|s| s > FLAG) || !self.note.is_empty()
+    }
+
+    fn stopped(&self) -> bool {
+        self.stopped
     }
 }
 
@@ -168,6 +165,7 @@ fn compare(s: &Sample, root: &Path, out: &Path, dpi: u32) -> Vec<Row> {
         share,
         note,
         picture: None,
+        stopped: false,
     };
     let mine = match ours(&path, s, dpi as f32 / 72.0) {
         Ok(p) => p,
@@ -227,6 +225,72 @@ fn compare(s: &Sample, root: &Path, out: &Path, dpi: u32) -> Vec<Row> {
     rows
 }
 
+/// In the child process: [`compare`] on the file `RENDER_COMPARE_FILE` names, its rows
+/// printed for the parent.
+fn child(name: &str, root: &Path, out: &Path, dpi: u32) {
+    apart::limit_memory("RENDER_COMPARE_MEMORY", MEMORY_MB);
+    let s = samples(name)
+        .into_iter()
+        .find(|s| s.name == name)
+        .expect("a listed file");
+    let (root, out) = (root.to_path_buf(), out.to_path_buf());
+    let Some(rows) = apart::on_big_stack(move || compare(&s, &root, &out, dpi)) else {
+        println!("{REPORT}stopped|the comparison panicked");
+        return;
+    };
+    for r in rows {
+        let share = r.share.map_or(String::new(), |s| s.to_string());
+        let picture = r.picture.unwrap_or_default();
+        let note = apart::field(&r.note);
+        println!("{REPORT}row|{}|{share}|{note}|{picture}", r.page);
+    }
+    println!("{REPORT}done");
+}
+
+/// The rows of `s`, compared in a child process (this test run again for that file alone),
+/// so that a file that takes too long or too much memory is stopped without stopping the
+/// others. A file stopped gives one row saying why.
+fn compare_apart(s: &Sample, dpi: u32) -> Vec<Row> {
+    let stopped = |why: String| {
+        vec![Row {
+            name: s.name.clone(),
+            page: s.first,
+            share: None,
+            note: format!("LimarePDF: {why}"),
+            picture: None,
+            stopped: true,
+        }]
+    };
+    let env = [
+        ("RENDER_COMPARE_FILE", s.name.clone()),
+        ("RENDER_COMPARE_DPI", dpi.to_string()),
+    ];
+    let (text, status) = match apart::run("render_compare", &env, TIMEOUT) {
+        apart::Ran::Ended(text, status) => (text, status),
+        apart::Ran::TimedOut => return stopped(format!("timed out after {} s", TIMEOUT.as_secs())),
+        apart::Ran::NotStarted(e) => return stopped(format!("no child process: {e}")),
+    };
+    let mut rows = Vec::new();
+    for l in apart::reports(&text, REPORT) {
+        let f: Vec<&str> = l.split('|').collect();
+        match f[..] {
+            ["row", page, share, note, picture] => rows.push(Row {
+                name: s.name.clone(),
+                page: page.parse().unwrap_or(0),
+                share: share.parse().ok(),
+                note: note.to_string(),
+                picture: (!picture.is_empty()).then(|| picture.to_string()),
+                stopped: false,
+            }),
+            ["stopped", why] => return stopped(why.to_string()),
+            ["done"] => return rows,
+            _ => {}
+        }
+    }
+    // No end: the child was stopped.
+    stopped(apart::why_stopped(status))
+}
+
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -244,13 +308,15 @@ fn report(rows: &[Row], dpi: u32, missing: usize) -> String {
          h2{{font-size:16px;margin:0 0 4px}}p{{margin:2px 0}}</style>\
          <h1>LimarePDF against poppler</h1>\
          <p>{} pages from {} files at {dpi} dpi; {} listed (more than {}% of pixels \
-         different, a size difference, something LimarePDF couldn't draw, or a failure). \
+         different, a size difference, something LimarePDF couldn't draw, or a failure); \
+         {} files stopped (timed out, too much memory or a crash). \
          {missing} listed files weren't downloaded.</p>\
          <p>Each picture: LimarePDF, poppler, differences in red.</p>",
         rows.len(),
         rows.iter().map(|r| &r.name).collect::<BTreeSet<_>>().len(),
         flagged.len(),
         FLAG * 100.0,
+        rows.iter().filter(|r| r.stopped()).count(),
     );
     for r in flagged {
         let share = r
@@ -290,6 +356,10 @@ fn render_compare() {
     let only = std::env::var("RENDER_COMPARE_ONLY").unwrap_or_default();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/render");
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("render-compare");
+    if let Ok(name) = std::env::var("RENDER_COMPARE_FILE") {
+        return child(&name, &root, &out, dpi);
+    }
+    let jobs = apart::jobs("RENDER_COMPARE_JOBS");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("pages")).unwrap();
 
@@ -303,14 +373,16 @@ fn render_compare() {
         root.display()
     );
 
-    // The files are spread over a pool of their own: LimarePDF's rendering uses rayon's
-    // global pool, which would starve if its workers were the ones waiting for it.
-    let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
+    // `jobs` files at a time, each in its own process.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build()
+        .unwrap();
     let start = Instant::now();
     let mut rows: Vec<Row> = pool.install(|| {
         present
             .par_iter()
-            .flat_map_iter(|s| compare(s, &root, &out, dpi))
+            .flat_map_iter(|s| compare_apart(s, dpi))
             .collect()
     });
     let _ = std::fs::remove_dir_all(out.join("tmp"));
@@ -333,11 +405,14 @@ fn render_compare() {
     std::fs::write(out.join("index.html"), report(&rows, dpi, absent.len())).unwrap();
 
     let flagged = rows.iter().filter(|r| r.flagged()).count();
+    let stopped = rows.iter().filter(|r| r.stopped()).count();
     println!(
-        "{} pages from {} files in {:.0?}; {flagged} listed in {}",
+        "{} pages from {} files in {:.0?}; {flagged} listed in {}; {stopped} files stopped \
+         (timed out, too much memory or a crash); {} listed files weren't downloaded",
         rows.len(),
         present.len(),
         start.elapsed(),
-        out.join("index.html").display()
+        out.join("index.html").display(),
+        absent.len(),
     );
 }

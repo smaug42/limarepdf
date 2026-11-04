@@ -381,7 +381,11 @@ available.
   ask for gigabytes and close: a page image has at most 268 million pixels (A3 at 1152 dpi;
   [export](../export-and-printing.md#pages-as-images)), Optimise scans skips pictures of more than 268 million pixels
   with the reason, redaction removes a fax picture of more than that whole, as it does any picture it can't read,
-  and a font's character widths are read for 65,536 characters at most. A font's map from characters to text
+  and a font's character widths are read for 65,536 characters at most. A picture stating over 16 million pixels
+  whose data fills less than an eighth of them is left out of the page as it is shown, printed as a picture and
+  read by OCR, and the page's notice says a picture can't be shown; the document keeps it. Pictures in JPEG, JPEG
+  2000 or JBIG2, and a fax picture's width, aren't checked against their data
+  ([details](architecture.md)). A font's map from characters to text
   (ToUnicode) is read for about a million characters at most, up to 32 MB, with up to 512 bytes of text for one
   character, as the PDF specification allows ([details](../reading-and-finding.md#how-text-is-read)). Pages of any real
   size show at every zoom. Working out the reading order of a page with tens of thousands of separate lines can't

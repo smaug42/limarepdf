@@ -1,6 +1,10 @@
 //! Annotations on made-up pages: reading them, drawing those without a drawing,
 //! removing and flattening them.
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
     Align, AnnotKind, DateStyle, InkColor, LinkTarget, Mark, Pdf, Shape, ShapeLook, SignArt,
@@ -1067,20 +1071,21 @@ fn endings_on_dashed_lines_are_solid() {
 #[test]
 #[ignore]
 fn cross_check_dashed_line_endings_with_poppler() {
-    let dir = std::env::temp_dir().join(format!("limarepdf-dashed-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("dashed");
     let poppler = |p: &mut Pdf, name: &str| {
         p.flatten_annotations(None).unwrap();
         let path = dir.join(format!("{name}.pdf"));
         std::fs::write(&path, p.to_bytes().unwrap()).unwrap();
         let stem = dir.join(name);
-        let ok = std::process::Command::new("pdftoppm")
-            .args(["-r", "72", "-singlefile", "-png"])
-            .arg(&path)
-            .arg(&stem)
-            .status()
-            .expect("pdftoppm")
-            .success();
+        let ok = tool::output(
+            std::process::Command::new("pdftoppm")
+                .args(["-r", "72", "-singlefile", "-png"])
+                .arg(&path)
+                .arg(&stem),
+        )
+        .expect("pdftoppm")
+        .status
+        .success();
         assert!(ok);
         let img = image::open(stem.with_extension("png")).unwrap().to_rgb8();
         let ink = |r: [u32; 4]| {
@@ -1098,7 +1103,6 @@ fn cross_check_dashed_line_endings_with_poppler() {
         assert_eq!(got, want, "{end}: drawn with gaps");
         assert!(dashes < shaft * 3 / 4, "{end}: shaft not dashed");
     }
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

@@ -1,5 +1,9 @@
 //! Flattening made-up forms: the drawing stays where it was, and the fields go.
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{FieldValue, Pdf};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
@@ -460,15 +464,16 @@ fn cross_check_appended_answers_with_poppler() {
     let mut p = Pdf::new();
     p.insert_blank(0, 300.0, 200.0).unwrap();
     p.append(vec![incoming]).unwrap();
-    let path = std::env::temp_dir().join(format!("limarepdf-append-{}.pdf", std::process::id()));
+    let dir = tool::Scratch::new("append");
+    let path = dir.join("appended.pdf");
     std::fs::write(&path, p.to_bytes().unwrap()).unwrap();
-    let out = std::process::Command::new("pdftotext")
-        .args(["-f", "2", "-l", "2"])
-        .arg(&path)
-        .arg("-")
-        .output()
-        .expect("pdftotext");
-    std::fs::remove_file(&path).unwrap();
+    let out = tool::output(
+        std::process::Command::new("pdftotext")
+            .args(["-f", "2", "-l", "2"])
+            .arg(&path)
+            .arg("-"),
+    )
+    .expect("pdftotext");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("Ada Lovelace") && text.contains("Second"),
