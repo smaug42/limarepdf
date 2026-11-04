@@ -16,7 +16,7 @@ use crate::panels::{self, Panel};
 use crate::print_preview;
 use crate::recent::Recent;
 use crate::regions::{self, Region, Regions};
-use crate::selection::Selection;
+use crate::selection::{ObjKind, Selection};
 use crate::settings::{Accent, Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
 use crate::styled::Switch;
@@ -26,7 +26,7 @@ use crate::timing;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use limarepdf_core::disk::{self, OnDisk};
-use limarepdf_core::render::{image_names, ImageFormat};
+use limarepdf_core::render::{image_names, Bitmap, ImageFormat};
 use limarepdf_core::{
     parse_page_range, part_file_name, print, ImageImport, LinkTarget, OcrResult, OpenPanel, Pdf,
     PictureFormat, Query, ScanResult, SplitBy, TrustEntry, TrustRole,
@@ -215,6 +215,9 @@ enum Loaded {
     },
     /// A save's thread finished writing (ENH-35).
     Saved(Box<save::Saved>),
+    /// Copy number `.0` of a picture finished drawing it for the system's clipboard
+    /// (NEW-09's stage 3): its pixels, or why it couldn't be drawn.
+    PictureCopied(u64, Result<Bitmap, String>),
 }
 
 /// Asks for `printer`'s paper sizes on a background thread, as [`App::find_printers`] looks
@@ -816,6 +819,12 @@ pub struct App {
     /// Pages copied, to paste in any tab (PF-48). Pages cut wait in their tab
     /// ([`Tab::cut_pages`]); one or the other, never both.
     copied_pages: Option<CopiedPages>,
+    /// Copies of a picture drawn on a thread for the system's clipboard (NEW-09's stage 3),
+    /// counted: what is copied or cut later replaces one still being drawn.
+    picture_copies: u64,
+    /// The frame in which Paste asked the system for its clipboard, waiting for what it
+    /// holds; nothing coming the next frame is said.
+    paste_asked: Option<u64>,
     /// The Undo and Redo buttons, as last drawn: a click on them leaves the keyboard in
     /// the text box that has it.
     undo_buttons: Vec<egui::Rect>,
@@ -967,6 +976,8 @@ impl App {
             band: Band::default(),
             clip: None,
             copied_pages: None,
+            picture_copies: 0,
+            paste_asked: None,
             undo_buttons: Vec::new(),
             undo_held: false,
             undo_in_box: None,
@@ -2059,6 +2070,21 @@ impl App {
                     })));
                 }
                 Loaded::Saved(s) => self.saved(ctx, *s),
+                // Unless something was copied or cut since.
+                Loaded::PictureCopied(n, _) if n != self.picture_copies => {}
+                Loaded::PictureCopied(_, Ok(b)) => {
+                    let size = [b.width, b.height];
+                    ctx.copy_image(egui::ColorImage::from_rgba_unmultiplied(size, &b.rgba));
+                    self.status =
+                        "Copied the picture: paste it in this document or another app.".into();
+                }
+                Loaded::PictureCopied(_, Err(e)) => {
+                    self.status.clear();
+                    self.show(Dialog::Message(
+                        "Copy".into(),
+                        format!("This picture can't be copied: {e}."),
+                    ));
+                }
             }
         }
         self.next_dialog();
@@ -3435,8 +3461,14 @@ impl App {
                 // now replaces the pages copied or cut before.
                 if clip != Clip::Paste {
                     self.let_go_of_pages();
+                    self.picture_copies += 1;
                 }
+                let held = self.pages_to_paste();
                 let t = &mut self.tabs[self.active];
+                let picture = match t.ed.selection.objects() {
+                    Some((page, [one])) if one.kind == ObjKind::Image => Some((page, one.id)),
+                    _ => None,
+                };
                 match (t.ed.typing_id(), clip) {
                     // The typing takes the keyboard back, and then the system copies or cuts
                     // what is selected in it, or pastes at its caret.
@@ -3451,7 +3483,13 @@ impl App {
                     }
                     // Pages cut or copied go where pages go: the insertion bar, else after the
                     // pages selected.
-                    (None, Clip::Paste) => self.paste_pages(ctx),
+                    (None, Clip::Paste) if held => self.paste_pages(ctx),
+                    // Else what the system's clipboard holds: a picture goes on the page in
+                    // view (`App::type_over`).
+                    (None, Clip::Paste) => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                        self.paste_asked = Some(ctx.cumulative_frame_nr());
+                    }
                     // Pages are cut to paste elsewhere; the system's clipboard gets their
                     // names, so that the paste keys work wherever the clipboard was empty.
                     (None, Clip::Cut) if t.ed.selection.pages().is_some() => {
@@ -3466,6 +3504,11 @@ impl App {
                         );
                     }
                     (None, Clip::Copy) if t.ed.selection.pages().is_some() => self.copy_pages(ctx),
+                    (None, Clip::Copy) if picture.is_some() => {
+                        if let Some((page, id)) = picture {
+                            self.copy_picture(ctx, page, id);
+                        }
+                    }
                     (None, Clip::Copy) => match t.ed.selected_text() {
                         Some(text) => {
                             ctx.copy_text(text);
@@ -4365,6 +4408,19 @@ impl App {
              selected, in this document or another.",
             pages_said(chosen.len())
         );
+    }
+
+    /// Copies picture `id` of page `page` in the tab in front to the system's clipboard as it
+    /// shows (NEW-09's stage 3), drawn on a thread ([`Loaded::PictureCopied`]).
+    fn copy_picture(&mut self, ctx: &egui::Context, page: usize, id: usize) {
+        let pdf = self.tabs[self.active].pdf.clone();
+        let (n, tx, ctx) = (self.picture_copies, self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let drawn = crate::guard(|| pdf.picture_pixels(page, id)).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Loaded::PictureCopied(n, drawn));
+            ctx.request_repaint();
+        });
+        self.status = "Copying the picture…".into();
     }
 
     /// Pastes the pages cut or copied into the tab in front, where pages go there
@@ -5852,15 +5908,57 @@ impl App {
     /// Text typed or pasted with no text box having the keyboard goes over the words
     /// selected in the tab in front, as a word processor types over a selection, or into a
     /// line just opened on its page ([`crate::editor::Editor::type_over`]).
+    ///
+    /// A picture pasted from the system's clipboard with nothing being typed goes on the page
+    /// in view ([`Tab::paste_picture`], NEW-09's stage 3).
     fn type_over(&mut self, ctx: &egui::Context) {
         if self.palette.is_some() || dlg::any_open(ctx) {
             return;
         }
+        let image = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::PasteImage(image) => Some(image.clone()),
+                _ => None,
+            })
+        });
+        // Paste asked the system for its clipboard last frame and nothing came.
+        let pasted = image.is_some()
+            || ctx.input(|i| (i.events.iter()).any(|e| matches!(e, egui::Event::Paste(_))));
+        let asked = self
+            .paste_asked
+            .take_if(|&mut at| pasted || at < ctx.cumulative_frame_nr());
         let held = self.pages_to_paste();
+        let busy = self.busy;
         let Some(t) = self.tabs.get_mut(self.active) else {
             return;
         };
+        if asked.is_some() && !pasted {
+            t.info = Some("There's nothing on the clipboard to paste here".into());
+        }
+        if image.is_some() && t.ed.typing_id().is_some() {
+            t.info = Some(
+                "A picture can't go into text being typed: press Esc to finish typing, then \
+                 paste"
+                    .into(),
+            );
+            return;
+        }
         if ctx.egui_wants_keyboard_input() && !t.holds_keys(ctx) {
+            return;
+        }
+        if let Some(image) = image {
+            if t.organising() {
+                t.info = Some("To paste the picture, go back to the page view first".into());
+            } else if busy {
+                t.info = Some("Paste waits until the task under way finishes".into());
+            } else {
+                // The clipboard holds one thing: a picture copied after pages replaces them.
+                self.let_go_of_pages();
+                let t = &mut self.tabs[self.active];
+                if t.paste_picture(ctx, &image) {
+                    self.status = "Pasted the picture.".into();
+                }
+            }
             return;
         }
         // An input method's too: with words selected it is on ([`Editor::type_over`]).
@@ -7938,6 +8036,7 @@ mod tests {
     mod align;
     mod backdrop;
     mod bookmarks;
+    mod clipboard_pictures;
     mod forms;
     mod history;
     mod input_methods;
@@ -8499,6 +8598,7 @@ mod tests {
             "View",
             "Print",
             "Compact commands",
+            "Paste",
             "Edit text",
             "Find",
             "Replace",

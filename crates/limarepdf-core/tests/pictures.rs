@@ -1,11 +1,13 @@
 //! Saving pictures (NEW-09's stage 2): a JPEG upright on the page written byte for byte, any
 //! other picture, or one turned or flipped on the page, a lossless PNG as it shows; and every
 //! picture of a document to a folder, named by page and number, one drawn on several pages
-//! once.
+//! once. A picture's pixels as it shows, for the system's clipboard (NEW-09's stage 3), and
+//! pixels pasted from it put on a page as a lossless picture.
 
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, GenericImageView, ImageFormat};
-use limarepdf_core::{ObjectKind, Pdf, PictureFormat};
+use limarepdf_core::render::Bitmap;
+use limarepdf_core::{png_file, ObjectKind, Pdf, PictureFormat};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
 const W: f32 = 612.0;
@@ -349,6 +351,81 @@ fn only_a_picture_can_be_saved_as_one() {
     assert!(p.picture_format(0, text.id).is_err());
     assert!(p.picture_file(0, 99).is_err());
     assert!(p.picture_file(3, 0).is_err());
+}
+
+#[test]
+fn a_picture_copied_out_is_its_pixels_as_it_shows() {
+    // Lossless: exactly its pixels, opaque.
+    let data = corners(60, 30);
+    let (p, _) = one(
+        flate_picture(60, 30, "DeviceRGB".into(), data.clone()),
+        "120 0 0 60 72 400",
+    );
+    let b = p.picture_pixels(0, picture_id(&p, 0)).unwrap();
+    assert_eq!((b.width, b.height), (60, 30));
+    let rgb: Vec<u8> = (b.rgba.chunks(4))
+        .flat_map(|c| [c[0], c[1], c[2]])
+        .collect();
+    assert_eq!(rgb, data);
+    assert!(b.rgba.chunks(4).all(|c| c[3] == 255));
+    // A JPEG turned a quarter anticlockwise on the page: turned as it shows.
+    let (p, _) = one(jpeg_picture(80, 40), "0 160 -80 0 300 300");
+    let b = p.picture_pixels(0, picture_id(&p, 0)).unwrap();
+    assert_eq!((b.width, b.height), (40, 80));
+    let at = |x: usize, y: usize| {
+        let i = (y * b.width + x) * 4;
+        [b.rgba[i], b.rgba[i + 1], b.rgba[i + 2]]
+    };
+    let close = |got: [u8; 3], want: [u8; 3]| (0..3).all(|i| got[i].abs_diff(want[i]) <= 24);
+    assert!(close(at(5, 75), RED), "{:?}", at(5, 75));
+    assert!(close(at(5, 5), GREEN), "{:?}", at(5, 5));
+    let text = (p.page_objects(0).unwrap().into_iter())
+        .find(|o| o.kind == ObjectKind::Text)
+        .unwrap();
+    assert!(p.picture_pixels(0, text.id).is_err());
+}
+
+#[test]
+fn pixels_pasted_onto_a_page_keep_their_colours_and_transparency() {
+    // A 6 × 4 picture: the left half opaque red and blue rows, the right half half clear.
+    let rgba: Vec<u8> = (0..24)
+        .flat_map(|i| {
+            let (x, y) = (i % 6, i / 6);
+            let c = if y % 2 == 0 {
+                [200, 20, 20]
+            } else {
+                [20, 20, 200]
+            };
+            [c[0], c[1], c[2], if x < 3 { 255 } else { 128 }]
+        })
+        .collect();
+    let b = Bitmap {
+        width: 6,
+        height: 4,
+        rgba: rgba.clone(),
+    };
+    let file = png_file(&b).unwrap();
+    let img = png(&file);
+    assert!(img.color().has_alpha());
+    assert_eq!(img.to_rgba8().into_raw(), rgba);
+    // Put on a page and copied out again: the same pixels.
+    let mut p = pages(1);
+    p.add_image(0, [100.0, 100.0, 106.0, 104.0], &file).unwrap();
+    let back = p.picture_pixels(0, picture_id(&p, 0)).unwrap();
+    assert_eq!((back.width, back.height), (6, 4));
+    for (got, want) in back.rgba.chunks(4).zip(rgba.chunks(4)) {
+        assert!(
+            (0..4).all(|i| got[i].abs_diff(want[i]) <= 2),
+            "{got:?} for {want:?}"
+        );
+    }
+    // Opaque pixels make a picture without alpha.
+    let opaque = Bitmap {
+        width: 2,
+        height: 1,
+        rgba: vec![10, 20, 30, 255, 40, 50, 60, 255],
+    };
+    assert!(!png(&png_file(&opaque).unwrap()).color().has_alpha());
 }
 
 /// Three pages: a logo (a JPEG) on the first and the third, a drawing holding a lossless

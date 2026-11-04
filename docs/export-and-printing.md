@@ -239,6 +239,9 @@ those fields.
 To save one picture, as Word's Save as Picture does: select it, then choose **Save image as…** from its
 right-click menu or its floating toolbar (also ☰ > Edit, and the command search), and name the file.
 
+To copy one picture to another app instead, select it and press Ctrl+C
+([Add a picture](content-editing.md#add-a-picture)).
+
 To save every picture in the document, choose ☰ > Export > **Save all images…** and pick a folder. The files are
 named after the document, the page and the picture's place on that page (`report-page-003-image-2.jpg`), so they
 sort in page order. A picture shown on several pages, such as a logo, is saved once, with the first page that

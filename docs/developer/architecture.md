@@ -1619,6 +1619,35 @@ kind, then `App::save_image` spawns the job (`picture_file`, `write_file`); `Act
 says when `picture_names` is empty, else `pick_folder` (now given its title) and `Replacing::Pictures` when
 `existing` finds files, then `start_save_pictures`. Neither changes the document (`changed` false).
 
+**Pictures and the clipboard** (NEW-09's stage 3): egui-winit sends Ctrl+V as `Event::PasteImage` when the
+clipboard holds a picture and no text (arboard's `get_image`), and eframe answers `ViewportCommand::RequestPaste`
+the same way, so both reach `App::type_over`. There, before the check that a text box has the keyboard, a picture
+with text being typed (`Editor::typing_id`) gets a note; then, in the page view and not busy, `let_go_of_pages`
+(the clipboard holds one thing: a picture copied after pages replaces them) and `Tab::paste_picture`: the
+`ColorImage`'s pixels unmultiplied, core's `png_file` (as Save image as writes one: grey, RGB, with alpha only
+when some pixel needs it), `pasted_rect` (96 pixels an inch, as Word sizes a screenshot, shrunk to fit inside
+half-inch margins or a tenth of a small page's side, centred on the page in view, `Tab::current`), `add_image`
+through `edit_pages` (one step), then the new object selected loose (`select_new`, the arrow kept, any other tool
+the read tool). The band's Paste (`pasteable` now true in the page view, as the clipboard can't be read ahead)
+with no pages held sends `RequestPaste` and keeps the frame in `App::paste_asked`; a later frame with no `Paste`
+or `PasteImage` says the clipboard holds nothing to paste here. Copy (`Act::Copy`, `copyable`'s `one_picture`)
+with one picture selected is `App::copy_picture`: core's `Pdf::picture_pixels` (`picture_bitmap`, the drawing
+`picture_png` makes for Save image as) on a thread, `Loaded::PictureCopied` carrying `App::picture_copies`'s
+number, then `ctx.copy_image`; Copy and Cut count `picture_copies` on, so a picture still being drawn when
+something else is copied is dropped.
+
+**A picture in front of text** (NEW-09's stage 3, the user's find): `Editor::picture_over_text` is the last
+picture whose box holds the pointer drawn after every line of page text whose box holds it (the page's objects
+are in drawing order), not hidden and under 0.8 of the page (`Editor::page_areas`, kept as each page is drawn),
+so a scan with its recognised text under it, or text drawn after the picture (recognised text of a pasted
+screenshot), still takes the click. Where it finds one, `hit_where` leaves page text out (so the arrow's
+smallest-box rule can't pick a hidden line, and `text_hit` finds none), the read tool's `on_text` is false (no
+text cursor, `object_at` selects the picture), and a double-click, a triple-click or a drag started there
+selects the picture rather than the words. A drag started on visible text still selects the words across the
+picture. `Tab::over_fields` (a visible widget of `Editor::form`'s fields overlapping the box) gives the note
+`OVER_FIELDS` after `add_image` from Paste or the Image tool: widgets are annotations, drawn above the page's
+content by every reader.
+
 **Decoding parameters given as a reference**: lopdf's `decompressed_content` reads `/DecodeParms` only when it is
 written in place (a dictionary, or an array of them); given as a reference (pdf.js's `issue17906`) it decodes as
 if there were none, leaving a PNG predictor's byte at the start of every row, so the samples read shifted.

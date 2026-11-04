@@ -1150,9 +1150,11 @@ fn paste_says_to_cut_pages_first_on(os: egui::os::OperatingSystem) {
     assert_eq!(why, "Cut or copy pages first.", "{os:?}: organising");
     app.act(&ctx, Act::Organise);
     ty.pause(&mut app);
-    let why = actions::why_not(&app.state(&ctx), paste);
-    let typed = "Click in text being typed, or where new text goes, first.";
-    assert_eq!(why, typed, "{os:?}: the page view");
+    // In the page view it can be used, for a picture on the system's clipboard.
+    assert!(
+        (paste.enabled)(&app.state(&ctx)),
+        "{os:?}: greyed in the page view"
+    );
     let key = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::V);
     let tip = actions::tooltip(&ctx, paste);
     assert!(tip.contains(&ctx.format_shortcut(&key)), "{os:?}: {tip}");

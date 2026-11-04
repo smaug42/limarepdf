@@ -244,7 +244,8 @@ Words you select with the read tool can be changed as in a word processor, witho
   (with **Paragraph** on; with it off, on several lines of one LimarePDF is sure is a paragraph), the paragraph opens
   with what you typed in their place (see [Edit a paragraph](#edit-a-paragraph)). Over words in different
   paragraphs nothing is typed, and a note says "Type over words within one paragraph." With no words selected and
-  nothing being typed, Ctrl+V says where to click to paste. An input method types over them too: the line opens
+  nothing being typed, Ctrl+V says where to click to paste text, and puts a picture on the page
+  ([Add a picture](#add-a-picture)). An input method types over them too: the line opens
   with what you compose in their place.
 - **Delete** or **Backspace** removes them, across lines and pages, in one step that Undo takes back. As in Word,
   a space beside them goes too when two would be left together, or one at the start or end of a line. In one
@@ -335,6 +336,18 @@ To put the same text on every page, such as page numbers or DRAFT, use
 2. Drag a box on the page where it goes.
 
 A photo shows upright, the way it was taken, even when the camera or phone was turned.
+
+To paste a picture or a screenshot copied in another app, press **Ctrl+V** (⌘V on a Mac), or choose **Paste**
+in **Edit** in the band, with nothing being typed. As in Word and PowerPoint, it goes in the middle of the page in
+view, at its own size (shrunk to fit the page), and is selected, ready to move or resize; Undo takes it back. A
+picture can't be pasted into text being typed: press Esc first.
+
+A picture you add or paste over text is in front of it, as in Word: clicking or double-clicking the picture selects
+it, not the text it hides. Over a form, the fields' answers still show on top of the picture, as they do in every
+PDF reader (form fields and comments are always drawn above the page), and a note says so.
+
+To copy a picture on a page to another app, select it and press **Ctrl+C** (or **Copy**). It is copied as it
+shows on the page, turned or flipped as the page shows it.
 
 To save a picture on a page as a file, select it and choose **Save image as…** from its right-click menu or its
 floating toolbar ([details](export-and-printing.md#pictures)).

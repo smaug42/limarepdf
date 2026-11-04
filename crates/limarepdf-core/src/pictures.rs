@@ -6,6 +6,7 @@
 //! other picture, or one turned or flipped on the page, is drawn alone, at its own pixel size,
 //! on a page of that size by the same renderer as the pages, and saved as a lossless PNG as
 //! it shows: CMYK, palettes, masks and every kind the renderer reads, its transparency kept.
+//! The same drawing gives a picture's pixels for the system's clipboard (NEW-09's stage 3).
 
 use crate::matrix::{self as mx, M};
 use crate::reduce::{Drawn, Seen};
@@ -81,6 +82,14 @@ impl Pdf {
             PictureFormat::Png => self.picture_png(&s, shown)?,
         };
         Ok((format, bytes))
+    }
+
+    /// The picture that is object `id` of page `page_index` (0-based) as it shows on the page,
+    /// at its own pixel size, turned and flipped as it shows: its colours not multiplied by
+    /// its transparency, as the system's clipboard takes a picture (NEW-09's stage 3).
+    pub fn picture_pixels(&self, page_index: usize, id: usize) -> Result<render::Bitmap> {
+        let (s, shown) = self.picture_at(page_index, id)?;
+        self.picture_bitmap(&s, shown)
     }
 
     /// The file names [`Pdf::save_all_pictures`] gives every picture the pages draw, in page
@@ -235,6 +244,12 @@ impl Pdf {
     /// Picture `s`, shown as `shown` on the displayed page, as a PNG: drawn alone at its own
     /// pixel size, turned and flipped as it shows, on a clear backdrop.
     fn picture_png(&self, s: &Stream, shown: M) -> Result<Vec<u8>> {
+        png_file(&self.picture_bitmap(s, shown)?)
+    }
+
+    /// Picture `s`, shown as `shown` on the displayed page, drawn alone at its own pixel size,
+    /// turned and flipped as it shows, on a clear backdrop.
+    fn picture_bitmap(&self, s: &Stream, shown: M) -> Result<render::Bitmap> {
         let (w, h) = size(s).ok_or_else(|| anyhow!("the picture has no usable size"))?;
         let (place, pw, ph) = placed(shown, w, h)?;
         if pw as u64 * ph as u64 > render::MAX_PIXELS {
@@ -247,7 +262,7 @@ impl Pdf {
         if !r.take_missing().is_empty() {
             bail!("the picture's data can't be read");
         }
-        png_of(&b)
+        Ok(b)
     }
 
     /// A document of one `pw` × `ph` page drawing picture `s` placed by `place`, with the
@@ -460,8 +475,9 @@ fn names(found: &[Found], stem: &str, pages: usize) -> Vec<String> {
         .collect()
 }
 
-/// `b` as a PNG: grey when every pixel is, without alpha when every pixel is opaque.
-fn png_of(b: &render::Bitmap) -> Result<Vec<u8>> {
+/// `b` (colours not multiplied by alpha) as a lossless PNG file: grey when every pixel is,
+/// without alpha when every pixel is opaque.
+pub fn png_file(b: &render::Bitmap) -> Result<Vec<u8>> {
     let px = b.rgba.as_chunks::<4>().0;
     let grey = px.iter().all(|p| p[0] == p[1] && p[1] == p[2]);
     let opaque = px.iter().all(|p| p[3] == 255);

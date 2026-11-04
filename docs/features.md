@@ -24,9 +24,9 @@ source.
   font, size or colour, or just select them as you read and press Ctrl+B.
 - **Write in many languages:** Latin, Greek and Cyrillic letters, Chinese, Japanese and Korean, in any font: as in
   a word processor, a word your font lacks is written in an installed font that has it.
-- **Add and arrange content:** add text, pictures and shapes, and move, resize, restyle or delete what is already
-  on the page, one thing or several at once; line things up or space them out evenly, and they snap into line
-  with the page and each other as you drag.
+- **Add and arrange content:** add text, pictures and shapes (or paste a picture or screenshot), and move,
+  resize, restyle or delete what is already on the page, one thing or several at once; line things up or space
+  them out evenly, and they snap into line with the page and each other as you drag.
 - **Comment and mark up:** highlights, notes, text boxes, shapes, arrows, freehand drawing and replies.
 - **Organise pages:** see every page at once, as in a slide sorter, and drag or cut and paste pages into a new
   order, or copy and paste them into another document; rotate, insert, delete and extract them; merge files into one, keeping their bookmarks, or split one

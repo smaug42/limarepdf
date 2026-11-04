@@ -63,6 +63,8 @@ const SIMILAR_FONT: &str =
 
 /// Typing whose change failed, left as it was, or that couldn't go back to its place.
 const LEFT_OUT: &str = "The typing that couldn't be kept was left out";
+/// Said when a picture is put over a form field, whose answer then shows on top of it.
+pub const OVER_FIELDS: &str = "Form fields show above pictures, in every PDF reader";
 
 /// A change to `n` objects, `done`: when several were changed and it failed, the message
 /// says that one of them couldn't be (`what`: "moved") and nothing was changed.
@@ -1195,8 +1197,12 @@ impl Tab {
                         continue;
                     };
                     let from = self.ed.objects(&self.pdf, p).len();
+                    let over = self.over_fields(p, rect);
                     if self.edit_pages(ctx, &[p], |pdf| pdf.add_image(p, rect, &bytes)) {
                         self.after_insert(p, from);
+                        if over {
+                            self.info = Some(OVER_FIELDS.into());
+                        }
                     }
                 }
                 Action::ReplaceImage(p, id, bytes) => {
@@ -1830,6 +1836,61 @@ impl Tab {
             }
             Err(e) => self.error = Some(e.to_string()),
         }
+    }
+
+    /// Put a picture from the system's clipboard on the page in view (NEW-09's stage 3), as
+    /// Word and PowerPoint paste one: in the middle of the page, at its own size
+    /// ([`pasted_rect`]), selected, in one step. Whether it was put down.
+    pub fn paste_picture(&mut self, ctx: &egui::Context, image: &egui::ColorImage) -> bool {
+        let [w, h] = image.size;
+        let p = self.current;
+        let Some(&(pw, ph)) = self.sizes.get(p) else {
+            return false;
+        };
+        if w == 0 || h == 0 {
+            return false;
+        }
+        let rgba = (image.pixels.iter())
+            .flat_map(|c| c.to_srgba_unmultiplied())
+            .collect();
+        let bitmap = limarepdf_core::render::Bitmap {
+            width: w,
+            height: h,
+            rgba,
+        };
+        let file = match limarepdf_core::png_file(&bitmap) {
+            Ok(f) => f,
+            Err(e) => {
+                self.error = Some(format!("The picture can't be pasted: {e:#}"));
+                return false;
+            }
+        };
+        let rect = pasted_rect((pw, ph), (w, h));
+        let from = self.ed.objects(&self.pdf, p).len();
+        let over = self.over_fields(p, rect);
+        if !self.edit_pages(ctx, &[p], |pdf| pdf.add_image(p, rect, &file)) {
+            return false;
+        }
+        if over {
+            self.info = Some(OVER_FIELDS.into());
+        }
+        // Selected to move or resize, as a picture just placed is; the arrow stays in use.
+        if self.ed.tool != Tool::Select {
+            self.ed.set_tool(Tool::Read);
+        }
+        self.ed.select_new(&self.pdf, p, from);
+        self.ed.selection.set_loose(true);
+        true
+    }
+
+    /// Whether a picture put in `rect` of page `page` (displayed-page points) overlaps one of
+    /// the form's fields shown there, which every PDF reader draws above the page's content.
+    fn over_fields(&self, page: usize, rect: [f32; 4]) -> bool {
+        let over =
+            |b: [f32; 4]| b[0] < rect[2] && rect[0] < b[2] && b[1] < rect[3] && rect[1] < b[3];
+        (self.ed.form.fields().iter())
+            .flat_map(|f| &f.widgets)
+            .any(|w| w.page == page && !w.hidden && over(w.bbox))
     }
 
     /// Record the state before a change: what puts the document back (`None` if it did not
@@ -3631,6 +3692,22 @@ impl Tab {
     }
 }
 
+/// Pixels a point for a pasted picture: 96 an inch, as Word sizes a screenshot.
+const PASTED_SCALE: f32 = 72.0 / 96.0;
+
+/// Where a `w` × `h`-pixel picture pasted on a page `page` points wide and high goes (NEW-09's
+/// stage 3; displayed-page points, y down): in the middle, at [`PASTED_SCALE`], shrunk to fit
+/// inside half-inch margins (a tenth of each side on a small page), its shape kept.
+fn pasted_rect(page: (f32, f32), (w, h): (usize, usize)) -> [f32; 4] {
+    let (pw, ph) = page;
+    let room = |side: f32| side - 2.0 * (side / 10.0).min(36.0);
+    let (w, h) = (w as f32 * PASTED_SCALE, h as f32 * PASTED_SCALE);
+    let k = (room(pw) / w).min(room(ph) / h).min(1.0);
+    let (w, h) = (w * k, h * k);
+    let (x, y) = ((pw - w) / 2.0, (ph - h) / 2.0);
+    [x, y, x + w, y + h]
+}
+
 /// The zoom at which the widest of the pages (`sizes`, in points) fits in `room` screen
 /// points beside the gaps, in whole percent so resizing the window does not re-render
 /// the pages at every step.
@@ -3915,6 +3992,27 @@ fn moving_label(ui: &egui::Ui, p: Pos2, n: usize) {
 mod tests {
     use super::*;
     use crate::page_text;
+
+    #[test]
+    fn a_pasted_picture_is_centred_at_its_own_size_or_shrunk_to_fit() {
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.01);
+        // 400 × 200 pixels at 96 an inch: 300 × 150 points, in the middle of a Letter page.
+        let r = pasted_rect((612.0, 792.0), (400, 200));
+        assert!(near(r, [156.0, 321.0, 456.0, 471.0]), "{r:?}");
+        // A full-screen screenshot, 1920 × 1080: shrunk to the room inside half-inch margins,
+        // 540 points wide, its shape kept.
+        let r = pasted_rect((612.0, 792.0), (1920, 1080));
+        assert!(near(r, [36.0, 244.125, 576.0, 547.875]), "{r:?}");
+        // Tall: fitted to the height.
+        let r = pasted_rect((612.0, 792.0), (500, 4000));
+        assert!(
+            (r[3] - r[1] - 720.0).abs() < 0.01 && (r[1] - 36.0).abs() < 0.01,
+            "{r:?}"
+        );
+        // A small page keeps a tenth of each side as its margin.
+        let r = pasted_rect((100.0, 100.0), (1000, 1000));
+        assert!(near(r, [10.0, 10.0, 90.0, 90.0]), "{r:?}");
+    }
 
     #[test]
     fn replies_follow_what_they_answer() {

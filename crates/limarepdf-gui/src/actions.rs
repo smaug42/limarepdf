@@ -626,20 +626,24 @@ fn redo(c: &Ctx) -> bool {
 fn words_idle(c: &Ctx) -> bool {
     c.words && !c.busy
 }
-/// Something to copy: the text being typed (what is selected in it), words or lines, or
-/// pages, to paste in this document or another.
+/// Something to copy: the text being typed (what is selected in it), words or lines, a
+/// picture, as it shows, or pages, to paste in this document or another.
 fn copyable(c: &Ctx) -> bool {
-    c.typing || c.words || lines_among(c) || (c.pages && !c.busy)
+    c.typing || c.words || lines_among(c) || (c.pages && !c.busy) || one_picture(c)
+}
+/// One picture is selected.
+fn one_picture(c: &Ctx) -> bool {
+    c.object && c.obj_kind == Some(ObjKind::Image)
 }
 /// Something to cut: what is selected in the text being typed, words, lines of page text
 /// with nothing else selected, whose text Cut copies, or pages, to paste elsewhere.
 fn cuttable(c: &Ctx) -> bool {
     c.typing || ((c.words || (c.object && c.obj_only_text) || c.pages) && !c.busy)
 }
-/// Somewhere to paste: the text being typed, words to type over, or pages cut or copied to
-/// put here.
+/// Somewhere to paste: the text being typed, words to type over, pages cut or copied to put
+/// here, or the page in view, for a picture on the system's clipboard (NEW-09's stage 3).
 fn pasteable(c: &Ctx) -> bool {
-    c.typing || ((c.words || c.cut) && !c.busy)
+    c.typing || ((c.words || c.cut || (c.doc && !c.organise)) && !c.busy)
 }
 /// Pages selected, to move.
 fn pages_selected(c: &Ctx) -> bool {
@@ -939,7 +943,8 @@ pub static ACTIONS: &[Action] = &[
         keys: &[k(C, Key::C)],
         enabled: copyable,
         hint: "Copy what is selected in the text being typed, else the selected words or \
-               lines of text, or the pages selected, to paste in this document or another.",
+               lines of text, the picture selected as it shows, or the pages selected, to \
+               paste in this document or another.",
         ..BASE
     },
     Action {
@@ -950,8 +955,9 @@ pub static ACTIONS: &[Action] = &[
         keys: &[k(C, Key::V)],
         enabled: pasteable,
         hint: "Paste into the text being typed, at its caret, or in place of the words \
-               selected. Pages cut or copied go where the insertion bar is in Organise, else \
-               after the selected pages.",
+               selected. A picture or screenshot copied goes in the middle of the page in \
+               view. Pages cut or copied go where the insertion bar is in Organise, else after \
+               the selected pages.",
         ..BASE
     },
     Action {
@@ -2866,11 +2872,14 @@ mod tests {
         assert_eq!(why(Act::Undo, &open), "Nothing to undo.");
         assert_eq!(why(Act::Redo, &open), "Nothing to redo.");
         assert_eq!(why(Act::Copy, &open), "Select some text first.");
-        let paste = why(Act::Paste, &open);
-        assert_eq!(
-            paste,
-            "Click in text being typed, or where new text goes, first."
-        );
+        // In the page view Paste can be used: the system's clipboard may hold a picture
+        // (NEW-09's stage 3); in Organise it waits for pages cut or copied.
+        assert!((get(Act::Paste).enabled)(&open), "Paste is greyed");
+        let organising = Ctx {
+            organise: true,
+            ..open
+        };
+        assert_eq!(why(Act::Paste, &organising), "Cut or copy pages first.");
         let busy = Ctx {
             words: true,
             busy: true,

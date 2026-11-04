@@ -228,6 +228,15 @@
   Save image as saves one, named by page and number (`report-page-003-image-2.jpg`). A picture shown on several
   pages, such as a logo, is saved once. It asks before replacing files. On the command line:
   `limarepdf-cli save-images in.pdf --out-dir pictures`.
+- **Paste a picture**: a picture or screenshot copied in another app is pasted with Ctrl+V (⌘V on a Mac) or Paste,
+  with nothing being typed, in the middle of the page in view at its own size (shrunk to fit the page), selected,
+  as Word and PowerPoint paste one; Undo takes it back. Paste can now be used in the page view whenever a document
+  is open, and says when the clipboard holds nothing it can paste there.
+- **Copy a picture**: Ctrl+C or Copy with a picture selected copies it to the clipboard as it shows on the page,
+  to paste in another app.
+- A picture added or pasted over text is in front of it: clicking or double-clicking it selects the picture
+  instead of opening the hidden text underneath, with the read tool and the arrow. A picture put over a form's
+  fields says that their answers show above it, as in every PDF reader.
 
 ### Changed
 

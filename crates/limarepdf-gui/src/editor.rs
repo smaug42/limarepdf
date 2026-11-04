@@ -1645,6 +1645,9 @@ pub struct Editor {
     /// Pages, an object or words; see [`Selection`].
     pub selection: Selection,
     objs: HashMap<usize, Vec<PageObject>>,
+    /// Each page's area in square points, as last drawn: what a picture covering most of
+    /// it is measured by ([`Editor::picture_over_text`]).
+    page_areas: HashMap<usize, f32>,
     unavailable: HashMap<usize, String>,
     /// The fonts of each line of a page, by object id, read together the first time one of
     /// its lines is selected ([`Editor::read_line_fonts`]), kept as `objs` is.
@@ -1860,6 +1863,7 @@ impl Default for Editor {
             by_edit_text: false,
             selection: Selection::None,
             objs: HashMap::new(),
+            page_areas: HashMap::new(),
             unavailable: HashMap::new(),
             line_fonts: HashMap::new(),
             drag: None,
@@ -3963,6 +3967,26 @@ impl Editor {
     /// The smallest object under `p` (within `tol`) that `keep` accepts; invisible text
     /// only while it is shown. A line's underline or strike-through is its line
     /// ([`PageObject::decorates`]): a click on it selects the line.
+    /// The picture at `p` on page `page` in front of the page text there: drawn after every
+    /// line of text whose box holds `p`, so it hides them, as a picture Word puts in front of
+    /// text. A click there goes to the picture, not to the text it hides, with either tool.
+    /// Not a hidden one, nor one covering most of the page, such as a scan with its
+    /// recognised text under it; none before the page is drawn.
+    fn picture_over_text(&self, page: usize, p: Pos2) -> Option<usize> {
+        let objs = self.objs.get(&page)?;
+        let area = *self.page_areas.get(&page)?;
+        let holds = |b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
+        let last_text = objs
+            .iter()
+            .rposition(|o| o.kind == ObjectKind::Text && holds(o.bbox));
+        (objs.iter().enumerate())
+            .skip(last_text.map_or(0, |t| t + 1))
+            .rev()
+            .filter(|(_, o)| o.kind == ObjectKind::Image && !o.hidden && holds(o.bbox))
+            .find(|(_, o)| (o.bbox[2] - o.bbox[0]) * (o.bbox[3] - o.bbox[1]) < 0.8 * area)
+            .map(|(i, _)| i)
+    }
+
     fn hit_where(
         &self,
         page: usize,
@@ -3972,11 +3996,14 @@ impl Editor {
     ) -> Option<usize> {
         let objs = self.objs.get(&page)?;
         let own = |i: usize| objs[i].decorates.filter(|&l| l < objs.len()).unwrap_or(i);
+        // Text hidden by a picture in front of it isn't under the pointer.
+        let covered = self.picture_over_text(page, p).is_some();
         objs.iter()
             .enumerate()
             .filter(|&(i, o)| {
                 let line = &objs[own(i)];
                 keep(line)
+                    && !(covered && line.kind == ObjectKind::Text)
                     && (self.show_hidden || !line.hidden)
                     && p.x >= o.bbox[0] - tol
                     && p.x <= o.bbox[2] + tol
@@ -4193,6 +4220,7 @@ impl Editor {
         let keys = (shift, ui.input(|i| i.modifiers.alt));
         let size = (r.width() / k, r.height() / k);
         let area = size.0 * size.1;
+        self.page_areas.insert(page, area);
         // Where a drag with the arrow or the read tool begins, the frame it does: once the
         // pointer has gone further from the press than a click can. One let go before that,
         // however long it was held, is a click there.
@@ -4481,11 +4509,14 @@ impl Editor {
                 let inside =
                     |p: Pos2, b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
                 let lines = Self::line_boxes(&words);
-                let on_text = |p: Pos2| lines.iter().any(|&b| inside(p, b));
+                // On a line's words, unless a picture in front of them hides them there.
+                let on_text = |ed: &Self, p: Pos2| {
+                    lines.iter().any(|&b| inside(p, b)) && ed.picture_over_text(page, p).is_none()
+                };
                 // Pictures and shapes a click selects; not ones covering most of the page.
                 let object_at = |ed: &Self, p: Pos2| {
                     let i = ed.read_hit(page, p, tol, area)?;
-                    (!on_text(p)).then_some(i)
+                    (!on_text(ed, p)).then_some(i)
                 };
                 if let Some(p) = hover_pt.filter(|_| !over_link && !self.text_drag) {
                     let handle = sized_box.and_then(|b| self.handle_hit(b, p, htol));
@@ -4497,7 +4528,7 @@ impl Editor {
                         ui.ctx().set_cursor_icon(handle_cursor(h));
                     } else if grabs(self, p) {
                         ui.ctx().set_cursor_icon(CursorIcon::Grab);
-                    } else if on_text(p) {
+                    } else if on_text(self, p) {
                         ui.ctx().set_cursor_icon(CursorIcon::Text);
                     } else if let Some(i) =
                         object_at(self, p).filter(|&i| !self.selection.holds(page, i))
@@ -4526,6 +4557,11 @@ impl Editor {
                 if let Some(p) = begins {
                     if grabs(self, p) {
                         start_arrange(self, p, true);
+                    } else if let Some(i) = self.picture_over_text(page, p) {
+                        // Not the words it hides.
+                        if !self.selection.holds(page, i) {
+                            self.select_object(page, i);
+                        }
                     } else {
                         self.start_word_drag(page, Some(p), &words);
                     }
@@ -4543,7 +4579,8 @@ impl Editor {
                 self.follow_word_drag(ui, pdf, page, r, k, &resp, &words);
                 let click_at = || resp.interact_pointer_pos().map(to_pt);
                 let on_line = |p: Option<Pos2>| p.and_then(|p| Self::word_on_line(&words, p, tol));
-                if resp.triple_clicked() {
+                let in_front = click_at().and_then(|p| self.picture_over_text(page, p));
+                if resp.triple_clicked() && in_front.is_none() {
                     let line = on_line(click_at()).and_then(|i| Self::line_of(&words, i));
                     if let Some((a, b)) = line {
                         self.selection = Selection::Words {
@@ -4559,6 +4596,11 @@ impl Editor {
                     if let Some(id) = annot.filter(|a| writable(a)).map(|a| a.id) {
                         self.selection = Selection::Annot { page, id };
                         self.write_selected();
+                    } else if let Some(i) = in_front {
+                        // A picture in front of text: it is selected, the text it hides left.
+                        if !self.selection.holds(page, i) {
+                            self.select_object(page, i);
+                        }
                     } else if let Some((p, i)) = line {
                         let pick = self.word_pick(page, i, p, &words);
                         self.start_text_edit(pdf, page, i, pick);
@@ -7727,6 +7769,57 @@ mod tests {
         assert_eq!(ed.text_hit(0, Pos2::new(142.0, y), 0.5), None, "{label:?}");
         assert_eq!(ed.text_hit(0, Pos2::new(147.0, y), 0.5), Some(1));
         assert!(cover_box(&objs[0])[2] < next[0], "{label:?} hides {next:?}");
+    }
+
+    /// A picture drawn after a line of text hides it where it covers it: neither tool's
+    /// click finds the text there. Not where the text is drawn after it, nor for a picture
+    /// covering most of the page (a scan with its text under it).
+    #[test]
+    fn a_picture_in_front_of_text_is_what_is_clicked() {
+        let png = limarepdf_core::render::encode(
+            &limarepdf_core::render::Bitmap {
+                width: 2,
+                height: 2,
+                rgba: [0, 128, 128, 255].repeat(4),
+            },
+            limarepdf_core::render::ImageFormat::Png,
+            72.0,
+        )
+        .unwrap();
+        let read = |pdf: &limarepdf_core::Pdf| {
+            let mut ed = Editor::default();
+            ed.objects(pdf, 0);
+            ed.page_areas.insert(0, 612.0 * 792.0);
+            ed
+        };
+        let (mut pdf, ed) = page_with_objects();
+        let text = ed.objs[&0][2].bbox;
+        let y = (text[1] + text[3]) / 2.0;
+        let (left, right) = (Pos2::new(text[0] + 2.0, y), Pos2::new(text[2] - 2.0, y));
+        // Over the line's first half.
+        let half = (text[0] + text[2]) / 2.0;
+        pdf.add_image(0, [text[0] - 5.0, y - 30.0, half, y + 30.0], &png)
+            .unwrap();
+        let ed = read(&pdf);
+        assert_eq!(ed.picture_over_text(0, left), Some(3));
+        assert_eq!(ed.text_hit(0, left, 1.0), None);
+        assert_eq!(ed.hit(0, left, 1.0), Some(3));
+        assert_eq!(ed.read_hit(0, left, 1.0, 612.0 * 792.0), Some(3));
+        // The half it doesn't cover.
+        assert_eq!(ed.picture_over_text(0, right), None);
+        assert_eq!(ed.text_hit(0, right, 1.0), Some(2));
+        // Text drawn after the picture is in front of it.
+        let font = FontChoice::default();
+        (pdf.add_text(0, (100.0, 300.0), "Seals", font, 12.0, [0.0; 3])).unwrap();
+        let ed = read(&pdf);
+        assert_eq!(ed.picture_over_text(0, left), None);
+        assert_eq!(ed.text_hit(0, left, 1.0), Some(4));
+        // A picture over the whole page, after the text, doesn't hide it.
+        let (mut pdf, _) = page_with_objects();
+        pdf.add_image(0, [0.0, 0.0, 612.0, 792.0], &png).unwrap();
+        let ed = read(&pdf);
+        assert_eq!(ed.picture_over_text(0, right), None);
+        assert_eq!(ed.text_hit(0, right, 1.0), Some(2));
     }
 
     #[test]

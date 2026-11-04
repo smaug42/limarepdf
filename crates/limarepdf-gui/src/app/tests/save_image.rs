@@ -12,7 +12,7 @@ use limarepdf_core::ObjectKind;
 const PHOTO: [f32; 4] = [100.0, 100.0, 300.0, 250.0];
 
 /// A 4 × 2 picture, red on the left and blue on the right.
-fn halves() -> Bitmap {
+pub(super) fn halves() -> Bitmap {
     let rgba = (0..8)
         .flat_map(|i| match i % 4 < 2 {
             true => [200, 20, 20, 255],
@@ -28,7 +28,7 @@ fn halves() -> Bitmap {
 
 /// A tab of one page showing `picture` (a PNG or JPEG file's bytes) at [`PHOTO`] under a
 /// caption, the arrow in use; the picture's id on the page.
-fn picture_tab(picture: &[u8]) -> (egui::Context, App, usize) {
+pub(super) fn picture_tab(picture: &[u8]) -> (egui::Context, App, usize) {
     let (ctx, mut app) = super::paragraphs::new_app();
     let mut pdf = Pdf::new();
     pdf.insert_blank(0, 612.0, 792.0).unwrap();
