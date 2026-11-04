@@ -12,6 +12,8 @@ out=$1
 here=$(cd "$(dirname "$0")" && pwd)
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 work=$(mktemp -d)
+# The work folder goes however the script ends, a failed step included.
+trap 'rm -rf "$work"' EXIT
 app="$work/stage/LimarePDF.app"
 
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -57,4 +59,3 @@ ln -s /Applications "$work/stage/Applications"
 mkdir -p "$out"
 hdiutil create -volname "LimarePDF $version" -srcfolder "$work/stage" -fs HFS+ -format UDZO -ov \
     "$out/LimarePDF-$version.dmg"
-rm -rf "$work"

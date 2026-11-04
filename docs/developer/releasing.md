@@ -113,6 +113,11 @@ branch with "dry_run" ticked. It builds, signs and attests as a release would, t
 graph shows `release` after `audit`, `build` and `macos-dmg`, and a failed audit skips it. Its attestations are real but harmless: they name the
 branch, not a tag.
 
+Without the `GPG_SIGNING_KEY` secret (a fork, say), a dry run still builds every package and writes `SHA256SUMS`,
+but signs nothing (no `.asc` files, no rpm signature) and makes no attestations. It says so in a warning on the run
+and its summary, and uploads the files as `release-dry-run-unsigned`, a name `packages.yml` never takes. A tag run
+without the secret fails at the release job's first step.
+
 ## Package repositories
 
 `.github/workflows/packages.yml` runs when a release is published. It downloads the `.deb` and `.rpm` files of the

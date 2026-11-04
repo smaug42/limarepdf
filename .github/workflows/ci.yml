@@ -240,8 +240,10 @@ jobs:
   # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
   # GPG signatures, build attestations and this version's section of CHANGELOG.md.
   # Publish it on GitHub. A dry run (workflow_dispatch) does everything but the release
-  # and uploads the signed files as an artifact instead. Both wait for the audit job, so
-  # neither starts after a known advisory.
+  # and uploads the signed files as an artifact instead. Without the signing key (a fork),
+  # a dry run only checksums the files, with no signatures or attestations, and says so; a
+  # tag run always needs the key. Both wait for the audit job, so neither starts after a
+  # known advisory.
   release:
     needs: [audit, build, macos-dmg]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run
@@ -259,16 +261,27 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      # Signed whenever the key is there; a tag run without it stops here.
+      - name: Signing key
+        id: key
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+        run: |
+          if [ -n "$GPG_SIGNING_KEY" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "The GPG_SIGNING_KEY secret is not set"; exit 1
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
       # SHA256SUMS, then a detached signature (.asc) for it and for every file, made with
       # the signing subkey in secrets and checked against the published key in docs/.
       - name: Checksums and signatures
+        if: steps.key.outputs.signed == 'true'
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          if [ -z "$GPG_SIGNING_KEY" ]; then
-            echo "The GPG_SIGNING_KEY secret is not set"; exit 1
-          fi
           echo "$GPG_SIGNING_KEY" | gpg --batch --import
           gpg --dearmor < docs/limarepdf-signing-key.asc > "$RUNNER_TEMP/limarepdf.gpg"
           # The rpm carries its own signature, checked by rpm and dnf against the published key.
@@ -290,14 +303,25 @@ jobs:
               --armor --detach-sign "$f"
             gpgv --keyring "$RUNNER_TEMP/limarepdf.gpg" "$f.asc" "$f"
           done
+      # A dry run without the key: the files and SHA256SUMS only, with a warning on the run.
+      - name: Checksums only (unsigned dry run)
+        if: steps.key.outputs.signed == 'false'
+        run: |
+          cd assets
+          sha256sum * > SHA256SUMS
+          note="Unsigned dry run: the GPG_SIGNING_KEY secret is not set, so the files have checksums only, with no GPG or rpm signatures and no attestations. A release needs the key."
+          echo "::warning::$note"
+          echo "$note" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/attest-build-provenance@v4
+        if: steps.key.outputs.signed == 'true'
         with:
           subject-path: assets/*
+      # Unsigned files get their own name, so packages.yml never takes them for signed ones.
       - name: Upload the dry run
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v7
         with:
-          name: release-dry-run
+          name: ${{ steps.key.outputs.signed == 'true' && 'release-dry-run' || 'release-dry-run-unsigned' }}
           path: assets
       - name: Draft the release
         if: startsWith(github.ref, 'refs/tags/v')
