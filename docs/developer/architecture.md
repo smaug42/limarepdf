@@ -1834,10 +1834,14 @@ The Minimal interface (ENH-45, build plan 4.4; stage 2 built) is the same comman
 second shell: `Settings::minimal` (settings.txt `interface = minimal`, any other value Full), `Act::ToggleMinimal`
 (View > Show, Ctrl+F1, ⌘⌥R on a Mac) and `Ctx::minimal`. With it `App::ui` draws the row alone: `quick` adds
 `ToggleSide` after ☰ and `Find` and `ToggleInspector` before Print (pressed while their panel shows, from the
-command's `checked`), and skips `band::names`, `compact_toggle` and `band::show`. Both interfaces end the row with
-`interface_switch`, whose widget sits in a scope of its own id (`UiBuilder::scope_id`), so the keyboard on it survives
-the widgets before it changing. The switch's rect joins `Editor::keep_typing`, so its click doesn't end the typing,
-as a click in the Font group doesn't. A focused widget the other interface doesn't draw loses the keyboard at egui's
+command's `checked`), and skips `band::names`, `compact_toggle` and `band::show`. Both interfaces end the tab
+strip with `interface_switch` (the user's place, nearest the window's own buttons; a panel app can't add a button
+to the system's title bar): the tabs panel is drawn on the start screen too, `tab_strip` gets the row less the
+switch's width from the last frame (`App::switch_width`, the frame drawn again when it changes), and the switch,
+labelled with where it goes (`SWITCH_TO_MINIMAL`, `SWITCH_TO_FULL`, a plain button for screen readers; View's
+choice is the ticked state), is as wide with either word, so the tabs don't move. Its widget sits in a scope of
+its own id (`UiBuilder::scope_id`), so the keyboard on it survives the widgets before it changing. The switch's
+rect joins `Editor::keep_typing`, so its click doesn't end the typing, as a click in the Font group doesn't. A focused widget the other interface doesn't draw loses the keyboard at egui's
 end of frame; `App::refocus` (set by the command when something had the keyboard or typing is open, as the switch's
 click takes the keyboard from new text) then lets `App::hand_on_keyboard` give it back to the typing
 (`page_text::give_back` on `Editor::typing_id`), else to the switch, within three frames. The status bar leaves out

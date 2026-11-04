@@ -273,7 +273,8 @@ fn a_tab_half_out_of_view_comes_into_view_when_chosen() {
     let half = all.iter().position(|t| t.rect.right() > v.max + 1.0);
     let i = half.expect("a tab half out of view");
     let r = all[i].rect;
-    let p = egui::pos2(v.max - 30.0, r.center().y);
+    // The middle of the part of it that shows.
+    let p = egui::pos2((r.left() + v.max) / 2.0, r.center().y);
     assert!(r.left() < p.x, "{r:?} not under {p:?}");
     window(&mut app, &ctx, 700.0, click_at(p));
     let tree = drawn(&mut app, &ctx, 700.0);

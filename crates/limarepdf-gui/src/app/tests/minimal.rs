@@ -16,7 +16,28 @@ const CTRL: egui::Modifiers = egui::Modifiers {
     command: true,
 };
 
-const SWITCH: &str = "Minimal interface";
+/// The switch's name in each interface: what it does.
+const TO_MINIMAL: &str = SWITCH_TO_MINIMAL;
+const TO_FULL: &str = SWITCH_TO_FULL;
+
+/// Click the interface's switch, as it is named in the interface in use.
+fn click_switch(app: &mut App, ctx: &egui::Context) {
+    let name = if app.settings.minimal {
+        TO_FULL
+    } else {
+        TO_MINIMAL
+    };
+    click_named(app, ctx, name);
+}
+
+/// Which interface the switch says it goes to: Some(true) for Minimal.
+fn goes_to_minimal(tree: &egui::accesskit::TreeUpdate) -> Option<bool> {
+    match (node(tree, TO_MINIMAL), node(tree, TO_FULL)) {
+        (Some(_), None) => Some(true),
+        (None, Some(_)) => Some(false),
+        _ => None,
+    }
+}
 
 /// An app with no document, its settings kept in `file`.
 fn kept_app(file: &Path) -> App {
@@ -96,7 +117,7 @@ fn the_interface_is_one_setting_kept_both_ways() {
     let file = test_dir("minimal-kept").join("settings.txt");
     let mut app = kept_app(&file);
     let tree = settle(&mut app, &ctx);
-    assert_eq!(ticked(&tree, SWITCH), Some(false), "Full first");
+    assert_eq!(goes_to_minimal(&tree), Some(true), "Full first");
     assert!(node(&tree, "Open PDF…").is_some(), "the start screen");
     let view = |app: &App, ctx: &egui::Context| {
         let a = actions::get(Act::ToggleMinimal);
@@ -105,42 +126,46 @@ fn the_interface_is_one_setting_kept_both_ways() {
     assert!(!view(&app, &ctx));
     assert_eq!(
         menu::path(Act::ToggleMinimal).unwrap(),
-        ["View", "Show", SWITCH]
+        ["View", "Show", "Minimal interface"]
     );
     let a = actions::get(Act::ToggleMinimal);
     assert!(a.palette, "the command search");
 
-    // The switch, on the start screen.
-    click_named(&mut app, &ctx, SWITCH);
+    // The switch, on the start screen, in the tab strip above the commands.
+    let (switch, _) = node(&tree, TO_MINIMAL).unwrap();
+    let (file_menu, _) = node(&tree, "File").unwrap();
+    assert!(switch.bottom() <= file_menu.top(), "{switch:?} not above");
+    click_switch(&mut app, &ctx);
     let tree = settle(&mut app, &ctx);
     assert!(app.settings.minimal && view(&app, &ctx));
-    assert_eq!(ticked(&tree, SWITCH), Some(true));
+    assert_eq!(goes_to_minimal(&tree), Some(false));
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("interface = minimal\n"), "{text}");
 
     // Restored at start, before any document opens.
     let mut again = kept_app(&file);
     let tree = settle(&mut again, &ctx);
-    assert_eq!(ticked(&tree, SWITCH), Some(true), "not restored");
+    assert_eq!(goes_to_minimal(&tree), Some(false), "not restored");
     assert!(node(&tree, "Navigation panel").is_some(), "Minimal's row");
 
     // Ctrl+F1, as Word folds its ribbon away, back to Full; kept so too.
     window(&mut again, &ctx, 1400.0, vec![key_with(Key::F1, CTRL)]);
     let tree = settle(&mut again, &ctx);
     assert!(!again.settings.minimal, "Ctrl+F1");
-    assert_eq!(ticked(&tree, SWITCH), Some(false));
+    assert_eq!(goes_to_minimal(&tree), Some(true));
     let mut third = kept_app(&file);
     let tree = settle(&mut third, &ctx);
-    assert_eq!(ticked(&tree, SWITCH), Some(false), "Full restored");
+    assert_eq!(goes_to_minimal(&tree), Some(true), "Full restored");
     // And View's choice, as the menus and the command search run it.
     third.act(&ctx, Act::ToggleMinimal);
     assert!(third.settings.minimal && view(&third, &ctx));
 }
 
 /// Minimal's one row: the File menu, the navigation panel, Open, Save, Undo and Redo, then
-/// Find, the inspector, Print and the switch at the right end, with no band's names and no
-/// band; Full's row is as it was, the switch at its end. The status bar has the page
-/// layout and Fit width beside the zoom in Minimal, and no Show planned features.
+/// Find, the inspector and Print, with no band's names and no band; Full's row is as it
+/// was. The switch is at the tab strip's right end in both, above Print, labelled with what
+/// it does. The status bar has the page layout and Fit width beside the zoom in Minimal, and
+/// no Show planned features.
 #[test]
 fn minimal_has_one_row_and_full_keeps_its_band() {
     let ctx = egui::Context::default();
@@ -153,8 +178,18 @@ fn minimal_has_one_row_and_full_keeps_its_band() {
     assert!(node(&tree, "Show planned features").is_some());
     let layout = node(&tree, "Page layout");
     assert!(layout.is_none(), "Full's status bar as approved");
-    let full = row(&settled_at(&mut app, &ctx, 1400.0));
-    assert_eq!(names(&full).last(), Some(&SWITCH), "{:?}", names(&full));
+    let full = row(&tree);
+    assert_eq!(names(&full).last(), Some(&"Compact commands"), "{full:?}");
+    let in_strip = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+        let (switch, _) = node(tree, name).expect(name);
+        let (tab, _) = node(tree, "Untitled, unsaved").expect("the tab");
+        let (print, _) = node(tree, "Print").expect("Print");
+        let level = (switch.center().y - tab.center().y).abs() < 6.0;
+        assert!(level && switch.right() > 1350.0, "{name}: {switch:?}");
+        assert!(switch.bottom() <= print.top(), "{name}: not above Print");
+        assert!(tab.right() <= switch.left(), "{name}: over the tab");
+    };
+    in_strip(&tree, TO_MINIMAL);
 
     app.act(&ctx, Act::ToggleMinimal);
     let tree = settled_at(&mut app, &ctx, 1400.0);
@@ -175,14 +210,12 @@ fn minimal_has_one_row_and_full_keeps_its_band() {
         "Find",
         "Inspector",
         "Print",
-        SWITCH,
     ];
     assert_eq!(names(&minimal), want);
     for pair in minimal.windows(2) {
         assert!(pair[0].1.right() <= pair[1].1.left(), "{pair:?} overlap");
     }
-    let end = minimal.last().unwrap().1.right();
-    assert!(end > 1350.0, "the switch at the end");
+    in_strip(&tree, TO_FULL);
     // The panels' buttons say whether their panel shows.
     assert_eq!(ticked(&tree, "Navigation panel"), Some(true));
     assert_eq!(ticked(&tree, "Inspector"), Some(true));
@@ -208,11 +241,12 @@ fn minimal_has_one_row_and_full_keeps_its_band() {
     assert_eq!(app.tabs[0].layout, Layout::Facing, "the page layout");
 
     // Back to Full: its row and status bar as they were.
-    click_named(&mut app, &ctx, SWITCH);
+    click_switch(&mut app, &ctx);
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert!(band_shown(&tree) && node(&tree, "Show planned features").is_some());
     let back = row(&tree);
     assert_eq!(names(&back), names(&full));
+    in_strip(&tree, TO_MINIMAL);
 }
 
 /// Compact commands is the Full interface's: greyed in Minimal, saying why, on the start
@@ -290,7 +324,7 @@ fn a_switch_keeps_every_tab_as_it_was() {
     let before = tabs_now(&app);
     assert!(app.tabs[3].unsaved() && !app.tabs[0].unsaved());
     for (i, way) in ["to Minimal", "back to Full"].into_iter().enumerate() {
-        click_named(&mut app, &ctx, SWITCH);
+        click_switch(&mut app, &ctx);
         settled_at(&mut app, &ctx, 1400.0);
         assert_eq!(app.settings.minimal, i == 0, "{way}");
         assert_eq!(app.active, 3, "{way}: the tab in front");
@@ -361,9 +395,13 @@ fn minimal_has_full_s_tab_strip() {
         let name = format!("/nonexistent/Quarterly report {i}.pdf");
         app.tabs.last_mut().unwrap().path = Some(PathBuf::from(name));
     }
+    let size = egui::vec2(1000.0, 660.0);
+    let full = tabs(&drawn(&mut app, &ctx, size, vec![]));
     app.act(&ctx, Act::ToggleMinimal);
-    let tree = drawn(&mut app, &ctx, egui::vec2(1000.0, 660.0), vec![]);
+    let tree = drawn(&mut app, &ctx, size, vec![]);
     assert!(node(&tree, "All open documents").is_some(), "many tabs");
+    // The switch is as wide saying Full as Minimal: the tabs don't move.
+    assert_eq!(tabs(&tree), full, "the tabs moved with the switch");
 }
 
 /// The line and the paragraph being edited stay open with the keyboard through a switch by
@@ -392,7 +430,7 @@ fn a_switch_leaves_the_typing_open_with_the_keyboard() {
                 true => {
                     window(&mut app, &ctx, 1400.0, vec![key_with(Key::F1, CTRL)]);
                 }
-                false => click_named(&mut app, &ctx, SWITCH),
+                false => click_switch(&mut app, &ctx),
             }
             let tree = settled_at(&mut app, &ctx, 1400.0);
             let case = format!("{said}, {how}");
@@ -464,7 +502,7 @@ fn a_switch_leaves_new_text_open() {
             "Ctrl+F1" => {
                 window(&mut app, &ctx, 1400.0, vec![key_with(Key::F1, CTRL)]);
             }
-            _ => click_named(&mut app, &ctx, SWITCH),
+            _ => click_switch(&mut app, &ctx),
         }
         settled_at(&mut app, &ctx, 1400.0);
         let adding = app.tabs[0].ed.adding.is_some();
@@ -489,7 +527,7 @@ fn a_switch_keeps_the_tool_and_its_pins() {
         app.act(&ctx, Act::Tool(Tool::Note));
         settled_at(&mut app, &ctx, 1400.0);
         for _ in 0..2 {
-            click_named(&mut app, &ctx, SWITCH);
+            click_switch(&mut app, &ctx);
             settled_at(&mut app, &ctx, 1400.0);
             assert_eq!(app.tabs[0].ed.tool, Tool::Note, "pinned {pinned}");
             assert_eq!(app.settings.keep_tools.contains(&Tool::Note), pinned);
@@ -535,13 +573,13 @@ fn the_keyboard_never_stays_on_a_control_gone() {
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert!(app.settings.minimal);
     let on = focused_name(&ctx, &tree);
-    assert_eq!(on.as_deref(), Some(SWITCH), "not on the switch");
+    assert_eq!(on.as_deref(), Some(TO_FULL), "not on the switch");
     let space = key_with(Key::Space, egui::Modifiers::NONE);
     window(&mut app, &ctx, 1400.0, vec![space]);
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert!(!app.settings.minimal, "Space on the switch");
     let on = focused_name(&ctx, &tree);
-    assert_eq!(on.as_deref(), Some(SWITCH), "the switch let go");
+    assert_eq!(on.as_deref(), Some(TO_MINIMAL), "the switch let go");
 }
 
 /// F6 and Shift+F6 go round Minimal's regions as Full's: the inspector, the status bar, the
@@ -579,8 +617,8 @@ fn f6_goes_round_minimal_s_regions() {
 }
 
 /// Minimal's row at 1000, 760 and 520 points wide, and under 600 high: nothing overlaps or
-/// leaves the window, and the File menu and the switch are there; under 560 points Find and
-/// Print give their labels up for their icons.
+/// leaves the window, and the File menu is there, the switch at the tab strip's end, clear
+/// of the tab; under 560 points Find and Print give their labels up for their icons.
 #[test]
 fn minimal_s_row_fits_narrow_and_short_windows() {
     let ctx = egui::Context::default();
@@ -596,15 +634,18 @@ fn minimal_s_row_fits_narrow_and_short_windows() {
         let tree = drawn(&mut app, &ctx, size, vec![]);
         let r = row(&tree);
         let n = names(&r);
-        let both = n.contains(&"File") && n.contains(&SWITCH);
-        assert!(both, "{n:?} at {size:?}");
-        assert_eq!(n.len(), 10, "{n:?} at {size:?}");
+        assert_eq!(n.first(), Some(&"File"), "{n:?} at {size:?}");
+        assert_eq!(n.len(), 9, "{n:?} at {size:?}");
         for pair in r.windows(2) {
             let apart = pair[0].1.right() <= pair[1].1.left();
             assert!(apart, "{pair:?} at {size:?}");
         }
         let inside = |b: &egui::Rect| b.left() >= 0.0 && b.right() <= size.x;
         assert!(r.iter().all(|(_, b)| inside(b)), "{r:?} at {size:?}");
+        let (switch, _) = node(&tree, TO_FULL).expect("the switch");
+        let (tab, _) = node(&tree, "Untitled, unsaved").expect("the tab");
+        let clear = inside(&switch) && tab.right() <= switch.left();
+        assert!(clear, "{switch:?} at {size:?}");
         let (find, _) = node(&tree, "Find").unwrap();
         let label = find.width() > 40.0;
         assert_eq!(label, size.x >= 560.0, "Find's label at {size:?}");
@@ -622,7 +663,7 @@ fn settings_has_the_interface() {
     app.act(&ctx, Act::Settings);
     let size = egui::vec2(1000.0, 800.0);
     let tree = dialog_frame(&mut app, &ctx, size, 1.0, vec![]);
-    assert_eq!(ticked(&tree, SWITCH), Some(false));
+    assert_eq!(ticked(&tree, "Minimal interface"), Some(false));
     let Dialog::Settings(p) = &mut app.dialog else {
         panic!("Settings isn't open");
     };
@@ -645,10 +686,12 @@ fn an_unsaved_choice_is_said_and_still_holds() {
     // A file where the settings folder would be.
     std::fs::write(dir.join("blocker"), "a file, not a folder").unwrap();
     let mut app = kept_app(&dir.join("blocker").join("settings.txt"));
-    click_named(&mut app, &ctx, SWITCH);
-    let tree = settle(&mut app, &ctx);
+    click_switch(&mut app, &ctx);
+    settle(&mut app, &ctx);
     let (title, _) = message(&app);
     assert_eq!(title, "Settings not saved");
     assert!(app.settings.minimal);
-    assert_eq!(ticked(&tree, SWITCH), Some(true));
+    app.dialog = Dialog::None;
+    let tree = settle(&mut app, &ctx);
+    assert_eq!(goes_to_minimal(&tree), Some(false), "not Minimal now");
 }
