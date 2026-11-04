@@ -68,6 +68,8 @@ winresource = { version = "0.1.34", default-features = false }
 [dev-dependencies]
 # Tests build documents with form fields; already used by limarepdf-core.
 lopdf.workspace = true
+# Tests only: a folder sync that fails, for "saved, not confirmed" (REL-10).
+limarepdf-core = { path = "../limarepdf-core", features = ["test-seams"] }
 
 # Linux packages, built in CI with cargo-deb and cargo-generate-rpm after the release build.
 # Both hold limarepdf and the limarepdf-cli command, the desktop entry, the icon, the README,

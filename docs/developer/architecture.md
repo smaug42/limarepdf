@@ -1219,7 +1219,11 @@ user on Unix while written, synced, then renamed over the target, and on Unix th
 so a power cut can't undo it. When only that folder sync fails, the error is a `NotConfirmed`, a third outcome apart
 from saved and failed: the app and the CLI treat the file as the new one and warn that it may need saving again (the
 app keeps the document marked unsaved, and its recovery copy). A file system that can't sync folders at all counts as
-synced. Writes of LimarePDF's own files say what happened too (BUG-14): `IdStore::create` and `import` return a
+synced. Tests reach this outcome through `atomic::sync_seam` (REL-10): folder syncs fail, on every thread, for files
+in folders a test registers (`fail_in`, `stop_failing_in`) or in the one `LIMAREPDF_TEST_SYNC_FAILS` names (for the
+CLI, run as a separate program). It is built for core's own tests and, through core's `test-seams` feature, only
+for the app's and the CLI's: their dev-dependencies turn the feature on, so `cargo build --release` never has it,
+and CI's "No test seam" steps check the release programs for the variable's name. Writes of LimarePDF's own files say what happened too (BUG-14): `IdStore::create` and `import` return a
 `Stored` (the ID and warnings) once the ID's file is written, so a default that can't be noted, or a sync not
 confirmed, is a warning, never a failure that a second try would repeat; `IdStore::remove` returns its warnings;
 the app's ID window shows them (`Said::Warning`), the CLI prints `warning:` lines and succeeds, and the trust list,

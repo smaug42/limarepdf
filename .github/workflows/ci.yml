@@ -95,6 +95,17 @@ jobs:
         run: cargo test --workspace --profile ci-test --locked
       - name: Build
         run: cargo build --workspace --release --locked
+      # Core's test seam (REL-10, the `test-seams` feature) is for tests only: the programs
+      # released must not have it. Its variable's name is in every program built with it.
+      - name: No test seam
+        shell: bash
+        run: |
+          ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          for bin in limarepdf limarepdf-cli; do
+            if grep -q LIMAREPDF_TEST_SYNC_FAILS "target/release/$bin$ext"; then
+              echo "::error::target/release/$bin$ext was built with the test seam"; exit 1
+            fi
+          done
       # One archive per platform, made here because artifacts lose Unix file permissions:
       # a folder limarepdf-<version>-<platform> holding the binaries, the docs and the licences.
       - name: Package
@@ -245,6 +256,14 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build
         run: cargo build --workspace --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+      # As in the build job: no test seam in the programs released.
+      - name: No test seam
+        run: |
+          for bin in target/*-apple-darwin/release/limarepdf target/*-apple-darwin/release/limarepdf-cli; do
+            if grep -q LIMAREPDF_TEST_SYNC_FAILS "$bin"; then
+              echo "::error::$bin was built with the test seam"; exit 1
+            fi
+          done
       - name: Make the dmg
         run: bash packaging/macos/make-dmg.sh dist
       # The app as it comes out of the dmg: its files and their links, and macOS 11 as the oldest

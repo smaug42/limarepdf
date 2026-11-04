@@ -107,6 +107,10 @@ check; uninstalling; the desktop shortcut asked for, kept by an upgrade and remo
 `DESKTOPSHORTCUT=0`; and uninstalling again, leaving nothing. The screens themselves are only checked by hand
 (testing.md's platform smoke checks).
 
+After the release build, the platform jobs and `macos-dmg` check that neither program has core's test seam (the
+`test-seams` feature, which only the app's and the CLI's tests turn on: architecture.md's "atomic.rs" paragraph),
+by looking for its variable's name, `LIMAREPDF_TEST_SYNC_FAILS`, in the binaries.
+
 The `deny` job runs `cargo deny check` with `deny.toml` on every crate in `Cargo.lock`, for every platform: known
 advisories (RustSec; those set aside are listed in `deny.toml` with their reasons), licences (an allow list matching
 what the packages carry; a new licence fails until it is looked at), crates from crates.io only, and two versions of
