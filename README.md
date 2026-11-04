@@ -32,3 +32,8 @@ Then go to the [everyday tasks](docs/README.md#everyday-tasks), the [desktop app
 - [Ideas pool](docs/developer/ideas.md)
 
 **[Changelog](CHANGELOG.md)** · **[Licence](docs/licence.md)** · **[Reporting a security problem](SECURITY.md)**
+
+## Support
+
+LimarePDF is free and always will be. If it's useful to you, you can support its development on
+[Patreon](https://www.patreon.com/smaug42) or [Buy Me a Coffee](https://buymeacoffee.com/smaug42).

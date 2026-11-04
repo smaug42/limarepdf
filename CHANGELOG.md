@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- The About window has a Support LimarePDF line under its other links, with **Patreon** and **Buy Me a
+  Coffee**, which open LimarePDF's pages there in your browser; the GitHub page has a Sponsor button for them.
+
 ## [0.13.0] - 2026-11-03
 
 ### Added

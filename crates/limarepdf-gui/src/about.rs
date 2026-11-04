@@ -8,6 +8,11 @@ use eframe::egui::{self, Align, Context, Layout, TextureHandle, TextureOptions, 
 const WEBSITE: &str = "https://github.com/smaug42/limarepdf";
 const LICENCE: &str = "https://github.com/smaug42/limarepdf/blob/main/docs/licence.md";
 pub const ISSUES: &str = "https://github.com/smaug42/limarepdf/issues";
+/// The pages for supporting LimarePDF, a line of their own under the links.
+const SUPPORT: [(&str, &str); 2] = [
+    ("Patreon", "https://www.patreon.com/smaug42"),
+    ("Buy Me a Coffee", "https://buymeacoffee.com/smaug42"),
+];
 /// The user guide's home page (Help > User guide).
 pub const GUIDE: &str = "https://github.com/smaug42/limarepdf/blob/main/docs/README.md";
 
@@ -198,6 +203,19 @@ fn main_page(ui: &mut Ui, page: &mut Page) {
     } else {
         row(ui, "about-links", &links);
     }
+    ui.add_space(4.0);
+    centred_row(ui, "about-support", |ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label("Support LimarePDF:");
+        for (i, (text, url)) in SUPPORT.into_iter().enumerate() {
+            if i > 0 {
+                ui.weak("·");
+            }
+            if ui.link(text).on_hover_text(url).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            }
+        }
+    });
     ui.add_space(8.0);
     ui.separator();
     ui.with_layout(Layout::top_down(Align::Min), credits);
@@ -279,7 +297,8 @@ mod tests {
     }
 
     /// The links are one row inside the card in a window of usual size, and two in a narrow
-    /// one, also when short (where the scroll bar takes room), each row inside the card.
+    /// one, also when short (where the scroll bar takes room), each row inside the card; the
+    /// Support line's links are inside it too, under them.
     #[test]
     fn the_links_fit_on_one_row_or_two() {
         let mut page = Page::Main;
@@ -306,13 +325,18 @@ mod tests {
             };
             // Inside the card's content, its margins kept.
             let content = window.shrink2(egui::vec2(16.0, 0.0));
-            for link in ["Website", "Licence", "Contributors", "Report a problem"] {
+            let links = ["Website", "Licence", "Contributors", "Report a problem"];
+            for link in links.into_iter().chain(SUPPORT.map(|(text, _)| text)) {
                 let r = at(link);
                 let inside = r.left() >= content.left() - 0.5 && r.right() <= content.right() + 0.5;
                 assert!(inside, "{size:?}: {link} at {r:?} in {window:?}");
             }
             let same = (at("Website").top() - at("Report a problem").top()).abs() < 1.0;
             assert_eq!(if same { 1 } else { 2 }, rows, "{size:?}");
+            for (text, _) in SUPPORT {
+                let under = at(text).top() >= at("Report a problem").bottom();
+                assert!(under, "{size:?}: {text} isn't under the links");
+            }
         }
     }
 
