@@ -692,10 +692,10 @@ top-left of the screen, since the desktop never placed it at its normal size; a 
 
 ☰ > Help > **User guide** opens this guide in your browser, and **Report a problem** the issue tracker.
 ☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),
-links to the website, the licence and the issue tracker, which open in your browser, and Credits for the bundled
-fonts, icons and text recognition model. Contributors switches the window to the people who made LimarePDF; Back
-returns. LimarePDF is made in Canada, which the About window and the foot of the start screen say beside a maple
-leaf.
+links to the website, the licence and the issue tracker, and under them to LimarePDF's Patreon and Buy Me a
+Coffee pages, which open in your browser, and Credits for the bundled fonts, icons and text recognition model. Contributors switches the window
+to the people who made LimarePDF; Back returns. LimarePDF is made in Canada, which the About window and the foot of
+the start screen say beside a maple leaf.
 
 ---
 
