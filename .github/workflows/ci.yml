@@ -45,6 +45,35 @@ jobs:
           cargo install cargo-deny --locked --version 0.20.2
           cargo deny --locked check
 
+  # Formatting, and clippy with warnings refused, on every target (tests and examples too),
+  # for the code of all three platforms. Clippy checks without linking, so one Linux runner
+  # covers Windows (the GNU target: LimarePDF's code has no cfg on the toolchain kind) and the
+  # Macs (one target: no cfg on the architecture), without waiting for scarce Mac runners.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rustfmt
+          targets: x86_64-pc-windows-gnu, aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Formatting
+        run: cargo fmt --all --check
+      # Each platform in turn, all of them reported even when one fails.
+      - name: Clippy
+        run: |
+          failed=""
+          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu aarch64-apple-darwin; do
+            echo "::group::clippy $target"
+            cargo clippy --workspace --all-targets --locked --target "$target" -- -D warnings \
+              || failed="$failed $target"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::clippy found problems on:$failed"; exit 1
+          fi
+
   build:
     strategy:
       fail-fast: false

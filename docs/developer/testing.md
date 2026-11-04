@@ -18,11 +18,12 @@ it against the rpm's requirement), macOS 11 from both halves of the dmg's (the d
 
 Run them with `cargo test --workspace`.
 
-CI runs the tests but not the formatting check or clippy, so run those before a change goes in: `cargo fmt --all
---check` and `cargo clippy --workspace --all-targets -- -D warnings`; for code that differs by platform (printing,
-recovery, file replacement, opening files, the build), also `cargo clippy -p limarepdf-core -p limarepdf-gui
---all-targets --target <target> -- -D warnings` for `x86_64-pc-windows-gnu`, `aarch64-apple-darwin` and
-`x86_64-apple-darwin` (type-checked only: nothing is linked). `--all-targets` takes in the tests, whose
+CI's `lint` job runs the formatting check and clippy on every change, for Linux, Windows and the Macs
+([releasing](releasing.md#what-ci-builds)); run them before a change goes in too, to save a round trip: `cargo fmt
+--all --check` and `cargo clippy --workspace --all-targets -- -D warnings`; for code that differs by platform
+(printing, recovery, file replacement, opening files, the build), also `cargo clippy --workspace --all-targets
+--target <target> -- -D warnings` for `x86_64-pc-windows-gnu` and `aarch64-apple-darwin` (type-checked only:
+nothing is linked). `--all-targets` takes in the tests, whose
 Unix-only parts have hidden Windows warnings before (core's `print.rs` helper and an unneeded `mut`, fixed
 2026-10-25).
 

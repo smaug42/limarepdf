@@ -113,6 +113,15 @@ what the packages carry; a new licence fails until it is looked at), crates from
 one crate (reported, not refused). The workspace's crates are `publish = false`, which lets them use each other by
 path.
 
+The `lint` job runs `cargo fmt --all --check`, then `cargo clippy --workspace --all-targets --locked -- -D warnings`
+for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-gnu` and `aarch64-apple-darwin` in turn, reporting every
+platform that fails. Clippy checks without linking, so one Linux runner covers the code of all three; the Windows GNU
+target lints the same code as the MSVC build, since LimarePDF's code has no `cfg` on the toolchain kind, and one Mac
+target is enough while none is on the architecture (a `target_env` or `target_arch` check added to LimarePDF's code
+means adding that target here). The same commands run locally once the two targets are added with `rustup target
+add`. Clippy comes with the stable toolchain, so a new Rust release can bring new lints: fix them in their own
+change. The release job doesn't wait for it, since a lint doesn't change what is built; pull requests show it.
+
 The `release` job writes `SHA256SUMS`, signs it and every file with the signing subkey (below), checks each signature
 against `docs/limarepdf-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which
 users check with `gh attestation verify`.
