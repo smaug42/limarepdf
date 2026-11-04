@@ -1347,9 +1347,14 @@ fn look_layout(compact: bool) -> egui::Layout {
     }
 }
 
-/// The font list, as wide as the Font group's first row leaves room for.
+/// The font list, as wide as the Font group's first row leaves room for: narrower where the
+/// row is (Minimal's inspector, ENH-45), leaving the size box and its list their room, so
+/// the panel keeps its width.
 fn font_field(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> bool) -> bool {
-    let size = egui::vec2(136.0, ui.spacing().interact_size.y);
+    // The size box, its list's button and the gaps between.
+    let room = ui.available_width() - 84.0;
+    let width = if room < 136.0 { room.max(80.0) } else { 136.0 };
+    let size = egui::vec2(width, ui.spacing().interact_size.y);
     ui.allocate_ui(size, add).inner
 }
 
@@ -5741,6 +5746,24 @@ impl Editor {
     /// floating bar act in it.
     pub fn editing_line(&self) -> bool {
         self.line_edit.is_some() || self.para.is_some()
+    }
+
+    /// Text is what the Font group changes now ([`Self::font_band`]): new text being typed,
+    /// or the Text tool's next; words selected, or the lines among objects selected; a line
+    /// or paragraph being edited, or a line selected. Minimal's inspector shows the group
+    /// then (ENH-45).
+    pub fn text_targeted(&self) -> bool {
+        if self.adding_text() || self.editing_line() {
+            return true;
+        }
+        if self.chosen_now().is_some_and(Chosen::restylable) {
+            return true;
+        }
+        let line = |(page, id): (usize, usize)| {
+            let o = self.objs.get(&page).and_then(|objs| objs.get(id));
+            o.is_some_and(|o| o.kind == ObjectKind::Text && !o.hidden)
+        };
+        self.selection.object().is_some_and(line)
     }
 
     /// Where the line or paragraph being edited on `page` was drawn last on the screen, as

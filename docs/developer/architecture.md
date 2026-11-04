@@ -1830,7 +1830,7 @@ a folded group being a menu button with its name holding its controls. `Parts::c
 gives the row's height). Tests: `band`'s own (every button a registered command; every command placed in a band, the
 File menu, a right-click menu or a key; planned items named for plan items; folding), and the app's band tests.
 
-The Minimal interface (ENH-45, build plan 4.4; stage 2 built) is the same commands panel drawn another way, not a
+The Minimal interface (ENH-45, build plan 4.4; stages 2 and 3 built) is the same commands panel drawn another way, not a
 second shell: `Settings::minimal` (settings.txt `interface = minimal`, any other value Full), `Act::ToggleMinimal`
 (View > Show, Ctrl+F1, ⌘⌥R on a Mac) and `Ctx::minimal`. With it `App::ui` draws the row alone: `quick` adds
 `ToggleSide` after ☰ and `Find` and `ToggleInspector` before Print (pressed while their panel shows, from the
@@ -1849,6 +1849,31 @@ Show planned features and adds `view_choices` (the page layout's menu and Fit wi
 the interface: the tabs, panels (`navigation_panel`, `inspector_panel`, `panel_widths`), docking and pins are one set
 for both. `actions::why_not` says `FULL_ONLY` for Compact commands in Minimal before its document check, so the
 start screen says it too. Tests: `app/tests/minimal.rs`.
+
+Stage 3 adds Tools, the inspector's Font group and More. **Tools** is `band::TOOLS`, each band's name with
+`Item`s that are the band's own: the buttons both have are `const` items (`EDIT_TEXT`, `SELECT`, `DRAW`, ...)
+that the band's statics and `TOOLS` share, so they can't drift apart. `band::tools` draws them through `items`
+(which takes a slice of items since then, a group's or one), labelled, in two columns of three bands (one
+column was taller than a laptop's window), in a `ScrollArea` that leaves room for **All commands**, and closes
+itself (`ui.close()`) when a command was pushed. All commands sets `App::open_file_menu`; the next frame opens
+☰'s popup by its id (`App::file_button`, the ☰ button's id kept each frame, `with("popup")`, as
+`Popup::default_response_id` makes it). `tools_button` is a `MenuButton` with
+`PopupCloseBehavior::CloseOnClickOutside`, its rect added to `keep_typing` beside the switch's, so Tools'
+Paragraph switches the line being edited; the other entries end the typing themselves (`Editor::set_tool`).
+egui keeps one popup open at a time: a `MenuButton` inside a popup closes the one it is in. `band::menu_button`
+uses a `SubMenuButton` when `menu::is_in_menu`, for the act-less buttons' menus and `caret`; that also mended
+the carets inside Full's folded groups, which had the same fault. **The inspector's Font group**:
+`Editor::text_targeted` mirrors `font_band`'s branches (new text or the Text tool's next, `Chosen` restylable,
+`editing_line`, a text object selected); with it in Minimal, `inspector_text_look` draws `band::text_look`
+(`font_band` on two rows, then `TEXT_ALIGNS` as `Item::Icons`) under the heading of the panel and of the
+pop-out, in the tab's scope, and the docked `toolbar_items` above the panel drop what it has (`in_text_look`;
+the strip keeps them). Clicks there keep the typing as any click in the inspector does (`insp_rect`).
+`editor::font_field` narrows below its 136 points when the row has less than that and 84 for the size box
+and its list: a resizable egui panel takes the width its content needs, so a fixed field widened the
+inspector, a few points each frame. **More**: `more_folded` counts how many of `MORE_ORDER` (the panels'
+buttons, which their strips repeat, then Print, Find, Redo, Undo, Save, Open) go under `more_button` for the
+row's width and Tools' last width (`App::tools_width`), each button 30 points and the dividers 26; ☰ and
+Tools always show. More's menu lists the folded commands in `ROW_ORDER` through `menu_item`.
 
 Edit's Font group is `Editor::font_band`, which moved the text look controls out of the inspector: the same
 `styles_ui` acts on new text being typed (`PageText`, with `page_text::held`'s selection, `refocus` after a change),

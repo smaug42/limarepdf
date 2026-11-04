@@ -287,6 +287,95 @@ const YOUR_AI: Planned = Planned {
     what: "Connect an AI of your own to ask about the document. Off unless you connect it.",
 };
 
+// The buttons both the band and Minimal's Tools have ([`TOOLS`]), defined once so that
+// they look and act alike in both.
+const EDIT_TEXT: Item = b(Act::EditObjectText, "Edit text", icon::CURSOR_TEXT);
+const SELECT: Item = menu(
+    "Select",
+    icon::CURSOR,
+    &[
+        Act::Tool(Tool::Read),
+        Act::Tool(Tool::Select),
+        Act::SelectAllText,
+        Act::SelectAllObjects,
+        Act::SelectAllPages,
+    ],
+);
+const PARAGRAPH: Item = b(Act::EditParagraph, "Paragraph", icon::PARAGRAPH);
+// Word's tooltip for its Align, and LibreOffice's name: not read as aligning text.
+const ALIGN_OBJECTS: Item = menu("Align objects", icon::ALIGN_LEFT, &ALIGN_MENU);
+const TEXT: Item = b(Act::Tool(Tool::Text), "Text", icon::TEXT_T);
+const IMAGE: Item = b(Act::Tool(Tool::Image), "Image", icon::IMAGE);
+const NOTE: Item = b(Act::Tool(Tool::Note), "Note", icon::NOTE);
+const COMMENTS: Item = split(
+    Act::Comments,
+    "Comments",
+    icon::CHAT_TEXT,
+    &[Act::CommentName],
+);
+const TEXT_BOX: Item = b(Act::Tool(Tool::TextBox), "Text box", icon::TEXTBOX);
+const DRAW: Item = split(
+    Act::Tool(Tool::Pen),
+    "Draw",
+    icon::PENCIL_SIMPLE,
+    &[
+        Act::Tool(Tool::Pen),
+        Act::Tool(Tool::Rect),
+        Act::Tool(Tool::Ellipse),
+        Act::Tool(Tool::Line),
+    ],
+);
+const STAMP: Item = b(Act::Tool(Tool::Stamp), "Stamp", icon::STAMP);
+const ROTATE: Item = split(
+    Act::RotR,
+    "Rotate",
+    icon::ARROW_CLOCKWISE,
+    &[Act::RotR, Act::RotL],
+);
+const INSERT_PAGES: Item = menu(
+    "Insert pages",
+    icon::FILE_PLUS,
+    &[Act::Blank, Act::InsertImages, Act::InsertPdf, Act::Merge],
+);
+const MOVE: Item = menu("Move", icon::ARROWS_OUT_CARDINAL, &actions::MOVES);
+const ORGANISE: Item = b(Act::Organise, "Organise", icon::SQUARES_FOUR);
+const FILL_FIELDS: Item = split(
+    Act::NextField,
+    "Fill fields",
+    icon::LIST_CHECKS,
+    &[
+        Act::NextField,
+        Act::PrevField,
+        Act::ToggleFields,
+        Act::ClearField,
+        Act::ResetForm,
+        Act::FlattenForm,
+    ],
+);
+const DIGITAL_SIGNATURE: Item = menu(
+    "Digital signature",
+    icon::SEAL_CHECK,
+    &[
+        Act::SignDigital,
+        Act::Certify,
+        Act::Signatures,
+        Act::DigitalIds,
+        Act::TrustedCertificates,
+    ],
+);
+const MARK_REDACTION: Item = split(
+    Act::Tool(Tool::Redact),
+    "Mark redaction",
+    icon::SELECTION,
+    &[
+        Act::Tool(Tool::Redact),
+        Act::MarkRedact,
+        Act::MarkResultsRedact,
+    ],
+);
+const APPLY_REDACTIONS: Item = b(Act::ApplyRedactions, "Apply redactions…", icon::ERASER);
+const PASSWORDS: Item = b(Act::Security, "Passwords", icon::KEY);
+
 static EDIT: &[Group] = &[
     group(
         "Clipboard",
@@ -302,41 +391,18 @@ static EDIT: &[Group] = &[
     group(
         "Editing",
         &[
-            b(Act::EditObjectText, "Edit text", icon::CURSOR_TEXT),
+            EDIT_TEXT,
             b(Act::Find, "Find", icon::MAGNIFYING_GLASS),
             b(Act::Replace, "Replace", icon::SWAP),
-            menu(
-                "Select",
-                icon::CURSOR,
-                &[
-                    Act::Tool(Tool::Read),
-                    Act::Tool(Tool::Select),
-                    Act::SelectAllText,
-                    Act::SelectAllObjects,
-                    Act::SelectAllPages,
-                ],
-            ),
+            SELECT,
         ],
     ),
-    group(
-        "Text flow",
-        &[b(Act::EditParagraph, "Paragraph", icon::PARAGRAPH)],
-    ),
-    // Word's tooltip for its Align, and LibreOffice's name: not read as aligning text.
-    group(
-        "Arrange",
-        &[menu("Align objects", icon::ALIGN_LEFT, &ALIGN_MENU)],
-    ),
+    group("Text flow", &[PARAGRAPH]),
+    group("Arrange", &[ALIGN_OBJECTS]),
 ];
 
 static INSERT: &[Group] = &[
-    group(
-        "Content",
-        &[
-            b(Act::Tool(Tool::Text), "Text", icon::TEXT_T),
-            b(Act::Tool(Tool::Image), "Image", icon::IMAGE),
-        ],
-    ),
+    group("Content", &[TEXT, IMAGE]),
     group(
         "Page marks",
         &[
@@ -359,37 +425,14 @@ static REVIEW: &[Group] = &[
     group(
         "Comments",
         &[
-            b(Act::Tool(Tool::Note), "Note", icon::NOTE),
-            split(
-                Act::Comments,
-                "Comments",
-                icon::CHAT_TEXT,
-                &[Act::CommentName],
-            ),
+            NOTE,
+            COMMENTS,
             // As Word's Review band has them, beside the comments.
             b(Act::PrevComment, "Previous", icon::CARET_UP),
             b(Act::NextComment, "Next", icon::CARET_DOWN),
         ],
     ),
-    group(
-        "Markup",
-        &[
-            Item::Marks,
-            b(Act::Tool(Tool::TextBox), "Text box", icon::TEXTBOX),
-            split(
-                Act::Tool(Tool::Pen),
-                "Draw",
-                icon::PENCIL_SIMPLE,
-                &[
-                    Act::Tool(Tool::Pen),
-                    Act::Tool(Tool::Rect),
-                    Act::Tool(Tool::Ellipse),
-                    Act::Tool(Tool::Line),
-                ],
-            ),
-            b(Act::Tool(Tool::Stamp), "Stamp", icon::STAMP),
-        ],
-    ),
+    group("Markup", &[Item::Marks, TEXT_BOX, DRAW, STAMP]),
     group("Proofing", &[Item::Spelling]),
     group(
         "Review",
@@ -404,12 +447,7 @@ static PAGES: &[Group] = &[
     group(
         "Page actions",
         &[
-            split(
-                Act::RotR,
-                "Rotate",
-                icon::ARROW_CLOCKWISE,
-                &[Act::RotR, Act::RotL],
-            ),
+            ROTATE,
             b(Act::Extract, "Extract", icon::FILES),
             split(
                 Act::Delete,
@@ -422,14 +460,10 @@ static PAGES: &[Group] = &[
     group(
         "Add and arrange",
         &[
-            menu(
-                "Insert pages",
-                icon::FILE_PLUS,
-                &[Act::Blank, Act::InsertImages, Act::InsertPdf, Act::Merge],
-            ),
-            menu("Move", icon::ARROWS_OUT_CARDINAL, &actions::MOVES),
+            INSERT_PAGES,
+            MOVE,
             b(Act::Split, "Split", icon::SCISSORS),
-            b(Act::Organise, "Organise", icon::SQUARES_FOUR),
+            ORGANISE,
         ],
     ),
     group(
@@ -449,65 +483,37 @@ static PAGES: &[Group] = &[
 ];
 
 static FORMS: &[Group] = &[
-    group(
-        "Complete a form",
-        &[
-            split(
-                Act::NextField,
-                "Fill fields",
-                icon::LIST_CHECKS,
-                &[
-                    Act::NextField,
-                    Act::PrevField,
-                    Act::ToggleFields,
-                    Act::ClearField,
-                    Act::ResetForm,
-                    Act::FlattenForm,
-                ],
-            ),
-            Item::Sign,
-        ],
-    ),
-    group(
-        "Certificate signatures",
-        &[menu(
-            "Digital signature",
-            icon::SEAL_CHECK,
-            &[
-                Act::SignDigital,
-                Act::Certify,
-                Act::Signatures,
-                Act::DigitalIds,
-                Act::TrustedCertificates,
-            ],
-        )],
-    ),
+    group("Complete a form", &[FILL_FIELDS, Item::Sign]),
+    group("Certificate signatures", &[DIGITAL_SIGNATURE]),
     group("Authoring", &[Item::Planned(&CREATE_FIELDS)]),
 ];
 
 static PROTECT: &[Group] = &[
-    group(
-        "Redaction",
-        &[
-            split(
-                Act::Tool(Tool::Redact),
-                "Mark redaction",
-                icon::SELECTION,
-                &[
-                    Act::Tool(Tool::Redact),
-                    Act::MarkRedact,
-                    Act::MarkResultsRedact,
-                ],
-            ),
-            b(Act::ApplyRedactions, "Apply redactions…", icon::ERASER),
-        ],
-    ),
+    group("Redaction", &[MARK_REDACTION, APPLY_REDACTIONS]),
     group(
         "Security",
         &[
-            b(Act::Security, "Passwords", icon::KEY),
+            PASSWORDS,
             b(Act::RemoveHidden, "Remove hidden data", icon::SHIELD_CHECK),
         ],
+    ),
+];
+
+/// Minimal's Tools (ENH-45, stage 1's record): in the band's order, each band's name with
+/// the built commands a task starts from, each the band's own button with its menu. No
+/// planned feature.
+pub static TOOLS: &[(Band, &[Item])] = &[
+    (Band::Edit, &[EDIT_TEXT, PARAGRAPH, SELECT, ALIGN_OBJECTS]),
+    (Band::Insert, &[TEXT, IMAGE]),
+    (
+        Band::Review,
+        &[NOTE, COMMENTS, Item::Marks, TEXT_BOX, DRAW, STAMP],
+    ),
+    (Band::Pages, &[ORGANISE, INSERT_PAGES, ROTATE, MOVE]),
+    (Band::Forms, &[FILL_FIELDS, Item::Sign, DIGITAL_SIGNATURE]),
+    (
+        Band::Protect,
+        &[MARK_REDACTION, APPLY_REDACTIONS, PASSWORDS],
     ),
 ];
 
@@ -818,7 +824,7 @@ fn group_ui(
         ui.allocate_ui_with_layout(row, layout, |ui| {
             ui.set_min_height(height);
             field_look(ui.style_mut());
-            items(ui, g, parts, acts);
+            items(ui, g.items, parts, acts);
         });
         ui.add_space(PAD);
     });
@@ -884,7 +890,7 @@ fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<
             .ui(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    items(ui, g, parts, acts);
+                    items(ui, g.items, parts, acts);
                 });
             });
         r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, g.name));
@@ -896,13 +902,85 @@ fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<
     r.response.rect
 }
 
-/// A group's controls, in a row.
-fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
+/// Minimal's Tools (ENH-45): under each band's name its entries ([`TOOLS`]), one a row,
+/// labelled, each the band's button with its menu, in two columns (Edit, Insert and Review;
+/// Pages, Forms and sign and Protect), so that it fits a laptop's window, scrolling in a
+/// shorter one; All commands at the foot, always shown. Picking one closes it. Returns
+/// whether All commands was picked, for the app to open the File menu.
+pub fn tools(ui: &mut egui::Ui, parts: &mut Parts, acts: &mut Vec<Act>) -> bool {
+    let muted = theme::muted(ui.visuals().dark_mode);
+    let ran = acts.len();
+    field_look(ui.style_mut());
+    // Room below for the list, leaving All commands its row.
+    let room = ui.ctx().content_rect().bottom() - ui.cursor().top() - 60.0;
+    egui::ScrollArea::vertical()
+        .max_height(room.max(120.0))
+        .show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 18.0;
+                for column in TOOLS.chunks(3) {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for (n, (band, list)) in column.iter().enumerate() {
+                            if n > 0 {
+                                ui.add_space(6.0);
+                            }
+                            ui.label(RichText::new(band.name()).size(12.0).color(muted));
+                            for item in *list {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    items(ui, std::slice::from_ref(item), parts, acts);
+                                });
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    ui.separator();
+    let all = egui::Button::new((theme::icon(icon::LIST).size(16.0), "All commands"))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(0.0, BUTTON));
+    let r = ui.add(all);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "All commands"));
+    let all = r
+        .on_hover_text("The File menu: every command, by kind")
+        .clicked();
+    if all || acts.len() > ran {
+        ui.close();
+    }
+    all
+}
+
+/// Minimal's inspector's top while text is the target (ENH-45): Edit's Font group (`font`,
+/// on two rows) and its Alignment group's four buttons, as the band draws them, there being
+/// no band.
+pub fn text_look(ui: &mut egui::Ui, c: &Ctx, font: &mut FontGroup, acts: &mut Vec<Act>) {
+    ui.scope(|ui| {
+        field_look(ui.style_mut());
+        theme::inspector_style(ui.style_mut());
+        font(ui);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let mut none = |_: &mut egui::Ui| {};
+            let mut parts = Parts {
+                c,
+                sign: None,
+                font: &mut none,
+                compact: true,
+            };
+            items(ui, &[Item::Icons(&TEXT_ALIGNS)], &mut parts, acts);
+        });
+    });
+}
+
+/// Controls for `list`, in a row.
+fn items(ui: &mut egui::Ui, list: &[Item], parts: &mut Parts, acts: &mut Vec<Act>) {
     let (c, compact) = (parts.c, parts.compact);
     let button = |ui: &mut egui::Ui, b: &Button, acts: &mut Vec<Act>| {
         button(ui, b, c, acts, compact);
     };
-    for item in g.items {
+    for item in list {
         match item {
             Item::Button(b) => button(ui, b, acts),
             Item::Icons(list) => {
@@ -1003,7 +1081,7 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
         .selected(on)
         .min_size(egui::vec2(0.0, BUTTON));
         ui.add_enabled_ui(enabled, |ui| {
-            let (r, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+            let r = menu_button(ui, button, |ui| {
                 actions::menu_list(ui, b.menu.iter().map(|&a| actions::get(a)), c, acts);
             });
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, b.label));
@@ -1046,9 +1124,24 @@ fn caret(ui: &mut egui::Ui, name: &str, menu: impl FnOnce(&mut egui::Ui)) {
     let more = egui::Button::new(theme::icon(icon::CARET_DOWN).size(10.0))
         .frame_when_inactive(false)
         .min_size(egui::vec2(16.0, BUTTON));
-    let (r, _) = egui::containers::menu::MenuButton::from_button(more).ui(ui, menu);
+    let r = menu_button(ui, more, menu);
     r.on_hover_text(name)
         .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+}
+
+/// `button`, opening `menu`: below it, or beside it as a submenu inside a menu (Minimal's
+/// Tools, a folded group), as the File menu's groups open; a menu of its own there would
+/// close the one it is in, egui keeping one open at a time.
+fn menu_button(
+    ui: &mut egui::Ui,
+    button: egui::Button,
+    menu: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    use egui::containers::menu::{is_in_menu, MenuButton, SubMenuButton};
+    match is_in_menu(ui) {
+        true => SubMenuButton::from_button(button).ui(ui, menu).0,
+        false => MenuButton::from_button(button).ui(ui, menu).0,
+    }
 }
 
 /// Spelling's menu: the language checked among those there are, as Word's Language menu
@@ -1239,6 +1332,150 @@ mod tests {
         assert_eq!(labels.len(), all.len());
     }
 
+    /// One item as a group of its own, for its name and its commands.
+    fn alone(name: &'static str, item: &'static Item) -> Group {
+        Group {
+            name,
+            items: std::slice::from_ref(item),
+        }
+    }
+
+    /// Minimal's Tools (ENH-45) holds stage 1's record's entries, in the band's order, each
+    /// under the band whose button it is, running that button's commands; no planned
+    /// feature.
+    #[test]
+    fn tools_has_its_bands_buttons_and_nothing_planned() {
+        let want: [(Band, &[&str]); 6] = [
+            (
+                Band::Edit,
+                &["Edit text", "Paragraph", "Select", "Align objects"],
+            ),
+            (Band::Insert, &["Text", "Image"]),
+            (
+                Band::Review,
+                &["Note", "Comments", "Highlight", "Text box", "Draw", "Stamp"],
+            ),
+            (Band::Pages, &["Organise", "Insert pages", "Rotate", "Move"]),
+            (
+                Band::Forms,
+                &["Fill fields", "Fill and sign", "Digital signature"],
+            ),
+            (
+                Band::Protect,
+                &["Mark redaction", "Apply redactions…", "Passwords"],
+            ),
+        ];
+        assert_eq!(TOOLS.len(), want.len());
+        for ((band, list), (want_band, want_names)) in TOOLS.iter().zip(want) {
+            assert_eq!(*band, want_band);
+            let names: Vec<String> = list.iter().map(|i| alone("", i).first_name()).collect();
+            assert_eq!(names, want_names, "{}", band.name());
+            for i in *list {
+                assert!(!matches!(i, Item::Planned(_)), "a planned feature in Tools");
+                let mine = alone("", i);
+                let same = (band.groups().iter().flat_map(|g| g.items)).any(|j| {
+                    alone("", j).first_name() == mine.first_name()
+                        && alone("", j).acts() == mine.acts()
+                });
+                assert!(same, "{} isn't {}'s button", mine.first_name(), band.name());
+            }
+        }
+    }
+
+    /// The openings an action takes in Minimal (ENH-45, stage 1's record): none on its row,
+    /// in the status bar beside the zoom or, while text is the target, in the inspector's
+    /// Font and Alignment groups; one for a Tools entry or the page layout's menu, two in a
+    /// Tools entry's menu; in the File menu, one for each menu on its way.
+    fn minimal_openings(act: Act) -> Option<usize> {
+        let row = [
+            Act::ToggleSide,
+            Act::Open,
+            Act::Save,
+            Act::Undo,
+            Act::Redo,
+            Act::Find,
+            Act::ToggleInspector,
+            Act::Print,
+            Act::ToggleMinimal,
+            Act::FitWidth,
+        ];
+        let inspector = matches!(
+            act,
+            Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough | Act::AlignText(_)
+        );
+        if row.contains(&act) || inspector {
+            return Some(0);
+        }
+        let mut fewest = crate::menu::path(act).map(|p| p.len());
+        let mut take = |n: usize| fewest = Some(fewest.map_or(n, |f| f.min(n)));
+        if matches!(act, Act::Layout(_) | Act::ToggleCover) {
+            take(1);
+        }
+        for i in TOOLS.iter().flat_map(|(_, list)| list.iter()) {
+            let n = match i {
+                Item::Button(b) if b.act == Some(act) => 1,
+                Item::Button(b) if b.menu.contains(&act) => 2,
+                Item::Sign if act == Act::Tool(Tool::Sign) => 1,
+                Item::Sign if matches!(act, Act::CreateSign(_) | Act::FinishSigning) => 2,
+                Item::Marks if act == Act::Mark(Mark::Highlight) => 1,
+                Item::Marks if matches!(act, Act::Mark(_)) => 2,
+                _ => continue,
+            };
+            take(n);
+        }
+        fewest
+    }
+
+    /// D6 in Minimal (ENH-45's stage 3 exit): each common action within two openings, by
+    /// its row, Tools, the status bar, the inspector or the File menu.
+    #[test]
+    fn common_actions_are_two_openings_away_in_minimal() {
+        for act in D6 {
+            let n = minimal_openings(act);
+            assert!(n.is_some_and(|n| n <= 2), "{act:?}: {n:?} openings");
+        }
+    }
+
+    /// Every built command of the band is reachable in Minimal (stage 1's standing rule).
+    #[test]
+    fn every_band_command_is_reachable_in_minimal() {
+        for band in Band::ALL {
+            for act in band.acts() {
+                let (n, name) = (minimal_openings(act), band.name());
+                assert!(n.is_some(), "{act:?} ({name}) has no place in Minimal");
+            }
+        }
+    }
+
+    /// D6's common actions (build plan 6.4), as `common_actions_are_two_openings_away_at_most`
+    /// counts them in Full.
+    const D6: [Act; 24] = [
+        Act::EditObjectText,
+        Act::Tool(Tool::Text),
+        Act::Tool(Tool::Image),
+        Act::Tool(Tool::Note),
+        Act::Comments,
+        Act::PrevComment,
+        Act::NextComment,
+        Act::RotR,
+        Act::RotL,
+        Act::Extract,
+        Act::Delete,
+        Act::InsertImages,
+        Act::InsertPdf,
+        Act::Organise,
+        Act::MovePages(PageMove::Earlier),
+        Act::MovePages(PageMove::End),
+        Act::Tool(Tool::Sign),
+        Act::SignDigital,
+        Act::Find,
+        Act::Align(Align::Left),
+        Act::Distribute(Axis::Across),
+        Act::ToggleSnap,
+        Act::AlignText(TextAlign::Centre),
+        Act::AlignText(TextAlign::Justified),
+    ];
+
     /// D6 (build plan 6.4, ENH-37): the band and menu openings each common action takes
     /// from the normal workspace, Edit's band showing: none in Edit's band, one to choose
     /// another band, one more in a button's menu; at most two. (Print, Open, Save, Undo and
@@ -1263,7 +1500,7 @@ mod tests {
             }
             fewest
         };
-        for (act, want) in [
+        let full = [
             (Act::EditObjectText, 0),
             (Act::Tool(Tool::Text), 1),
             (Act::Tool(Tool::Image), 1),
@@ -1288,9 +1525,12 @@ mod tests {
             (Act::ToggleSnap, 1),
             (Act::AlignText(TextAlign::Centre), 0),
             (Act::AlignText(TextAlign::Justified), 0),
-        ] {
+        ];
+        for (act, want) in full {
             assert_eq!(openings(act), Some(want), "{act:?}");
         }
+        // Minimal's twin counts the same actions.
+        assert_eq!(full.map(|(act, _)| act), D6);
         // Align objects' menu has the right-click menu's commands, then Snap.
         assert_eq!(ALIGN_MENU[..8], actions::ALIGNS);
         // The font, size, Bold, Italic and colour: Edit's Font group, showing.

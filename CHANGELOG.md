@@ -237,15 +237,20 @@
 - A picture added or pasted over text is in front of it: clicking or double-clicking it selects the picture
   instead of opening the hidden text underneath, with the read tool and the arrow. A picture put over a form's
   fields says that their answers show above it, as in every PDF reader.
-- **Minimal interface** (being built; first part): one quiet row of commands in place of the commands row and the
-  band. The switch at the right end of the tab strip, above Print, says where it takes you: **Minimal** in the
-  Full interface, **Full** in the Minimal one. View > Show > Minimal interface, Settings, the command search and
-  Ctrl+F1 (as Word folds its ribbon away; ⌘⌥R on a Mac) do the same. Minimal's row has the File menu, the
-  navigation panel, Open, Save, Undo and Redo, then Find, the inspector and Print; its status bar adds the page
-  layout and Fit width beside the zoom. The choice is remembered, Full until Minimal is chosen. Switching changes nothing else: the
-  open documents, the one in front, what is selected, the zoom, Undo and anything being typed stay as they are.
-  Compact commands is for the Full interface and is greyed in Minimal. Still to come: Tools, the font controls in
-  the inspector and a More button for narrow windows; until then Minimal reaches the band's commands through ☰.
+- **Minimal interface** (being built; most of it done): one quiet row of commands in place of the commands row
+  and the band. The switch at the right end of the tab strip, above Print, says where it takes you: **Minimal**
+  in the Full interface, **Full** in the Minimal one. View > Show > Minimal interface, Settings, the command
+  search and Ctrl+F1 (as Word folds its ribbon away; ⌘⌥R on a Mac) do the same. Minimal's row has the File menu,
+  the navigation panel, Open, Save, Undo and Redo, then Find, **Tools**, the inspector and Print; its status bar
+  adds the page layout and Fit width beside the zoom. **Tools** lists the commands a task starts from under the
+  band's names (Edit, Insert, Review, Pages, Forms and sign, Protect), each with its menu as in the band
+  (Highlight's colours, Draw's shapes, your saved signatures), and **All commands** at its foot opens ☰. While
+  text is selected, edited or typed, the inspector's top has the font, size, Bold, Italic, Underline,
+  Strikethrough, colour and the four alignments, as the band's Font group has them. A window too narrow for the
+  row puts the least needed commands under **More** (⋯); ☰, Tools and the switch always show. The choice is
+  remembered, Full until Minimal is chosen. Switching changes nothing else: the open documents, the one in
+  front, what is selected, the zoom, Undo and anything being typed stay as they are. Compact commands is for the
+  Full interface and is greyed in Minimal.
 
 ### Changed
 
@@ -369,6 +374,9 @@
 - A dialog that grew while open (Print's Page range chosen, Advanced opened) moved up by half of what was added,
   as it was kept centred. It now stays where it opened and grows downward, moving up only as far as keeps its
   buttons on the screen.
+- In a narrow window, a menu inside one of the band's folded groups (Select in a folded Editing group, or Draw's
+  shapes in a folded Markup, say) closed the group instead of opening. It now opens beside it, as ☰'s submenus
+  do.
 
 ## [0.12.0] - 2026-10-31
 

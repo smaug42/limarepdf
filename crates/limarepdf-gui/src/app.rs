@@ -847,10 +847,16 @@ pub struct App {
     /// The width of the status bar's controls at its right, as last drawn.
     status_width: Option<f32>,
     /// The width of the controls at the commands' right (Print and the compact commands
-    /// button; in Minimal, Find, the inspector and Print), as last drawn.
+    /// button; in Minimal, Find, Tools, the inspector, Print and More), as last drawn.
     commands_right: Option<f32>,
     /// The width of the interface's switch at the tab strip's right end, as last drawn.
     switch_width: Option<f32>,
+    /// The width of Minimal's Tools button, as last drawn, for the row's More (ENH-45).
+    tools_width: Option<f32>,
+    /// The File menu's button, as last drawn; and whether Tools' All commands asked for its
+    /// menu, opened in the next frame (ENH-45).
+    file_button: Option<egui::Id>,
+    open_file_menu: bool,
     /// Frames left in which the keyboard, if a switch of interface left it nowhere, goes
     /// back to the typing or to the switch (ENH-45).
     refocus: u8,
@@ -993,6 +999,9 @@ impl App {
             status_width: None,
             commands_right: None,
             switch_width: None,
+            tools_width: None,
+            file_button: None,
+            open_file_menu: false,
             refocus: 0,
             accent_read: None,
             fitted: false,
@@ -6764,6 +6773,82 @@ fn view_choices(ui: &mut egui::Ui, c: &Ctx, acts: &mut Vec<Act>) {
     });
 }
 
+/// Minimal's Tools (ENH-45): labelled at every width, as the reference has it, opening
+/// [`band::tools`] (`add`). Returns its button.
+fn tools_button(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    let glyph = theme::icon(icon::TOOLBOX).size(16.0);
+    let caret = egui::Atom::from(theme::icon(icon::CARET_DOWN).size(10.0));
+    let b = egui::Button::new((glyph, "Tools", caret))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(28.0, 28.0));
+    // Open while a command's own menu in it is used; picking a command closes it.
+    let config = egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let (r, _) = egui::containers::menu::MenuButton::from_button(b)
+        .config(config)
+        .ui(ui, add);
+    r.widget_info(|| named("Tools"));
+    r.on_hover_text("Tools: the commands a task starts from, by kind")
+}
+
+/// Minimal's row's commands in reading order, for More's menu.
+const ROW_ORDER: [Act; 8] = [
+    Act::ToggleSide,
+    Act::Open,
+    Act::Save,
+    Act::Undo,
+    Act::Redo,
+    Act::Find,
+    Act::ToggleInspector,
+    Act::Print,
+];
+
+/// The order Minimal's row's commands go under More as room runs out (ENH-45): first the
+/// panels' buttons, which their strips at the window's edges also have, then Print and
+/// Find, and the file's and history's last. The File menu and Tools always show.
+const MORE_ORDER: [Act; 8] = [
+    Act::ToggleSide,
+    Act::ToggleInspector,
+    Act::Print,
+    Act::Find,
+    Act::Redo,
+    Act::Undo,
+    Act::Save,
+    Act::Open,
+];
+
+/// How many of [`MORE_ORDER`] go under More in a row `room` wide, Tools `tools` wide: none
+/// while every command fits (always, at the window's least width today).
+fn more_folded(room: f32, tools: f32) -> usize {
+    // A button with the gap after it; the dividers either side of Undo and Redo.
+    const BUTTON: f32 = 30.0;
+    const DIVIDERS: f32 = 26.0;
+    let need = |n: usize| {
+        let history = MORE_ORDER[n..].contains(&Act::Undo) || MORE_ORDER[n..].contains(&Act::Redo);
+        // The File menu, those shown and More.
+        let buttons = 1 + (MORE_ORDER.len() - n) + usize::from(n > 0);
+        let dividers = if history { DIVIDERS } else { 0.0 };
+        buttons as f32 * BUTTON + tools + 2.0 + dividers + 8.0
+    };
+    (0..=MORE_ORDER.len())
+        .find(|&n| need(n) <= room)
+        .unwrap_or(MORE_ORDER.len())
+}
+
+/// Minimal's More (ENH-45): the row's commands without room (`folded`), in the row's order.
+fn more_button(ui: &mut egui::Ui, folded: &[Act], c: &Ctx, acts: &mut Vec<Act>) {
+    let b = egui::Button::new(theme::icon(icon::DOTS_THREE).size(16.0))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(28.0, 28.0));
+    let (r, _) = egui::containers::menu::MenuButton::from_button(b).ui(ui, |ui| {
+        for a in ROW_ORDER.into_iter().filter(|a| folded.contains(a)) {
+            menu_item(ui, actions::get(a), c, acts);
+        }
+    });
+    r.widget_info(|| named("More"));
+    r.on_hover_text("More commands, without room in the row");
+}
+
 /// The window's width under which the status bar's zoom has no slider, only its buttons.
 const SLIDER_ROOM: f32 = 900.0;
 
@@ -6900,6 +6985,26 @@ fn float_button(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
     }
 }
 
+/// Minimal's inspector's top while text is the target (ENH-45): Edit's Font group and the
+/// four alignments ([`band::text_look`]), in the tab's own ids, as the inspector's body.
+fn inspector_text_look(ui: &mut egui::Ui, t: &mut Tab, c: &Ctx, acts: &mut Vec<Act>) {
+    let scope = t.ed.scope();
+    ui.push_id((scope, "text-look"), |ui| {
+        let mut font = |ui: &mut egui::Ui| t.guarded(|t| t.ed.font_band(ui, false));
+        band::text_look(ui, c, &mut font, acts);
+    });
+    ui.separator();
+}
+
+/// What Minimal's inspector's Font and Alignment groups have, which the docked buttons
+/// beside them then leave out.
+fn in_text_look(act: Act) -> bool {
+    matches!(
+        act,
+        Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough | Act::AlignText(_)
+    )
+}
+
 /// The collapsed inspector: a strip with a button to expand it at the top, the docked
 /// selection buttons (`groups`, empty when floating or nothing is selected) with the
 /// float button, and a button for the inspector's contents in a pop-out. Returns
@@ -7012,6 +7117,7 @@ fn inspector_popout(
     s: &mut Settings,
     t: &mut Tab,
     c: &Ctx,
+    acts: &mut Vec<Act>,
 ) -> (Option<inspector::Apply>, bool, egui::Rect) {
     let mut apply = None;
     let height = (strip.height() - 16.0).max(120.0);
@@ -7025,6 +7131,9 @@ fn inspector_popout(
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(INSPECTOR_WIDTH);
                 inspector_head(ui, s, t, false);
+                if c.minimal && t.ed.text_targeted() {
+                    inspector_text_look(ui, t, c, acts);
+                }
                 ui.add_space(4.0);
                 let scope = t.ed.scope();
                 egui::ScrollArea::vertical()
@@ -7579,8 +7688,9 @@ impl eframe::App for App {
         // 2026-10-27, for a shorter window top); under it the chosen band's groups, compact
         // when chosen or while the window is short. (The file's name is on its tab and in
         // the window's title.) The Minimal interface (ENH-45) has the one row alone: the
-        // navigation panel beside the File menu, and Find and the inspector by Print, in
-        // place of the band's names; no band.
+        // navigation panel beside the File menu, and Find, Tools and the inspector by Print,
+        // in place of the band's names; no band. Without room for its commands, the least
+        // needed go under More ([`MORE_ORDER`]); the File menu and Tools always show.
         let short = ctx.content_rect().height() < SHORT_HEIGHT;
         let compact = c.compact || short;
         let minimal = c.minimal;
@@ -7590,6 +7700,16 @@ impl eframe::App for App {
         let chosen = &mut self.band;
         let right_last = &mut self.commands_right;
         let undo_buttons = &mut self.undo_buttons;
+        let tools_last = &mut self.tools_width;
+        let file_button = &mut self.file_button;
+        // Tools' All commands, picked last frame: the File menu opens where it always is.
+        if std::mem::take(&mut self.open_file_menu) {
+            if let Some(id) = *file_button {
+                egui::Popup::open_id(&ctx, id.with("popup"));
+            }
+        }
+        let mut all_commands = false;
+        let mut tools_at = None::<egui::Rect>;
         let mut tab = self.tabs.get_mut(active);
         let commands = egui::Panel::top("commands")
             .frame(theme::commands_frame(ui.style()))
@@ -7609,25 +7729,47 @@ impl eframe::App for App {
                 egui::Frame::new().inner_margin(row).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
+                        let folded = match minimal {
+                            true => more_folded(ui.available_width(), tools_last.unwrap_or(72.0)),
+                            false => 0,
+                        };
+                        let more = &MORE_ORDER[..folded];
+                        let shown = |a: Act| !more.contains(&a);
                         let file = egui::Button::new(theme::icon(icon::LIST).size(16.0))
                             .frame_when_inactive(false)
                             .min_size(egui::vec2(28.0, 28.0));
-                        egui::containers::menu::MenuButton::from_button(file)
+                        let r = egui::containers::menu::MenuButton::from_button(file)
                             .ui(ui, |ui| menu::show(ui, &c, &recent, &mut acts))
-                            .0
-                            .on_hover_text("File: every command, by kind")
+                            .0;
+                        *file_button = Some(r.id);
+                        r.on_hover_text("File: every command, by kind")
                             .widget_info(|| named("File"));
-                        if minimal {
+                        if minimal && shown(Act::ToggleSide) {
                             quick(ui, Act::ToggleSide, icon::SIDEBAR_SIMPLE, None, &mut acts);
                         }
-                        quick(ui, Act::Open, icon::FOLDER_OPEN, None, &mut acts);
-                        quick(ui, Act::Save, icon::FLOPPY_DISK, None, &mut acts);
-                        divider(ui);
-                        *undo_buttons = vec![
-                            quick(ui, Act::Undo, icon::ARROW_U_UP_LEFT, None, &mut acts),
-                            quick(ui, Act::Redo, icon::ARROW_U_UP_RIGHT, None, &mut acts),
+                        for (act, glyph) in [
+                            (Act::Open, icon::FOLDER_OPEN),
+                            (Act::Save, icon::FLOPPY_DISK),
+                        ] {
+                            if shown(act) {
+                                quick(ui, act, glyph, None, &mut acts);
+                            }
+                        }
+                        let history = [
+                            (Act::Undo, icon::ARROW_U_UP_LEFT),
+                            (Act::Redo, icon::ARROW_U_UP_RIGHT),
                         ];
-                        divider(ui);
+                        let undo_shown = history.iter().any(|&(a, _)| shown(a));
+                        if undo_shown {
+                            divider(ui);
+                        }
+                        *undo_buttons = (history.into_iter())
+                            .filter(|&(a, _)| shown(a))
+                            .map(|(a, glyph)| quick(ui, a, glyph, None, &mut acts))
+                            .collect();
+                        if undo_shown {
+                            divider(ui);
+                        }
                         // The names, leaving room for the controls at the right as they
                         // were last drawn; then those, in reading order.
                         let right = right_last.unwrap_or(110.0);
@@ -7641,13 +7783,35 @@ impl eframe::App for App {
                         let end = egui::Layout::right_to_left(egui::Align::Center);
                         ui.with_layout(end, |ui| {
                             let width = dlg::reading_order(ui, *right_last, |ui| {
-                                if minimal {
+                                if minimal && shown(Act::Find) {
                                     let find = label("Find");
                                     quick(ui, Act::Find, icon::MAGNIFYING_GLASS, find, &mut acts);
+                                }
+                                if minimal {
+                                    let r = tools_button(ui, |ui| {
+                                        let mut font = |_: &mut egui::Ui| {};
+                                        let mut parts = band::Parts {
+                                            c: &c,
+                                            sign: sign_menu.as_ref(),
+                                            font: &mut font,
+                                            compact: false,
+                                        };
+                                        all_commands = band::tools(ui, &mut parts, &mut acts);
+                                    });
+                                    *tools_last = Some(r.rect.width());
+                                    tools_at = Some(r.rect);
+                                }
+                                if minimal && shown(Act::ToggleInspector) {
                                     let glyph = icon::SLIDERS_HORIZONTAL;
                                     quick(ui, Act::ToggleInspector, glyph, None, &mut acts);
                                 }
-                                quick(ui, Act::Print, icon::PRINTER, label("Print"), &mut acts);
+                                if shown(Act::Print) {
+                                    let print = label("Print");
+                                    quick(ui, Act::Print, icon::PRINTER, print, &mut acts);
+                                }
+                                if !more.is_empty() {
+                                    more_button(ui, more, &c, &mut acts);
+                                }
                                 if has && !minimal {
                                     toggled = band::compact_toggle(ui, compact, short);
                                 }
@@ -7660,8 +7824,11 @@ impl eframe::App for App {
                     acts.push(Act::ToggleCompact);
                 }
                 // A click on the interface's switch, in the tab strip, leaves the typing open,
-                // as the band's Font group's do.
-                let keep: Vec<egui::Rect> = switch.iter().map(|r| r.rect).collect();
+                // as the band's Font group's do; so does one on Tools, whose Paragraph switches
+                // the line being edited, as the band's does (its other commands end the typing
+                // themselves, choosing a tool).
+                let keep: Vec<egui::Rect> =
+                    (switch.iter().map(|r| r.rect)).chain(tools_at).collect();
                 let Some(t) = tab.as_deref_mut().filter(|_| !minimal) else {
                     return keep;
                 };
@@ -7685,6 +7852,10 @@ impl eframe::App for App {
             t.ed.keep_typing = commands.inner;
         }
         self.regions.add(Region::Commands, commands.response.rect);
+        if all_commands {
+            self.open_file_menu = true;
+            ctx.request_repaint();
+        }
         if switch.as_ref().is_some_and(egui::Response::clicked) {
             acts.push(Act::ToggleMinimal);
         }
@@ -7893,6 +8064,17 @@ impl eframe::App for App {
             } else {
                 Vec::new()
             };
+            // Minimal has no band: while text is the target, Edit's Font and Alignment
+            // groups head its inspector (ENH-45), and the docked buttons above the panel
+            // leave out the styles and Centre they have. The strip keeps them all.
+            let text_look = c.minimal && t.ed.text_targeted();
+            let top: Vec<Vec<&Action>> = match text_look {
+                true => (groups.iter())
+                    .map(|g| g.iter().copied().filter(|a| !in_text_look(a.act)).collect())
+                    .filter(|g: &Vec<&Action>| !g.is_empty())
+                    .collect(),
+                false => groups.clone(),
+            };
             let mut open = self.inspector.shown();
             let (mut toggle, mut pop) = (false, false);
             let mut strip = None;
@@ -7919,10 +8101,15 @@ impl eframe::App for App {
                 // The heading stays put above the scrolling content, with the
                 // button that hides the panel at its right.
                 toggle = inspector_head(ui, s, t, true);
+                if text_look {
+                    inspector_text_look(ui, t, &c, &mut panel_acts);
+                }
                 if !groups.is_empty() {
                     ui.horizontal_wrapped(|ui| {
-                        actions::context_buttons(ui, &groups, &c, &mut panel_acts);
-                        ui.separator();
+                        if !top.is_empty() {
+                            actions::context_buttons(ui, &top, &c, &mut panel_acts);
+                            ui.separator();
+                        }
                         float_button(ui, &mut panel_acts);
                     });
                     ui.separator();
@@ -7962,7 +8149,8 @@ impl eframe::App for App {
             }
             if let Some(strip) = strip.filter(|_| self.popout) {
                 let t = &mut self.tabs[self.active];
-                let (apply, keep, at) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
+                let s = &mut self.settings;
+                let (apply, keep, at) = inspector_popout(&ctx, strip, s, t, &c, &mut acts);
                 t.ed.inspector_drawn(&ctx, at);
                 panel_apply = panel_apply.or(apply);
                 self.popout = keep;
@@ -9774,6 +9962,16 @@ mod tests {
         let tree = settled_at(&mut app, &ctx, 700.0);
         assert!(egui::Popup::is_any_open(&ctx), "Editing didn't open");
         assert!(node(&tree, "Find").is_some(), "no Find in it");
+        // Its Select opens beside it, the group staying open, and runs its choice (egui
+        // keeps one popup open: a menu of its own closed both, ENH-45's stage 3).
+        let (select, _) = node(&tree, "Select").expect("Select in Editing");
+        window(&mut app, &ctx, 700.0, click_at(select.center()));
+        let tree = settled_at(&mut app, &ctx, 700.0);
+        let choice = actions::get(Act::Tool(Tool::Select)).label;
+        let (at, _) = node(&tree, choice).expect("Select's menu");
+        window(&mut app, &ctx, 700.0, click_at(at.center()));
+        settled_at(&mut app, &ctx, 700.0);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Select, "Select's choice");
     }
 
     /// The screen bounds of the node named `name` in `tree`, and whether it has the keyboard.

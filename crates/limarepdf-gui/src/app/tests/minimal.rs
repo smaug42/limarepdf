@@ -1,20 +1,30 @@
 //! ENH-45's stage 2: the Minimal interface, one quiet row of commands in place of the
 //! commands row and the band, chosen by the switch at the row's right end, View's Minimal
-//! interface, Ctrl+F1 or Settings; one setting, kept, and a switch that changes nothing but
-//! what is shown.
+//! interface, Ctrl+F1 (Option+Cmd+R on a Mac) or Settings; one setting, kept, and a switch
+//! that changes nothing but what is shown. Stage 3: Tools, the inspector's Font group while
+//! text is the target, and More for a row without room.
 
 use super::paragraphs::{double_click_word, new_app, prose_tab, status_says};
 use super::*;
 use egui::accesskit::{Role, Toggled};
 
-/// Linux's Ctrl, as egui-winit sends it.
-const CTRL: egui::Modifiers = egui::Modifiers {
-    alt: false,
-    ctrl: true,
-    shift: false,
-    mac_cmd: false,
-    command: true,
-};
+/// The Minimal interface's key, the registry's, as egui-winit sends it: Ctrl+F1, with Ctrl
+/// as Linux and Windows have it; Option+Cmd+R on a Mac, with its Cmd.
+fn minimal_key() -> (Key, egui::Modifiers) {
+    let k = actions::get(Act::ToggleMinimal).keys[0];
+    let mut m = k.modifiers;
+    if m.command {
+        m.ctrl = !cfg!(target_os = "macos");
+        m.mac_cmd = cfg!(target_os = "macos");
+    }
+    (k.logical_key, m)
+}
+
+/// The Minimal interface's key pressed.
+fn minimal_key_event() -> egui::Event {
+    let (key, m) = minimal_key();
+    key_with(key, m)
+}
 
 /// The switch's name in each interface: what it does.
 const TO_MINIMAL: &str = SWITCH_TO_MINIMAL;
@@ -149,7 +159,7 @@ fn the_interface_is_one_setting_kept_both_ways() {
     assert!(node(&tree, "Navigation panel").is_some(), "Minimal's row");
 
     // Ctrl+F1, as Word folds its ribbon away, back to Full; kept so too.
-    window(&mut again, &ctx, 1400.0, vec![key_with(Key::F1, CTRL)]);
+    window(&mut again, &ctx, 1400.0, vec![minimal_key_event()]);
     let tree = settle(&mut again, &ctx);
     assert!(!again.settings.minimal, "Ctrl+F1");
     assert_eq!(goes_to_minimal(&tree), Some(true));
@@ -162,7 +172,7 @@ fn the_interface_is_one_setting_kept_both_ways() {
 }
 
 /// Minimal's one row: the File menu, the navigation panel, Open, Save, Undo and Redo, then
-/// Find, the inspector and Print, with no band's names and no band; Full's row is as it
+/// Find, Tools, the inspector and Print, with no band's names and no band; Full's row is as it
 /// was. The switch is at the tab strip's right end in both, above Print, labelled with what
 /// it does. The status bar has the page layout and Fit width beside the zoom in Minimal, and
 /// no Show planned features.
@@ -208,6 +218,7 @@ fn minimal_has_one_row_and_full_keeps_its_band() {
         "Undo",
         "Redo",
         "Find",
+        "Tools",
         "Inspector",
         "Print",
     ];
@@ -428,7 +439,7 @@ fn a_switch_leaves_the_typing_open_with_the_keyboard() {
         for how in ["the switch", "Ctrl+F1", "the switch back", "Ctrl+F1 back"] {
             match how.starts_with("Ctrl") {
                 true => {
-                    window(&mut app, &ctx, 1400.0, vec![key_with(Key::F1, CTRL)]);
+                    window(&mut app, &ctx, 1400.0, vec![minimal_key_event()]);
                 }
                 false => click_switch(&mut app, &ctx),
             }
@@ -464,7 +475,8 @@ fn a_switch_leaves_a_field_open() {
     let field = app.tabs[0].ed.form.typing_in();
     assert_eq!(field, Some(("Name".to_string(), 0)), "the field isn't open");
     let steps = app.tabs[0].history();
-    ty.key(&mut app, Key::F1, CTRL);
+    let (key, m) = minimal_key();
+    ty.key(&mut app, key, m);
     let tree = ty.pause(&mut app);
     assert!(app.settings.minimal);
     let open = app.tabs[0].ed.form.typing_in();
@@ -500,7 +512,7 @@ fn a_switch_leaves_new_text_open() {
     for how in ["Ctrl+F1", "the switch"] {
         match how {
             "Ctrl+F1" => {
-                window(&mut app, &ctx, 1400.0, vec![key_with(Key::F1, CTRL)]);
+                window(&mut app, &ctx, 1400.0, vec![minimal_key_event()]);
             }
             _ => click_switch(&mut app, &ctx),
         }
@@ -548,7 +560,7 @@ fn the_keyboard_never_stays_on_a_control_gone() {
     window(&mut app, &ctx, 1400.0, click_at(size.center()));
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Font size"));
-    window(&mut app, &ctx, 1400.0, vec![key_with(Key::F1, CTRL)]);
+    window(&mut app, &ctx, 1400.0, vec![minimal_key_event()]);
     settled_at(&mut app, &ctx, 1400.0);
     assert!(app.settings.minimal);
     assert!(app.tabs[0].ed.editing_line(), "the line was ended");
@@ -569,7 +581,7 @@ fn the_keyboard_never_stays_on_a_control_gone() {
     }
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Edit"));
-    window(&mut app, &ctx, 1400.0, vec![key_with(Key::F1, CTRL)]);
+    window(&mut app, &ctx, 1400.0, vec![minimal_key_event()]);
     let tree = settled_at(&mut app, &ctx, 1400.0);
     assert!(app.settings.minimal);
     let on = focused_name(&ctx, &tree);
@@ -618,7 +630,8 @@ fn f6_goes_round_minimal_s_regions() {
 
 /// Minimal's row at 1000, 760 and 520 points wide, and under 600 high: nothing overlaps or
 /// leaves the window, and the File menu is there, the switch at the tab strip's end, clear
-/// of the tab; under 560 points Find and Print give their labels up for their icons.
+/// of the tab; under 560 points Find and Print give their labels up for their icons, Tools
+/// keeping its; every command has room, so no More.
 #[test]
 fn minimal_s_row_fits_narrow_and_short_windows() {
     let ctx = egui::Context::default();
@@ -635,7 +648,10 @@ fn minimal_s_row_fits_narrow_and_short_windows() {
         let r = row(&tree);
         let n = names(&r);
         assert_eq!(n.first(), Some(&"File"), "{n:?} at {size:?}");
-        assert_eq!(n.len(), 9, "{n:?} at {size:?}");
+        assert_eq!(n.len(), 10, "{n:?} at {size:?}");
+        assert!(!n.contains(&"More"), "{n:?} at {size:?}");
+        let (tools, _) = node(&tree, "Tools").unwrap();
+        assert!(tools.width() > 50.0, "Tools labelled at {size:?}");
         for pair in r.windows(2) {
             let apart = pair[0].1.right() <= pair[1].1.left();
             assert!(apart, "{pair:?} at {size:?}");
@@ -694,4 +710,250 @@ fn an_unsaved_choice_is_said_and_still_holds() {
     app.dialog = Dialog::None;
     let tree = settle(&mut app, &ctx);
     assert_eq!(goes_to_minimal(&tree), Some(false), "not Minimal now");
+}
+
+// ENH-45's stage 3: Tools, the inspector's Font group, More.
+
+/// Where the control `name` is in a window `size`: of that name exactly, else the first
+/// whose name starts with it (a menu item's name is its label, then its key's text).
+fn place(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<egui::Rect> {
+    let exact = node(tree, name).map(|(r, _)| r);
+    exact.or_else(|| {
+        (tree.nodes.iter())
+            .filter(|(_, n)| n.label().is_some_and(|l| l.starts_with(name)))
+            .find_map(|(_, n)| n.bounds().map(rect))
+    })
+}
+
+/// Click the control `name` in a window `size`, then settle.
+fn click_in(app: &mut App, ctx: &egui::Context, size: egui::Vec2, name: &str) {
+    let tree = drawn(app, ctx, size, vec![]);
+    let at = place(&tree, name).unwrap_or_else(|| panic!("no {name}"));
+    drawn(app, ctx, size, click_at(at.center()));
+}
+
+/// Where the text `name` shown as a label (not a button) is: a label's text is its value.
+fn label_at(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<egui::Rect> {
+    (tree.nodes.iter())
+        .filter(|(_, n)| n.role() == Role::Label && n.value() == Some(name))
+        .find_map(|(_, n)| n.bounds().map(rect))
+}
+
+const WIDE: egui::Vec2 = egui::vec2(1400.0, 800.0);
+
+/// Tools: under the band's names, in the band's order down two columns, the commands a task
+/// starts from, labelled, with no planned feature, all inside a 1000 × 660 window; a
+/// command picked runs as the band's button does and closes Tools; one in a command's own
+/// menu too (Draw's shapes).
+#[test]
+fn tools_lists_the_tasks_by_kind_and_runs_them() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let mut app = app_with(&ctx, 1);
+    app.act(&ctx, Act::ToggleMinimal);
+    let laptop = egui::vec2(1000.0, 660.0);
+    click_in(&mut app, &ctx, laptop, "Tools");
+    let tree = drawn(&mut app, &ctx, laptop, vec![]);
+    let at: Vec<egui::Rect> = (band::TOOLS.iter())
+        .map(|(b, _)| label_at(&tree, b.name()).unwrap_or_else(|| panic!("no {}", b.name())))
+        .collect();
+    let down = |c: &[egui::Rect]| c.windows(2).all(|w| w[0].top() < w[1].top());
+    assert!(down(&at[..3]) && down(&at[3..]), "{at:?}");
+    assert!(at[2].right() < at[3].left(), "not two columns: {at:?}");
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, laptop);
+    for name in ["Stamp", "Passwords", "All commands"] {
+        let r = place(&tree, name).unwrap_or_else(|| panic!("no {name}"));
+        assert!(window.contains_rect(r), "{name} outside the window: {r:?}");
+    }
+    for name in [
+        "Edit text",
+        "Paragraph",
+        "Select",
+        "Align objects",
+        "Text",
+        "Image",
+        "Note",
+        "Comments",
+        "Highlight",
+        "Text box",
+        "Draw",
+        "Stamp",
+        "Organise",
+        "Insert pages",
+        "Rotate",
+        "Move",
+        "Fill fields",
+        "Fill and sign",
+        "Digital signature",
+        "Mark redaction",
+        "Apply redactions…",
+        "Passwords",
+        "All commands",
+    ] {
+        assert!(node(&tree, name).is_some(), "no {name} in Tools");
+    }
+    for p in band::all_planned() {
+        assert!(node(&tree, &p.name()).is_none(), "{} in Tools", p.label);
+    }
+    // Picked, as the band's Note: the tool on, Tools closed.
+    click_in(&mut app, &ctx, WIDE, "Note");
+    assert_eq!(app.tabs[0].ed.tool, Tool::Note);
+    let tree = drawn(&mut app, &ctx, WIDE, vec![]);
+    assert!(node(&tree, "Passwords").is_none(), "Tools still open");
+    // A shape from Draw's menu in it.
+    click_in(&mut app, &ctx, WIDE, "Tools");
+    click_in(&mut app, &ctx, WIDE, "Draw options");
+    let shape = actions::get(Act::Tool(Tool::Rect)).label;
+    click_in(&mut app, &ctx, WIDE, shape);
+    assert_eq!(app.tabs[0].ed.tool, Tool::Rect);
+    let tree = drawn(&mut app, &ctx, WIDE, vec![]);
+    let open = node(&tree, "Passwords").is_some();
+    assert!(!open, "Tools open after a shape");
+}
+
+/// Tools' All commands opens the File menu, where its groups always are.
+#[test]
+fn all_commands_opens_the_file_menu() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let mut app = app_with(&ctx, 1);
+    app.act(&ctx, Act::ToggleMinimal);
+    let tree = drawn(&mut app, &ctx, WIDE, vec![]);
+    assert!(node(&tree, "Export").is_none(), "the File menu open first");
+    click_in(&mut app, &ctx, WIDE, "Tools");
+    click_in(&mut app, &ctx, WIDE, "All commands");
+    let tree = drawn(&mut app, &ctx, WIDE, vec![]);
+    assert!(node(&tree, "Passwords").is_none(), "Tools still open");
+    let (file, _) = node(&tree, "File").unwrap();
+    let export = place(&tree, "Export").expect("the File menu");
+    let under = export.top() >= file.bottom() - 1.0;
+    assert!(under, "{export:?} not under the File menu");
+}
+
+/// Where the inspector's left edge is: its resize handle's.
+fn inspector_left(tree: &egui::accesskit::TreeUpdate) -> f32 {
+    let (edge, _) = node(tree, "Inspector width").expect("the inspector's edge");
+    edge.center().x
+}
+
+/// Where the Font size box is in the inspector (the window's right), if it shows.
+fn inspector_font(tree: &egui::accesskit::TreeUpdate) -> Option<egui::Rect> {
+    (tree.nodes.iter())
+        .filter(|(_, n)| n.label() == Some("Font size"))
+        .filter_map(|(_, n)| n.bounds().map(rect))
+        .find(|r| r.left() > 1100.0)
+}
+
+/// Minimal has no band: while text is the target (a line or paragraph being edited, the
+/// Text tool's new text) its inspector heads with Edit's Font group and the alignments;
+/// not with nothing selected, and not in Full, whose band has them. A style changed there
+/// leaves the line open with the keyboard back in it.
+#[test]
+fn minimal_s_inspector_has_the_font_group_while_text_is_the_target() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    app.act(&ctx, Act::ToggleMinimal);
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(inspector_font(&tree).is_none(), "nothing selected");
+    let panel = inspector_left(&tree);
+    double_click_word(&mut app, &ctx, "fishing");
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing one line"));
+    let at = inspector_font(&tree).expect("the Font group, a line edited");
+    // In the panel's own width, give or take its last point: the page doesn't move.
+    let now = inspector_left(&tree);
+    assert!((now - panel).abs() <= 1.0, "widened: {panel} to {now}");
+    let (justify, _) = node(&tree, "Justify").expect("the alignments");
+    let below = justify.left() > 1100.0 && justify.top() > at.top();
+    assert!(below, "{justify:?}");
+    // Bold in the inspector, below its Font size.
+    let bold = (tree.nodes.iter())
+        .filter(|(_, n)| n.label() == Some("Bold"))
+        .filter_map(|(_, n)| n.bounds().map(rect))
+        .find(|r| r.left() > 1100.0)
+        .expect("Bold in the inspector");
+    window(&mut app, &ctx, 1400.0, click_at(bold.center()));
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing one line"), "Bold ended it");
+    assert!(app.tabs[0].ed.pending(), "the typing lost");
+    let typing = app.tabs[0].ed.typing_id();
+    assert_eq!(ctx.memory(|m| m.focused()), typing, "the keyboard");
+
+    app.act(&ctx, Act::EditParagraph);
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing a paragraph"));
+    assert!(inspector_font(&tree).is_some(), "a paragraph edited");
+
+    // Full: the band's, not the inspector's.
+    app.act(&ctx, Act::ToggleMinimal);
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(inspector_font(&tree).is_none(), "in Full's inspector");
+    let sizes = (tree.nodes.iter()).filter(|(_, n)| n.label() == Some("Font size"));
+    assert_eq!(sizes.count(), 1, "the band's alone");
+
+    // The Text tool: the next new text's look.
+    app.act(&ctx, Act::ToggleMinimal);
+    app.act(&ctx, Act::Tool(Tool::Text));
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(inspector_font(&tree).is_some(), "the Text tool");
+}
+
+/// Tools > Paragraph while a line is edited switches it to a paragraph, as the band's
+/// Paragraph does: the click on Tools leaves the line open, and no change is made.
+#[test]
+fn tools_paragraph_switches_the_line_being_edited() {
+    let (ctx, mut app) = new_app();
+    prose_tab(&mut app, &ctx);
+    app.act(&ctx, Act::ToggleMinimal);
+    double_click_word(&mut app, &ctx, "fishing");
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing one line"));
+    let steps = app.tabs[0].history();
+    click_in(&mut app, &ctx, WIDE, "Tools");
+    let tree = drawn(&mut app, &ctx, WIDE, vec![]);
+    assert!(status_says(&tree, "Editing one line"), "Tools ended it");
+    click_in(&mut app, &ctx, WIDE, "Paragraph");
+    let tree = settled_at(&mut app, &ctx, 1400.0);
+    assert!(status_says(&tree, "Editing a paragraph"), "not switched");
+    assert!(app.settings.paragraphs, "Text flow's mode");
+    assert_eq!(app.tabs[0].history(), steps, "a change");
+}
+
+/// Narrower than its commands, Minimal's row puts the least needed under More: the File
+/// menu, Tools and More show, nothing overlaps or leaves the window, Open (the last to go)
+/// stays; each of the row's commands is either in the row or in More's menu, which runs
+/// it.
+#[test]
+fn more_holds_the_commands_without_room() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let mut app = app_with(&ctx, 1);
+    app.act(&ctx, Act::ToggleMinimal);
+    let size = egui::vec2(300.0, 560.0);
+    let tree = drawn(&mut app, &ctx, size, vec![]);
+    let r = row(&tree);
+    let n = names(&r);
+    for name in ["File", "Open", "Tools", "More"] {
+        assert!(n.contains(&name), "no {name}: {n:?}");
+    }
+    assert!(!n.contains(&"Navigation panel"), "{n:?}");
+    for pair in r.windows(2) {
+        assert!(pair[0].1.right() <= pair[1].1.left(), "{pair:?}");
+    }
+    let inside = |b: &egui::Rect| b.left() >= 0.0 && b.right() <= size.x;
+    assert!(r.iter().all(|(_, b)| inside(b)), "{r:?}");
+    let in_row = |a: Act| n.contains(&actions::get(a).label.trim_end_matches('…'));
+    let folded: Vec<Act> = (ROW_ORDER.into_iter()).filter(|&a| !in_row(a)).collect();
+    assert!(folded.contains(&Act::Find), "{n:?}");
+    click_in(&mut app, &ctx, size, "More");
+    let tree = drawn(&mut app, &ctx, size, vec![]);
+    for a in &folded {
+        let label = actions::get(*a).label;
+        assert!(place(&tree, label).is_some(), "{label} not in More");
+    }
+    click_in(&mut app, &ctx, size, actions::get(Act::Find).label);
+    assert_eq!(app.tabs[0].side, Side::Search, "Find from More");
 }
