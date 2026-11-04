@@ -786,6 +786,12 @@ impl Tab {
         (self.revision, self.undo.len(), self.redo.len())
     }
 
+    /// The place at the top of the view: the page, and points down it.
+    #[cfg(test)]
+    pub fn place(&self) -> (usize, f32) {
+        self.view
+    }
+
     /// The memory the undo steps and the stamp's link hold, as the budget counts it.
     #[cfg(test)]
     pub fn undo_held(&self) -> usize {

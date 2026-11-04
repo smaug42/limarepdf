@@ -235,6 +235,8 @@ pub enum Act {
     TogglePlanned,
     /// The band's commands on one row, as icons, or full.
     ToggleCompact,
+    /// The Minimal interface, one quiet row of commands, or the Full one (ENH-45).
+    ToggleMinimal,
     /// The accent colour: the desktop's, or LimarePDF's.
     Accent(Accent),
     NextField,
@@ -426,6 +428,7 @@ impl Act {
             | Act::TogglePageLabels
             | Act::TogglePlanned
             | Act::ToggleCompact
+            | Act::ToggleMinimal
             | Act::ToggleSnap
             | Act::Accent(_)
             | Act::NextField
@@ -527,6 +530,8 @@ pub struct Ctx {
     pub planned: bool,
     /// See [`Act::ToggleCompact`]: the setting, whatever a short window does.
     pub compact: bool,
+    /// See [`Act::ToggleMinimal`].
+    pub minimal: bool,
     /// See [`Act::ToggleSnap`].
     pub snap: bool,
     pub accent: Accent,
@@ -766,6 +771,18 @@ const PREVIEW_KEYS: &[KeyboardShortcut] = if cfg!(target_os = "linux") {
     &[k(CS, Key::O), k(C, Key::F2)]
 } else {
     &[k(C, Key::F2)]
+};
+
+/// Why Compact commands is greyed in the Minimal interface (ENH-45).
+pub const FULL_ONLY: &str = "Compact commands are for the Full interface's band.";
+
+/// Minimal interface's keys: Word's Ctrl+F1, which folds its ribbon away, and on a Mac Word
+/// for Mac's Option+Cmd+R. (KDE takes Ctrl+F1 for its first desktop: there the switch and
+/// View reach it.)
+const MINIMAL_KEYS: &[KeyboardShortcut] = if cfg!(target_os = "macos") {
+    &[k(Modifiers::ALT.plus(Modifiers::COMMAND), Key::R)]
+} else {
+    &[k(C, Key::F1)]
 };
 
 /// Spelling's keys: Word's F7, and on a Mac Word for Mac's Option+Cmd+L.
@@ -1685,10 +1702,21 @@ pub static ACTIONS: &[Action] = &[
         act: Act::ToggleCompact,
         label: "Compact commands",
         icon: icon::CARET_UP,
-        enabled: always,
+        enabled: |c| !c.minimal,
         checked: Some(|c| c.compact),
         hint: "The commands on one row, as icons: their names show on hover. Short windows \
                show them so anyway.",
+        ..BASE
+    },
+    Action {
+        act: Act::ToggleMinimal,
+        label: "Minimal interface",
+        icon: icon::ARROWS_IN_SIMPLE,
+        keys: MINIMAL_KEYS,
+        enabled: always,
+        checked: Some(|c| c.minimal),
+        hint: "One quiet row of commands in place of the band; every command stays in the \
+               menu.",
         ..BASE
     },
     Action {
@@ -2487,6 +2515,10 @@ pub const SIGNED_KEEPS: &str =
 /// Why command `a` can't be used in `c`, for its greyed button or menu item: the first of
 /// the things it may wait for, in the order people meet them, that would let it be used.
 pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
+    // The one command the interface greys, with or without a document (ENH-45).
+    if a.act == Act::ToggleCompact && c.minimal {
+        return FULL_ONLY;
+    }
     if !c.doc {
         return "Open a document first.";
     }

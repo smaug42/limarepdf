@@ -1994,6 +1994,7 @@ pub struct Prefs {
     pub accent: crate::settings::Accent,
     pub page_look: crate::settings::PageLook,
     pub pictures_too: bool,
+    pub minimal: bool,
     pub compact: bool,
     pub planned: bool,
     pub docked: bool,
@@ -2114,7 +2115,11 @@ pub fn settings(ctx: &Context, p: &mut Prefs) -> SettingsOut {
                 pick(ui, "Page colours", &mut p.page_look, &looks);
                 tick(ui, &mut p.pictures_too, Act::TogglePicturesToo);
                 ui.add_space(FIELD_GAP);
-                tick(ui, &mut p.compact, Act::ToggleCompact);
+                tick(ui, &mut p.minimal, Act::ToggleMinimal);
+                // Greyed as the menus grey it: the Minimal interface has no band (ENH-45).
+                let compact = egui::Checkbox::new(&mut p.compact, named(Act::ToggleCompact));
+                (ui.add_enabled(!p.minimal, compact))
+                    .on_disabled_hover_text(crate::actions::FULL_ONLY);
                 tick(ui, &mut p.planned, Act::TogglePlanned);
                 tick(ui, &mut p.docked, Act::ToggleDock);
             });

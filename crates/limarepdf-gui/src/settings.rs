@@ -231,6 +231,9 @@ pub struct Settings {
     pub show_planned: bool,
     /// The band's commands on one row, as icons (their names on hover); off unless chosen.
     pub compact_commands: bool,
+    /// The Minimal interface: one quiet row of commands in place of the commands row and
+    /// the band (ENH-45); off, the Full interface, unless chosen.
+    pub minimal: bool,
     /// Page text is edited a paragraph at a time where it can be (Edit > Text flow's
     /// Paragraph, NEW-01); off, a line at a time, unless chosen.
     pub paragraphs: bool,
@@ -333,6 +336,7 @@ impl Settings {
             page_labels: true,
             show_planned: true,
             compact_commands: false,
+            minimal: false,
             paragraphs: false,
             snap: true,
             organise_zoom: ORGANISE_ZOOM,
@@ -421,6 +425,7 @@ impl Settings {
                 "page_names" => s.page_labels = value != "numbers",
                 "planned_features" => s.show_planned = value != "hidden",
                 "commands" => s.compact_commands = value == "compact",
+                "interface" => s.minimal = value == "minimal",
                 "text_editing" => s.paragraphs = value == "paragraphs",
                 "snap_to_objects" => s.snap = value != "false",
                 "spelling_as_you_type" => s.spelling = value != "false",
@@ -661,7 +666,9 @@ impl Settings {
             Accent::Desktop => "desktop",
             Accent::LimarePdf => "limarepdf",
         };
-        text += &format!("commands = {commands}\naccent_colour = {accent}\n");
+        let interface = if self.minimal { "minimal" } else { "full" };
+        text +=
+            &format!("commands = {commands}\ninterface = {interface}\naccent_colour = {accent}\n");
         let editing = if self.paragraphs {
             "paragraphs"
         } else {
@@ -989,6 +996,34 @@ mod tests {
         let s = Settings::from_file(Some(f));
         assert!(!s.compact_commands);
         assert_eq!(s.accent, Accent::Desktop);
+    }
+
+    /// ENH-45: the Full interface unless Minimal is chosen, the choice kept both ways; a
+    /// missing or unknown value is Full.
+    #[test]
+    fn the_interface_is_remembered() {
+        let f = file("interface");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(!s.minimal);
+        s.minimal = true;
+        s.save();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("interface = minimal\n"), "{text}");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.minimal);
+        s.minimal = false;
+        s.save();
+        assert!(!Settings::from_file(Some(f.clone())).minimal);
+        for text in [
+            "interface = full\n",
+            "interface = walrus\n",
+            "interface = Minimal\n",
+        ] {
+            std::fs::write(&f, text).unwrap();
+            assert!(!Settings::from_file(Some(f.clone())).minimal, "{text}");
+        }
+        std::fs::write(&f, "interface = minimal\n").unwrap();
+        assert!(Settings::from_file(Some(f)).minimal);
     }
 
     /// NEW-14: the size of Organise's cards is kept, within its range; nonsense gives the

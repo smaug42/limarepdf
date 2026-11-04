@@ -846,9 +846,12 @@ pub struct App {
     front: Option<u64>,
     /// The width of the status bar's controls at its right, as last drawn.
     status_width: Option<f32>,
-    /// The width of Print and the compact commands button, at the commands' right, as last
-    /// drawn.
+    /// The width of the controls at the commands' right (Print, the compact commands button
+    /// and the interface's switch; in Minimal, Find to the switch), as last drawn.
     commands_right: Option<f32>,
+    /// Frames left in which the keyboard, if a switch of interface left it nowhere, goes
+    /// back to the typing or to the switch (ENH-45).
+    refocus: u8,
     /// The desktop's accent colour being read off the window's thread ([`App::read_accent`]).
     accent_read: Option<Receiver<Option<egui::Color32>>>,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
@@ -987,6 +990,7 @@ impl App {
             front: None,
             status_width: None,
             commands_right: None,
+            refocus: 0,
             accent_read: None,
             fitted: false,
             regions: Regions::default(),
@@ -3227,6 +3231,19 @@ impl App {
                 self.settings.compact_commands = !self.settings.compact_commands;
                 self.settings.save();
             }
+            // Presentation only (ENH-45): no tab, typing, view or history changes. A control
+            // with the keyboard that the other interface hasn't drawn gives it up, and new
+            // text gives it up to the switch's click; it then goes back to the typing, else
+            // to the switch ([`App::hand_on_keyboard`]).
+            Act::ToggleMinimal => {
+                self.settings.minimal = !self.settings.minimal;
+                self.settings.save();
+                let typing =
+                    (self.tabs.get(self.active)).is_some_and(|t| t.ed.typing_id().is_some());
+                if typing || ctx.memory(|m| m.focused().is_some()) {
+                    self.refocus = 3;
+                }
+            }
             Act::Accent(accent) => {
                 self.settings.accent = accent;
                 self.settings.save();
@@ -3854,6 +3871,7 @@ impl App {
             accent: s.accent,
             page_look: s.page_look,
             pictures_too: s.pictures_too,
+            minimal: s.minimal,
             compact: s.compact_commands,
             planned: s.show_planned,
             docked: s.controls_docked,
@@ -3894,6 +3912,9 @@ impl App {
         }
         if p.paragraphs != was.paragraphs {
             self.set_paragraphs(p.paragraphs);
+        }
+        if p.minimal != was.minimal {
+            self.act(ctx, Act::ToggleMinimal);
         }
         if (p.layout, p.cover) != (was.layout, was.cover) {
             if let Some(t) = self.tabs.get_mut(self.active) {
@@ -5643,6 +5664,28 @@ impl App {
     }
 
     /// The state the commands' conditions are checked against.
+    /// After a switch of interface (ENH-45): the keyboard a control gave up, as the other
+    /// interface doesn't draw it, goes back to the typing open on the page, else to the
+    /// interface's switch `switch`. A control both draw keeps it.
+    fn hand_on_keyboard(&mut self, ctx: &egui::Context, switch: Option<egui::Id>) {
+        if self.refocus == 0 {
+            return;
+        }
+        self.refocus -= 1;
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+        self.refocus = 0;
+        match self.tabs.get(self.active).and_then(|t| t.ed.typing_id()) {
+            Some(id) => page_text::give_back(ctx, id),
+            None => {
+                if let Some(id) = switch {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
+            }
+        }
+    }
+
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
             docs: self.tabs.len(),
@@ -5661,6 +5704,7 @@ impl App {
             page_labels: self.settings.page_labels,
             planned: self.settings.show_planned,
             compact: self.settings.compact_commands,
+            minimal: self.settings.minimal,
             snap: self.settings.snap,
             spelling: self.settings.spelling,
             accent: self.settings.accent,
@@ -6679,8 +6723,77 @@ fn zoom_menu(ui: &mut egui::Ui, zoom: f32, c: &Ctx, acts: &mut Vec<Act>) {
     });
 }
 
+/// Minimal's status bar beside the zoom (ENH-45): the page layout's menu and Fit width, the
+/// commands the band's View has, as the reference keeps them at the bottom right.
+fn view_choices(ui: &mut egui::Ui, c: &Ctx, acts: &mut Vec<Act>) {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let size = egui::vec2(22.0, 20.0);
+        let b = egui::Button::new(theme::icon(icon::COLUMNS).size(14.0))
+            .frame_when_inactive(false)
+            .min_size(size);
+        egui::containers::menu::MenuButton::from_button(b)
+            .ui(ui, |ui| {
+                for l in [Layout::Continuous, Layout::Facing, Layout::Single] {
+                    menu_item(ui, actions::get(Act::Layout(l)), c, acts);
+                }
+                ui.separator();
+                menu_item(ui, actions::get(Act::ToggleCover), c, acts);
+            })
+            .0
+            .on_hover_text("Page layout")
+            .widget_info(|| named("Page layout"));
+        let a = actions::get(Act::FitWidth);
+        let (on, enabled) = (c.fit, (a.enabled)(c));
+        let b = egui::Button::new(theme::icon(icon::ARROWS_HORIZONTAL).size(14.0))
+            .selected(on)
+            .frame_when_inactive(on)
+            .min_size(size);
+        let r = ui.add_enabled(enabled, b);
+        r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, on, a.label));
+        let tip = tooltip(ui.ctx(), a);
+        if r.on_hover_text(tip)
+            .on_disabled_hover_ui(|ui| actions::greyed_tip(ui, a, c))
+            .clicked()
+        {
+            acts.push(Act::FitWidth);
+        }
+    });
+}
+
 /// The window's width under which the status bar's zoom has no slider, only its buttons.
 const SLIDER_ROOM: f32 = 900.0;
+
+/// The interface's switch at the commands' right end (ENH-45): its text the interface in
+/// use, Full or Minimal, its tooltip the other; for screen readers the View choice it is,
+/// Minimal interface, ticked or not. Its own id, so the keyboard stays on it through a
+/// switch.
+fn interface_switch(ui: &mut egui::Ui, minimal: bool) -> egui::Response {
+    let a = actions::get(Act::ToggleMinimal);
+    let (glyph, text, tip) = match minimal {
+        true => (
+            icon::ARROWS_IN_SIMPLE,
+            "Minimal",
+            "Switch to the Full interface: the band, with every command's button",
+        ),
+        false => (
+            icon::ARROWS_OUT_SIMPLE,
+            "Full",
+            "Switch to the Minimal interface: one quiet row of commands",
+        ),
+    };
+    let tip = match actions::shown_key(ui.ctx(), a) {
+        Some(k) => format!("{tip} ({})", actions::key_text(ui.ctx(), &k)),
+        None => tip.to_string(),
+    };
+    let b = egui::Button::new((theme::icon(glyph).size(16.0), text))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(28.0, 28.0));
+    let scope = egui::UiBuilder::new().scope_id(egui::Id::unique("interface switch"));
+    let r = ui.scope_builder(scope, |ui| ui.add(b)).inner;
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, minimal, a.label));
+    r.on_hover_text(tip)
+}
 
 /// The status bar's view buttons, as a word processor's: the pages as they read, and
 /// Organise's grid (NEW-14), the one showing marked.
@@ -7365,21 +7478,30 @@ impl eframe::App for App {
         let recent: Vec<&PathBuf> = recent_files.iter().collect();
 
         // A document command's button in the commands' row: its icon and label, or its icon
-        // alone, named; its label, shortcut and hint as the tooltip. Returns where it is.
+        // alone, named; its label, shortcut and hint as the tooltip; pressed while a panel it
+        // shows is (Minimal's). Returns where it is.
         let quick =
             |ui: &mut egui::Ui, act: Act, glyph: &str, label: Option<&str>, acts: &mut Vec<Act>| {
                 let a = actions::get(act);
                 let glyph = theme::icon(glyph).size(16.0);
+                let on = a.checked.map(|f| f(&c));
                 let b = match label {
                     Some(label) => egui::Button::new((glyph, label)),
                     None => egui::Button::new(glyph),
                 }
-                .frame_when_inactive(false)
+                .frame_when_inactive(on == Some(true))
                 .min_size(egui::vec2(28.0, 28.0));
+                let b = match on {
+                    Some(on) => b.selected(on),
+                    None => b,
+                };
                 let enabled = (a.enabled)(&c);
                 let r = ui.add_enabled(enabled, b);
                 let name = a.label.trim_end_matches('…');
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
+                r.widget_info(|| match on {
+                    Some(on) => egui::WidgetInfo::selected(egui::Role::Button, enabled, on, name),
+                    None => egui::WidgetInfo::labeled(egui::Role::Button, enabled, name),
+                });
                 let tip = tooltip(ui.ctx(), a);
                 let at = r.rect;
                 if r.on_hover_text(tip.as_str())
@@ -7419,9 +7541,12 @@ impl eframe::App for App {
         // and Print and the button for compact commands at the right (the user's layout,
         // 2026-10-27, for a shorter window top); under it the chosen band's groups, compact
         // when chosen or while the window is short. (The file's name is on its tab and in
-        // the window's title.)
+        // the window's title.) The Minimal interface (ENH-45) has the one row alone: the
+        // navigation panel beside the File menu, and Find and the inspector by Print, in
+        // place of the band's names; no band. The interface's switch ends the row in both.
         let short = ctx.content_rect().height() < SHORT_HEIGHT;
         let compact = c.compact || short;
+        let minimal = c.minimal;
         let room = ctx.content_rect().width();
         let label = |text: &'static str| (room >= 560.0).then_some(text);
         let active = self.active;
@@ -7429,10 +7554,11 @@ impl eframe::App for App {
         let right_last = &mut self.commands_right;
         let undo_buttons = &mut self.undo_buttons;
         let mut tab = self.tabs.get_mut(active);
+        let mut switch = None::<egui::Response>;
         let commands = egui::Panel::top("commands")
             .frame(theme::commands_frame(ui.style()))
             .show(ui, |ui| {
-                let name = match has {
+                let name = match has && !minimal {
                     true => format!("{} commands", chosen.name()),
                     false => "Commands".into(),
                 };
@@ -7455,6 +7581,9 @@ impl eframe::App for App {
                             .0
                             .on_hover_text("File: every command, by kind")
                             .widget_info(|| named("File"));
+                        if minimal {
+                            quick(ui, Act::ToggleSide, icon::SIDEBAR_SIMPLE, None, &mut acts);
+                        }
                         quick(ui, Act::Open, icon::FOLDER_OPEN, None, &mut acts);
                         quick(ui, Act::Save, icon::FLOPPY_DISK, None, &mut acts);
                         divider(ui);
@@ -7466,7 +7595,7 @@ impl eframe::App for App {
                         // The names, leaving room for the controls at the right as they
                         // were last drawn; then those, in reading order.
                         let right = right_last.unwrap_or(110.0);
-                        if has {
+                        if has && !minimal {
                             let names = (ui.available_width() - right - 8.0).max(0.0);
                             ui.scope(|ui| {
                                 ui.set_max_width(names);
@@ -7476,10 +7605,18 @@ impl eframe::App for App {
                         let end = egui::Layout::right_to_left(egui::Align::Center);
                         ui.with_layout(end, |ui| {
                             let width = dlg::reading_order(ui, *right_last, |ui| {
+                                if minimal {
+                                    let find = label("Find");
+                                    quick(ui, Act::Find, icon::MAGNIFYING_GLASS, find, &mut acts);
+                                    let glyph = icon::SLIDERS_HORIZONTAL;
+                                    quick(ui, Act::ToggleInspector, glyph, None, &mut acts);
+                                }
                                 quick(ui, Act::Print, icon::PRINTER, label("Print"), &mut acts);
-                                if has {
+                                if has && !minimal {
                                     toggled = band::compact_toggle(ui, compact, short);
                                 }
+                                divider(ui);
+                                switch = Some(interface_switch(ui, minimal));
                             });
                             *right_last = Some(width);
                         });
@@ -7488,8 +7625,10 @@ impl eframe::App for App {
                 if toggled {
                     acts.push(Act::ToggleCompact);
                 }
-                let Some(t) = tab.as_deref_mut() else {
-                    return Vec::new();
+                // A click on the switch leaves the typing open, as the band's Font group's do.
+                let keep: Vec<egui::Rect> = switch.iter().map(|r| r.rect).collect();
+                let Some(t) = tab.as_deref_mut().filter(|_| !minimal) else {
+                    return keep;
                 };
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(8, 4))
@@ -7503,7 +7642,7 @@ impl eframe::App for App {
                             font: &mut font,
                             compact,
                         };
-                        band::show(ui, *chosen, &mut parts, &mut acts)
+                        [band::show(ui, *chosen, &mut parts, &mut acts), keep].concat()
                     })
                     .inner
             });
@@ -7511,6 +7650,10 @@ impl eframe::App for App {
             t.ed.keep_typing = commands.inner;
         }
         self.regions.add(Region::Commands, commands.response.rect);
+        if switch.as_ref().is_some_and(egui::Response::clicked) {
+            acts.push(Act::ToggleMinimal);
+        }
+        self.hand_on_keyboard(&ctx, switch.map(|r| r.id));
 
         // The status bar: what is selected or the tool in use, and messages, at the left;
         // the page, Show planned features and the zoom at the right.
@@ -7572,11 +7715,18 @@ impl eframe::App for App {
                             _ if name == n.to_string() => format!("Page {n} of {count}"),
                             _ => format!("Page {name} ({n} of {count})"),
                         }));
-                        let text = small("Show planned features");
-                        let r = ui.add(egui::Checkbox::new(show_planned, text));
-                        planned_changed = r.changed();
-                        r.on_hover_text(actions::get(Act::TogglePlanned).hint);
+                        // Minimal has no Planned controls to show (ENH-45); the setting stays
+                        // under View.
+                        if !c.minimal {
+                            let text = small("Show planned features");
+                            let r = ui.add(egui::Checkbox::new(show_planned, text));
+                            planned_changed = r.changed();
+                            r.on_hover_text(actions::get(Act::TogglePlanned).hint);
+                        }
                         view_buttons(ui, t.organising(), &mut acts);
+                        if c.minimal && !t.organising() {
+                            view_choices(ui, &c, &mut acts);
+                        }
                         let zoom = if t.organising() { grid_zoom } else { t.zoom };
                         zoom_bar(ui, zoom, t.organising(), &c, &mut acts);
                     }));
@@ -8041,6 +8191,7 @@ mod tests {
     mod history;
     mod input_methods;
     mod links;
+    mod minimal;
     mod new_document;
     mod organise;
     mod overflow;
@@ -8598,6 +8749,7 @@ mod tests {
             "View",
             "Print",
             "Compact commands",
+            "Minimal interface",
             "Paste",
             "Edit text",
             "Find",
@@ -9279,19 +9431,21 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
-        // One row under the tabs: the document's commands, the names, then Print and the
-        // compact commands button at the right edge.
+        // One row under the tabs: the document's commands, the names, then Print, the
+        // compact commands button and the interface's switch (ENH-45) at the right edge.
         let tree = settled_at(&mut app, &ctx, 1400.0);
         let at = |name: &str| node(&tree, name).expect(name).0;
         let (file, edit, print) = (at("File"), at("Edit"), at("Print"));
         let (caret, doc) = (at("Compact commands"), at("Untitled, unsaved"));
-        for r in [edit, print, caret] {
+        let switch = at("Minimal interface");
+        for r in [edit, print, caret, switch] {
             let level = (r.center().y - file.center().y).abs() < 4.0;
             assert!(level, "{r:?} beside {file:?}");
         }
         assert!(doc.bottom() <= file.top(), "the tabs aren't above");
         assert!(file.right() < edit.left() && edit.right() < print.left());
-        assert!(print.right() <= caret.left() && caret.right() > 1350.0);
+        assert!(print.right() <= caret.left() && caret.right() <= switch.left());
+        assert!(switch.right() > 1350.0, "{switch:?}");
         let tab = |tree: &egui::accesskit::TreeUpdate, name: &str| {
             let (_, n) = (tree.nodes.iter())
                 .find(|(_, n)| n.role() == Role::Tab && n.label() == Some(name))

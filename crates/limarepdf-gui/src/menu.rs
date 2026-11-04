@@ -342,6 +342,7 @@ static VIEW: &[Entry] = &[
             Cmd(Act::ToggleHidden),
             Cmd(Act::TogglePageLabels),
             Cmd(Act::TogglePlanned),
+            Cmd(Act::ToggleMinimal),
             Cmd(Act::ToggleCompact),
         ],
     ),

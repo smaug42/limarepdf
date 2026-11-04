@@ -1830,6 +1830,22 @@ a folded group being a menu button with its name holding its controls. `Parts::c
 gives the row's height). Tests: `band`'s own (every button a registered command; every command placed in a band, the
 File menu, a right-click menu or a key; planned items named for plan items; folding), and the app's band tests.
 
+The Minimal interface (ENH-45, build plan 4.4; stage 2 built) is the same commands panel drawn another way, not a
+second shell: `Settings::minimal` (settings.txt `interface = minimal`, any other value Full), `Act::ToggleMinimal`
+(View > Show, Ctrl+F1, ⌘⌥R on a Mac) and `Ctx::minimal`. With it `App::ui` draws the row alone: `quick` adds
+`ToggleSide` after ☰ and `Find` and `ToggleInspector` before Print (pressed while their panel shows, from the
+command's `checked`), and skips `band::names`, `compact_toggle` and `band::show`. Both interfaces end the row with
+`interface_switch`, whose widget sits in a scope of its own id (`UiBuilder::scope_id`), so the keyboard on it survives
+the widgets before it changing. The switch's rect joins `Editor::keep_typing`, so its click doesn't end the typing,
+as a click in the Font group doesn't. A focused widget the other interface doesn't draw loses the keyboard at egui's
+end of frame; `App::refocus` (set by the command when something had the keyboard or typing is open, as the switch's
+click takes the keyboard from new text) then lets `App::hand_on_keyboard` give it back to the typing
+(`page_text::give_back` on `Editor::typing_id`), else to the switch, within three frames. The status bar leaves out
+Show planned features and adds `view_choices` (the page layout's menu and Fit width) in Minimal. Nothing else reads
+the interface: the tabs, panels (`navigation_panel`, `inspector_panel`, `panel_widths`), docking and pins are one set
+for both. `actions::why_not` says `FULL_ONLY` for Compact commands in Minimal before its document check, so the
+start screen says it too. Tests: `app/tests/minimal.rs`.
+
 Edit's Font group is `Editor::font_band`, which moved the text look controls out of the inspector: the same
 `styles_ui` acts on new text being typed (`PageText`, with `page_text::held`'s selection, `refocus` after a change),
 before it the next new text's look (`tfont`, `tsize`, `tcolor`; greyed with nothing to style), the read tool's words

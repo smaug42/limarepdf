@@ -595,6 +595,7 @@ static VIEW: &[Group] = &[
                     Act::ToggleFields,
                     Act::TogglePageLabels,
                     Act::TogglePlanned,
+                    Act::ToggleMinimal,
                     Act::ToggleCompact,
                 ],
             ),

@@ -104,7 +104,7 @@ Click in a form field first.", then what it does.
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
 | Forms and sign | Fill fields ▾ (next and previous field, highlight fields, clear, reset or flatten the form), Fill and sign ▾ (saved signatures and initials, Create signature…, the date, your name, text, marks); Digital signature ▾ (sign, certify, the signatures in this document, digital IDs, trusted certificates) |
 | Protect | Mark redaction ▾ (the area tool, the selected words, all search results), Apply redactions…; Passwords, Remove hidden data |
-| View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
+| View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, the Minimal interface, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
 Export comments in Review; Create fields in Forms and sign; Your AI in View. They do nothing, and Tab passes them by. Turn
@@ -638,8 +638,8 @@ menus and the command band where they were.
 - **General:** your name for comments; the **Documents folder**, where Open, and Save As for a new document,
   start (**Choose…** picks it, **Clear** goes back to the folder last used); Keep recovery copies of unsaved
   changes ([Recovery copies](#recovery-copies)).
-- **Appearance:** theme, accent colour, page colours and Recolour pictures too, Compact commands, Show planned
-  features, and Selection controls on the right.
+- **Appearance:** theme, accent colour, page colours and Recolour pictures too, Minimal interface, Compact
+  commands, Show planned features, and Selection controls on the right.
 - **Pages:** the page layout new documents open in (and the one in front), Show cover page alone, Use the
   document's page labels, and Highlight fields.
 - **Editing:** editing page text a paragraph at a time, Snap to objects, your name and the date on stamps, Check
