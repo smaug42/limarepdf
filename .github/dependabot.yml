@@ -1,0 +1,15 @@
+# Updates for the GitHub Actions the workflows use, each pinned by commit SHA with its version
+# in a comment. Cargo updates stay with each release's preparation (docs/developer/releasing.md),
+# since some crates are pinned to exact versions on purpose. dtolnay/rust-toolchain follows its
+# `stable` branch, which Dependabot can't update: releasing.md says how to update it by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

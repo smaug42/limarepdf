@@ -21,6 +21,8 @@ How a release is made, for maintainers.
      `limarepdf-gui`'s winit entry at the winit version eframe uses; after a winit
      upgrade, whether it now handles Finder's "open documents" event or lets an app set its own delegate, either
      of which changes `macos.rs` (see [How it is built](architecture.md), BUG-28);
+   - merge or close Dependabot's open pull requests for the workflows' actions ([Pinned
+     actions](#pinned-actions)), and move `dtolnay/rust-toolchain` to its `stable` branch's latest commit by hand;
    - check that the user guide's screenshots (`docs/images/`) still show the app as it is, and retake any that
      don't: a 1000×660 window in the light theme under a virtual X server, made-up documents and digital IDs only,
      cut down to the part the page is about.
@@ -117,6 +119,17 @@ Without the `GPG_SIGNING_KEY` secret (a fork, say), a dry run still builds every
 but signs nothing (no `.asc` files, no rpm signature) and makes no attestations. It says so in a warning on the run
 and its summary, and uploads the files as `release-dry-run-unsigned`, a name `packages.yml` never takes. A tag run
 without the secret fails at the release job's first step.
+
+### Pinned actions
+
+Every action in the workflows is pinned by the full SHA of a commit, with its version in a comment
+(`actions/checkout@3d3c42e… # v7.0.1`), so a moved or replaced tag can't change what runs. Dependabot
+(`.github/dependabot.yml`) checks them weekly and opens one pull request for all the updates; Cargo updates aren't
+part of it, since they come with each release's preparation (step 1) and some crates are pinned on purpose.
+`dtolnay/rust-toolchain` has no releases and is used through its `stable` branch, so Dependabot can't update it:
+at each release preparation, pin it to that branch's latest commit
+(`gh api repos/dtolnay/rust-toolchain/commits/stable --jq .sha`) in every place it appears. A new action is added
+pinned the same way: `gh api repos/OWNER/REPO/commits/vX.Y.Z --jq .sha`.
 
 ## Package repositories
 
