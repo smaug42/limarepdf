@@ -5,11 +5,14 @@
 # people's names and certificates. The folder is git-ignored.
 #
 # Usage, from crates/limarepdf-core: sh tools/fetch-dss-samples.sh
+# Exits with 2 when some files couldn't be downloaded (each named, then a count).
 set -eu
 commit=9f3af8f2ca672b8948e0a3ee8687e53adf9f5c33
 base=https://raw.githubusercontent.com/esig/dss/$commit/dss-pades/src/test/resources/validation
 out=tests/data/signatures/dss
 mkdir -p "$out"
+listed=0
+missing=0
 for f in \
     adbe_crl_signed.pdf adbe_ocsp_signed.pdf BadEncodedCMS.pdf doc-firmado.pdf \
     hello_signed_INCSAVE_signed.pdf hello_signed_INCSAVE_signed_EDITED.pdf \
@@ -29,7 +32,23 @@ for f in \
     dss-2554/fieldmdp-include.pdf \
     "dss-818/Signature-P-IT_ADO-1 (HASH_FAILURE) (ECDSA).pdf" \
     dss-PLAIN-ECDSA/TeleSec_PKS_eIDAS_QES_CA_1-baseline-b.pdf; do
+    listed=$((listed + 1))
     url=$base/$(printf '%s' "$f" | sed 's/ /%20/g; s/(/%28/g; s/)/%29/g')
-    curl -sfL -o "$out/$(basename "$f")" "$url" || echo "failed: $f" >&2
+    dest=$out/$(basename "$f")
+    if curl -sfL -o "$dest.part" "$url"; then
+        mv "$dest.part" "$dest"
+    else
+        rm -f "$dest.part"
+        if [ -f "$dest" ]; then
+            echo "failed: $f (the copy already there is kept)" >&2
+        else
+            echo "failed: $f" >&2
+            missing=$((missing + 1))
+        fi
+    fi
 done
-echo "$(ls "$out" | wc -l) files in $out"
+echo "$((listed - missing)) of $listed files in $out"
+if [ "$missing" -gt 0 ]; then
+    echo "$missing files missing: their downloads failed (above)" >&2
+    exit 2
+fi

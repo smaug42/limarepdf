@@ -19,30 +19,31 @@
 //! turned and have the new comment. The bytes aren't compared: a save may renumber objects,
 //! compress streams and write numbers shorter.
 //!
-//! Each file is checked in a process of its own (this test run again for that file), two at a
-//! time (`SAVE_REOPEN_JOBS` changes it), with at most [`MEMORY_MB`] of memory on Linux, so a
-//! file that takes longer than [`TIMEOUT`] or needs more memory stops only its own check.
-//! Those files, and files
+//! Each file is checked in a process of its own (this test run again for that file, through
+//! `common/apart.rs`), two at a time (`SAVE_REOPEN_JOBS` changes it), with at most
+//! [`MEMORY_MB`] of memory on Linux, so a file that takes longer than [`TIMEOUT`] or needs
+//! more memory stops only its own check, and is stopped. Those files, and files
 //! LimarePDF can't open or draw at all, are counted and listed as skipped, not checked:
 //! `render_compare.rs` covers them. Every difference is
 //! listed in `target/tmp/save-reopen/index.html`, with pictures of pages that draw differently;
-//! `summary.txt` has one line per file. The test fails when a file not in
-//! `tools/save-reopen-known.txt` (the known limits, each with its reason) has a difference.
+//! `summary.txt` has one line per file. The counts of files checked, the same, different,
+//! skipped and not downloaded are printed. The test fails on a difference that isn't in
+//! `tools/save-reopen-known.txt` (the known limits: each names a file, the text of its
+//! difference and the reason, so another difference in the same file still fails), and when
+//! it checks nothing or, from [`MIN_FILES`] files, skips more than a tenth of them.
 //! `SAVE_REOPEN_ONLY` limits the run to files whose name contains it.
 
 mod common;
 
+use common::apart;
 use common::compare::{differences, side_by_side, Facts, Image};
 use common::corpus::{root, samples, Sample};
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{append_edits, Pdf};
 use rayon::prelude::*;
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::io::Read as _;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// How far, in any channel, a pixel may be outside the colours around it in the other
@@ -51,8 +52,9 @@ const TOLERANCE: u8 = 8;
 /// Time allowed for all of one file's checks.
 const TIMEOUT: Duration = Duration::from_secs(180);
 /// The memory each file's check may use, in MiB (on Linux; `SAVE_REOPEN_MEMORY` changes it).
-#[cfg(target_os = "linux")]
 const MEMORY_MB: u64 = 2048;
+/// From this many files a run fails when it skips more than a tenth of them.
+const MIN_FILES: usize = 20;
 /// The comment added in the second check.
 const NOTE: &str = "Save and reopen check";
 
@@ -310,38 +312,15 @@ const REPORT: &str = "save-reopen|";
 /// In the child process: [`check`] on the file `SAVE_REOPEN_FILE` names, on a thread with a
 /// large stack, its outcome printed for the parent.
 fn child(name: &str, out: &Path, scale: f32) {
-    // A file needing more memory than the limit stops this check alone, when an allocation
-    // fails, before the system runs short.
-    #[cfg(target_os = "linux")]
-    {
-        use rustix::process::{getrlimit, setrlimit, Resource, Rlimit};
-        let mb: u64 = std::env::var("SAVE_REOPEN_MEMORY")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(MEMORY_MB);
-        let hard = getrlimit(Resource::Data).maximum;
-        let soft = hard.map_or(mb << 20, |h| h.min(mb << 20));
-        setrlimit(
-            Resource::Data,
-            Rlimit {
-                current: Some(soft),
-                maximum: hard,
-            },
-        )
-        .expect("a memory limit");
-    }
+    apart::limit_memory("SAVE_REOPEN_MEMORY", MEMORY_MB);
     let s = samples(name)
         .into_iter()
         .find(|s| s.name == name)
         .expect("a listed file");
     let out = out.to_path_buf();
-    let outcome = std::thread::Builder::new()
-        .stack_size(256 << 20)
-        .spawn(move || check(&s, &out, scale))
-        .unwrap()
-        .join()
-        .unwrap_or_else(|_| Outcome::Skipped("the check panicked".into()));
-    let line = |s: &str| s.replace(['\n', '\r', '|'], " ");
+    let outcome = apart::on_big_stack(move || check(&s, &out, scale))
+        .unwrap_or_else(|| Outcome::Skipped("the check panicked".into()));
+    let line = apart::field;
     match outcome {
         Outcome::Skipped(why) => println!("{REPORT}skipped|{}", line(&why)),
         Outcome::Checked(found) => {
@@ -358,45 +337,19 @@ fn child(name: &str, out: &Path, scale: f32) {
 /// that takes too long or too much memory can be stopped without stopping the others: given
 /// up after [`TIMEOUT`].
 fn check_apart(s: &Sample, dpi: u32) -> Outcome {
-    let spawned = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "save_and_reopen_the_corpus", "--ignored"])
-        .args(["--nocapture", "--test-threads", "1"])
-        .env("SAVE_REOPEN_FILE", &s.name)
-        .env("SAVE_REOPEN_DPI", dpi.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn();
-    let mut child = match spawned {
-        Ok(c) => c,
-        Err(e) => return Outcome::Skipped(format!("no child process: {e}")),
-    };
-    // Read as it comes, so a full pipe can't stop the child.
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        text
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() > TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Outcome::Skipped("timed out".into());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Outcome::Skipped(e.to_string()),
+    let env = [
+        ("SAVE_REOPEN_FILE", s.name.clone()),
+        ("SAVE_REOPEN_DPI", dpi.to_string()),
+    ];
+    let (text, status) = match apart::run("save_and_reopen_the_corpus", &env, TIMEOUT) {
+        apart::Ran::Ended(text, status) => (text, status),
+        apart::Ran::TimedOut => {
+            return Outcome::Skipped(format!("timed out after {} s", TIMEOUT.as_secs()))
         }
+        apart::Ran::NotStarted(e) => return Outcome::Skipped(format!("no child process: {e}")),
     };
-    let text = reader.join().unwrap_or_default();
     let mut found = Vec::new();
-    // The first line follows the test harness's "test ... ".
-    for l in text
-        .lines()
-        .filter_map(|l| l.split_once(REPORT).map(|(_, l)| l))
-    {
+    for l in apart::reports(&text, REPORT) {
         let f: Vec<&str> = l.split('|').collect();
         match f[..] {
             ["skipped", why] => return Outcome::Skipped(why.to_string()),
@@ -414,30 +367,46 @@ fn check_apart(s: &Sample, dpi: u32) -> Outcome {
         }
     }
     // No outcome: the child was stopped.
-    #[cfg(unix)]
-    let signal = std::os::unix::process::ExitStatusExt::signal(&status);
-    #[cfg(not(unix))]
-    let signal = None;
-    let why = match (status.code(), signal) {
-        (_, Some(6)) => "stopped (signal 6), most likely for needing more memory than its \
-                         limit"
-            .to_string(),
-        (_, Some(9)) => "killed (signal 9), most likely for using too much memory".to_string(),
-        (_, Some(sig)) => format!("killed (signal {sig})"),
-        (code, None) => format!("the check stopped with status {}", code.unwrap_or(-1)),
-    };
-    Outcome::Skipped(why)
+    Outcome::Skipped(apart::why_stopped(status))
 }
 
-/// The known limits: file name to reason.
-fn known() -> BTreeMap<String, String> {
+/// A known limit: a file, the text its difference contains, and the reason.
+struct Known {
+    name: String,
+    text: String,
+    why: String,
+}
+
+impl Known {
+    /// Whether this limit is `f`, found in the file `name`.
+    fn covers(&self, name: &str, f: &Finding) -> bool {
+        self.name == name && said(f).contains(&self.text)
+    }
+}
+
+/// A finding as summary.txt and the known list say it: "edited: page 1 draws differently".
+fn said(f: &Finding) -> String {
+    format!("{}: {}", f.check, f.what)
+}
+
+/// The known limits, from tools/save-reopen-known.txt.
+fn known() -> Vec<Known> {
     let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/save-reopen-known.txt");
     let text = std::fs::read_to_string(&list).expect("tools/save-reopen-known.txt");
     text.lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .map(|l| match l.split_once(char::is_whitespace) {
-            Some((name, why)) => (name.to_string(), why.trim().to_string()),
-            None => (l.to_string(), String::new()),
+        .map(|l| {
+            let f: Vec<&str> = l.split(" | ").map(str::trim).collect();
+            match f[..] {
+                [name, text, why] if !text.is_empty() => Known {
+                    name: name.to_string(),
+                    text: text.to_string(),
+                    why: why.to_string(),
+                },
+                _ => panic!(
+                    "tools/save-reopen-known.txt: \"{l}\" isn't name | the difference | the reason"
+                ),
+            }
         })
         .collect()
 }
@@ -448,7 +417,7 @@ fn escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn report(results: &[(String, Outcome)], known: &BTreeMap<String, String>, dpi: u32) -> String {
+fn report(results: &[(String, Outcome)], known: &[Known], dpi: u32, missing: usize) -> String {
     let mut h = String::new();
     let checked = results
         .iter()
@@ -461,9 +430,11 @@ fn report(results: &[(String, Outcome)], known: &BTreeMap<String, String>, dpi: 
          img{{max-width:100%;border:1px solid #ccc}}section{{margin:24px 0}}\
          h2{{font-size:16px;margin:0 0 4px}}p{{margin:2px 0}}</style>\
          <h1>Saved and opened again</h1>\
-         <p>{checked} of {} files checked at {dpi} dpi. Each picture: before saving, after, \
+         <p>{checked} of {} files checked at {dpi} dpi, {} skipped (in summary.txt); \
+         {missing} listed files weren't downloaded. Each picture: before saving, after, \
          differences in red.</p>",
-        results.len()
+        results.len(),
+        results.len() - checked,
     );
     for (name, o) in results {
         let Outcome::Checked(found) = o else { continue };
@@ -471,11 +442,11 @@ fn report(results: &[(String, Outcome)], known: &BTreeMap<String, String>, dpi: 
             continue;
         }
         let _ = write!(h, "<section><h2>{}</h2>", escape(name));
-        if let Some(why) = known.get(name) {
-            let _ = write!(h, "<p><em>Known: {}</em></p>", escape(why));
-        }
         for f in found {
             let _ = write!(h, "<p>{}: {}</p>", f.check, escape(&f.what));
+            if let Some(k) = known.iter().find(|k| k.covers(name, f)) {
+                let _ = write!(h, "<p><em>Known: {}</em></p>", escape(&k.why));
+            }
             if let Some(p) = &f.picture {
                 let _ = write!(
                     h,
@@ -501,18 +472,13 @@ fn save_and_reopen_the_corpus() {
         return child(&name, &out, scale);
     }
     let only = std::env::var("SAVE_REOPEN_ONLY").unwrap_or_default();
-    let jobs: usize = std::env::var("SAVE_REOPEN_JOBS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
+    let jobs = apart::jobs("SAVE_REOPEN_JOBS");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("pages")).unwrap();
     let known = known();
 
-    let present: Vec<Sample> = samples(&only)
-        .into_iter()
-        .filter(|s| s.path().exists())
-        .collect();
+    let (present, absent): (Vec<Sample>, Vec<Sample>) =
+        samples(&only).into_iter().partition(|s| s.path().exists());
     assert!(
         !present.is_empty(),
         "no samples in {}: run sh tools/fetch-render-samples.sh",
@@ -534,53 +500,77 @@ fn save_and_reopen_the_corpus() {
     results.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut summary = String::new();
-    let (mut skipped, mut differ, mut unknown, mut fixed) = (0, 0, Vec::new(), Vec::new());
+    let (mut skipped, mut differ) = (0, 0);
+    let (mut unknown, mut seen) = (Vec::new(), vec![false; known.len()]);
     for (name, o) in &results {
         let line = match o {
             Outcome::Skipped(why) => {
                 skipped += 1;
                 format!("skipped   {name}  {why}")
             }
-            Outcome::Checked(found) if found.is_empty() => {
-                if known.contains_key(name) {
-                    fixed.push(name.clone());
-                }
-                format!("same      {name}")
-            }
+            Outcome::Checked(found) if found.is_empty() => format!("same      {name}"),
             Outcome::Checked(found) => {
                 differ += 1;
-                if !known.contains_key(name) {
-                    unknown.push(name.clone());
+                // Each difference is known only if a line of the list names it.
+                for f in found {
+                    match known.iter().position(|k| k.covers(name, f)) {
+                        Some(i) => seen[i] = true,
+                        None => unknown.push(format!("{name}  {}", said(f))),
+                    }
                 }
-                let all: Vec<String> = found
-                    .iter()
-                    .map(|f| format!("{}: {}", f.check, f.what))
-                    .collect();
+                let all: Vec<String> = found.iter().map(said).collect();
                 format!("differs   {name}  {}", all.join("; "))
             }
         };
         let _ = writeln!(summary, "{line}");
     }
     std::fs::write(out.join("summary.txt"), &summary).unwrap();
-    std::fs::write(out.join("index.html"), report(&results, &known, dpi)).unwrap();
+    std::fs::write(
+        out.join("index.html"),
+        report(&results, &known, dpi, absent.len()),
+    )
+    .unwrap();
 
+    let checked = results.len() - skipped;
     println!(
-        "{} files in {:.0?}: {} the same, {differ} differ, {skipped} skipped; see {}",
+        "{} files in {:.0?}: {} the same, {differ} differ, {skipped} skipped; {} listed files \
+         weren't downloaded; see {}",
         results.len(),
         start.elapsed(),
-        results.len() - differ - skipped,
+        checked - differ,
+        absent.len(),
         out.join("index.html").display()
     );
-    if !fixed.is_empty() {
+    // Known limits not seen in a file that was checked: fixed, or now different.
+    let gone: Vec<String> = known
+        .iter()
+        .zip(&seen)
+        .filter(|(k, &seen)| {
+            !seen
+                && results
+                    .iter()
+                    .any(|(n, o)| *n == k.name && matches!(o, Outcome::Checked(_)))
+        })
+        .map(|(k, _)| format!("{} | {}", k.name, k.text))
+        .collect();
+    if !gone.is_empty() {
         println!(
-            "known limits that are the same now (take them off tools/save-reopen-known.txt): {}",
-            fixed.join(", ")
+            "known limits not seen now (take them off tools/save-reopen-known.txt): {}",
+            gone.join(", ")
         );
     }
     assert!(
         unknown.is_empty(),
-        "differences in files not in tools/save-reopen-known.txt (listed in {}):\n{}",
+        "differences not in tools/save-reopen-known.txt (listed in {}):\n{}",
         out.join("summary.txt").display(),
         unknown.join("\n")
+    );
+    // A run that skips most of its files says little: about 1 in 200 is skipped (files
+    // LimarePDF can't open; summary.txt says why).
+    assert!(
+        checked > 0 && (results.len() < MIN_FILES || skipped * 10 <= results.len()),
+        "{skipped} of {} files skipped, too many for the run to count (see {})",
+        results.len(),
+        out.join("summary.txt").display()
     );
 }

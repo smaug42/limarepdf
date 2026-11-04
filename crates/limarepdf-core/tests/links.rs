@@ -1,6 +1,10 @@
 //! Reading link annotations from made-up pages, including the broken shapes real files
 //! have, and making and changing links (ENH-17).
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::{email_link, web_link, Link, LinkId, LinkTarget, Pdf, Unfollowed};
 use lopdf::{dictionary, Dictionary, Object, StringFormat};
 
@@ -450,28 +454,25 @@ fn cross_check_links_with_poppler() {
     p.add_link(0, &LINES[1..], &email, false).unwrap();
     let first = LinkTarget::Page(0);
     p.add_link(1, &LINES[..1], &first, true).unwrap();
-    let dir = std::env::temp_dir().join(format!("limarepdf-links-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("links");
     let file = dir.join("links.pdf");
     std::fs::write(&file, p.snapshot().unwrap()).unwrap();
 
-    let out = std::process::Command::new("pdfinfo")
-        .arg("-url")
-        .arg(&file)
-        .output()
-        .unwrap();
+    let out = tool::output(std::process::Command::new("pdfinfo").arg("-url").arg(&file)).unwrap();
     let urls = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{urls}");
     assert!(urls.contains("https://example.com/a"), "{urls}");
     assert!(urls.contains("mailto:you@example.com"), "{urls}");
 
     let png = dir.join("page");
-    let ok = std::process::Command::new("pdftoppm")
-        .args(["-r", "72", "-f", "1", "-l", "1", "-png", "-singlefile"])
-        .arg(&file)
-        .arg(&png)
-        .status()
-        .unwrap();
+    let ok = tool::output(
+        std::process::Command::new("pdftoppm")
+            .args(["-r", "72", "-f", "1", "-l", "1", "-png", "-singlefile"])
+            .arg(&file)
+            .arg(&png),
+    )
+    .unwrap()
+    .status;
     assert!(ok.success());
     let img = image::open(png.with_extension("png")).unwrap().to_rgb8();
     let blue_in = |rows: std::ops::Range<u32>| {
@@ -482,5 +483,4 @@ fn cross_check_links_with_poppler() {
     // The first line is underlined, the second isn't.
     assert!(blue_in(40..45) > 50, "no underline drawn by Poppler");
     assert_eq!(blue_in(46..61), 0);
-    std::fs::remove_dir_all(&dir).ok();
 }

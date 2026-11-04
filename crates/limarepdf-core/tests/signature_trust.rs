@@ -4,6 +4,9 @@
 //! Signatures are made on 2026-06-01; the chains are valid 2026 to 2036 unless noted.
 
 mod sigkit;
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
 
 use limarepdf_core::{
     read_certificates, verify_signatures, Added, SigStatus, SignatureReport, Trust, TrustList,
@@ -985,8 +988,7 @@ fn reading_certificate_files() {
 #[test]
 #[ignore]
 fn cross_check_with_openssl() {
-    let dir = scratch("openssl");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("trust-openssl");
     let pem_of = |names: &[&str], file: &str| {
         let mut out = String::new();
         for n in names {
@@ -1047,14 +1049,11 @@ fn cross_check_with_openssl() {
         if !chain.is_empty() {
             cmd.arg("-untrusted").arg(pem_of(chain, "chain.pem"));
         }
-        let ok = cmd
-            .arg(&leaf_pem)
-            .output()
+        let ok = tool::output(cmd.arg(&leaf_pem))
             .expect("openssl installed")
             .status
             .success();
         let limarepdf = trust(&signed_by(leaf, chain), &root()).is_trusted();
         assert_eq!(limarepdf, ok, "{leaf}: LimarePDF and OpenSSL disagree");
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }

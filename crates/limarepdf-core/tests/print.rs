@@ -3,6 +3,10 @@
 //! on sheets of the paper by LimarePDF (ENH-14), so the sheets are checked against the
 //! placements the model gives.
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::print::{
     lp_args, send, sheets as plan, Binding, Booklet, BookletSides, Orientation, PageOrder,
     PageSetup, Paper, PerSheet, PrintOptions, Scale, Sides,
@@ -836,13 +840,15 @@ fn poppler(path: &std::path::Path, i: usize) -> Pic {
     let stem = path.with_extension(format!("p{i}"));
     let png = path.with_extension(format!("p{i}.png"));
     let n = (i + 1).to_string();
-    let ok = std::process::Command::new("pdftoppm")
-        .args(["-r", "72", "-singlefile", "-png", "-f", &n, "-l", &n])
-        .arg(path)
-        .arg(&stem)
-        .status()
-        .expect("pdftoppm")
-        .success();
+    let ok = tool::output(
+        std::process::Command::new("pdftoppm")
+            .args(["-r", "72", "-singlefile", "-png", "-f", &n, "-l", &n])
+            .arg(path)
+            .arg(&stem),
+    )
+    .expect("pdftoppm")
+    .status
+    .success();
     assert!(ok, "pdftoppm failed");
     let img = image::open(png).unwrap().to_rgb8();
     Pic {
@@ -931,7 +937,7 @@ fn cross_check_sheets_pass_cupsfilter_unscaled() {
         for o in options {
             cmd.args(["-o", o]);
         }
-        let out = cmd.arg(&sheet).output().expect("cupsfilter");
+        let out = tool::output(cmd.arg(&sheet)).expect("cupsfilter");
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{err}");
         let filtered = dir.join(format!("{name}-filtered.pdf"));

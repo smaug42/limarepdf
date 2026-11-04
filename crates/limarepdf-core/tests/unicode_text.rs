@@ -5,6 +5,10 @@
 //! nothing. Emoji are written where a font has them, and refused with a message where
 //! not (BUG-24).
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
     typed_signature, Bates, Family, FieldValue, FontChoice, HeaderFooter, InkColor, Pdf, SignStyle,
@@ -441,23 +445,17 @@ fn selected_text_as_a_plain_page_keeps_what_it_can_write() {
 }
 
 /// Runs `name` with `args` (`{}` the file holding `bytes`): its output and messages.
-fn tool(name: &str, args: &[&str], bytes: &[u8]) -> (String, String) {
+fn run_tool(name: &str, args: &[&str], bytes: &[u8]) -> (String, String) {
     // A folder of its own for each run, as the cross-checks run side by side.
-    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("limarepdf-unicode-{}-{run}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("unicode");
     let path = dir.join(format!("{name}.pdf"));
     std::fs::write(&path, bytes).unwrap();
     let args: Vec<String> = args
         .iter()
         .map(|a| a.replace("{}", path.to_str().unwrap()))
         .collect();
-    let out = std::process::Command::new(name)
-        .args(&args)
-        .output()
+    let out = tool::output(std::process::Command::new(name).args(&args))
         .unwrap_or_else(|e| panic!("{name} installed: {e}"));
-    std::fs::remove_dir_all(&dir).unwrap();
     assert!(out.status.success(), "{name} failed");
     let s = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     (s(&out.stdout), s(&out.stderr))
@@ -511,7 +509,7 @@ fn cross_check_every_writer_with_poppler_and_ghostscript() {
         "ΠΡΟΣΧΕΔΙΟ",
         "Ωmega",
     ];
-    let (text, _) = tool("pdftotext", &["-raw", "{}", "-"], &bytes);
+    let (text, _) = run_tool("pdftotext", &["-raw", "{}", "-"], &bytes);
     let gs = [
         "-q",
         "-dNOPAUSE",
@@ -521,7 +519,7 @@ fn cross_check_every_writer_with_poppler_and_ghostscript() {
         "-sOutputFile=-",
         "{}",
     ];
-    let (gs_text, gs_errors) = tool("gs", &gs, &bytes);
+    let (gs_text, gs_errors) = run_tool("gs", &gs, &bytes);
     // Both space and break the turned watermark as drawn: compare without spaces.
     let bare = |s: &str| -> String { s.split_whitespace().collect() };
     let (text, gs_text) = (bare(&text), bare(&gs_text));
@@ -530,7 +528,7 @@ fn cross_check_every_writer_with_poppler_and_ghostscript() {
         assert!(gs_text.contains(&w), "Ghostscript: {w:?} in {gs_text:?}");
     }
     assert!(gs_errors.trim().is_empty(), "Ghostscript: {gs_errors}");
-    let (fonts, errors) = tool("pdffonts", &["{}"], &bytes);
+    let (fonts, errors) = run_tool("pdffonts", &["{}"], &bytes);
     assert!(errors.trim().is_empty(), "pdffonts: {errors}");
     let embedded: Vec<&str> = fonts
         .lines()
@@ -555,7 +553,7 @@ fn cross_check_every_writer_with_poppler_and_ghostscript() {
         "-sDEVICE=nullpage",
         "{}",
     ];
-    let (out, errors) = tool("gs", &draw, &bytes);
+    let (out, errors) = run_tool("gs", &draw, &bytes);
     assert!(
         (out + &errors).trim().is_empty(),
         "Ghostscript drawing: {errors}"
@@ -854,20 +852,20 @@ fn another_apps_text_box_is_never_redrawn_with_question_marks() {
 /// The number of dark pixels on the first page of the PDF `bytes` as Poppler draws it, at
 /// 2 pixels per point.
 fn poppler_ink(bytes: &[u8]) -> usize {
-    let dir = std::env::temp_dir().join(format!("limarepdf-emoji-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("emoji");
     let pdf = dir.join("in.pdf");
     std::fs::write(&pdf, bytes).unwrap();
     let out = dir.join("out");
-    let run = std::process::Command::new("pdftoppm")
-        .args(["-r", "144", "-gray", "-singlefile"])
-        .arg(&pdf)
-        .arg(&out)
-        .status()
-        .expect("pdftoppm installed");
+    let run = tool::output(
+        std::process::Command::new("pdftoppm")
+            .args(["-r", "144", "-gray", "-singlefile"])
+            .arg(&pdf)
+            .arg(&out),
+    )
+    .expect("pdftoppm installed")
+    .status;
     assert!(run.success(), "pdftoppm failed");
     let pgm = std::fs::read(dir.join("out.pgm")).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
     // A binary PGM: "P5", width, height and the largest value, then a byte a pixel.
     let mut fields = 0;
     let mut at = 0;
@@ -910,9 +908,9 @@ fn cross_check_emoji_with_poppler() {
         assert!(p.page_text(0).contains(&line), "{name}: LimarePDF");
         let bytes = p.to_bytes().unwrap();
         // Through the text map, characters beyond the first plane included.
-        let (text, _) = tool("pdftotext", &["{}", "-"], &bytes);
+        let (text, _) = run_tool("pdftotext", &["{}", "-"], &bytes);
         assert!(text.contains(&line), "{name}: poppler read {text:?}");
-        let (fonts, errors) = tool("pdffonts", &["{}"], &bytes);
+        let (fonts, errors) = run_tool("pdffonts", &["{}"], &bytes);
         assert!(errors.trim().is_empty(), "{name}: pdffonts: {errors}");
         let row = fonts.lines().nth(2).unwrap();
         let flags: Vec<&str> = row.split_whitespace().rev().skip(2).take(3).collect();

@@ -4,6 +4,9 @@
 //! should get. Shadow attacks are stage 3's (allowed-changes analysis).
 
 mod sigkit;
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
 
 use limarepdf_core::{
     verify_signatures, DigitalSignature, LockAction, Permissions, SigKind, SigStatus, SigWarning,
@@ -1715,8 +1718,7 @@ fn der_len(b: &[u8]) -> usize {
 #[test]
 #[ignore]
 fn cross_check_with_pdfsig_and_openssl() {
-    let dir = std::env::temp_dir().join(format!("limarepdf-sig-cross-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("sig-cross");
     let mut changed = signed();
     replace_once(&mut changed, b"(Testing)", b"(Tasting)");
     let files: Vec<(&str, Vec<u8>, &str)> = vec![
@@ -1783,9 +1785,7 @@ fn cross_check_with_pdfsig_and_openssl() {
     for (name, bytes, pdfsig_says) in &files {
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
-        let out = std::process::Command::new("pdfsig")
-            .arg(&path)
-            .output()
+        let out = tool::output(std::process::Command::new("pdfsig").arg(&path))
             .expect("pdfsig installed");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains(pdfsig_says), "{name}: pdfsig said {text}");
@@ -1796,12 +1796,11 @@ fn cross_check_with_pdfsig_and_openssl() {
             "{name}"
         );
         assert_eq!(
-            openssl_accepts(&dir, bytes),
+            openssl_accepts(dir.path(), bytes),
             limarepdf_valid,
             "{name}: openssl and LimarePDF disagree"
         );
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// Whether OpenSSL accepts the CMS of the last signature in `bytes` over its signed
@@ -1819,23 +1818,25 @@ fn openssl_accepts(dir: &std::path::Path, bytes: &[u8]) -> bool {
         [&bytes[..b], &bytes[c..c + d]].concat(),
     )
     .unwrap();
-    std::process::Command::new("openssl")
-        .args([
-            "cms",
-            "-verify",
-            "-binary",
-            "-noverify",
-            "-inform",
-            "DER",
-            "-in",
-        ])
-        .arg(dir.join("sig.der"))
-        .arg("-content")
-        .arg(dir.join("data.bin"))
-        .args(["-out", "/dev/null"])
-        .status()
-        .expect("openssl installed")
-        .success()
+    tool::output(
+        std::process::Command::new("openssl")
+            .args([
+                "cms",
+                "-verify",
+                "-binary",
+                "-noverify",
+                "-inform",
+                "DER",
+                "-in",
+            ])
+            .arg(dir.join("sig.der"))
+            .arg("-content")
+            .arg(dir.join("data.bin"))
+            .args(["-out", "/dev/null"]),
+    )
+    .expect("openssl installed")
+    .status
+    .success()
 }
 
 /// The RSA-PSS-only key cases against OpenSSL's check of the same CMS, which applies the
@@ -1843,8 +1844,7 @@ fn openssl_accepts(dir: &std::path::Path, bytes: &[u8]) -> bool {
 #[test]
 #[ignore]
 fn cross_check_rsa_pss_keys_with_openssl() {
-    let dir = std::env::temp_dir().join(format!("limarepdf-pss-cross-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("pss-cross");
     // Left out because LimarePDF is stricter by design: OpenSSL 3.6 ignores the key's
     // trailer field, which RFC 4055 allows only to be 1.
     let stricter = ["pss_unknown_trailer"];
@@ -1853,10 +1853,9 @@ fn cross_check_rsa_pss_keys_with_openssl() {
             continue;
         }
         assert_eq!(
-            openssl_accepts(&dir, &pdf),
+            openssl_accepts(dir.path(), &pdf),
             report(&pdf).all_valid(),
             "{name}: openssl and LimarePDF disagree"
         );
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }

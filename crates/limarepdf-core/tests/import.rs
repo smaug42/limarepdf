@@ -1,5 +1,9 @@
 //! Importing PNG, JPEG and TIFF files as pages.
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use image::codecs::jpeg::{JpegEncoder, PixelDensity};
 use image::metadata::Orientation;
 use image::{DynamicImage, GrayImage, Rgb, RgbImage, Rgba, RgbaImage};
@@ -457,19 +461,20 @@ fn cmyk_jpegs_become_pages_and_are_added_and_replace_pictures() {
 #[test]
 #[ignore]
 fn cross_check_upright_pictures_with_poppler() {
-    let dir = std::env::temp_dir().join(format!("limarepdf-upright-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("upright");
     let poppler = |p: &mut Pdf, name: &str| {
         let path = dir.join(format!("{name}.pdf"));
         std::fs::write(&path, p.to_bytes().unwrap()).unwrap();
         let stem = dir.join(name);
-        let ok = std::process::Command::new("pdftoppm")
-            .args(["-r", "144", "-singlefile", "-png"])
-            .arg(&path)
-            .arg(&stem)
-            .status()
-            .expect("pdftoppm")
-            .success();
+        let ok = tool::output(
+            std::process::Command::new("pdftoppm")
+                .args(["-r", "144", "-singlefile", "-png"])
+                .arg(&path)
+                .arg(&stem),
+        )
+        .expect("pdftoppm")
+        .status
+        .success();
         assert!(ok);
         image::open(stem.with_extension("png")).unwrap().to_rgb8()
     };
@@ -506,7 +511,6 @@ fn cross_check_upright_pictures_with_poppler() {
         let at = (100.0 + (80.0 - w) / 2.0, 100.0 + (80.0 - h) / 2.0);
         expect(&img, &want, at, k, &format!("{code}: replaced"));
     }
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 // ------------------------------------------------------------ colour data

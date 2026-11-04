@@ -12,6 +12,10 @@
 //! again in another font. Opt-in: `cargo test -p limarepdf-core --test own_font -- --ignored
 //! cross_check` has Poppler read and draw edited lines.
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::CharRefusal::{Ambiguous, Contradicted, Encoding, NoCode, NoGlyph, Width};
 use limarepdf_core::{
     bundled_face, CharRefusal, FontChoice, FontRefusal, LineFont, ObjectKind, PageObject, PartFont,
@@ -2084,27 +2088,14 @@ fn a_line_that_would_read_as_other_words_is_written_in_another_font_and_said() {
     assert!(fonts[1].starts_with("LimareEd"), "{fonts:?}");
 }
 
-/// The folder for one run of a Poppler tool, as the cross-checks run side by side.
-fn run_dir() -> std::path::PathBuf {
-    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let name = format!("limarepdf-own-font-{}-{run}", std::process::id());
-    let dir = std::env::temp_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
 /// The text Poppler's `pdftotext` reads in the PDF `bytes`, its words one space apart.
 fn poppler_text(bytes: &[u8]) -> String {
-    let dir = run_dir();
+    // A folder for each run, as the cross-checks run side by side.
+    let dir = tool::Scratch::new("own-font");
     let pdf = dir.join("in.pdf");
     std::fs::write(&pdf, bytes).unwrap();
-    let out = std::process::Command::new("pdftotext")
-        .arg(&pdf)
-        .arg("-")
-        .output()
+    let out = tool::output(std::process::Command::new("pdftotext").arg(&pdf).arg("-"))
         .expect("pdftotext installed");
-    std::fs::remove_dir_all(&dir).unwrap();
     assert!(out.status.success(), "pdftotext failed");
     spaced(&String::from_utf8_lossy(&out.stdout))
 }
@@ -2117,19 +2108,20 @@ fn spaced(text: &str) -> String {
 /// The first page of the PDF `bytes` as Poppler's `pdftoppm` draws it in grey at 2 pixels a
 /// point: its width, and a byte a pixel.
 fn poppler_page(bytes: &[u8]) -> (usize, Vec<u8>) {
-    let dir = run_dir();
+    let dir = tool::Scratch::new("own-font");
     let pdf = dir.join("in.pdf");
     std::fs::write(&pdf, bytes).unwrap();
-    let ok = std::process::Command::new("pdftoppm")
-        .args(["-r", "144", "-gray", "-singlefile"])
-        .arg(&pdf)
-        .arg(dir.join("out"))
-        .status()
-        .expect("pdftoppm installed")
-        .success();
+    let ok = tool::output(
+        std::process::Command::new("pdftoppm")
+            .args(["-r", "144", "-gray", "-singlefile"])
+            .arg(&pdf)
+            .arg(dir.join("out")),
+    )
+    .expect("pdftoppm installed")
+    .status
+    .success();
     assert!(ok, "pdftoppm failed");
     let pgm = std::fs::read(dir.join("out.pgm")).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
     // A binary PGM: "P5", width, height and the largest value, a space, then a byte a pixel.
     let mut fields = Vec::new();
     let mut at = 0;
@@ -2204,8 +2196,7 @@ fn poppler_sees(why: &str, mut p: Pdf, o: &PageObject, part: TextPart, reference
 #[test]
 #[ignore]
 fn cross_check_edited_lines_with_poppler() {
-    let have = |tool: &str| std::process::Command::new(tool).arg("-v").output().is_ok();
-    if !have("pdftotext") || !have("pdftoppm") {
+    if !tool::installed("pdftotext", "-v") || !tool::installed("pdftoppm", "-v") {
         eprintln!("pdftotext or pdftoppm (Poppler) isn't installed: nothing checked");
         return;
     }

@@ -5,6 +5,9 @@
 //! OpenSSL-made test files in `tests/data/signatures/ids` (password "mpe-test-password").
 
 mod sigkit;
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
 
 use limarepdf_core::{
     append_edits, sign_document, verify_signatures, AnnotKind, AppendedEdits, ChangeKind, Cipher,
@@ -1240,8 +1243,7 @@ fn signed_hidden_content_cant_be_checked_or_added_to() {
 #[test]
 #[ignore]
 fn cross_check_with_pdfsig_and_openssl() {
-    let dir = std::env::temp_dir().join(format!("limarepdf-signing-cross-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("signing-cross");
     let doc = form_doc(&[("Approver", None)], false);
     let rsa1 = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
     let mut certified = req(p384(), new_box(2));
@@ -1281,9 +1283,7 @@ fn cross_check_with_pdfsig_and_openssl() {
     for (name, bytes, count) in &files {
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
-        let out = std::process::Command::new("pdfsig")
-            .arg(&path)
-            .output()
+        let out = tool::output(std::process::Command::new("pdfsig").arg(&path))
             .expect("pdfsig installed");
         let text = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
@@ -1309,26 +1309,27 @@ fn cross_check_with_pdfsig_and_openssl() {
             [&bytes[..b], &bytes[c..c + d]].concat(),
         )
         .unwrap();
-        let ok = std::process::Command::new("openssl")
-            .args([
-                "cms",
-                "-verify",
-                "-binary",
-                "-noverify",
-                "-inform",
-                "DER",
-                "-in",
-            ])
-            .arg(dir.join("sig.der"))
-            .arg("-content")
-            .arg(dir.join("data.bin"))
-            .args(["-out", "/dev/null"])
-            .status()
-            .expect("openssl installed")
-            .success();
+        let ok = tool::output(
+            std::process::Command::new("openssl")
+                .args([
+                    "cms",
+                    "-verify",
+                    "-binary",
+                    "-noverify",
+                    "-inform",
+                    "DER",
+                    "-in",
+                ])
+                .arg(dir.join("sig.der"))
+                .arg("-content")
+                .arg(dir.join("data.bin"))
+                .args(["-out", "/dev/null"]),
+        )
+        .expect("openssl installed")
+        .status
+        .success();
         assert!(ok, "{name}: openssl cms -verify failed");
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// The [`Hide`] files as poppler reads them, before and after LimarePDF signs them:
@@ -1336,13 +1337,10 @@ fn cross_check_with_pdfsig_and_openssl() {
 #[test]
 #[ignore]
 fn cross_check_hidden_content_with_poppler() {
-    let dir = std::env::temp_dir().join(format!("limarepdf-signing-hidden-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let run = |tool: &str, path: &std::path::Path| {
-        let out = std::process::Command::new(tool)
-            .arg(path)
-            .args(if tool == "pdftotext" { &["-"][..] } else { &[] })
-            .output()
+    let dir = tool::Scratch::new("signing-hidden");
+    let run = |program: &str, path: &std::path::Path| {
+        let extra: &[&str] = if program == "pdftotext" { &["-"] } else { &[] };
+        let out = tool::output(std::process::Command::new(program).arg(path).args(extra))
             .expect("poppler installed");
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
@@ -1370,7 +1368,6 @@ fn cross_check_hidden_content_with_poppler() {
             "{hide:?}: {sigs}"
         );
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// The length of the DER element at the start of `b`.

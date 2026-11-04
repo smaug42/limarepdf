@@ -4,6 +4,10 @@
 //! descriptions, comments and page labels), edited and saved. And emoji in text strings
 //! LimarePDF writes, sequences included.
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::{BookmarkPlace, FieldValue, Info, Pdf};
 use lopdf::{dictionary, Object, StringFormat};
 
@@ -231,15 +235,15 @@ fn comments_bookmarks_and_properties_keep_emoji_and_their_sequences() {
 #[test]
 #[ignore]
 fn cross_check_pdfdocencoding_with_poppler() {
-    let dir = std::env::temp_dir().join(format!("limarepdf-pdfdoc-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tool::Scratch::new("pdfdoc");
     let path = dir.join("pdfdoc.pdf");
     std::fs::write(&path, file().to_bytes().unwrap()).unwrap();
-    let out = std::process::Command::new("pdfinfo")
-        .args(["-enc", "UTF-8"])
-        .arg(&path)
-        .output()
-        .expect("pdfinfo");
+    let out = tool::output(
+        std::process::Command::new("pdfinfo")
+            .args(["-enc", "UTF-8"])
+            .arg(&path),
+    )
+    .expect("pdfinfo");
     let out = String::from_utf8(out.stdout).unwrap();
     let title = out
         .lines()
@@ -247,5 +251,4 @@ fn cross_check_pdfdocencoding_with_poppler() {
         .expect("a title line")
         .trim();
     assert_eq!(title, file().info().title.unwrap());
-    std::fs::remove_dir_all(dir).unwrap();
 }
