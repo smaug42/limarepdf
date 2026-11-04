@@ -152,13 +152,18 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice, lines: &mut Lines) {
             true => format!("{} has no {face}.", f.family_name()),
             false => actions::why_not(&open, actions::get(act)).into(),
         };
-        (tip.clone(), format!("{tip}\n{why}"))
+        (tip, why)
+    };
+    let greyed = |ui: &mut egui::Ui, act: Act, why: &str| {
+        actions::greyed_why(ui, actions::get(act), why);
     };
     let b = egui::RichText::new("B").family(crate::theme::semibold());
     let b = square(egui::Button::new(b), bold);
-    let (hover, greyed) = tip(Act::Bold, "bold");
+    let (hover, why) = tip(Act::Bold, "bold");
     let r = ui.add_enabled(has(!f.bold, f.italic), b);
-    let r = r.on_hover_text(hover).on_disabled_hover_text(greyed);
+    let r = r
+        .on_hover_text(hover)
+        .on_disabled_hover_ui(|ui| greyed(ui, Act::Bold, &why));
     if r.clicked() {
         bold = !bold;
     }
@@ -168,9 +173,11 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice, lines: &mut Lines) {
     // to stand as tall as the B.
     let i = crate::theme::icon(crate::icon::TEXT_ITALIC).size(size + 3.0);
     let i = square(egui::Button::new(i), f.italic);
-    let (hover, greyed) = tip(Act::Italic, "italic");
+    let (hover, why) = tip(Act::Italic, "italic");
     let r = ui.add_enabled(has(bold, !f.italic), i);
-    let r = r.on_hover_text(hover).on_disabled_hover_text(greyed);
+    let r = r
+        .on_hover_text(hover)
+        .on_disabled_hover_ui(|ui| greyed(ui, Act::Italic, &why));
     if r.clicked() {
         f.italic = !f.italic;
     }
@@ -192,9 +199,11 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice, lines: &mut Lines) {
     ] {
         let glyph = crate::theme::icon(icon).size(size + 3.0);
         let tip = actions::tooltip(&ctx, actions::get(act));
-        let greyed = format!("{tip}\n{}", actions::why_not(&open, actions::get(act)));
+        let why = actions::why_not(&open, actions::get(act));
         let r = ui.add(square(egui::Button::new(glyph), *on));
-        let r = r.on_hover_text(tip).on_disabled_hover_text(greyed);
+        let r = r
+            .on_hover_text(tip)
+            .on_disabled_hover_ui(|ui| greyed(ui, act, why));
         if r.clicked() {
             *on = !*on;
         }

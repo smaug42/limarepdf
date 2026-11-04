@@ -9,8 +9,8 @@ once. Every change here is one step to undo with Ctrl+Z. Shortcuts are written w
 
 ## See every page at once
 
-Choose **Pages > Organise**, or **Organise pages** at the right of the status bar (also ☰ > View > Organise pages
-and the command palette). The pages make way for a grid of cards, one for each page, as in a slide sorter: the
+Choose **Pages > Organise**, or **Organise pages** at the right of the status bar (also ☰ > Pages > Organise pages
+and the command search). The pages make way for a grid of cards, one for each page, as in a slide sorter: the
 page, with a checkbox and its name under it. The heading above the cards counts the pages and those selected,
 such as "12 pages · 4 selected", and so does the status bar ("4 of 12 pages selected"). The command band shows
 **Pages**, and the Pages view on the left folds away while you organise.
@@ -74,9 +74,9 @@ Tab to the thumbnails: they take the same keys, in a column, and the page view g
 Moved a place or a row, pages that are apart stay apart, each going as far as it can; moved to the start or the
 end, they go together. The pages moved stay selected, and each move is one step for Undo.
 
-### Cut and paste pages
+### Cut, copy and paste pages
 
-To move pages a long way, cut them and paste them where they go:
+To move pages a long way, or into another document, cut them and paste them where they go:
 
 1. Select the pages and press Ctrl+X (or **Edit > Cut**, or **Cut** in the right-click menu). They stay where
    they are, faint, until you paste them.
@@ -87,9 +87,25 @@ To move pages a long way, cut them and paste them where they go:
    selected, in one step that Undo takes back.
 
 Esc takes the cut back, and the pages stay selected; Esc again lets go of them. Pasting with no new place chosen
-changes nothing, and a message says what to do. The clipboard gets the pages' names, such as "Pages 2, 3 of
-report.pdf", not the pages themselves. Pages can't be copied yet (to have them twice), nor pasted into another
-document.
+changes nothing, and a message says what to do.
+
+To paste them into another document, go to its tab and paste there: the pages are added there and taken out of
+the document they were cut from, each change one step for Undo in its own document. Cutting every page of a
+document copies them instead, because a document needs at least one page, and a message says so.
+
+To have pages twice, copy them: select them and press Ctrl+C (or **Edit > Copy**, or **Copy** in the right-click
+menu), then paste in this document or another as above. The pages you copied stay as they are. Each paste adds
+another copy, selected, in one step that Undo takes back.
+
+Copying or cutting something else in LimarePDF, text or pages, replaces the pages copied or cut, as in a word
+processor; pages that were cut stay where they are. Copying in another app doesn't replace them. The clipboard
+gets the pages' names, such as "Pages 2, 3 of report.pdf", not the pages themselves, so pages can't be pasted
+into another app.
+
+Pasting pages that come from a password-protected document makes the document you paste into protected too:
+LimarePDF keeps no recovery copies of it. Pages with form fields are asked about first, as when you
+[add pages from a file](#when-the-files-added-have-form-fields): the fields are drawn onto the pages with their
+answers and can't be filled in afterwards.
 
 ## Rotate, delete and extract pages
 
@@ -120,9 +136,13 @@ The files are added in the order chosen, in one step that Ctrl+Z takes back. A p
 password: **Add pages** adds its pages, **Skip this file** leaves it out and adds the others, and **Cancel** adds
 nothing. A file that can't be read adds nothing either, and a message names it.
 
-Inserting or appending PDFs adds the pages only: the bookmarks and named destinations of the files added aren't
-carried over. Pages from a password-protected file make the whole document count as protected, so it gets no
-[recovery copies](gui.md#recovery-copies) while it is open.
+The bookmarks of the files added come with their pages, as Word keeps the headings of a file inserted into a
+document. In the [Bookmarks](reading-and-finding.md#bookmarks) view they go at the top level, among the
+document's own in page order (after all of them when you append), each file's arranged as it was. Links in the
+pages added keep going where they went: the places a file names for its links (named destinations) come with it,
+and one whose name the document already uses is renamed (`intro` becomes `intro-2`), with the links and
+bookmarks that go to it. Pages from a password-protected file make the whole document count as protected, so it
+gets no [recovery copies](gui.md#recovery-copies) while it is open.
 
 ### When the files added have form fields
 
@@ -157,7 +177,7 @@ anything: **Replace** replaces them, **Cancel** writes no files at all.
 
 ## Remove blank pages
 
-**Pages > Delete ▾ > Remove blank pages** (or ☰ > Pages > Remove blank pages, or the command palette) deletes every
+**Pages > Delete ▾ > Remove blank pages** (or ☰ > Pages > Remove blank pages, or the command search) deletes every
 page that is one even colour, give or take scanner specks, faint show-through or a lone page number, and lists the
 pages it removed. Undo brings them back. A document whose pages are all blank is left alone.
 
@@ -200,8 +220,8 @@ the page has now. When a document has labels, the status bar shows the label wit
 stay with their pages when pages are deleted or moved.
 
 To have LimarePDF number every document's pages 1, 2, 3 from the first page instead, turn off View > Show > **Use
-the document's page labels** (also in ☰ > View). The labels stay in the document, and the status bar still shows
-them. The choice is remembered between runs.
+the document's page labels** (also in ☰ > View > Show). The labels stay in the document, and the status bar still
+shows them. The choice is remembered between runs.
 
 ## What removed pages leave behind
 

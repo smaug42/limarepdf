@@ -13,6 +13,7 @@ mod blank;
 mod cms_check;
 mod cms_write;
 mod colour;
+mod compact;
 mod decorate;
 pub mod disk;
 mod display;
@@ -31,10 +32,12 @@ mod imgs;
 mod incremental;
 mod inline;
 mod installed_fonts;
+mod ipp;
 mod labels;
 mod layout;
 mod links;
 mod matrix;
+mod merge;
 mod objects;
 mod ocr;
 mod outline;
@@ -44,9 +47,11 @@ mod own_font;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
+mod paper;
 mod para_frames;
 mod para_write;
 mod paragraph;
+mod pictures;
 mod pkcs12;
 mod preview_font;
 pub mod print;
@@ -56,17 +61,20 @@ mod radicals;
 mod reading;
 mod redact;
 mod redact_img;
+mod reduce;
 pub mod render;
 mod repair;
 mod rewrap;
 mod sanitise;
 mod scan;
 mod security;
+mod sheets;
 mod sig_changes;
 mod sig_save;
 mod sig_sign;
 mod sig_verify;
 mod sign;
+pub mod spelling;
 mod stamps;
 mod stand_in;
 mod std14;
@@ -99,17 +107,21 @@ pub use ids::{
 pub use imgs::{image_dimensions, picture_preview, ImageImport};
 pub use labels::{LabelRange, LabelStyle};
 pub use layout::{fallback_faces, fallbacks, set_in, warm_fallbacks};
-pub use links::{Link, LinkTarget};
+pub use links::{email_link, web_link, Link, LinkId, LinkTarget, Unfollowed};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord, TextSpan};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
-pub use outline::{BookmarkPlace, OutlineItem};
+pub use outline::{bookmark_moves, bookmark_step, BookmarkPlace, BookmarkStep, OutlineItem};
 pub use overlay::{
     picture_size, text_width, today_iso, Bates, HeaderFooter, ImageWatermark, Placed, Watermark,
 };
 pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
+pub use pictures::{png_file, PictureFormat, SavedPictures};
 pub use redact::{PageRedaction, RedactReport};
+pub use reduce::{
+    KeptWhy, Most, PictureQuality, ReduceOptions, ReducePreview, Reduced, PREVIEW_SIDE,
+};
 pub use rewrap::{
     DocWords, Hyphen, LineEndHyphen, Paragraph, ParagraphPiece, ParagraphSetting, SetLine,
     SetParagraph,

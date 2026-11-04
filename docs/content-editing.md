@@ -68,7 +68,7 @@ character you clicked along the line, and a double-click selects the word you cl
 
 To edit whole paragraphs, their lines rewrapping as you type, as in a word processor, turn on **Paragraph** in
 **Edit > Text flow** in the band. It shows pressed while it is on. It is also **Edit as paragraph** in the
-right-click menu and the command search (Ctrl+K), and **Paragraph** in the inspector's **Editing** row while text
+right-click menu and the command search (Ctrl+Shift+P), and **Paragraph** in the inspector's **Editing** row while text
 is selected. Then:
 
 1. Double-click a line of the paragraph with the read tool, or click it with the Text tool (or choose **Edit >
@@ -102,12 +102,14 @@ While you type:
 - To align the paragraph, use **Edit > Alignment** in the band or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J, as in
   Word ([Align text](#align-text)): the lines move across between the paragraph's edges at once, keeping their
   words, and the editing stays open. Ctrl+Z inside takes the change back.
-- Once you move a paragraph's edges or change its alignment, LimarePDF keeps a small note of its edges and indent
-  in the file (in the page's private data, which other apps don't show), so the paragraph opens again with the
-  same edges, after saving too. Without it, a centred paragraph would open narrower, as its lines no longer
-  reach its edges. If another app moves the paragraph's lines, its edges are worked out from the lines again.
+- Once you move a paragraph's edges, change its alignment or split it with Enter, LimarePDF keeps a small note of
+  its edges, indent and line spacing in the file (in the page's private data, which other apps don't show), so
+  the paragraph opens again with the same edges, after saving too. Without it, a centred paragraph would open
+  narrower, as its lines no longer reach its edges. If another app moves the paragraph's lines, its edges are
+  worked out from the lines again.
 - **Enter** starts a new paragraph within the frame, with the first line's indent if it has one; **Shift+Enter**
-  starts a new line.
+  starts a new line. As in Word, each new paragraph keeps the frame: opened again, even with a single line, it
+  is a paragraph between the same edges, with the same line spacing, and can be aligned there.
 - Each word keeps its own style, and letters keep their font, as in a line (see
   [Edit a line of text](#edit-a-line-of-text)). Ctrl+B, Ctrl+I, Ctrl+U, **Edit > Font**, the floating toolbar and
   the right-click menu act on what is selected in the paragraph. The inspector shows its font and size, the PDF's
@@ -133,9 +135,8 @@ LimarePDF is sure is a paragraph) are typed over, deleted and cut in the paragra
 
 ## Align text
 
-Paragraphs of the page's text are aligned as in a word processor: use **Align left**, **Centre**, **Align right**
-or **Justify** in **Edit > Alignment** in the band, or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J (⌘L, ⌘E, ⌘R or ⌘J on
-a Mac). They act on:
+Text is aligned as in a word processor: use **Align left**, **Centre**, **Align right** or **Justify** in **Edit >
+Alignment** in the band, or press Ctrl+L, Ctrl+E, Ctrl+R or Ctrl+J (⌘L, ⌘E, ⌘R or ⌘J on a Mac). They act on:
 
 - **A paragraph you are editing** (with **Paragraph** on): its lines move across between its edges at once, and
   the editing stays open. Ctrl+Z inside takes the change back.
@@ -145,6 +146,16 @@ a Mac). They act on:
 - **Words you select with the read tool**: every paragraph they touch is aligned, as one change that one Undo
   takes back, and the words stay selected.
 - **Lines you select with the arrow**: their paragraphs are aligned the same way, and the lines stay selected.
+- **New text you are typing** ([Add text](#add-text)): its lines line up with each other. The longest line starts
+  where you clicked; the others start there too, are centred under it, or end where it ends. Each line ends where
+  you press Enter, so there is nothing to justify: **Justify** is greyed. The next new text you add starts aligned
+  the same way.
+- **A text box**, while you type in it or when it is selected ([Add a note or a text box](comments-and-markup.md#add-a-note-or-a-text-box)):
+  its lines are aligned left, centred or right inside it, and other PDF readers show it the same way. A PDF text
+  box can't keep justified text, so **Justify** is greyed. A new text box takes the alignment the last one had.
+
+A form field's alignment is set by its form, so the alignments are greyed while you type in one; its text shows
+where the form puts it as you type.
 
 The alignment the text has shows pressed (none, when the paragraphs selected are aligned differently). As in Word,
 Centre, Align right or Justify pressed on text already aligned that way puts it back to the left. Each line keeps
@@ -153,7 +164,7 @@ first-line indent; aligned left or justified again, the paragraph has its own ba
 
 A paragraph is aligned between its own edges, not the page's margins: open it with **Paragraph** on and drag an
 edge first to give it more room. **Centre** is on the floating toolbar too, and all four are in ☰ > Edit > Align
-text and the command search (Ctrl+K: type "align" or "centre").
+text and the command search (Ctrl+Shift+P: type "align" or "centre").
 
 A line on its own (a heading, say) has no paragraph to align it in, and text in a table or form, turned text,
 invisible recognised text and vertical writing aren't aligned either: a notice says what was left as it was.
@@ -176,7 +187,7 @@ As in a word processor:
   they are: **B** or ***I*** is greyed, and says why when you point at it, and Ctrl+B or Ctrl+I says so at the
   caret.
 - Strikethrough has no key on Windows and Linux, as in Word: use **S**, the right-click menu or the command search
-  (Ctrl+K). On a Mac it is ⌘⇧X, as in Word for Mac.
+  (Ctrl+Shift+P). On a Mac it is ⌘⇧X, as in Word for Mac.
 - An underline or strike-through shows as you type where it will be written: at the font's own place and
   thickness for it, in the words' colour. Spaces inside an underlined stretch are underlined; spaces at either end
   of the line are not.
@@ -233,7 +244,8 @@ Words you select with the read tool can be changed as in a word processor, witho
   (with **Paragraph** on; with it off, on several lines of one LimarePDF is sure is a paragraph), the paragraph opens
   with what you typed in their place (see [Edit a paragraph](#edit-a-paragraph)). Over words in different
   paragraphs nothing is typed, and a note says "Type over words within one paragraph." With no words selected and
-  nothing being typed, Ctrl+V says where to click to paste. An input method types over them too: the line opens
+  nothing being typed, Ctrl+V says where to click to paste text, and puts a picture on the page
+  ([Add a picture](#add-a-picture)). An input method types over them too: the line opens
   with what you compose in their place.
 - **Delete** or **Backspace** removes them, across lines and pages, in one step that Undo takes back. As in Word,
   a space beside them goes too when two would be left together, or one at the start or end of a line. In one
@@ -256,7 +268,10 @@ copies it.
 
 1. Pick **Insert > Text** (the Add text tool), or **Edit > Edit text** with nothing selected.
 2. Click where the text starts, and type. The line sits on the point you clicked; Enter starts a new line.
-3. Press Esc, click elsewhere on the page, or choose another tool, to finish.
+3. Press Esc, click elsewhere on the page, or choose another tool, to finish. To stop adding text, click
+   **Text** again (or **Edit text**, if you chose it there) or press Esc again.
+
+With the tool on, a click on a form field fills the field in rather than adding text over it.
 
 The text appears as you type, in the font, size and colour it will have, with an outline around it that turns the
 caution colour if the text runs off the page or into text, a picture or a shape, with a tag just below the line
@@ -266,10 +281,11 @@ added as one undo step, and nothing typed adds nothing. Each line becomes its ow
 afterwards it moves and is edited line by line.
 
 While you type, Ctrl+B, Ctrl+I, Ctrl+U and **Edit > Font** style what is selected, or what you type next, as when
-[styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards).
-Ctrl+Z and Ctrl+Y undo and redo typing and styles, and dragging the outline moves the text (Esc during the drag
+[styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards), and Ctrl+L,
+Ctrl+E and Ctrl+R or **Edit > Alignment** line its lines up with each other ([Align text](#align-text)).
+Ctrl+Z and Ctrl+Y undo and redo typing, styles and alignment, and dragging the outline moves the text (Esc during the drag
 puts it back where it was). The next text you add
-starts in the style this one ended in; before you click, **Edit > Font** sets it. A line with larger text in it
+starts in the style and alignment this one ended in; before you click, **Edit > Font** sets its style. A line with larger text in it
 sits further below the one before, as in a word processor. With this tool, a click on text already on the page
 edits that line instead, with the caret where you clicked (Edit > Font and the inspector then show that line's
 look), and a drag selects text, as with the read tool.
@@ -321,6 +337,21 @@ To put the same text on every page, such as page numbers or DRAFT, use
 
 A photo shows upright, the way it was taken, even when the camera or phone was turned.
 
+To paste a picture or a screenshot copied in another app, press **Ctrl+V** (⌘V on a Mac), or choose **Paste**
+in **Edit** in the band, with nothing being typed. As in Word and PowerPoint, it goes in the middle of the page in
+view, at its own size (shrunk to fit the page), and is selected, ready to move or resize; Undo takes it back. A
+picture can't be pasted into text being typed: press Esc first.
+
+A picture you add or paste over text is in front of it, as in Word: clicking or double-clicking the picture selects
+it, not the text it hides. Over a form, the fields' answers still show on top of the picture, as they do in every
+PDF reader (form fields and comments are always drawn above the page), and a note says so.
+
+To copy a picture on a page to another app, select it and press **Ctrl+C** (or **Copy**). It is copied as it
+shows on the page, turned or flipped as the page shows it.
+
+To save a picture on a page as a file, select it and choose **Save image as…** from its right-click menu or its
+floating toolbar ([details](export-and-printing.md#pictures)).
+
 ## Move, resize or delete
 
 With the read tool:
@@ -335,9 +366,9 @@ With the read tool:
 A picture or shape covering most of the page, such as a scanned page or a background, isn't selected by a click,
 so that clicking a scan doesn't pick it up. A drag that starts anywhere else still selects text.
 
-**The arrow** (**Edit > Select > Select, move and resize objects**, or ☰ > Tools > Select, move and resize objects)
-selects any object, page text and full-page pictures included: click to select, drag to move, drag a handle to
-resize (Shift keeps the proportions), and arrow keys to nudge.
+**The arrow** (**Edit > Select > Select, move and resize objects**, or ☰ > Edit > Select > Select, move and
+resize objects) selects any object, page text and full-page pictures included: click to select, drag to move,
+drag a handle to resize (Shift keeps the proportions), and arrow keys to nudge.
 
 Pictures, shapes and lines of text snap into line with the page and other objects as you drag them, a guide
 showing where; hold **Alt** (Option on a Mac) to place them freely (see [Line up objects](#line-up-objects)).
@@ -371,9 +402,9 @@ Comments and markup are selected one at a time, never with page objects.
 **Align objects ▾**, in the **Arrange** group of **Edit** in the band, lines up the selected objects or spaces
 them out evenly, as Word's Align does. Its menu has **Align left**, **Align centre**, **Align right**, **Align
 top**, **Align middle** and **Align bottom**, then **Distribute horizontally** and **Distribute vertically**, then
-**Snap to objects**. The same commands are in ☰ > Edit > Align objects and in the command search (Ctrl+K: type
-"align", "distribute" or "snap"). Right-click selected objects for an **Align objects** submenu of the Align and
-Distribute commands that apply just then. It moves pictures, shapes and lines of text on the page; it doesn't
+**Snap to objects**. The same commands are in ☰ > Edit > Align objects and in the command search (Ctrl+Shift+P:
+type "align", "distribute" or "snap"). Right-click selected objects for an **Align objects** submenu of the Align
+and Distribute commands that apply just then. It moves pictures, shapes and lines of text on the page; it doesn't
 line text up inside a paragraph.
 
 1. Select the objects: Shift+click them, or drag a rectangle round them with the arrow (see
@@ -441,8 +472,9 @@ will be written, and changes as you type:
 (See [How it works](#how-it-works).) For shapes it shows the fill, outline and width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
 stays open or closed as you left it. Changes in the band and the inspector are kept as you make them, without an
-Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or leave its
-box, a colour when its picker closes. Each is one undo step.
+Apply button: typed text when you press Enter or leave the box, a number when you press Enter, leave its box or
+step it with its ▲ and ▼ ([number boxes](gui.md#number-boxes)), a colour when its picker closes. Each is one undo
+step.
 
 The font size box shows the exact size, which isn't rounded to a listed one (10.126 shows as 10.126). Type any
 size, or pick one from the list beside it. Going into the box and out again without typing changes nothing, and
@@ -548,10 +580,12 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   is left a drawing, and stays where it is when its line changes.
 - Styling words doesn't rewrap: bold or larger words make their line longer and the rest of it moves along, and
   highlights, links and redaction marks over them stay where they were.
-- Alignment (Align left, Centre, Align right, Justify) works on the page's paragraphs only, for now: new text,
-  text boxes and form fields can't be aligned yet, and the buttons are greyed for them. A paragraph is aligned
-  between its own edges; there are no indents, line spacing or spacing before and after a paragraph to set.
-  Aligning the paragraphs of a long selection takes a moment: about two seconds for 300 pages.
+- Alignment (Align left, Centre, Align right, Justify) works on the page's paragraphs, new text and text boxes. New
+  text and text boxes can't be justified, and a form field takes its form's alignment, which can't be changed in
+  LimarePDF. New text's lines are aligned with each other once kept, but each stays a line of its own, so
+  afterwards they move and are edited line by line, not as a paragraph. A paragraph is aligned between its own
+  edges; there are no indents, line spacing or spacing before and after a paragraph to set. Aligning the
+  paragraphs of a long selection takes a moment: about two seconds for 300 pages.
 - Editing a line does not change its width, and a paragraph keeps its frame's width unless you drag its edges:
   longer text can overlap its neighbours. The outline warns of it, a tag where it happens, but nothing is moved
   out of the way.
@@ -575,4 +609,4 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 
 ---
 
-[← Comments and markup](comments-and-markup.md) · [User guide](README.md) · [Filling in forms →](forms.md)
+[← Comments and markup](comments-and-markup.md) · [User guide](README.md) · [Checking spelling →](spelling.md)

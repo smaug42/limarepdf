@@ -9,6 +9,7 @@ use crate::inspector::{facts, note, section, section_name};
 use crate::page_text::{self, selection, PageText};
 use crate::selection::{ObjKind, Selected, Selection, Toward, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
+use crate::spin::Spin;
 use crate::styled::{History, InLine, Restyle, Styled, Switch};
 use crate::theme;
 use crate::typing_fonts::Wanted;
@@ -16,9 +17,9 @@ use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeK
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
     words_text, Annot, AnnotKind, Block, BoxSetting, DecoKind, Decorated, DocWords, FieldValue,
-    FontChoice, FontRefusal, LineFont, Link, LinkTarget, ObjectKind, PageObject, PageWord,
+    FontChoice, FontRefusal, LineFont, Link, LinkId, LinkTarget, ObjectKind, PageObject, PageWord,
     ParagraphSetting, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
-    StampPlace, TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
+    StampPlace, TextEdit, TextPart, TextStyle, Unfollowed, MIN_SIGNATURE_BOX,
 };
 use paragraph::{para_id, ParaEdit, Then};
 use std::collections::{BTreeMap, HashMap};
@@ -34,7 +35,7 @@ pub use arrange::{Align, Axis};
 /// How a paragraph's text is aligned (NEW-15), as core reads and sets it; [`Align`] lines
 /// objects up.
 pub use limarepdf_core::Align as TextAlign;
-pub use paragraph::{align_paragraphs, Aligned, NotAligned};
+pub use paragraph::{align_paragraphs, Aligned, Aligns, NotAligned};
 pub use replace::NotReplaced;
 pub use replace_all::{replace_all, AllJob, Pass, Prepared};
 
@@ -65,6 +66,9 @@ pub enum Tool {
     /// Choose where a digital signature goes: click an empty signature field or drag a
     /// box. The signing window opens next.
     DigitalSign,
+    /// Links (ENH-17): each outlined; drag a box for a new one, click one to select it,
+    /// then move or resize it, change it or remove it. Stays on until turned off.
+    Link,
 }
 
 impl Tool {
@@ -119,7 +123,9 @@ impl Tool {
             Tool::Stamp => "stamp",
             Tool::Redact => "redact",
             Tool::Sign => "fill_and_sign",
-            Tool::Read | Tool::Select | Tool::Pen | Tool::Note | Tool::DigitalSign => "",
+            Tool::Read | Tool::Select | Tool::Pen | Tool::Note | Tool::DigitalSign | Tool::Link => {
+                ""
+            }
         }
     }
 
@@ -283,9 +289,12 @@ pub struct Writing {
     size: f32,
     /// A text box's border's width in points.
     border: f32,
+    /// How a text box's lines are aligned (its `/Q`).
+    align: TextAlign,
     /// Takes the keyboard on the next frame.
     fresh: bool,
-    /// Takes the keyboard back once a change in the inspector is finished.
+    /// Takes the keyboard back once a change in the inspector, or an alignment, is
+    /// finished.
     refocus: bool,
     /// A list or colour picker was open last frame: the click that closes it is not one
     /// outside a new note.
@@ -320,6 +329,7 @@ impl Writing {
             original: String::new(),
             size,
             border: 0.0,
+            align: TextAlign::Left,
             fresh: true,
             refocus: false,
             picking: false,
@@ -368,8 +378,9 @@ pub enum Action {
     Delete(usize, Vec<usize>),
     AddShape(usize, Shape, [f32; 4]),
     /// New text, its lines separated by `\n`, from the first line's baseline at the point
-    /// given, in the styles it was typed in.
-    AddText(usize, (f32, f32), Box<Styled>),
+    /// given, in the styles it was typed in, its lines aligned among themselves as given
+    /// ([`limarepdf_core::Pdf::add_text_lines`]).
+    AddText(usize, (f32, f32), Box<Styled>, TextAlign),
     AddImage(usize, [f32; 4]),
     ReplaceImage(usize, usize, Vec<u8>),
     /// A line's change, with its underlines and strike-throughs over its new text; true when
@@ -422,6 +433,17 @@ pub enum Action {
     AddStamp(usize, StampPlace),
     /// Mark an area (displayed-page points) for redaction.
     AddRedactMark(usize, [f32; 4]),
+    /// A box dragged with the Link tool (displayed-page points): a link there, once the
+    /// Insert link window says where it goes (ENH-17).
+    NewLink(usize, [f32; 4]),
+    /// Give a link a new box (displayed-page points).
+    MoveLink(usize, LinkId, [f32; 4]),
+    /// Point a link somewhere else, or give it another look, from the inspector.
+    SetLink(usize, LinkId, LinkTarget, bool),
+    /// Open the Edit link window for a link: a double-click on it, or Enter, with the Link
+    /// tool.
+    EditLink(usize, LinkId),
+    RemoveLink(usize, LinkId),
     /// The Sign tool's picked item.
     AddSign(usize, StampPlace),
     /// Sign in an empty signature field: its page and box. Switches to the Sign tool.
@@ -439,7 +461,7 @@ pub struct AnnotEdit {
     pub color: Option<[f32; 3]>,
     pub opacity: f32,
     pub contents: String,
-    /// A text box's text size, colour, fill and border.
+    /// A text box's text size, colour, fill, border and alignment.
     pub text: Option<TextStyle>,
     /// A shape's, line's or drawing's fill, width and arrowhead.
     pub shape: Option<ShapeLook>,
@@ -467,7 +489,7 @@ impl AnnotEdit {
             (Some(a), Some(b)) => {
                 same_color(a.color, b.color)
                     && col(a.fill, b.fill)
-                    && (a.size, a.border) == (b.size, b.border)
+                    && (a.size, a.border, a.align) == (b.size, b.border, b.align)
             }
             (a, b) => a.is_none() && b.is_none(),
         };
@@ -577,6 +599,38 @@ struct Draw {
     cur: Pos2,
 }
 
+/// A link being moved, or resized by one of its handles, with the Link tool.
+struct LinkDrag {
+    page: usize,
+    id: LinkId,
+    /// Its box as the drag began, and as it is now (displayed-page points).
+    from: [f32; 4],
+    cur: [f32; 4],
+    start: Pos2,
+    /// The handle dragged ([`handle_pos`]'s numbering); `None` moves it.
+    handle: Option<usize>,
+}
+
+/// The selected link as the inspector shows it: which link, and its form as typed.
+struct LinkInsp {
+    key: (usize, LinkId),
+    form: crate::dialogs::LinkForm,
+}
+
+/// A link's tooltip: where it goes, or what it would do.
+pub fn link_tip(t: &LinkTarget) -> String {
+    match t {
+        LinkTarget::Page(n) => format!("Go to page {}", n + 1),
+        LinkTarget::Uri(u) => limarepdf_core::display_line(u, 300),
+        LinkTarget::Unfollowed(u) => unfollowed(u),
+    }
+}
+
+/// Whether point `p` is over one of link `l`'s areas.
+fn on_link(l: &Link, p: Pos2) -> bool {
+    (l.areas.iter()).any(|b| (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y))
+}
+
 struct Marquee {
     page: usize,
     start: Pos2,
@@ -596,6 +650,34 @@ impl Marquee {
 /// Whether box `b` is wholly inside box `r`.
 fn inside(b: [f32; 4], r: [f32; 4]) -> bool {
     b[0] >= r[0] && b[1] >= r[1] && b[2] <= r[2] && b[3] <= r[3]
+}
+
+/// What a link LimarePDF doesn't follow does, for its tooltip.
+pub fn unfollowed(u: &Unfollowed) -> String {
+    let named = |what: &str, name: &str| match limarepdf_core::display_line(name, 80) {
+        n if n.is_empty() => what.to_string(),
+        n => format!("{what}: {n}"),
+    };
+    match u {
+        Unfollowed::File(f) => format!(
+            "{}. LimarePDF doesn't open other files from links.",
+            named("Opens another file", f)
+        ),
+        Unfollowed::Program(p) => format!(
+            "{}. LimarePDF doesn't run them.",
+            named("Runs a program or opens a file", p)
+        ),
+        Unfollowed::Script => "Runs a script. LimarePDF doesn't run scripts.".into(),
+        Unfollowed::Address(a) => format!(
+            "{}\nLimarePDF opens web and email links only.",
+            limarepdf_core::display_line(a, 300)
+        ),
+        Unfollowed::Action(a) => format!(
+            "{}. LimarePDF doesn't do this from a link.",
+            named("Does something else", a)
+        ),
+        Unfollowed::Nowhere => "Goes nowhere in this document.".into(),
+    }
 }
 
 /// Box `b` moved by `(dx, dy)`.
@@ -1265,9 +1347,14 @@ fn look_layout(compact: bool) -> egui::Layout {
     }
 }
 
-/// The font list, as wide as the Font group's first row leaves room for.
+/// The font list, as wide as the Font group's first row leaves room for: narrower where the
+/// row is (Minimal's inspector, ENH-45), leaving the size box and its list their room, so
+/// the panel keeps its width.
 fn font_field(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> bool) -> bool {
-    let size = egui::vec2(136.0, ui.spacing().interact_size.y);
+    // The size box, its list's button and the gaps between.
+    let room = ui.available_width() - 84.0;
+    let width = if room < 136.0 { room.max(80.0) } else { 136.0 };
+    let size = egui::vec2(width, ui.spacing().interact_size.y);
     ui.allocate_ui(size, add).inner
 }
 
@@ -1557,9 +1644,15 @@ pub type Match = (usize, Vec<[f32; 4]>);
 
 pub struct Editor {
     pub tool: Tool,
+    /// The Text tool was chosen with Edit text ([`Editor::edit_text`]), not Insert > Text:
+    /// Edit text shows pressed for it.
+    by_edit_text: bool,
     /// Pages, an object or words; see [`Selection`].
     pub selection: Selection,
     objs: HashMap<usize, Vec<PageObject>>,
+    /// Each page's area in square points, as last drawn: what a picture covering most of
+    /// it is measured by ([`Editor::picture_over_text`]).
+    page_areas: HashMap<usize, f32>,
     unavailable: HashMap<usize, String>,
     /// The fonts of each line of a page, by object id, read together the first time one of
     /// its lines is selected ([`Editor::read_line_fonts`]), kept as `objs` is.
@@ -1598,6 +1691,8 @@ pub struct Editor {
     pub tcolor: [f32; 3],
     /// Underline and Strikethrough for the next new text.
     pub tlines: crate::font_list::Lines,
+    /// How the next new text's lines are aligned: as the last new text's were left.
+    pub talign: TextAlign,
     pub fill_on: bool,
     pub fill: [f32; 3],
     pub stroke_on: bool,
@@ -1666,6 +1761,12 @@ pub struct Editor {
     links: HashMap<usize, Vec<Link>>,
     /// A link was clicked; the tab follows it.
     pub follow: Option<LinkTarget>,
+    /// A link being moved or resized with the Link tool.
+    link_drag: Option<LinkDrag>,
+    /// The document's page count, lent for the selected link's page box.
+    pub page_count: usize,
+    /// The selected link as the inspector shows it, with what is typed there.
+    link_insp: Option<LinkInsp>,
     /// Filling in form fields.
     pub form: FormUi,
     annots: HashMap<usize, Vec<Annot>>,
@@ -1764,8 +1865,10 @@ impl Default for Editor {
     fn default() -> Self {
         Self {
             tool: Tool::Read,
+            by_edit_text: false,
             selection: Selection::None,
             objs: HashMap::new(),
+            page_areas: HashMap::new(),
             unavailable: HashMap::new(),
             line_fonts: HashMap::new(),
             drag: None,
@@ -1783,6 +1886,7 @@ impl Default for Editor {
             tsize: 14.0,
             tcolor: [0.0; 3],
             tlines: crate::font_list::Lines::default(),
+            talign: TextAlign::Left,
             fill_on: false,
             fill: [0.95, 0.75, 0.2],
             stroke_on: true,
@@ -1814,6 +1918,9 @@ impl Default for Editor {
             text_drag: false,
             links: HashMap::new(),
             follow: None,
+            link_drag: None,
+            page_count: 1,
+            link_insp: None,
             form: FormUi::default(),
             annots: HashMap::new(),
             annot_insp: None,
@@ -2136,10 +2243,24 @@ impl Editor {
         self.selection.clear_words();
         self.text_drag = false;
         self.links.clear();
+        self.link_drag = None;
         self.form.invalidate();
         self.annots.clear();
         self.annot_insp = None;
         self.ink = None;
+    }
+
+    /// The links on `page`, read once until the document changes.
+    pub fn page_links(&mut self, pdf: &limarepdf_core::Pdf, page: usize) -> &[Link] {
+        self.links
+            .entry(page)
+            .or_insert_with(|| pdf.page_links(page).unwrap_or_default())
+    }
+
+    /// The selected link, as last read from its page.
+    pub fn selected_link(&self) -> Option<&Link> {
+        let (page, id) = self.selection.link()?;
+        self.links.get(&page)?.iter().find(|l| l.id == id)
     }
 
     /// The annotations on `page`, read once until the document changes.
@@ -2189,6 +2310,7 @@ impl Editor {
             text: a.contents.clone(),
             original: a.contents,
             border: a.text_style.map_or(0.0, |s| s.border),
+            align: a.text_style.map_or(TextAlign::Left, |s| s.align),
             ..Writing::new(
                 a.page,
                 a.kind == AnnotKind::Note,
@@ -2235,7 +2357,7 @@ impl Editor {
         let (action, held) = match piece {
             Typed::Text => {
                 let a = self.adding.take().filter(PageText::has_text)?;
-                let add = Action::AddText(a.page, a.at, Box::new(a.text.clone()));
+                let add = Action::AddText(a.page, a.at, Box::new(a.text.clone()), a.align);
                 (add, Kept::Text(Box::new(a)))
             }
             Typed::Writing => {
@@ -2320,7 +2442,8 @@ impl Editor {
         self.carry_on(&held);
     }
 
-    /// The next new text carries on in the style this one ended in, as typing would.
+    /// The next new text carries on in the style this one ended in, as typing would, aligned
+    /// as it was.
     fn carry_on(&mut self, held: &Held) {
         if let Kept::Text(a) = &held.0 {
             let end = page_text::Look::of(a.text.end_style());
@@ -2329,6 +2452,7 @@ impl Editor {
                 underline: end.underline,
                 strike: end.strike,
             };
+            self.talign = a.align;
         }
     }
 
@@ -2811,6 +2935,7 @@ impl Editor {
         }
         let b = o.bbox;
         let mut typed = insp.text.text().to_string();
+        crate::spell::apply(&ctx, id, &mut typed);
         let mode = self.page_colours;
         // The text as egui has it this frame, in parts at `k` pixels per point, coloured
         // by `color`.
@@ -2832,6 +2957,7 @@ impl Editor {
                 accent: ui.visuals().selection.stroke.color,
                 warn: &warn,
                 bands: &bands,
+                align: TextAlign::Left,
             };
             let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
             let c = cover_box(&o);
@@ -2892,7 +3018,9 @@ impl Editor {
                         .clip_text(false)
                         .margin(egui::Margin::same(2));
                     if o.hidden {
-                        return te.show(ui);
+                        let out = te.show(ui);
+                        crate::spell::marks(ui, id, &out, out.galley.text());
+                        return out;
                     }
                     let out = te.layouter(&mut layouter).show(ui);
                     let paper = |c| page_text::shown(PageColours::Normal, c);
@@ -2900,6 +3028,7 @@ impl Editor {
                     let decos = insp.text.preview(now).drawn_decos();
                     let bands = page_text::char_bands(&runs(now, scale, &paper), &decos, &paper);
                     page_text::paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands, &[]);
+                    crate::spell::marks(ui, id, &out, now);
                     out
                 })
                 .inner;
@@ -3051,6 +3180,7 @@ impl Editor {
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
         };
+        crate::spell::apply(ui.ctx(), id, &mut w.text);
         // A text box shows its size and border as the inspector changes them: a new one the
         // Text box tool's, which it is kept with; one on the page its own (ENH-13).
         let own = |id| {
@@ -3064,6 +3194,7 @@ impl Editor {
         if let Some(s) = style.filter(|_| !w.note) {
             w.size = s.size;
             w.border = s.border;
+            w.align = s.align;
         }
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let b = shown_box(w.note, w.rect, k);
@@ -3094,6 +3225,7 @@ impl Editor {
                                 .show(ui);
                             page_text::keep_on_right_click(ui.ctx(), id, &mut out, held);
                             page_text::snap_drawn(ui.ctx(), id, &mut out, &w.text, held);
+                            crate::spell::marks(ui, id, &out, &w.text);
                             out.response.response
                         })
                         .inner
@@ -3125,6 +3257,7 @@ impl Editor {
             // writes them in, not the interface's font; on the lines core breaks it into,
             // where it writes them in the box.
             let set = BoxSetting::text_box(w.rect[2] - w.rect[0], w.border, w.size);
+            let set = set.aligned(w.align);
             let lang = self.lang.as_deref();
             let (helvetica, color) = (FontChoice::default(), egui::Visuals::light().text_color());
             let now = page_text::set_in_box(ui.ctx(), &set, &w.text, helvetica, k, color, lang);
@@ -3151,6 +3284,7 @@ impl Editor {
             let mut out = ui.scope_builder(at, |ui| te.show(ui)).inner;
             page_text::keep_on_right_click(ui.ctx(), id, &mut out, held);
             page_text::snap_drawn(ui.ctx(), id, &mut out, &w.text, held);
+            crate::spell::marks(ui, id, &out, &w.text);
             // What an input method composes shows unchecked; left without the keyboard, it
             // is taken as committed (PB-54).
             w.composing = page_text::composition(ui.ctx(), id, w.composing);
@@ -3243,6 +3377,10 @@ impl Editor {
             self.annot_tool = t;
         }
         self.tool = t;
+        self.by_edit_text = false;
+        if t != Tool::Image {
+            self.pending_image = None;
+        }
         self.drag = None;
         self.draw = None;
         self.marquee = None;
@@ -3258,6 +3396,11 @@ impl Editor {
         if !matches!(t, Tool::Read | Tool::Select) {
             self.selection.clear_object();
             self.selection.clear_annot();
+        }
+        // A link stays selected only for the Link tool.
+        self.link_drag = None;
+        if t != Tool::Link {
+            self.selection.clear_link();
         }
         if t != Tool::DigitalSign {
             self.digital_place = None;
@@ -3287,12 +3430,27 @@ impl Editor {
         self.para = None;
         self.then = None;
         self.annot_insp = None;
+        self.link_drag = None;
+        self.link_insp = None;
         self.digital_place = None;
         self.digital_error = None;
         self.actions.clear();
         self.later.clear();
         self.not_kept = None;
         self.apply_redactions = false;
+    }
+
+    /// The Text tool, chosen with Edit text: Edit text shows pressed while it is in use
+    /// ([`Editor::edit_text_on`]).
+    pub fn edit_text(&mut self) {
+        self.set_tool(Tool::Text);
+        self.by_edit_text = true;
+    }
+
+    /// Edit text shows pressed: page text is being edited, or the Text tool was chosen with
+    /// it. Insert > Text's tool alone doesn't press it.
+    pub fn edit_text_on(&self) -> bool {
+        self.editing_line() || (self.tool == Tool::Text && self.by_edit_text)
     }
 
     pub fn set_tool_keep_sel(&mut self, t: Tool) {
@@ -3814,6 +3972,26 @@ impl Editor {
     /// The smallest object under `p` (within `tol`) that `keep` accepts; invisible text
     /// only while it is shown. A line's underline or strike-through is its line
     /// ([`PageObject::decorates`]): a click on it selects the line.
+    /// The picture at `p` on page `page` in front of the page text there: drawn after every
+    /// line of text whose box holds `p`, so it hides them, as a picture Word puts in front of
+    /// text. A click there goes to the picture, not to the text it hides, with either tool.
+    /// Not a hidden one, nor one covering most of the page, such as a scan with its
+    /// recognised text under it; none before the page is drawn.
+    fn picture_over_text(&self, page: usize, p: Pos2) -> Option<usize> {
+        let objs = self.objs.get(&page)?;
+        let area = *self.page_areas.get(&page)?;
+        let holds = |b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
+        let last_text = objs
+            .iter()
+            .rposition(|o| o.kind == ObjectKind::Text && holds(o.bbox));
+        (objs.iter().enumerate())
+            .skip(last_text.map_or(0, |t| t + 1))
+            .rev()
+            .filter(|(_, o)| o.kind == ObjectKind::Image && !o.hidden && holds(o.bbox))
+            .find(|(_, o)| (o.bbox[2] - o.bbox[0]) * (o.bbox[3] - o.bbox[1]) < 0.8 * area)
+            .map(|(i, _)| i)
+    }
+
     fn hit_where(
         &self,
         page: usize,
@@ -3823,11 +4001,14 @@ impl Editor {
     ) -> Option<usize> {
         let objs = self.objs.get(&page)?;
         let own = |i: usize| objs[i].decorates.filter(|&l| l < objs.len()).unwrap_or(i);
+        // Text hidden by a picture in front of it isn't under the pointer.
+        let covered = self.picture_over_text(page, p).is_some();
         objs.iter()
             .enumerate()
             .filter(|&(i, o)| {
                 let line = &objs[own(i)];
                 keep(line)
+                    && !(covered && line.kind == ObjectKind::Text)
                     && (self.show_hidden || !line.hidden)
                     && p.x >= o.bbox[0] - tol
                     && p.x <= o.bbox[2] + tol
@@ -3986,36 +4167,41 @@ impl Editor {
         let selecting = self.tool == Tool::Read;
         let mut over_link = false;
         let ctrl = ui.input(|i| i.modifiers.command);
-        // Form fields are filled in the same way, and sit above links.
+        // Form fields are filled in the same way, and sit above links; the Text tool fills
+        // them with a plain click too, typing in a field being what a click there means.
         let filling = (selecting || ctrl) && !self.dragging();
-        let over_field = self
-            .form
-            .page_ui(ui, pdf, page, r, k, &resp, filling, &mut self.actions);
+        let typing_tool = self.tool == Tool::Text && !self.dragging();
+        let over_field = (self.form).page_ui(
+            ui,
+            pdf,
+            page,
+            r,
+            k,
+            &resp,
+            filling || typing_tool,
+            &mut self.actions,
+        );
         if over_field {
+            // New text being typed is kept, as a click elsewhere keeps it.
+            if typing_tool && resp.clicked() {
+                self.finish_adding();
+            }
             if !selecting || resp.clicked() {
                 return resp;
             }
             over_link = true;
         } else if filling {
-            let link = resp.hover_pos().map(to_pt).and_then(|p| {
-                let links = self
-                    .links
-                    .entry(page)
-                    .or_insert_with(|| pdf.page_links(page).unwrap_or_default());
-                links.iter().find(|l| {
-                    let b = l.bbox;
-                    (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y)
-                })
-            });
-            if let Some(link) = link {
+            let link = (resp.hover_pos().map(to_pt))
+                .and_then(|p| self.page_links(pdf, page).iter().find(|l| on_link(l, p)));
+            // A link LimarePDF doesn't follow says what it does, and the page goes on
+            // taking clicks there as if it weren't there.
+            if let Some(LinkTarget::Unfollowed(u)) = link.map(|l| &l.target) {
+                resp = resp.on_hover_text_at_pointer(unfollowed(u));
+            } else if let Some(link) = link {
                 let target = link.target.clone();
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                let tip = match &target {
-                    LinkTarget::Page(n) => format!("Go to page {}", n + 1),
-                    LinkTarget::Uri(u) => u.clone(),
-                };
                 over_link = true;
-                resp = resp.on_hover_text_at_pointer(tip);
+                resp = resp.on_hover_text_at_pointer(link_tip(&target));
                 if resp.clicked() {
                     self.follow = Some(target);
                     return resp;
@@ -4039,6 +4225,7 @@ impl Editor {
         let keys = (shift, ui.input(|i| i.modifiers.alt));
         let size = (r.width() / k, r.height() / k);
         let area = size.0 * size.1;
+        self.page_areas.insert(page, area);
         // Where a drag with the arrow or the read tool begins, the frame it does: once the
         // pointer has gone further from the press than a click can. One let go before that,
         // however long it was held, is a click there.
@@ -4227,6 +4414,11 @@ impl Editor {
                     self.selection = Selection::Annot { page, id };
                 }
             }
+            Tool::Link => {
+                if let Some(tip) = self.link_tool(ui, pdf, page, &resp, r, k) {
+                    resp = resp.on_hover_text_at_pointer(tip);
+                }
+            }
             Tool::Select => {
                 if let Some(p) = hover_pt {
                     let over_handle = sized_box.and_then(|b| self.handle_hit(b, p, htol));
@@ -4322,11 +4514,14 @@ impl Editor {
                 let inside =
                     |p: Pos2, b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
                 let lines = Self::line_boxes(&words);
-                let on_text = |p: Pos2| lines.iter().any(|&b| inside(p, b));
+                // On a line's words, unless a picture in front of them hides them there.
+                let on_text = |ed: &Self, p: Pos2| {
+                    lines.iter().any(|&b| inside(p, b)) && ed.picture_over_text(page, p).is_none()
+                };
                 // Pictures and shapes a click selects; not ones covering most of the page.
                 let object_at = |ed: &Self, p: Pos2| {
                     let i = ed.read_hit(page, p, tol, area)?;
-                    (!on_text(p)).then_some(i)
+                    (!on_text(ed, p)).then_some(i)
                 };
                 if let Some(p) = hover_pt.filter(|_| !over_link && !self.text_drag) {
                     let handle = sized_box.and_then(|b| self.handle_hit(b, p, htol));
@@ -4338,7 +4533,7 @@ impl Editor {
                         ui.ctx().set_cursor_icon(handle_cursor(h));
                     } else if grabs(self, p) {
                         ui.ctx().set_cursor_icon(CursorIcon::Grab);
-                    } else if on_text(p) {
+                    } else if on_text(self, p) {
                         ui.ctx().set_cursor_icon(CursorIcon::Text);
                     } else if let Some(i) =
                         object_at(self, p).filter(|&i| !self.selection.holds(page, i))
@@ -4367,6 +4562,11 @@ impl Editor {
                 if let Some(p) = begins {
                     if grabs(self, p) {
                         start_arrange(self, p, true);
+                    } else if let Some(i) = self.picture_over_text(page, p) {
+                        // Not the words it hides.
+                        if !self.selection.holds(page, i) {
+                            self.select_object(page, i);
+                        }
                     } else {
                         self.start_word_drag(page, Some(p), &words);
                     }
@@ -4384,7 +4584,8 @@ impl Editor {
                 self.follow_word_drag(ui, pdf, page, r, k, &resp, &words);
                 let click_at = || resp.interact_pointer_pos().map(to_pt);
                 let on_line = |p: Option<Pos2>| p.and_then(|p| Self::word_on_line(&words, p, tol));
-                if resp.triple_clicked() {
+                let in_front = click_at().and_then(|p| self.picture_over_text(page, p));
+                if resp.triple_clicked() && in_front.is_none() {
                     let line = on_line(click_at()).and_then(|i| Self::line_of(&words, i));
                     if let Some((a, b)) = line {
                         self.selection = Selection::Words {
@@ -4400,6 +4601,11 @@ impl Editor {
                     if let Some(id) = annot.filter(|a| writable(a)).map(|a| a.id) {
                         self.selection = Selection::Annot { page, id };
                         self.write_selected();
+                    } else if let Some(i) = in_front {
+                        // A picture in front of text: it is selected, the text it hides left.
+                        if !self.selection.holds(page, i) {
+                            self.select_object(page, i);
+                        }
                     } else if let Some((p, i)) = line {
                         let pick = self.word_pick(page, i, p, &words);
                         self.start_text_edit(pdf, page, i, pick);
@@ -4465,7 +4671,8 @@ impl Editor {
                     } else {
                         // New text there; with nothing typed yet, it moves there.
                         let look = self.new_look();
-                        self.adding = Some(PageText::new(self.scope, page, (p.x, p.y), look));
+                        let (at, align) = ((p.x, p.y), self.talign);
+                        self.adding = Some(PageText::new(self.scope, page, at, look, align));
                     }
                 }
             }
@@ -4898,7 +5105,195 @@ impl Editor {
                 }
             }
         }
+        // The selected link: its areas framed (the Link tool frames it with its handles). One
+        // gone from the page (taken away by Undo) is let go.
+        if let Some((_, id)) = self.selection.link().filter(|(p, _)| *p == page) {
+            let areas = (self.page_links(pdf, page).iter())
+                .find(|l| l.id == id)
+                .map(|l| l.areas.clone());
+            match areas {
+                None => self.selection.clear_link(),
+                Some(_) if self.tool == Tool::Link => {}
+                Some(areas) => {
+                    for b in areas {
+                        let shown = screen_rect(b).expand(2.0);
+                        let line = Stroke::new(2.0, accent_strong);
+                        painter.rect_stroke(shown, 2.0, line, StrokeKind::Outside);
+                    }
+                }
+            }
+        }
         resp
+    }
+
+    /// The topmost link under `p` (page points) with the Link tool: over one of its areas,
+    /// or anywhere in the selected link's box, which moves by it.
+    fn link_under(&mut self, pdf: &limarepdf_core::Pdf, page: usize, p: Pos2) -> Option<&Link> {
+        let chosen = self
+            .selection
+            .link()
+            .filter(|(on, _)| *on == page)
+            .map(|(_, id)| id);
+        let inside = |b: [f32; 4]| (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y);
+        let links = self.page_links(pdf, page);
+        (links.iter().rev()).find(|l| on_link(l, p) || (chosen == Some(l.id) && inside(l.bbox)))
+    }
+
+    /// The Link tool on `page` (ENH-17), `r` the page on screen and `k` a point's size there:
+    /// every link outlined, dashed; a press on a link selects it and a drag moves it, or
+    /// resizes the selected one by a handle; a drag elsewhere draws a new link's box; a
+    /// double-click on a link, or Enter with one selected, opens it in the Edit link window.
+    /// Returns the tooltip for the link under the pointer.
+    fn link_tool(
+        &mut self,
+        ui: &mut egui::Ui,
+        pdf: &limarepdf_core::Pdf,
+        page: usize,
+        resp: &egui::Response,
+        r: Rect,
+        k: f32,
+    ) -> Option<String> {
+        let to_pt = |p: Pos2| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k);
+        let screen = |b: [f32; 4]| {
+            let at = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
+            Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3]))
+        };
+        let tol = 6.0 / k;
+        let links = self.page_links(pdf, page).to_vec();
+        let chosen = self.selection.link().filter(|(on, _)| *on == page);
+        let selected = chosen.and_then(|(_, id)| links.iter().find(|l| l.id == id).cloned());
+        let handle = |ed: &Self, p: Pos2| {
+            selected
+                .as_ref()
+                .and_then(|l| ed.handle_hit(l.bbox, p, tol))
+        };
+        let mut tip = None;
+        let still = self.link_drag.is_none() && self.draw.is_none();
+        if let Some(p) = resp.hover_pos().map(to_pt).filter(|_| still) {
+            let icon = match (handle(self, p), self.link_under(pdf, page, p).cloned()) {
+                (Some(h), _) => handle_cursor(h),
+                (None, Some(l)) => {
+                    tip = Some(link_tip(&l.target));
+                    if Some(l.id) == selected.as_ref().map(|s| s.id) {
+                        CursorIcon::Move
+                    } else {
+                        CursorIcon::PointingHand
+                    }
+                }
+                (None, None) => CursorIcon::Crosshair,
+            };
+            ui.ctx().set_cursor_icon(icon);
+        }
+        // A press on a handle of the selected link resizes it, on a link moves it (selected
+        // first), elsewhere draws a new one's box.
+        if resp.drag_started() {
+            if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
+                let drag = |l: &Link, handle| LinkDrag {
+                    page,
+                    id: l.id,
+                    from: l.bbox,
+                    cur: l.bbox,
+                    start: p,
+                    handle,
+                };
+                match (handle(self, p), self.link_under(pdf, page, p).cloned()) {
+                    (Some(h), _) => self.link_drag = selected.as_ref().map(|l| drag(l, Some(h))),
+                    (None, Some(l)) => {
+                        self.selection = Selection::Link { page, id: l.id };
+                        self.link_drag = Some(drag(&l, None));
+                    }
+                    (None, None) => {
+                        self.draw = Some(Draw {
+                            page,
+                            start: p,
+                            cur: p,
+                        })
+                    }
+                }
+            }
+        }
+        if resp.dragged() {
+            if let Some(at) = resp.interact_pointer_pos().map(to_pt) {
+                if let Some(d) = self.link_drag.as_mut().filter(|d| d.page == page) {
+                    let (dx, dy) = (at.x - d.start.x, at.y - d.start.y);
+                    d.cur = match d.handle {
+                        Some(h) => norm(resize(d.from, h, dx, dy, false)),
+                        None => shifted(d.from, dx, dy),
+                    };
+                } else if let Some(d) = self.draw.as_mut().filter(|d| d.page == page) {
+                    d.cur = at;
+                }
+            }
+        }
+        let big = |b: [f32; 4]| b[2] - b[0] > 2.0 && b[3] - b[1] > 2.0;
+        if resp.drag_stopped() {
+            if let Some(d) = self.link_drag.take_if(|d| d.page == page) {
+                if d.cur != d.from && big(d.cur) {
+                    self.actions.push(Action::MoveLink(page, d.id, d.cur));
+                }
+            }
+            if let Some(d) = self.draw.take_if(|d| d.page == page) {
+                let n = norm([d.start.x, d.start.y, d.cur.x, d.cur.y]);
+                if big(n) {
+                    self.actions.push(Action::NewLink(page, n));
+                }
+            }
+        }
+        let clicked = (resp.clicked() || resp.double_clicked())
+            .then(|| resp.interact_pointer_pos().map(to_pt))
+            .flatten();
+        if let Some(p) = clicked {
+            match self.link_under(pdf, page, p).map(|l| l.id) {
+                Some(id) if resp.double_clicked() => self.actions.push(Action::EditLink(page, id)),
+                Some(id) => self.selection = Selection::Link { page, id },
+                None => self.selection.clear_link(),
+            }
+        }
+        if let Some(l) = &selected {
+            let free = ui.memory(|m| m.focused().is_none());
+            let enter =
+                |i: &mut egui::InputState| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            if free && ui.input_mut(enter) {
+                self.actions.push(Action::EditLink(page, l.id));
+            }
+        }
+        // Every link dashed; the selected one, as it is or being dragged, framed with its
+        // handles; a new one's box as it is drawn.
+        let painter = ui.painter();
+        let accent = ui.visuals().selection.stroke.color;
+        let dashed = |b: Rect, stroke: Stroke| {
+            let corners = [
+                b.left_top(),
+                b.right_top(),
+                b.right_bottom(),
+                b.left_bottom(),
+                b.left_top(),
+            ];
+            painter.extend(egui::Shape::dashed_line(&corners, stroke, 4.0, 3.0));
+        };
+        for l in &links {
+            for &b in &l.areas {
+                dashed(screen(b), Stroke::new(1.0, accent));
+            }
+        }
+        let dragged = self.link_drag.as_ref().filter(|d| d.page == page);
+        if let Some(b) = dragged.map(|d| d.cur).or(selected.as_ref().map(|l| l.bbox)) {
+            let frame = Stroke::new(2.0, accent);
+            painter.rect_stroke(screen(b), 0.0, frame, StrokeKind::Outside);
+            let fill = ui.visuals().extreme_bg_color;
+            for h in 0..8 {
+                let (x, y) = handle_pos(b, h);
+                let at = screen([x, y, x, y]).center();
+                let dot = Rect::from_center_size(at, Vec2::splat(7.0));
+                painter.rect_filled(dot, 1.0, fill);
+                painter.rect_stroke(dot, 1.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+            }
+        }
+        if let Some(d) = self.draw.as_ref().filter(|d| d.page == page) {
+            let n = norm([d.start.x, d.start.y, d.cur.x, d.cur.y]);
+            dashed(screen(n), Stroke::new(1.5, accent));
+        }
+        tip
     }
 
     /// Before a right-click menu opens: select what is under the pointer `p` (page
@@ -4944,6 +5339,11 @@ impl Editor {
                 if under.is_some_and(|i| on.is_some_and(|r| r.contains(&i))) {
                     return;
                 }
+                // A link's menu over its words, as Word's is.
+                if let Some(l) = self.page_links(pdf, page).iter().find(|l| on_link(l, p)) {
+                    self.selection = Selection::Link { page, id: l.id };
+                    return;
+                }
                 if let Some(id) = self.annot_at(pdf, page, p).map(|a| a.id) {
                     self.selection = Selection::Annot { page, id };
                     return;
@@ -4959,6 +5359,13 @@ impl Editor {
                     if !self.selection.holds(page, i) {
                         self.select_object(page, i);
                     }
+                    return;
+                }
+            }
+            (Tool::Link, Some(p)) => {
+                let under = self.link_under(pdf, page, p).map(|l| l.id);
+                if let Some(id) = under {
+                    self.selection = Selection::Link { page, id };
                     return;
                 }
             }
@@ -5222,6 +5629,7 @@ impl Editor {
                 | Tool::DigitalSign
         ) || self.has_object()
             || self.selection.annot().is_some()
+            || self.selection.link().is_some()
             || self.words_panel()
     }
 
@@ -5235,6 +5643,9 @@ impl Editor {
                 Some(a) => a.label(),
                 None => "Comment".into(),
             };
+        }
+        if self.selection.link().is_some() {
+            return "Link".into();
         }
         if self.words_panel() {
             return "Selected text".into();
@@ -5271,7 +5682,8 @@ impl Editor {
             Tool::DigitalSign => "Sign with a digital ID",
             Tool::Redact => "Mark for redaction",
             Tool::TextBox => "New text box",
-            Tool::Select | Tool::Read => return None,
+            // The Link tool has no options: the inspector shows a link selected with it.
+            Tool::Select | Tool::Read | Tool::Link => return None,
         })
     }
 
@@ -5336,6 +5748,24 @@ impl Editor {
         self.line_edit.is_some() || self.para.is_some()
     }
 
+    /// Text is what the Font group changes now ([`Self::font_band`]): new text being typed,
+    /// or the Text tool's next; words selected, or the lines among objects selected; a line
+    /// or paragraph being edited, or a line selected. Minimal's inspector shows the group
+    /// then (ENH-45).
+    pub fn text_targeted(&self) -> bool {
+        if self.adding_text() || self.editing_line() {
+            return true;
+        }
+        if self.chosen_now().is_some_and(Chosen::restylable) {
+            return true;
+        }
+        let line = |(page, id): (usize, usize)| {
+            let o = self.objs.get(&page).and_then(|objs| objs.get(id));
+            o.is_some_and(|o| o.kind == ObjectKind::Text && !o.hidden)
+        };
+        self.selection.object().is_some_and(line)
+    }
+
     /// Where the line or paragraph being edited on `page` was drawn last on the screen, as
     /// typed.
     pub fn line_area(&self, page: usize) -> Option<Rect> {
@@ -5375,7 +5805,11 @@ impl Editor {
 
     /// The pointer is moving, resizing, drawing or selecting something.
     pub fn dragging(&self) -> bool {
-        self.drag.is_some() || self.draw.is_some() || self.marquee.is_some() || self.text_drag
+        self.drag.is_some()
+            || self.draw.is_some()
+            || self.marquee.is_some()
+            || self.text_drag
+            || self.link_drag.is_some()
     }
 
     /// One line of page text is selected, for Edit text to edit on the page.
@@ -5423,6 +5857,8 @@ impl Editor {
     pub fn delete_selected(&mut self) {
         if let Some((p, ids)) = self.selection.object_ids() {
             self.actions.push(Action::Delete(p, ids));
+        } else if let Some((p, id)) = self.selection.link() {
+            self.actions.push(Action::RemoveLink(p, id));
         } else if let Some(a) = self.selected_annot().filter(|a| !a.locked()) {
             self.actions.push(Action::DeleteAnnot(a.page, a.id));
         }
@@ -5430,6 +5866,14 @@ impl Editor {
 
     /// Move the selected objects, or annotation (arrow tool), by (dx, dy) points.
     pub fn nudge(&mut self, dx: f32, dy: f32) {
+        // A link selected with the Link tool, as a drag moves it.
+        if let Some(l) = self.selected_link().filter(|_| self.tool == Tool::Link) {
+            if let Some((p, _)) = self.selection.link() {
+                let to = shifted(l.bbox, dx, dy);
+                self.actions.push(Action::MoveLink(p, l.id, to));
+            }
+            return;
+        }
         if self.annot_moves() {
             if let Some(a) = self.selected_annot() {
                 let b = a.bbox;
@@ -5498,6 +5942,7 @@ impl Editor {
             self.draw = None;
             self.marquee = None;
             self.pen_stroke = None;
+            self.link_drag = None;
             if std::mem::take(&mut self.text_drag) {
                 self.selection.clear_words();
             }
@@ -5527,6 +5972,11 @@ impl Editor {
         }
         if self.selection.annot().is_some() {
             self.selection.clear_annot();
+            return;
+        }
+        // A link first lets go of the link; the Link tool then gives way to the read tool.
+        if self.selection.link().is_some() {
+            self.selection.clear_link();
             return;
         }
         match self.tool {
@@ -5667,10 +6117,9 @@ impl Editor {
                 egui::Grid::new("geom").num_columns(2).show(ui, |ui| {
                     for (label, v) in [("X", &mut x), ("Y", &mut y)] {
                         ui.label(label);
-                        let field = egui::DragValue::new(v).range(-5000.0..=20000.0);
-                        let r = ui.add(field.clamp_existing_to_range(false).speed(0.5));
-                        dialogs::set_name(&r, label);
-                        done |= r.drag_stopped() || r.lost_focus();
+                        let field = Spin::new(v, -5000.0..=20000.0).name(label);
+                        // Typed (Enter, or leaving it) or stepped.
+                        done |= ui.add(field).changed();
                         ui.end_row();
                     }
                 });
@@ -6014,6 +6463,52 @@ impl Editor {
 
     /// The selected annotation: what and whose it is, and its colour, opacity and comment,
     /// each finished change kept at once as one undo step.
+    /// The selected link's controls (ENH-17): Link to, the address or page, Show as a link,
+    /// as the Edit link window has them. A change is kept at once, an address when its box
+    /// is left or at Enter, each one undo step; an address not taken says why and isn't.
+    fn link_inspector(&mut self, ui: &mut egui::Ui) {
+        let Some(l) = self.selected_link().cloned() else {
+            return;
+        };
+        let Some((page, _)) = self.selection.link() else {
+            return;
+        };
+        let pages = self.page_count.max(1);
+        let form = || crate::dialogs::LinkForm::of(&l.target, l.underlined, pages, page);
+        let key = (page, l.id);
+        if self.link_insp.as_ref().is_none_or(|i| i.key != key) {
+            self.link_insp = Some(LinkInsp { key, form: form() });
+        }
+        let Some(insp) = self.link_insp.as_mut() else {
+            return;
+        };
+        note(ui, format!("Page {}", page + 1));
+        if let LinkTarget::Unfollowed(u) = &l.target {
+            note(ui, format!("Now: {}", unfollowed(u)));
+        }
+        ui.separator();
+        let before = insp.form.clone();
+        let (field, enter) = insp.form.ui(ui, ("link inspector", page));
+        // The address waits for the box to be left; Link to, the page and the look apply
+        // at once.
+        let typing = field.has_focus() && !enter;
+        let address = |f: &crate::dialogs::LinkForm| (f.web.clone(), f.email.clone());
+        let only_typed = address(&before) != address(&insp.form) && before.to == insp.form.to;
+        let left = field.lost_focus() || enter;
+        let changed = insp.form != before && !(typing && only_typed);
+        if !(changed || left) {
+            return;
+        }
+        let Ok(target) = insp.form.target() else {
+            return;
+        };
+        let underline = insp.form.underline;
+        if target != l.target || underline != l.underlined {
+            let set = Action::SetLink(page, l.id, target, underline);
+            self.actions.push(set);
+        }
+    }
+
     fn annot_inspector(&mut self, ui: &mut egui::Ui) {
         let Some(a) = self.selected_annot().cloned() else {
             ui.weak("Nothing selected.");
@@ -6070,14 +6565,7 @@ impl Editor {
                             color_button(ui, c, name);
                         }
                         if let Some(s) = e.shape.as_mut() {
-                            let r = ui.add(
-                                egui::DragValue::new(&mut s.width)
-                                    .range(0.0..=40.0)
-                                    .clamp_existing_to_range(false)
-                                    .speed(0.1)
-                                    .suffix(" pt"),
-                            );
-                            dialogs::set_name(&r, "Line width");
+                            ui.add(line_width(&mut s.width, 0.0..=40.0, "Line width"));
                         }
                     });
                 }
@@ -6126,6 +6614,7 @@ impl Editor {
                         self.text_refused.mark(ui.ctx(), note);
                     }
                 }
+                crate::spell::apply(ui.ctx(), id, &mut e.contents);
                 let held =
                     egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
                 let mut out = egui::TextEdit::multiline(&mut page_text::Clusters(&mut e.contents))
@@ -6134,6 +6623,8 @@ impl Editor {
                     .desired_width(f32::INFINITY)
                     .show(ui);
                 page_text::snap_drawn(ui.ctx(), id, &mut out, &e.contents, held);
+                crate::spell::marks(ui, id, &out, &e.contents);
+                crate::spell::menu_on(&out.response.response, id);
                 self.text_refused.show(ui.ctx(), &out, id);
                 dialogs::set_name(&out.response.response, label);
                 // Changes are kept as they are made, each finished one a step to undo; the
@@ -6202,13 +6693,16 @@ impl Editor {
             text: String::new(),
         });
         draft.page = Some(a.page);
-        let out = ui.add(
-            egui::TextEdit::multiline(&mut draft.text)
-                .id(id)
-                .hint_text("Reply")
-                .desired_rows(2)
-                .desired_width(f32::INFINITY),
-        );
+        crate::spell::apply(ui.ctx(), id, &mut draft.text);
+        let shown = egui::TextEdit::multiline(&mut draft.text)
+            .id(id)
+            .hint_text("Reply")
+            .desired_rows(2)
+            .desired_width(f32::INFINITY)
+            .show(ui);
+        crate::spell::marks(ui, id, &shown, &draft.text);
+        let out = shown.response.response;
+        crate::spell::menu_on(&out, id);
         dialogs::set_name(&out, "Reply");
         if self.reply_focus {
             out.request_focus();
@@ -6392,6 +6886,10 @@ impl Editor {
             self.annot_inspector(ui);
             return;
         }
+        if self.selection.link().is_some() {
+            self.link_inspector(ui);
+            return;
+        }
         self.sync_insp();
         let page = self.selection.objects().map(|(p, _)| p);
         let page_err = page.and_then(|p| self.unavailable.get(&p)).cloned();
@@ -6459,13 +6957,7 @@ impl Editor {
                         "Outline colour"
                     };
                     color_button(ui, &mut self.stroke, name);
-                    let r = ui.add(
-                        egui::DragValue::new(&mut self.width)
-                            .range(0.25..=40.0)
-                            .speed(0.1)
-                            .suffix(" pt"),
-                    );
-                    dialogs::set_name(&r, "Line width");
+                    ui.add(line_width(&mut self.width, 0.25..=40.0, "Line width"));
                 });
                 if self.tool == Tool::Line && !self.draw_permanent {
                     ui.checkbox(&mut self.arrow, "Arrowhead");
@@ -6481,13 +6973,7 @@ impl Editor {
             Tool::Pen => {
                 ui.horizontal(|ui| {
                     color_button(ui, &mut self.pen_color, "Pen colour");
-                    let r = ui.add(
-                        egui::DragValue::new(&mut self.pen_width)
-                            .range(0.25..=40.0)
-                            .speed(0.1)
-                            .suffix(" pt"),
-                    );
-                    dialogs::set_name(&r, "Pen width");
+                    ui.add(line_width(&mut self.pen_width, 0.25..=40.0, "Pen width"));
                 });
                 return;
             }
@@ -6580,7 +7066,7 @@ impl Editor {
                 self.group_ui(ui);
                 return;
             }
-            Tool::Select | Tool::Read | Tool::Text => {}
+            Tool::Select | Tool::Read | Tool::Text | Tool::Link => {}
         }
 
         // Below a tool's options, the object's own heading.
@@ -6670,14 +7156,7 @@ impl Editor {
                     color_button(ui, &mut insp.stroke, "Outline colour");
                     // A width outside the range (a hairline) is shown as it is: raised to
                     // the range, it would be a change never made.
-                    let r = ui.add(
-                        egui::DragValue::new(&mut insp.width)
-                            .range(0.25..=100.0)
-                            .clamp_existing_to_range(false)
-                            .speed(0.1)
-                            .suffix(" pt"),
-                    );
-                    dialogs::set_name(&r, "Outline width");
+                    ui.add(line_width(&mut insp.width, 0.25..=100.0, "Outline width"));
                 });
             }
             ObjectKind::Image => {
@@ -6717,10 +7196,9 @@ impl Editor {
                         ui.label(label);
                         // A rule's height under 1 pt is shown as it is: raised, it would
                         // be made with the next change.
-                        let field = egui::DragValue::new(v).range(lo..=20000.0);
-                        let r = ui.add(field.clamp_existing_to_range(false).speed(0.5));
-                        dialogs::set_name(&r, label);
-                        done |= r.drag_stopped() || r.lost_focus();
+                        let field = Spin::new(v, lo..=20000.0).name(label);
+                        // Typed (Enter, or leaving it) or stepped.
+                        done |= ui.add(field).changed();
                         ui.end_row();
                     }
                 });
@@ -6824,17 +7302,9 @@ fn shapes_ui(ui: &mut egui::Ui, g: &mut Group) {
         // Widths compared to a hundredth of a point, as a change is.
         let widths = g.all(|l| (l.width * 100.0).round() as i64);
         let mut w = g.shapes.first().map_or(1.0, |(.., l)| l.width);
-        // A hairline is shown as it is, as for one shape.
-        let mut value = egui::DragValue::new(&mut w)
-            .range(0.25..=100.0)
-            .clamp_existing_to_range(false)
-            .speed(0.1);
-        value = match widths {
-            Some(_) => value.suffix(" pt"),
-            None => value.custom_formatter(|_, _| String::new()),
-        };
-        let r = ui.add(value);
-        dialogs::set_name(&r, "Outline width");
+        // A hairline is shown as it is, as for one shape; widths that differ, as nothing.
+        let value = line_width(&mut w, 0.25..=100.0, "Outline width");
+        let r = ui.add(value.mixed(widths.is_none()));
         if r.changed() {
             g.set(|l| l.width = w);
         }
@@ -6861,15 +7331,18 @@ fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
     });
     ui.horizontal(|ui| {
         ui.label("Border");
-        let r = ui.add(
-            egui::DragValue::new(&mut s.border)
-                .range(0.0..=20.0)
-                .clamp_existing_to_range(false)
-                .speed(0.1)
-                .suffix(" pt"),
-        );
-        dialogs::set_name(&r, "Border width");
+        ui.add(line_width(&mut s.border, 0.0..=20.0, "Border width"));
     });
+}
+
+/// A line's width in points, called `name`, stepped by a quarter point as Word's line
+/// weights are. A width outside `range` (a hairline) is shown as it is.
+fn line_width<'a>(
+    v: &'a mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    name: &'a str,
+) -> Spin<'a, f32> {
+    Spin::new(v, range).step(0.25).suffix(" pt").name(name)
 }
 
 /// Ask for an image file and return its bytes if it can be decoded.
@@ -6975,7 +7448,7 @@ mod tests {
             let typed = |ed: &mut Editor, text: &str| match piece {
                 Typed::Text => {
                     let a = ed.adding.get_or_insert_with(|| {
-                        PageText::new(egui::Id::NULL, 0, (100.0, 100.0), look)
+                        PageText::new(egui::Id::NULL, 0, (100.0, 100.0), look, TextAlign::Left)
                     });
                     a.text.sync(text, None);
                 }
@@ -7319,6 +7792,57 @@ mod tests {
         assert_eq!(ed.text_hit(0, Pos2::new(142.0, y), 0.5), None, "{label:?}");
         assert_eq!(ed.text_hit(0, Pos2::new(147.0, y), 0.5), Some(1));
         assert!(cover_box(&objs[0])[2] < next[0], "{label:?} hides {next:?}");
+    }
+
+    /// A picture drawn after a line of text hides it where it covers it: neither tool's
+    /// click finds the text there. Not where the text is drawn after it, nor for a picture
+    /// covering most of the page (a scan with its text under it).
+    #[test]
+    fn a_picture_in_front_of_text_is_what_is_clicked() {
+        let png = limarepdf_core::render::encode(
+            &limarepdf_core::render::Bitmap {
+                width: 2,
+                height: 2,
+                rgba: [0, 128, 128, 255].repeat(4),
+            },
+            limarepdf_core::render::ImageFormat::Png,
+            72.0,
+        )
+        .unwrap();
+        let read = |pdf: &limarepdf_core::Pdf| {
+            let mut ed = Editor::default();
+            ed.objects(pdf, 0);
+            ed.page_areas.insert(0, 612.0 * 792.0);
+            ed
+        };
+        let (mut pdf, ed) = page_with_objects();
+        let text = ed.objs[&0][2].bbox;
+        let y = (text[1] + text[3]) / 2.0;
+        let (left, right) = (Pos2::new(text[0] + 2.0, y), Pos2::new(text[2] - 2.0, y));
+        // Over the line's first half.
+        let half = (text[0] + text[2]) / 2.0;
+        pdf.add_image(0, [text[0] - 5.0, y - 30.0, half, y + 30.0], &png)
+            .unwrap();
+        let ed = read(&pdf);
+        assert_eq!(ed.picture_over_text(0, left), Some(3));
+        assert_eq!(ed.text_hit(0, left, 1.0), None);
+        assert_eq!(ed.hit(0, left, 1.0), Some(3));
+        assert_eq!(ed.read_hit(0, left, 1.0, 612.0 * 792.0), Some(3));
+        // The half it doesn't cover.
+        assert_eq!(ed.picture_over_text(0, right), None);
+        assert_eq!(ed.text_hit(0, right, 1.0), Some(2));
+        // Text drawn after the picture is in front of it.
+        let font = FontChoice::default();
+        (pdf.add_text(0, (100.0, 300.0), "Seals", font, 12.0, [0.0; 3])).unwrap();
+        let ed = read(&pdf);
+        assert_eq!(ed.picture_over_text(0, left), None);
+        assert_eq!(ed.text_hit(0, left, 1.0), Some(4));
+        // A picture over the whole page, after the text, doesn't hide it.
+        let (mut pdf, _) = page_with_objects();
+        pdf.add_image(0, [0.0, 0.0, 612.0, 792.0], &png).unwrap();
+        let ed = read(&pdf);
+        assert_eq!(ed.picture_over_text(0, right), None);
+        assert_eq!(ed.text_hit(0, right, 1.0), Some(2));
     }
 
     #[test]

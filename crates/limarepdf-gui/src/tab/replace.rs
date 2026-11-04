@@ -272,7 +272,7 @@ impl Tab {
                 b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
                 let key = (!mac).then_some(key);
                 let tip = match key {
-                    Some(k) => format!("{name} ({})\n{}", ctx.format_shortcut(&k), a.hint),
+                    Some(k) => format!("{name} ({})\n{}", actions::key_text(&ctx, &k), a.hint),
                     None => format!("{name}\n{}", a.hint),
                 };
                 let focused = b.has_focus();
@@ -282,7 +282,7 @@ impl Tab {
                     enabled,
                     key,
                     clicked: b
-                        .on_disabled_hover_text(actions::greyed_tip(&ctx, a, c))
+                        .on_disabled_hover_ui(|ui| actions::greyed_tip(ui, a, c))
                         .clicked(),
                     focused,
                 }

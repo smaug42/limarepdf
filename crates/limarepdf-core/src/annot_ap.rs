@@ -10,6 +10,7 @@ use crate::form_ap::{
 };
 use crate::form_write::parse_da;
 use crate::layout::Setter;
+use crate::links::LINK_BLUE;
 use crate::matrix as mx;
 use crate::stamps::{rounded, StampColor, StampKind, CAP};
 use crate::{Family, FontChoice, Pdf, Result};
@@ -257,13 +258,15 @@ impl Pdf {
         let line = Pen { c, ic, w: bw, dash };
         let mut ops = Vec::new();
         let mut blend = false;
+        let quads = || -> Vec<[(f32, f32); 4]> {
+            self.points(d.get(b"QuadPoints").ok())
+                .filter(|p| p.len() >= 4)
+                .map(|p| p.as_chunks::<4>().0.iter().map(orient).collect())
+                .unwrap_or_else(|| vec![orient(&rect_corners(rect))])
+        };
         match sub {
             b"Highlight" | b"Underline" | b"StrikeOut" | b"Squiggly" => {
-                let quads = self
-                    .points(d.get(b"QuadPoints").ok())
-                    .filter(|p| p.len() >= 4)
-                    .map(|p| p.as_chunks::<4>().0.iter().map(orient).collect())
-                    .unwrap_or_else(|| vec![orient(&rect_corners(rect))]);
+                let quads = quads();
                 let default = if sub == b"Highlight" {
                     [1.0, 1.0, 0.0]
                 } else {
@@ -272,6 +275,12 @@ impl Pdf {
                 let c = line.c.unwrap_or_else(|| default.to_vec());
                 markup(&mut ops, sub, &quads, &c);
                 blend = sub == b"Highlight";
+            }
+            // LimarePDF's underline for a link, under each line as an underline mark is
+            // drawn; a link's other borders are left to the viewer.
+            b"Link" if self.link_underlined(d) => {
+                let c = line.c.unwrap_or_else(|| LINK_BLUE.to_vec());
+                markup(&mut ops, b"Underline", &quads(), &c);
             }
             b"Square" | b"Circle" => {
                 let r = self.inner(d, rect);

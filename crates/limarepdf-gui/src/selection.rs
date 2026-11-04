@@ -4,7 +4,7 @@
 //! another, except that clearing objects, words or an annotation leaves a page selection
 //! alone.
 
-use limarepdf_core::{ObjectKind, PageObject};
+use limarepdf_core::{LinkId, ObjectKind, PageObject};
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 
@@ -116,6 +116,8 @@ pub enum Selection {
     Words { anchor: WordAt, end: WordAt },
     /// One annotation (a comment or markup), by its page and object id.
     Annot { page: usize, id: (u32, u16) },
+    /// One link (ENH-17), by its page and id.
+    Link { page: usize, id: LinkId },
 }
 
 impl Selection {
@@ -282,6 +284,21 @@ impl Selection {
         }
     }
 
+    /// The selected link's page and id.
+    pub fn link(&self) -> Option<(usize, LinkId)> {
+        match *self {
+            Selection::Link { page, id } => Some((page, id)),
+            _ => None,
+        }
+    }
+
+    /// Clear a link selection; anything else stays.
+    pub fn clear_link(&mut self) {
+        if matches!(self, Selection::Link { .. }) {
+            *self = Selection::None;
+        }
+    }
+
     /// Clear an annotation selection; anything else stays.
     pub fn clear_annot(&mut self) {
         if matches!(self, Selection::Annot { .. }) {
@@ -313,7 +330,11 @@ impl Selection {
                     *self = Selection::None;
                 }
             }
-            Selection::Objects { page, .. } | Selection::Annot { page, .. } if *page >= n => {
+            Selection::Objects { page, .. }
+            | Selection::Annot { page, .. }
+            | Selection::Link { page, .. }
+                if *page >= n =>
+            {
                 *self = Selection::None
             }
             Selection::Words { anchor, end } if anchor.0.max(end.0) >= n => {

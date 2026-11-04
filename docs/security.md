@@ -8,7 +8,7 @@ again before saving.
 
 ## Protect a document
 
-1. Choose **Protect > Passwords** (or ☰ > Document > Password security…). **Password security** opens in the
+1. Choose **Protect > Passwords** (or ☰ > Protect > Password security…). **Password security** opens in the
    inspector.
 2. Tick **Protect with passwords when saving**.
 3. Type an **Open** password, which is needed to open the document, a **Permissions** password, which is needed to

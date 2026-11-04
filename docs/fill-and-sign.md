@@ -36,8 +36,9 @@ the item picked last.
 
 ## Make your signature
 
-**Create signature…**, in the Fill and sign pane, **Forms and sign > Fill and sign ▾ > Signature**, ☰ > Tools or
-the command palette (Ctrl+K), opens a window with three ways to make one (Create initials… likewise):
+**Create signature…**, in the Fill and sign pane, **Forms and sign > Fill and sign ▾ > Signature**, ☰ > Forms
+and sign or the command search (Ctrl+Shift+P), opens a window with three ways to make one (Create initials…
+likewise):
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what
@@ -84,7 +85,7 @@ or resize it. To sign several places in a row, pin the tool (see [Keep tool acti
 - **Signature and initials:** a signature is up to 150 by 50 points, initials up to 50 by 30.
 - **Date:** today's date on your computer, in the style picked beside it: 2026-10-16, 16 October 2026 or
   October 16, 2026. The date is a text box: double-click it to change it.
-- **Name:** your name for comments (the same as ☰ > Edit > Your name for comments). A name with characters
+- **Name:** your name for comments (the same as ☰ > Review > Your name for comments). A name with characters
   LimarePDF can't write (Hebrew or Arabic, say, an emoji made of several characters, or characters no installed
   font has) can't be put down: a message says which.
 - **Text:** type in the box, then click on the page; for anything else a form asks for. Like the name and date,
@@ -107,8 +108,8 @@ read tool (or Ctrl+click it with another tool) to select it. The Comments view l
 "Initials", "Tick" and so on.
 
 While there are such items, a notice above the pages says how many and has a **Finish signing…** button; the Fill
-and sign pane has the same button, and so do Fill and sign ▾ and ☰ > Document. Finish signing draws them into the
-pages as they look,
+and sign pane has the same button, and so do Fill and sign ▾ and ☰ > Forms and sign. Finish signing draws them
+into the pages as they look,
 after asking, so they can no longer be moved or removed as comments. Undo brings them back until you close the
 document. Other comments and stamps are left alone.
 

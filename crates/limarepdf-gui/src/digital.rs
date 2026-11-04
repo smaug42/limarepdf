@@ -930,10 +930,13 @@ impl IdsWindow {
                     path.display()
                 );
                 let warnings: Vec<String> = unsure.iter().map(|w| unconfirmed_text(w)).collect();
-                let tail = "Recipients trust it in LimarePDF with Document > Digital signatures \
-                            > Trusted certificates… > Add certificate file…, or in their PDF \
-                            app's trusted certificates, after checking the fingerprint with you.";
-                self.note = Some(told(&head, &warnings, tail));
+                let tail = format!(
+                    "Recipients trust it in LimarePDF with {} > Add certificate file…, or in \
+                     their PDF app's trusted certificates, after checking the fingerprint with \
+                     you.",
+                    crate::menu::way(crate::actions::Act::TrustedCertificates)
+                );
+                self.note = Some(told(&head, &warnings, &tail));
             }
             Err(e) => {
                 f.error = Some((Field::Form, sentence(&e)));
@@ -1358,12 +1361,12 @@ impl SignWindow {
                         if id.cert.self_issued {
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(
+                                    RichText::new(format!(
                                         "Others see you as an unknown signer until they trust \
-                                         your certificate: send it to them from Document > \
-                                         Digital signatures > Digital IDs… (Export…, \
+                                         your certificate: send it to them from {} (Export…, \
                                          Certificate only).",
-                                    )
+                                        crate::menu::way(crate::actions::Act::DigitalIds)
+                                    ))
                                     .small()
                                     .weak(),
                                 )
@@ -2453,14 +2456,9 @@ mod tests {
         let (said, text) = w.note.clone().unwrap();
         assert_eq!(said, Said::Done, "{text}");
         // The way there, as the menus have it.
-        let trusted = crate::actions::get(crate::actions::Act::TrustedCertificates);
-        let way = format!(
-            "{} > {} > {} > Add certificate file…",
-            trusted.group.name(),
-            trusted.submenu,
-            trusted.label
-        );
-        assert!(text.contains(&way), "{text}");
+        let way = "Forms and sign > Digital signatures > Trusted certificates… > Add certificate \
+                   file…";
+        assert!(text.contains(way), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

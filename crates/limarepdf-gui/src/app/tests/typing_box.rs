@@ -210,6 +210,129 @@ fn a_text_box_and_a_multi_line_field_wrap_where_their_text_is_written() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Where each row of the drawn text that reads `text` reaches on the screen: its first
+/// letter's left and its last letter's right, spaces at its ends left out. Glyphs are
+/// placed by the pen, the advances before them, as epaint rounds their `pos.x`.
+fn row_reaches(shapes: &[egui::epaint::ClippedShape], text: &str) -> Option<Vec<(f32, f32)>> {
+    let shape = (drawn_texts(shapes).into_iter()).find(|t| t.galley.job.text == text)?;
+    let rows = shape.galley.rows.iter().filter_map(|row| {
+        let g = &row.row.glyphs;
+        let first = g.iter().position(|c| !c.chr.is_whitespace())?;
+        let last = g.iter().rposition(|c| !c.chr.is_whitespace())?;
+        let pen = |i: usize| g[0].pos.x + g[..i].iter().map(|c| c.advance_width).sum::<f32>();
+        let x = shape.pos.x + row.pos.x;
+        Some((x + pen(first), x + pen(last + 1)))
+    });
+    Some(rows.collect())
+}
+
+/// The rows drawn for `text` once `fits` takes their reaches, else after a minute.
+fn settled_reaches(
+    app: &mut App,
+    ty: &Typist,
+    text: &str,
+    fits: impl Fn(&[(f32, f32)]) -> bool,
+) -> Vec<(f32, f32)> {
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        let got = row_reaches(&shapes(app, ty, vec![]), text).unwrap_or_default();
+        if (!got.is_empty() && fits(&got)) || Instant::now() > until {
+            return got;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Whether rows (their reaches, [`row_reaches`]) have their middles within a pixel of
+/// `middle`.
+fn centred_on(rows: &[(f32, f32)], middle: f32) -> bool {
+    let off = |&(a, b): &(f32, f32)| (a + b) / 2.0 - middle;
+    rows.iter().all(|r| off(r).abs() < 1.0)
+}
+
+/// PB-59: a text box and a form field show their text aligned while it is typed as it is
+/// written, as `/Q` aligns it: a centred text box's rows centred in it, a right-aligned
+/// multi-line field's rows ending where the field's text ends (its side less its border and
+/// padding), a centred single-line field's text centred.
+#[test]
+fn a_text_box_and_fields_show_their_text_aligned_while_it_is_typed() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let ty = Typist::new(&ctx);
+    let text = "The walrus and the carpenter were walking close at hand";
+    let mut pdf = Pdf::new();
+    pdf.insert_blank(0, 612.0, 792.0).unwrap();
+    let rect = [72.0, 100.0, 272.0, 160.0];
+    let style = limarepdf_core::TextStyle::default();
+    let id = pdf.add_text_box(0, rect, text, &style, "Sam").unwrap();
+    pdf.doc.get_dictionary_mut(id).unwrap().set("Q", 1);
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    assert!(app.add_tab(&ctx, pdf, None, None, false));
+    let t = &mut app.tabs[0];
+    t.ed.annots(&t.pdf, 0);
+    t.ed.selection = Selection::Annot { page: 0, id };
+    t.ed.write_selected();
+    let (min, k) = ty.page(&mut app);
+    let middle = min.x + (rect[0] + rect[2]) / 2.0 * k;
+    let centred = |rows: &[(f32, f32)]| centred_on(rows, middle);
+    let got = settled_reaches(&mut app, &ty, text, centred);
+    let said = format!("the text box: {got:?}, middle {middle}");
+    assert!(got.len() > 1 && centred(&got), "{said}");
+
+    let mut pdf = form_doc(&[("Notes", 1), ("Name", 1)]);
+    let field = |pdf: &Pdf, name: &[u8]| {
+        (pdf.doc.objects.iter())
+            .find_map(|(&id, o)| {
+                let d = o.as_dict().ok()?;
+                (d.get(b"T").ok()?.as_str().ok()? == name).then_some(id)
+            })
+            .expect("the field")
+    };
+    let notes = field(&pdf, b"Notes");
+    let d = pdf.doc.get_dictionary_mut(notes).unwrap();
+    d.set("Ff", 4096);
+    d.set("DA", lopdf::Object::string_literal("/Helv 10 Tf 0 g"));
+    d.set("Q", 2);
+    let name = field(&pdf, b"Name");
+    let d = pdf.doc.get_dictionary_mut(name).unwrap();
+    d.set("DA", lopdf::Object::string_literal("/Helv 10 Tf 0 g"));
+    d.set("Q", 1);
+    let dir = test_dir("box-aligned");
+    let path = dir.join("form.pdf");
+    pdf.save(&path).unwrap();
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    open_and_wait(&mut app, &ctx, &path, 1);
+    let notes = "The walrus and the carpenter were walking close at hand they wept like \
+                 anything to see such quantities of sand";
+    ty.click_field(&mut app, "Notes", 0);
+    ty.text(&mut app, notes);
+    let (min, k) = ty.page(&mut app);
+    let pdf = &app.tabs[0].pdf;
+    let fields = pdf.form_fields();
+    let widget = &fields.iter().find(|f| f.name == "Notes").unwrap().widgets[0];
+    let set = pdf.field_setting("Notes", widget.id).expect("a setting");
+    let end = min.x + (widget.bbox[2] - set.margin()) * k;
+    let right = |rows: &[(f32, f32)]| rows.iter().all(|&(_, b)| (b - end).abs() < 1.0);
+    let got = settled_reaches(&mut app, &ty, notes, right);
+    let said = format!("the multi-line field: {got:?}, end {end}");
+    assert!(got.len() > 1 && right(&got), "{said}");
+
+    ty.click_field(&mut app, "Name", 0);
+    ty.text(&mut app, "Walrus");
+    let b = (app.tabs[0].pdf.form_fields().into_iter())
+        .find(|f| f.name == "Name")
+        .unwrap()
+        .widgets[0]
+        .bbox;
+    let middle = min.x + (b[0] + b[2]) / 2.0 * k;
+    let centred = |rows: &[(f32, f32)]| centred_on(rows, middle);
+    let got = settled_reaches(&mut app, &ty, "Walrus", centred);
+    let said = format!("the single-line field: {got:?}, middle {middle}");
+    assert!(centred(&got), "{said}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A text box open for typing shows the look its inspector gives it meanwhile (ENH-13): a
 /// bigger size and a thick border change its typing box's lines as they change the written
 /// ones, as a new box's do with the Text box tool's look.

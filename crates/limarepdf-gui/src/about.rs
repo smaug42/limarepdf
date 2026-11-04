@@ -7,7 +7,9 @@ use eframe::egui::{self, Align, Context, Layout, TextureHandle, TextureOptions, 
 
 const WEBSITE: &str = "https://github.com/smaug42/limarepdf";
 const LICENCE: &str = "https://github.com/smaug42/limarepdf/blob/main/docs/licence.md";
-const ISSUES: &str = "https://github.com/smaug42/limarepdf/issues";
+pub const ISSUES: &str = "https://github.com/smaug42/limarepdf/issues";
+/// The user guide's home page (Help > User guide).
+pub const GUIDE: &str = "https://github.com/smaug42/limarepdf/blob/main/docs/README.md";
 
 /// The people who made LimarePDF, and what they did.
 const CONTRIBUTORS: &[(&str, &str)] = &[
@@ -227,6 +229,12 @@ fn credits(ui: &mut Ui) {
                  Homemade Apple (Apache License 2.0); all included unmodified",
             );
             row(ui, "Icons:", "Phosphor Icons (MIT)");
+            row(
+                ui,
+                "Spelling:",
+                "spellbook (MPL-2.0); SCOWL's English dictionaries; Grammalecte's French \
+                 dictionary (MPL-2.0); all included unmodified",
+            );
             ui.add_space(4.0);
             ui.weak("LimarePDF is licensed under MIT or Apache-2.0, at your option.");
         });

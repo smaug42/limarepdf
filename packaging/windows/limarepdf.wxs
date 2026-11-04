@@ -167,6 +167,15 @@
       <Component Directory="INSTALLFOLDER">
         <File Source="crates\limarepdf-core\assets\fonts\OFL-Zeyada.txt" Name="FONT-LICENSE-Zeyada.txt" />
       </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\assets\dictionaries\README_en_CA.txt" Name="DICTIONARY-LICENSE-English.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\assets\dictionaries\README_dict_fr.txt" Name="DICTIONARY-LICENSE-French.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\assets\dictionaries\LICENSE-MPL-2.0.txt" Name="LICENSE-MPL-2.0.txt" />
+      </Component>
     </Feature>
   </Package>
 </Wix>

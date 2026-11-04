@@ -1,5 +1,6 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
+use crate::dialogs::{LinkAsk, LinkForm};
 use crate::editor::{
     align_paragraphs, Action, Aligned, Editor, Match, NotAligned, StampPick, Tool, Typed,
 };
@@ -21,19 +22,21 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptio
 use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
-    Annot, BookmarkPlace, DocWords, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf,
-    Query, Restore, SearchHit, SearchOptions, Shape, ShapeLook, StampPlace,
+    Annot, DocWords, Encryption, ImageWatermark, LinkId, LinkTarget, Pdf, Query, Restore,
+    SearchHit, SearchOptions, Shape, ShapeLook, StampPlace,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 mod backdrop;
+mod bookmarks;
 mod comments;
 mod organise;
 mod previews;
 mod proofs;
 mod replace;
+mod spelling;
 pub use comments::Review;
 use organise::Organise;
 use previews::{CropDrag, Picture};
@@ -60,6 +63,8 @@ const SIMILAR_FONT: &str =
 
 /// Typing whose change failed, left as it was, or that couldn't go back to its place.
 const LEFT_OUT: &str = "The typing that couldn't be kept was left out";
+/// Said when a picture is put over a form field, whose answer then shows on top of it.
+pub const OVER_FIELDS: &str = "Form fields show above pictures, in every PDF reader";
 
 /// A change to `n` objects, `done`: when several were changed and it failed, the message
 /// says that one of them couldn't be (`what`: "moved") and nothing was changed.
@@ -86,6 +91,7 @@ pub enum Side {
     Search,
     Bookmarks,
     Comments,
+    Spelling,
     Signatures,
 }
 
@@ -413,6 +419,8 @@ pub struct Tab {
     /// A link to a web address (or anything outside the document) was clicked; the app
     /// asks before opening it.
     pub open_link: Option<String>,
+    /// The Insert link or Edit link window to open (ENH-17); the app opens it.
+    pub ask_link: Option<LinkAsk>,
     /// A thumbnail drag in progress: the thumbnail it started on.
     thumb_drag: Option<usize>,
     /// Notices about the document shown above the pages, most important first.
@@ -429,22 +437,15 @@ pub struct Tab {
     /// The same for the fill-and-sign banner and its items (counted into
     /// `ed.sign_items`).
     signs_hidden: usize,
-    /// The bookmarks, read when first shown and again after the document changes:
-    /// the revision they were read at, and the items.
-    outline: Option<(u64, Vec<OutlineItem>)>,
-    /// For each bookmark, whether its children are shown.
-    outline_open: Vec<bool>,
-    /// The bookmark last clicked; a new one goes after it.
-    outline_sel: Option<usize>,
-    /// A bookmark being renamed, and its title so far; `outline_focus` until the box
-    /// has been given the keyboard.
-    outline_rename: Option<(usize, String)>,
-    outline_focus: bool,
+    /// The Bookmarks view.
+    outline: bookmarks::Outline,
     /// The annotations, read when the Comments tab is first shown and again after the
     /// document changes: the revision they were read at, and the list.
     comments: Option<(u64, Vec<Annot>)>,
     /// The Comments view's filter, search and place (ENH-40).
     pub review: Review,
+    /// The Spelling view's words ignored and list (NEW-06).
+    spell_view: spelling::SpellView,
     /// Single-page layout: whether the view was at the page's top and bottom at the end
     /// of the last frame, so the next wheel step past it turns the page.
     edge: (bool, bool),
@@ -579,15 +580,13 @@ impl Tab {
             notice: None,
             info: None,
             open_link: None,
+            ask_link: None,
             thumb_drag: None,
             stale: HashSet::new(),
-            outline: None,
-            outline_open: Vec::new(),
-            outline_sel: None,
-            outline_rename: None,
-            outline_focus: false,
+            outline: bookmarks::Outline::default(),
             comments: None,
             review: Review::default(),
+            spell_view: spelling::SpellView::default(),
             edge: (false, false),
             flipped: 0.0,
             layout: Layout::default(),
@@ -617,6 +616,12 @@ impl Tab {
             .map(|n| limarepdf_core::display_line(&n.to_string_lossy(), 120))
             .or_else(|| self.label.clone())
             .unwrap_or_else(|| "Untitled".into())
+    }
+
+    /// The document is password-protected, or holds pages of one: pages taken from it into
+    /// another document make that one protected too, with no recovery copies.
+    pub fn is_protected(&self) -> bool {
+        self.copy.protected || self.encryption.is_some() || self.pdf.encrypted()
     }
 
     /// The name, marked when there is work to save: typing counts from the first key.
@@ -779,6 +784,12 @@ impl Tab {
     /// change, Undo or Redo moves it.
     pub fn history(&self) -> (u64, usize, usize) {
         (self.revision, self.undo.len(), self.redo.len())
+    }
+
+    /// The place at the top of the view: the page, and points down it.
+    #[cfg(test)]
+    pub fn place(&self) -> (usize, f32) {
+        self.view
     }
 
     /// The memory the undo steps and the stamp's link hold, as the budget counts it.
@@ -1177,14 +1188,9 @@ impl Tab {
                         self.after_insert(p, from);
                     }
                 }
-                Action::AddText(p, pos, text) => {
+                Action::AddText(p, pos, text, align) => {
                     // Every line in one change, so Undo takes them back together.
-                    let add = |pdf: &mut Pdf| {
-                        for (dy, parts, decos) in text.lines() {
-                            pdf.add_text_decorated(p, (pos.0, pos.1 + dy), &parts, &decos)?;
-                        }
-                        Ok(())
-                    };
+                    let add = |pdf: &mut Pdf| pdf.add_text_lines(p, pos, &text.lines(), align);
                     // Finished by choosing another tool: that tool stays.
                     let placing = matches!(self.ed.tool, Tool::Text | Tool::Read);
                     let from = self.ed.objects(&self.pdf, p).len();
@@ -1197,8 +1203,12 @@ impl Tab {
                         continue;
                     };
                     let from = self.ed.objects(&self.pdf, p).len();
+                    let over = self.over_fields(p, rect);
                     if self.edit_pages(ctx, &[p], |pdf| pdf.add_image(p, rect, &bytes)) {
                         self.after_insert(p, from);
+                        if over {
+                            self.info = Some(OVER_FIELDS.into());
+                        }
                     }
                 }
                 Action::ReplaceImage(p, id, bytes) => {
@@ -1373,6 +1383,23 @@ impl Tab {
                         self.after_annot(p, new);
                     }
                 }
+                Action::NewLink(p, rect) => {
+                    let form = LinkForm::new(self.page_count(), self.current, false);
+                    self.ask_link = Some(LinkAsk {
+                        form,
+                        areas: vec![(p, vec![rect])],
+                        editing: None,
+                        was: None,
+                    });
+                }
+                Action::MoveLink(p, id, to) => {
+                    self.change_link(ctx, p, |pdf| pdf.move_link(p, id, to));
+                }
+                Action::SetLink(p, id, to, underline) => {
+                    self.change_link(ctx, p, |pdf| pdf.set_link(p, id, &to, underline));
+                }
+                Action::EditLink(p, id) => self.ask_edit_link(p, id),
+                Action::RemoveLink(p, id) => self.remove_link(ctx, p, id),
                 Action::AddRedactMark(p, rect) => {
                     // Pinned, the tool stays, so several areas can be marked in a row.
                     let author = self.ed.author.clone();
@@ -1614,6 +1641,113 @@ impl Tab {
         }
     }
 
+    /// Link (ENH-17): the Insert link window for the selected words (a link over their
+    /// lines, underlined), the Edit link window for the selected link, else the Link tool on
+    /// or, when on, off.
+    pub fn link_command(&mut self) {
+        let lines = self.ed.selected_lines();
+        if !lines.is_empty() {
+            self.ask_link = Some(LinkAsk {
+                form: LinkForm::new(self.page_count(), self.current, true),
+                areas: lines,
+                editing: None,
+                was: None,
+            });
+            return;
+        }
+        if let Some((page, id)) = self.ed.selection.link() {
+            self.ask_edit_link(page, id);
+            return;
+        }
+        let tool = if self.ed.tool == Tool::Link {
+            Tool::Read
+        } else {
+            Tool::Link
+        };
+        self.ed.set_tool(tool);
+    }
+
+    /// The Edit link window for link `id` on `page`, as it goes now.
+    pub fn ask_edit_link(&mut self, page: usize, id: LinkId) {
+        let links = self.pdf.page_links(page).unwrap_or_default();
+        let Some(l) = links.into_iter().find(|l| l.id == id) else {
+            return;
+        };
+        let was = match &l.target {
+            LinkTarget::Unfollowed(u) => Some(crate::editor::unfollowed(u)),
+            _ => None,
+        };
+        let form = LinkForm::of(&l.target, l.underlined, self.page_count(), page);
+        self.ask_link = Some(LinkAsk {
+            form,
+            areas: Vec::new(),
+            editing: Some((page, id)),
+            was,
+        });
+    }
+
+    /// The link window answered with `to` and `underline`: the new link made (one a page
+    /// for words across pages), or the link changed, one undo step. The words are let go, as
+    /// Word leaves them; a link made or changed with the Link tool is selected.
+    pub fn write_link(
+        &mut self,
+        ctx: &egui::Context,
+        ask: &LinkAsk,
+        to: &LinkTarget,
+        underline: bool,
+    ) {
+        if let Some((p, id)) = ask.editing {
+            self.change_link(ctx, p, |pdf| pdf.set_link(p, id, to, underline));
+            return;
+        }
+        let pages: Vec<usize> = ask.areas.iter().map(|(p, _)| *p).collect();
+        let mut first = None;
+        let add = |pdf: &mut Pdf| {
+            for (p, boxes) in &ask.areas {
+                let id = pdf.add_link(*p, boxes, to, underline)?;
+                first.get_or_insert((*p, id));
+            }
+            Ok(())
+        };
+        if self.edit_pages(ctx, &pages, add) {
+            self.ed.selection.clear_words();
+            if let Some((page, id)) = first.filter(|_| self.ed.tool == Tool::Link) {
+                let id = LinkId::Object(id);
+                self.ed.selection = Selection::Link { page, id };
+            }
+        }
+    }
+
+    /// Change a link on `page` with `f`, which returns its id after (one written inside the
+    /// page's list becomes an object), one undo step; the link stays selected.
+    fn change_link(
+        &mut self,
+        ctx: &egui::Context,
+        page: usize,
+        f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<(u32, u16)>,
+    ) {
+        let was = self.ed.selection.link();
+        let mut now = None;
+        let change = |pdf: &mut Pdf| {
+            now = Some(f(pdf)?);
+            Ok(())
+        };
+        if self.edit_pages(ctx, &[page], change) && was.is_some_and(|(p, _)| p == page) {
+            if let Some(id) = now {
+                let id = LinkId::Object(id);
+                self.ed.selection = Selection::Link { page, id };
+            }
+        }
+    }
+
+    /// Remove link `id` from `page`, one undo step.
+    pub fn remove_link(&mut self, ctx: &egui::Context, page: usize, id: LinkId) {
+        let gone = |pdf: &mut Pdf| pdf.remove_links(page, &[id]).map(|_| ());
+        if self.edit_pages(ctx, &[page], gone) {
+            self.ed.selection.clear_link();
+        }
+    }
+
     /// Mark the selected words for redaction: one mark per page, a box per line.
     pub fn mark_selection_for_redaction(&mut self, ctx: &egui::Context, author: &str) {
         let lines = self.ed.selected_lines();
@@ -1708,6 +1842,61 @@ impl Tab {
             }
             Err(e) => self.error = Some(e.to_string()),
         }
+    }
+
+    /// Put a picture from the system's clipboard on the page in view (NEW-09's stage 3), as
+    /// Word and PowerPoint paste one: in the middle of the page, at its own size
+    /// ([`pasted_rect`]), selected, in one step. Whether it was put down.
+    pub fn paste_picture(&mut self, ctx: &egui::Context, image: &egui::ColorImage) -> bool {
+        let [w, h] = image.size;
+        let p = self.current;
+        let Some(&(pw, ph)) = self.sizes.get(p) else {
+            return false;
+        };
+        if w == 0 || h == 0 {
+            return false;
+        }
+        let rgba = (image.pixels.iter())
+            .flat_map(|c| c.to_srgba_unmultiplied())
+            .collect();
+        let bitmap = limarepdf_core::render::Bitmap {
+            width: w,
+            height: h,
+            rgba,
+        };
+        let file = match limarepdf_core::png_file(&bitmap) {
+            Ok(f) => f,
+            Err(e) => {
+                self.error = Some(format!("The picture can't be pasted: {e:#}"));
+                return false;
+            }
+        };
+        let rect = pasted_rect((pw, ph), (w, h));
+        let from = self.ed.objects(&self.pdf, p).len();
+        let over = self.over_fields(p, rect);
+        if !self.edit_pages(ctx, &[p], |pdf| pdf.add_image(p, rect, &file)) {
+            return false;
+        }
+        if over {
+            self.info = Some(OVER_FIELDS.into());
+        }
+        // Selected to move or resize, as a picture just placed is; the arrow stays in use.
+        if self.ed.tool != Tool::Select {
+            self.ed.set_tool(Tool::Read);
+        }
+        self.ed.select_new(&self.pdf, p, from);
+        self.ed.selection.set_loose(true);
+        true
+    }
+
+    /// Whether a picture put in `rect` of page `page` (displayed-page points) overlaps one of
+    /// the form's fields shown there, which every PDF reader draws above the page's content.
+    fn over_fields(&self, page: usize, rect: [f32; 4]) -> bool {
+        let over =
+            |b: [f32; 4]| b[0] < rect[2] && rect[0] < b[2] && b[1] < rect[3] && rect[1] < b[3];
+        (self.ed.form.fields().iter())
+            .flat_map(|f| &f.widgets)
+            .any(|w| w.page == page && !w.hidden && over(w.bbox))
     }
 
     /// Record the state before a change: what puts the document back (`None` if it did not
@@ -1936,191 +2125,6 @@ impl Tab {
             }
             if let Some(t) = kept.thumbs.get(id) {
                 self.thumbs.insert(i, t.clone());
-            }
-        }
-    }
-
-    /// The Bookmarks side tab: the outline indented by level, with a caret to show or
-    /// hide an entry's children. Clicking an entry goes to its page; double-click or
-    /// right-click to rename, add under it or delete it.
-    pub fn show_outline(&mut self, ui: &mut egui::Ui) {
-        let rev = self.revision;
-        if self.outline.as_ref().is_none_or(|(r, _)| *r != rev) {
-            let items = self.pdf.outline();
-            self.outline_open = items.iter().map(|i| i.open).collect();
-            if self.outline_sel.is_some_and(|s| s >= items.len()) {
-                self.outline_sel = None;
-            }
-            // Keep the selected bookmark (a new one, say) in view: open the ones above it.
-            if let Some(s) = self.outline_sel {
-                let mut depth = items[s].depth;
-                for k in (0..s).rev() {
-                    if items[k].depth < depth {
-                        depth = items[k].depth;
-                        self.outline_open[k] = true;
-                    }
-                }
-            }
-            self.outline = Some((rev, items));
-        }
-        let Some((_, items)) = &self.outline else {
-            return;
-        };
-        let add = theme::glyph_button(ui, icon::PLUS, "Add bookmark")
-            .on_hover_text(match self.outline_sel {
-                Some(_) => "Bookmark the current page, after the selected bookmark",
-                None => "Bookmark the current page",
-            })
-            .clicked();
-        let mut place = add.then_some(match self.outline_sel {
-            Some(s) => BookmarkPlace::After(s),
-            None => BookmarkPlace::End,
-        });
-        if items.is_empty() {
-            ui.weak("This document has no bookmarks.");
-        }
-        let mut jump = None;
-        let mut toggle = None;
-        let mut rename = None;
-        let mut renamed = None;
-        let mut delete = None;
-        let mut editing = self.outline_rename.take();
-        let mut focus = std::mem::take(&mut self.outline_focus);
-        let mut sel = self.outline_sel;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                // Items deeper than this are inside a closed entry.
-                let mut closed_at: Option<usize> = None;
-                for (i, item) in items.iter().enumerate() {
-                    match closed_at {
-                        Some(d) if item.depth > d => continue,
-                        _ => closed_at = None,
-                    }
-                    let open = self.outline_open[i];
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        ui.add_space(item.depth as f32 * 12.0);
-                        let caret = if open {
-                            icon::CARET_DOWN
-                        } else {
-                            icon::CARET_RIGHT
-                        };
-                        if item.has_children {
-                            let button = egui::Button::new(theme::icon(caret).size(10.0))
-                                .frame_when_inactive(false);
-                            let r = ui.add(button);
-                            let what = if open { "Collapse" } else { "Expand" };
-                            crate::dialogs::set_name(&r, &format!("{what} {}", item.title));
-                            if r.clicked() {
-                                toggle = Some(i);
-                            }
-                        } else {
-                            // The caret's room, so titles line up; nothing a screen reader
-                            // would find.
-                            let font = egui::FontId::new(10.0, theme::icons());
-                            let c = caret.chars().next().unwrap_or(' ');
-                            let w = ui.ctx().fonts_mut(|f| f.glyph_width(&font, c));
-                            let pad = ui.spacing().button_padding.x;
-                            let size = egui::vec2(w + 2.0 * pad, ui.spacing().interact_size.y);
-                            ui.allocate_exact_size(size, egui::Sense::hover());
-                        }
-                        if let Some((at, title)) = &mut editing {
-                            if *at == i {
-                                let r = ui.add(
-                                    egui::TextEdit::singleline(title).desired_width(f32::INFINITY),
-                                );
-                                if std::mem::take(&mut focus) {
-                                    r.request_focus();
-                                }
-                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                    rename = Some(None);
-                                } else if r.lost_focus() {
-                                    let title = title.trim().to_string();
-                                    renamed = Some((i, title, item.title.clone()));
-                                }
-                                return;
-                            }
-                        }
-                        let shown = limarepdf_core::display_line(&item.title, 300);
-                        let mut text = egui::RichText::new(&shown);
-                        if item.page.is_none() {
-                            text = text.weak();
-                        }
-                        let selected = sel == Some(i);
-                        let row = egui::Button::selectable(selected, text).truncate();
-                        let tip = match item.page {
-                            Some(p) => format!("{shown}\nPage {}", self.page_name(p)),
-                            None => format!("{shown}\nGoes outside this document"),
-                        };
-                        let r = ui.add(row).on_hover_text(tip);
-                        if r.clicked() {
-                            sel = Some(i);
-                            jump = item.page;
-                        }
-                        if r.double_clicked() {
-                            rename = Some(Some((i, item.title.clone())));
-                        }
-                        r.context_menu(|ui| {
-                            if theme::glyph_button(ui, icon::PENCIL_SIMPLE, "Rename").clicked() {
-                                rename = Some(Some((i, item.title.clone())));
-                            }
-                            let under = "Add bookmark under this";
-                            if theme::glyph_button(ui, icon::PLUS, under).clicked() {
-                                place = Some(BookmarkPlace::Under(i));
-                            }
-                            let label = match item.has_children {
-                                true => "Delete, with its children",
-                                false => "Delete",
-                            };
-                            if theme::glyph_button(ui, icon::TRASH, label).clicked() {
-                                delete = Some(i);
-                            }
-                        });
-                    });
-                    if item.has_children && !open {
-                        closed_at = Some(item.depth);
-                    }
-                }
-            });
-        self.outline_rename = editing;
-        self.outline_focus = focus;
-        self.outline_sel = sel;
-        if let Some(i) = toggle {
-            self.outline_open[i] = !self.outline_open[i];
-        }
-        if let Some(p) = jump {
-            self.go_to(p);
-        }
-        let ctx = ui.ctx().clone();
-        if let Some(r) = rename {
-            self.outline_rename = r;
-            self.outline_focus = true;
-        }
-        if let Some((i, title, old)) = renamed {
-            self.outline_rename = None;
-            if !title.is_empty() && title != old {
-                self.edit(&ctx, |p| p.rename_bookmark(i, &title));
-            }
-        }
-        if let Some(i) = delete {
-            if self.edit(&ctx, |p| p.remove_bookmark(i)) {
-                self.outline_sel = None;
-                self.notice = Some("Deleted the bookmark".into());
-            }
-        }
-        if let Some(place) = place {
-            let page = self.current;
-            let title = format!("Page {}", self.page_name(page));
-            let mut added = None;
-            let ok = self.edit(&ctx, |p| {
-                added = Some(p.add_bookmark(&title, page, place)?);
-                Ok(())
-            });
-            if let Some(i) = added.filter(|_| ok) {
-                self.outline_sel = Some(i);
-                self.outline_rename = Some((i, title));
-                self.outline_focus = true;
             }
         }
     }
@@ -2873,6 +2877,7 @@ impl Tab {
     pub fn fill_ctx(&self, c: &mut Ctx) {
         c.doc = true;
         c.file = self.path.is_some();
+        c.signed = self.signed;
         c.layout = self.layout;
         c.cover = self.cover;
         c.can_undo = self.can_undo();
@@ -2903,6 +2908,10 @@ impl Tab {
         c.form = !self.ed.form.fields().is_empty();
         c.field = self.ed.form.focused_field().is_some();
         c.fields_shown = self.ed.form.highlight;
+        let link = self.ed.selected_link().map(|l| &l.target);
+        c.link = link.is_some();
+        c.link_opens = link.is_some_and(|t| !matches!(t, LinkTarget::Unfollowed(_)));
+        c.link_address = link.is_some_and(|t| matches!(t, LinkTarget::Uri(_)));
         let annot = self.ed.selected_annot();
         c.annot = annot.is_some();
         c.annot_locked = annot.is_some_and(|a| a.locked());
@@ -2916,9 +2925,10 @@ impl Tab {
         c.search_running = self.search_running();
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
+        c.edit_text = self.ed.edit_text_on();
         c.paragraph = self.ed.paragraphs;
         c.hyphen = self.ed.hyphen_here();
-        c.aligns_text = self.ed.aligns_text();
+        c.aligns = self.ed.aligns_text();
         c.text_align = self.ed.text_align();
     }
 
@@ -2933,7 +2943,8 @@ impl Tab {
     }
 
     /// A right-click in the text being typed on the page: the menu for its text, Cut, Copy
-    /// and Paste, Bold and Italic, as word processors have. The box as drawn this frame
+    /// and Paste, Bold and Italic, as word processors have, and over a word spelt wrongly its
+    /// suggestions, Ignore all and Add to dictionary. The box as drawn this frame
     /// (`Editor::typing_box`): one read again by its id would give up the keyboard it was
     /// just given back, when a press elsewhere came this frame.
     fn typing_menu(&mut self, base: &Ctx) {
@@ -2942,7 +2953,13 @@ impl Tab {
         };
         let mut c = *base;
         self.fill_ctx(&mut c);
-        resp.context_menu(|ui| actions::typing_menu(ui, &c, &mut self.requested));
+        // Over a word spelt wrongly, its suggestions first, as word processors put them.
+        resp.context_menu(|ui| {
+            if crate::spell::menu(ui, resp.id) {
+                ui.separator();
+            }
+            actions::typing_menu(ui, &c, &mut self.requested)
+        });
     }
 
     /// A small bar for the selected object or words, with icon buttons for the right-click
@@ -3417,7 +3434,8 @@ impl Tab {
         match self.ed.follow.take() {
             Some(LinkTarget::Page(p)) => self.go_to(p),
             Some(LinkTarget::Uri(u)) => self.open_link = Some(u),
-            None => {}
+            // Never followed; the editor doesn't offer them.
+            Some(LinkTarget::Unfollowed(_)) | None => {}
         }
         if self.goto.is_none() {
             self.current = probe;
@@ -3678,6 +3696,22 @@ impl Tab {
         let order = moved_order(self.page_count(), &moving, to);
         self.reorder_pages(ctx, &order);
     }
+}
+
+/// Pixels a point for a pasted picture: 96 an inch, as Word sizes a screenshot.
+const PASTED_SCALE: f32 = 72.0 / 96.0;
+
+/// Where a `w` × `h`-pixel picture pasted on a page `page` points wide and high goes (NEW-09's
+/// stage 3; displayed-page points, y down): in the middle, at [`PASTED_SCALE`], shrunk to fit
+/// inside half-inch margins (a tenth of each side on a small page), its shape kept.
+fn pasted_rect(page: (f32, f32), (w, h): (usize, usize)) -> [f32; 4] {
+    let (pw, ph) = page;
+    let room = |side: f32| side - 2.0 * (side / 10.0).min(36.0);
+    let (w, h) = (w as f32 * PASTED_SCALE, h as f32 * PASTED_SCALE);
+    let k = (room(pw) / w).min(room(ph) / h).min(1.0);
+    let (w, h) = (w * k, h * k);
+    let (x, y) = ((pw - w) / 2.0, (ph - h) / 2.0);
+    [x, y, x + w, y + h]
 }
 
 /// The zoom at which the widest of the pages (`sizes`, in points) fits in `room` screen
@@ -3964,6 +3998,27 @@ fn moving_label(ui: &egui::Ui, p: Pos2, n: usize) {
 mod tests {
     use super::*;
     use crate::page_text;
+
+    #[test]
+    fn a_pasted_picture_is_centred_at_its_own_size_or_shrunk_to_fit() {
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.01);
+        // 400 × 200 pixels at 96 an inch: 300 × 150 points, in the middle of a Letter page.
+        let r = pasted_rect((612.0, 792.0), (400, 200));
+        assert!(near(r, [156.0, 321.0, 456.0, 471.0]), "{r:?}");
+        // A full-screen screenshot, 1920 × 1080: shrunk to the room inside half-inch margins,
+        // 540 points wide, its shape kept.
+        let r = pasted_rect((612.0, 792.0), (1920, 1080));
+        assert!(near(r, [36.0, 244.125, 576.0, 547.875]), "{r:?}");
+        // Tall: fitted to the height.
+        let r = pasted_rect((612.0, 792.0), (500, 4000));
+        assert!(
+            (r[3] - r[1] - 720.0).abs() < 0.01 && (r[1] - 36.0).abs() < 0.01,
+            "{r:?}"
+        );
+        // A small page keeps a tenth of each side as its margin.
+        let r = pasted_rect((100.0, 100.0), (1000, 1000));
+        assert!(near(r, [10.0, 10.0, 90.0, 90.0]), "{r:?}");
+    }
 
     #[test]
     fn replies_follow_what_they_answer() {
@@ -4323,6 +4378,7 @@ mod tests {
             0,
             (72.0, 72.0),
             look,
+            crate::editor::TextAlign::Left,
         ));
         if let Some(a) = t.ed.adding.as_mut() {
             a.text.sync("Walrus", None);

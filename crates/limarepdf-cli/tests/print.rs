@@ -50,6 +50,365 @@ fn fake_cups(dir: &Path) {
     }
 }
 
+/// Stand-ins for `lpstat`, listing one printer, the default, and `lpoptions`, naming its
+/// paper sizes as a PPD does.
+fn fake_lpstat(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                  -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+    let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *A4 Letter Custom.WIDTHxHEIGHT'\n";
+    for (name, script) in [("lpstat", lpstat), ("lpoptions", lpoptions)] {
+        let path = dir.join(name);
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// An IPP answer describing a printer with Letter (the default, with margins) and A4.
+fn ipp_answer() -> Vec<u8> {
+    fn put(b: &mut Vec<u8>, tag: u8, name: &str, value: &[u8]) {
+        b.push(tag);
+        b.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        b.extend_from_slice(name.as_bytes());
+        b.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        b.extend_from_slice(value);
+    }
+    let mut b = vec![1, 1, 0, 0, 0, 0, 0, 1, 0x01];
+    put(&mut b, 0x47, "attributes-charset", b"utf-8");
+    put(&mut b, 0x48, "attributes-natural-language", b"en");
+    b.push(0x04);
+    put(&mut b, 0x44, "media-supported", b"na_letter_8.5x11in");
+    put(&mut b, 0x44, "", b"iso_a4_210x297mm");
+    put(&mut b, 0x44, "media-default", b"na_letter_8.5x11in");
+    // media-col-database: Letter with 4.23 mm margins.
+    put(&mut b, 0x34, "media-col-database", b"");
+    put(&mut b, 0x4A, "", b"media-size");
+    put(&mut b, 0x34, "", b"");
+    put(&mut b, 0x4A, "", b"x-dimension");
+    put(&mut b, 0x21, "", &21590i32.to_be_bytes());
+    put(&mut b, 0x4A, "", b"y-dimension");
+    put(&mut b, 0x21, "", &27940i32.to_be_bytes());
+    put(&mut b, 0x37, "", b"");
+    for side in ["top", "right", "bottom", "left"] {
+        put(&mut b, 0x4A, "", format!("media-{side}-margin").as_bytes());
+        put(&mut b, 0x21, "", &423i32.to_be_bytes());
+    }
+    put(&mut b, 0x37, "", b"");
+    b.push(0x03);
+    b
+}
+
+/// A stand-in printing service on the socket `path`, answering one request with
+/// [`ipp_answer`].
+fn fake_ipp(path: &Path) -> std::thread::JoinHandle<()> {
+    use std::io::{Read, Write};
+    let _ = std::fs::remove_file(path);
+    let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+    std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        // The request's head and body: the body ends with the end-of-attributes tag.
+        while let Ok(n) = s.read(&mut buf) {
+            got.extend_from_slice(&buf[..n]);
+            if n == 0 || (got.windows(4).any(|w| w == b"\r\n\r\n") && got.last() == Some(&3)) {
+                break;
+            }
+        }
+        let body = ipp_answer();
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+        let _ = s.write_all(head.as_bytes());
+        let _ = s.write_all(&body);
+    })
+}
+
+/// `printers --paper` lists the printer's paper sizes as the printing service describes
+/// them over IPP, and from `lpoptions`'s names when it can't be asked.
+#[test]
+fn printers_list_their_paper_sizes() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("printers-paper");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    fake_lpstat(&dir);
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let socket = dir.join("ipp.sock");
+    let run = |socket: &Path| {
+        let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .args(["printers", "--paper"])
+            .env("PATH", &path)
+            .env("CUPS_SERVER", socket)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            out.status.success(),
+            "{said}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        said
+    };
+
+    let serve = fake_ipp(&socket);
+    let said = run(&socket);
+    serve.join().unwrap();
+    assert_eq!(
+        said,
+        "limarepdf-test (default)\n  Letter (8.5 × 11 in), default\n  A4 (210 × 297 mm)\n"
+    );
+
+    // No service on the socket: `lpoptions`'s names, without margins.
+    let said = run(&dir.join("nothing.sock"));
+    assert_eq!(
+        said,
+        "limarepdf-test (default)\n  A4 (210 × 297 mm), default\n  Letter (8.5 × 11 in)\n  \
+         (the printer doesn't say how near the edges it can print)\n"
+    );
+}
+
+/// Stand-ins for a printing service that can't be asked over IPP: `lpstat` (one printer, the
+/// default), `lpoptions` (A4, the default, and Letter) and `lp`, which saves its arguments and
+/// the job. Returns the PATH and the socket path naming no service, for `CUPS_SERVER`.
+fn fake_printing(dir: &Path) -> (String, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    fake_lpstat(dir);
+    let lp = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{d}/args.txt'\ncat > '{d}/job.pdf'\n\
+         echo 'request id is Test-1 (1 file(s))'\n",
+        d = dir.display()
+    );
+    let path = dir.join("lp");
+    std::fs::write(&path, lp).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    (path, dir.join("nothing.sock"))
+}
+
+/// A PDF of two pages: Letter, and one 1,000 points square.
+fn two_pages(dir: &Path) -> PathBuf {
+    let mut p = limarepdf_core::Pdf::new();
+    p.insert_blank(0, 612.0, 792.0).unwrap();
+    p.insert_blank(1, 1000.0, 1000.0).unwrap();
+    let path = dir.join("two.pdf");
+    p.save(&path).unwrap();
+    path
+}
+
+/// `print` sends sheets of the paper named with `--paper` (else the printer's default), with
+/// CUPS's scaling turned off; a paper the printer doesn't take is refused before anything
+/// is sent; pages reaching past the printable area at the scale asked for are warned about.
+#[test]
+fn print_lays_the_pages_out_on_the_paper() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-paper");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, socket) = fake_printing(&dir);
+    let file = two_pages(&dir);
+    let run = |args: &[&str]| {
+        let _ = std::fs::remove_file(dir.join("job.pdf"));
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("print")
+            .args(args)
+            .arg(&file)
+            .env("PATH", &path)
+            .env("CUPS_SERVER", &socket)
+            .output()
+            .unwrap()
+    };
+    let sheets = || {
+        let job = limarepdf_core::Pdf::open(dir.join("job.pdf"), None).unwrap();
+        (0..job.page_count())
+            .map(|i| {
+                let (w, h) = job.page_size(i).unwrap();
+                (w.round(), h.round())
+            })
+            .collect::<Vec<_>>()
+    };
+    let args = || std::fs::read_to_string(dir.join("args.txt")).unwrap();
+    let err = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).to_string();
+
+    // The printer's default paper, A4: both pages on A4 sheets.
+    let out = run(&[]);
+    assert!(out.status.success(), "{}", err(&out));
+    assert_eq!(sheets(), [(595.0, 842.0), (595.0, 842.0)]);
+    let said = args();
+    assert!(said.contains("media=A4\n"), "{said}");
+    assert!(said.contains("print-scaling=none\n"), "{said}");
+    assert!(out.stderr.is_empty(), "{}", err(&out));
+
+    // Letter, named as people name it, upright, at 50 %.
+    let upright = ["--orientation", "portrait", "--scale", "50%"];
+    let out = run(&[&["--paper", "letter"][..], &upright].concat());
+    assert!(out.status.success(), "{}", err(&out));
+    assert_eq!(sheets(), [(612.0, 792.0), (612.0, 792.0)]);
+    assert!(args().contains("media=Letter\n"));
+
+    // At actual size both pages reach past the printable area: said, and printed.
+    let out = run(&["--paper", "Letter", "--scale", "actual"]);
+    assert!(out.status.success());
+    let said = err(&out);
+    let warned = "warning: at this scale pages 1, 2 reach past the printable area of Letter \
+                  (8.5 × 11 in), so their edges won't print\n";
+    assert!(said.contains(warned), "{said}");
+
+    // A paper the printer doesn't take: refused, naming those it does, nothing sent.
+    let out = run(&["--paper", "A3"]);
+    assert!(!out.status.success());
+    let said = err(&out);
+    assert!(said.contains("no paper size called \"A3\""), "{said}");
+    let listed = said.contains("A4 (210 × 297 mm), Letter (8.5 × 11 in)");
+    assert!(listed, "{said}");
+    assert!(!dir.join("job.pdf").exists(), "a job reached lp");
+
+    // A scale out of range is refused by the command line itself.
+    let out = run(&["--scale", "401"]);
+    assert!(!out.status.success());
+    let said = err(&out);
+    assert!(said.contains("a percentage from 1 to 400"), "{said}");
+}
+
+/// NEW-05: `--pages-per-sheet` puts several pages on each sheet, in `--page-order`, with
+/// `--borders`; a count that can't be printed, a scale with several pages a sheet, and the
+/// order or borders with one are refused before anything is sent.
+#[test]
+fn print_puts_several_pages_on_a_sheet() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-several");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, socket) = fake_printing(&dir);
+    let file = two_pages(&dir);
+    let run = |args: &[&str]| {
+        let _ = std::fs::remove_file(dir.join("job.pdf"));
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("print")
+            .args(args)
+            .arg(&file)
+            .env("PATH", &path)
+            .env("CUPS_SERVER", &socket)
+            .output()
+            .unwrap()
+    };
+    let err = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).to_string();
+    let sheets = || {
+        let job = limarepdf_core::Pdf::open(dir.join("job.pdf"), None).unwrap();
+        let objects = |i| job.page_objects(i).unwrap().len();
+        (0..job.page_count()).map(objects).collect::<Vec<_>>()
+    };
+
+    // Both pages on one A4 sheet, each a drawing of its own.
+    let out = run(&["--pages-per-sheet", "2"]);
+    assert!(out.status.success(), "{}", err(&out));
+    assert_eq!(sheets(), [2]);
+    let four = ["--pages-per-sheet", "4", "--page-order", "down-from-right"];
+    let out = run(&[&four[..], &["--borders"]].concat());
+    assert!(out.status.success(), "{}", err(&out));
+    // The two drawings, and the borders.
+    assert_eq!(sheets(), [3]);
+
+    let border = "--borders is for more than one page a sheet";
+    let counts = "expected 1, 2, 4, 6, 9 or 16";
+    for (args, said) in [
+        (&["--pages-per-sheet", "3"][..], counts),
+        (
+            &["--pages-per-sheet", "2", "--scale", "fit"],
+            "--scale is for one page a sheet",
+        ),
+        (&["--borders"], border),
+        (
+            &["--page-order", "down"],
+            "--page-order is for more than one page a sheet",
+        ),
+    ] {
+        let out = run(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(err(&out).contains(said), "{args:?}: {}", err(&out));
+        assert!(!dir.join("job.pdf").exists(), "{args:?}: a job reached lp");
+    }
+}
+
+/// NEW-05: `--booklet` prints the pages in folding order, two a side, both sides flipped on
+/// the short edge; `--booklet-sides` prints the fronts or backs alone on one side, and
+/// `--binding` binds on the right. The choices a booklet sets itself, and the booklet's own
+/// without it, are refused before anything is sent.
+#[test]
+fn print_makes_a_booklet() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-booklet");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, socket) = fake_printing(&dir);
+    let file = two_pages(&dir);
+    let run = |args: &[&str]| {
+        let _ = std::fs::remove_file(dir.join("job.pdf"));
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("print")
+            .args(args)
+            .arg(&file)
+            .env("PATH", &path)
+            .env("CUPS_SERVER", &socket)
+            .output()
+            .unwrap()
+    };
+    let err = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).to_string();
+    let sheets = || {
+        let job = limarepdf_core::Pdf::open(dir.join("job.pdf"), None).unwrap();
+        let objects = |i| job.page_objects(i).unwrap().len();
+        (0..job.page_count()).map(objects).collect::<Vec<_>>()
+    };
+    let sides = || {
+        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+        let sides = args.lines().find(|l| l.starts_with("sides="));
+        sides.unwrap_or_default().to_string()
+    };
+
+    // Two pages: the first on the front, the second on the back, the rest blank.
+    let out = run(&["--booklet"]);
+    assert!(out.status.success(), "{}", err(&out));
+    assert_eq!(sheets(), [1, 1]);
+    assert_eq!(sides(), "sides=two-sided-short-edge");
+    for (subset, binding) in [("fronts", "left"), ("backs", "right")] {
+        let args = ["--booklet", "--booklet-sides", subset, "--binding", binding];
+        let out = run(&args);
+        assert!(out.status.success(), "{subset}: {}", err(&out));
+        assert_eq!(sheets(), [1], "{subset}");
+        assert_eq!(sides(), "sides=one-sided", "{subset}");
+    }
+
+    let set = "a booklet sets this itself";
+    for (args, said) in [
+        (&["--booklet", "--pages-per-sheet", "2"][..], set),
+        (&["--booklet", "--page-order", "down"], set),
+        (&["--booklet", "--borders"], set),
+        (&["--booklet", "--scale", "fit"], set),
+        (&["--booklet", "--orientation", "portrait"], set),
+        (
+            &["--booklet", "--sides", "long-edge"],
+            "--booklet-sides fronts",
+        ),
+        (
+            &["--binding", "right"],
+            "--binding is for a booklet: add --booklet",
+        ),
+        (
+            &["--booklet-sides", "backs"],
+            "--booklet-sides is for a booklet: add --booklet",
+        ),
+    ] {
+        let out = run(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(err(&out).contains(said), "{args:?}: {}", err(&out));
+        assert!(!dir.join("job.pdf").exists(), "{args:?}: a job reached lp");
+    }
+}
+
 #[test]
 fn fields_that_would_print_empty_stop_printing() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("print-fields");

@@ -22,6 +22,8 @@ rfd.workspace = true
 unicode-segmentation = "1.13"
 # Backspace takes off a letter's last accent typed apart (page_text.rs); core already uses it.
 unicode-normalization = "0.1.25"
+# The system's language, which spelling starts in until one is chosen (spell.rs).
+sys-locale = "0.3.2"
 
 # Finder's Open With and double-click (macos.rs); eframe, rfd and arboard already use both.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -100,6 +102,9 @@ assets = [
     ["../limarepdf-core/assets/fonts/OFL-CedarvilleCursive.txt", "usr/share/doc/limarepdf/FONT-LICENSE-CedarvilleCursive.txt", "644"],
     ["../limarepdf-core/assets/fonts/LICENSE-HomemadeApple.txt", "usr/share/doc/limarepdf/FONT-LICENSE-HomemadeApple.txt", "644"],
     ["../limarepdf-core/assets/fonts/OFL-Zeyada.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Zeyada.txt", "644"],
+    ["../limarepdf-core/assets/dictionaries/README_en_CA.txt", "usr/share/doc/limarepdf/DICTIONARY-LICENSE-English.txt", "644"],
+    ["../limarepdf-core/assets/dictionaries/README_dict_fr.txt", "usr/share/doc/limarepdf/DICTIONARY-LICENSE-French.txt", "644"],
+    ["../limarepdf-core/assets/dictionaries/LICENSE-MPL-2.0.txt", "usr/share/doc/limarepdf/LICENSE-MPL-2.0.txt", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -127,6 +132,9 @@ assets = [
     { source = "../limarepdf-core/assets/fonts/OFL-CedarvilleCursive.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-CedarvilleCursive.txt", mode = "644" },
     { source = "../limarepdf-core/assets/fonts/LICENSE-HomemadeApple.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-HomemadeApple.txt", mode = "644" },
     { source = "../limarepdf-core/assets/fonts/OFL-Zeyada.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Zeyada.txt", mode = "644" },
+    { source = "../limarepdf-core/assets/dictionaries/README_en_CA.txt", dest = "/usr/share/licenses/limarepdf/DICTIONARY-LICENSE-English.txt", mode = "644" },
+    { source = "../limarepdf-core/assets/dictionaries/README_dict_fr.txt", dest = "/usr/share/licenses/limarepdf/DICTIONARY-LICENSE-French.txt", mode = "644" },
+    { source = "../limarepdf-core/assets/dictionaries/LICENSE-MPL-2.0.txt", dest = "/usr/share/licenses/limarepdf/LICENSE-MPL-2.0.txt", mode = "644" },
 ]
 
 # Library sonames rather than package names, so the same rpm works on Fedora and openSUSE.

@@ -8,8 +8,10 @@
 //!   (escapes, line continuations and hex spacing undone), with a `TJ` array's strings joined.
 //!   lopdf's content parser stops at the first operation it can't read, so what follows is
 //!   searched as bytes only.
-//! - **The file's own cross-reference table,** checked entry by entry, so the structure read
-//!   here is the one written and not one lopdf rebuilt by scanning.
+//! - **The file's own cross-reference table,** checked entry by entry (an object in an object
+//!   stream by the stream's header), so the structure read here is the one written and not
+//!   one lopdf rebuilt by scanning. An object stream is a Flate segment like any other, so
+//!   what it holds is searched decoded.
 //! - **Structure, explicitly:** form fields (values, defaults, rich text, inherited ones) and
 //!   their appearances, actions and JavaScript wherever they are, optional content, pages and
 //!   references to pages that aren't in the page tree.
@@ -356,7 +358,7 @@ impl Saved {
     }
 
     /// The objects nothing reachable from the trailer refers to (the cross-reference stream
-    /// aside).
+    /// and object streams aside, which lopdf keeps once it has read them).
     pub fn unreachable(&self) -> Vec<ObjectId> {
         let mut seen = HashSet::new();
         let mut todo: Vec<ObjectId> = Vec::new();
@@ -372,8 +374,12 @@ impl Saved {
             }
         }
         let xref = |o: &Object| {
-            o.as_stream()
-                .is_ok_and(|s| s.dict.get(b"Type").and_then(|t| t.as_name()).ok() == Some(b"XRef"))
+            o.as_stream().is_ok_and(|s| {
+                matches!(
+                    s.dict.get(b"Type").and_then(|t| t.as_name()),
+                    Ok(b"XRef" | b"ObjStm")
+                )
+            })
         };
         let mut out: Vec<ObjectId> = self
             .doc
@@ -674,17 +680,30 @@ fn check_xref(b: &[u8]) {
                 .iter()
                 .fold(0, |v, &x| (v << 8) | usize::from(x))
         };
+        let mut offsets = std::collections::HashMap::new();
+        // Objects in object streams: their number, the stream's and their place in it.
+        let mut packed = Vec::new();
         for pair in index.chunks(2) {
             for k in 0..pair[1] {
                 let kind = if w[0] == 0 { 1 } else { field(i, w[0]) };
                 let offset = field(i + w[0], w[1]);
                 let gen = field(i + w[0] + w[1], w[2]);
-                assert_ne!(kind, 2, "the checker doesn't read object streams");
-                if kind == 1 {
-                    points_at(offset, pair[0] + k, gen);
+                match kind {
+                    1 => {
+                        points_at(offset, pair[0] + k, gen);
+                        offsets.insert(pair[0] + k, offset);
+                    }
+                    2 => packed.push((pair[0] + k, offset, gen)),
+                    _ => {}
                 }
                 i += w.iter().sum::<usize>();
             }
+        }
+        for (n, container, place) in packed {
+            let at = *offsets
+                .get(&container)
+                .unwrap_or_else(|| panic!("object {n}'s object stream {container} isn't listed"));
+            check_packed(b, at, n, place);
         }
         return;
     }
@@ -713,6 +732,44 @@ fn check_xref(b: &[u8]) {
             i += 20;
         }
     }
+}
+
+/// Check that the object stream at byte `at` holds object `n` in place `place`: its
+/// dictionary says `/Type /ObjStm`, and its header (`/First` bytes of number pairs, Flate
+/// decoded when it says so) names `n` there.
+fn check_packed(b: &[u8], at: usize, n: usize, place: usize) {
+    let data = find_from(b, b"stream", at).expect("the object stream's data");
+    let dict = String::from_utf8_lossy(&b[at..data]).into_owned();
+    assert!(
+        dict.contains("/ObjStm"),
+        "object {n} is listed in object {at}'s place, which isn't an object stream"
+    );
+    let start = match b.get(data + 6..) {
+        Some([b'\r', b'\n', ..]) => data + 8,
+        _ => data + 7,
+    };
+    let end = find_from(b, b"endstream", start).expect("the object stream's end");
+    let body = if dict.contains("/FlateDecode") {
+        inflate(at, &b[start..end])
+    } else {
+        b[start..end].to_vec()
+    };
+    let first = dict.find("/First").expect("the object stream's /First") + 6;
+    let first: usize = dict[first..]
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|s| !s.is_empty())
+        .unwrap()
+        .parse()
+        .unwrap();
+    let header: Vec<usize> = String::from_utf8_lossy(&body[..first])
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    assert_eq!(
+        header.get(place * 2),
+        Some(&n),
+        "object {n} isn't in place {place} of its object stream"
+    );
 }
 
 /// `f` for every string in `o`, direct values included.

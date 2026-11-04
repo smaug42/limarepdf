@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 /// Limits that keep a malformed or hostile file from running away.
-const MAX_ITEMS: usize = 100_000;
+pub(crate) const MAX_ITEMS: usize = 100_000;
 const MAX_DEPTH: usize = 64;
 
 /// One bookmark. [`Pdf::outline`] lists them in reading order, each followed by its
@@ -26,16 +26,59 @@ pub struct OutlineItem {
     pub has_children: bool,
 }
 
-/// Where [`Pdf::add_bookmark`] puts a new bookmark. The numbers are positions in
-/// [`Pdf::outline`].
+/// Where [`Pdf::add_bookmark`] puts a new bookmark, or [`Pdf::move_bookmark`] a bookmark.
+/// The numbers are positions in [`Pdf::outline`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BookmarkPlace {
     /// Last at the top level.
     End,
+    /// Just before this bookmark, at its level.
+    Before(usize),
     /// Just after this bookmark (and its children), at its level.
     After(usize),
     /// Last among this bookmark's children.
     Under(usize),
+}
+
+/// A move from the keyboard, as Word's outline makes them ([`bookmark_step`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BookmarkStep {
+    /// Before the bookmark above it at its level.
+    Up,
+    /// After the bookmark below it at its level.
+    Down,
+    /// Out of the bookmark it is in, to just after it.
+    Promote,
+    /// Into the bookmark above it at its level, last.
+    Demote,
+}
+
+/// Where `step` moves bookmark `index` of `items` (as [`Pdf::outline`] lists them), or
+/// `None` when it can't go that way: Up and Down stay among the bookmarks at its level, so
+/// the first and last there go no further; a top-level bookmark can't be promoted, nor the
+/// first at its level demoted.
+pub fn bookmark_step(
+    items: &[OutlineItem],
+    index: usize,
+    step: BookmarkStep,
+) -> Option<BookmarkPlace> {
+    items.get(index)?;
+    let parent = parent(items, index);
+    let level = children(items, parent);
+    let k = level.iter().position(|&j| j == index)?;
+    Some(match step {
+        BookmarkStep::Up => BookmarkPlace::Before(level[k.checked_sub(1)?]),
+        BookmarkStep::Down => BookmarkPlace::After(*level.get(k + 1)?),
+        BookmarkStep::Promote => BookmarkPlace::After(parent?),
+        BookmarkStep::Demote => BookmarkPlace::Under(level[k.checked_sub(1)?]),
+    })
+}
+
+/// Whether [`Pdf::move_bookmark`] would move bookmark `index` of `items` (as
+/// [`Pdf::outline`] lists them) to `place`: false when it is there already, an error when
+/// it can't go there.
+pub fn bookmark_moves(items: &[OutlineItem], index: usize, place: BookmarkPlace) -> Result<bool> {
+    Ok(plan_move(items, index, place)?.is_some())
 }
 
 impl Pdf {
@@ -81,6 +124,12 @@ impl Pdf {
             BookmarkPlace::End => {
                 let root = self.outline_root()?;
                 (root, self.last_child(root), None)
+            }
+            BookmarkPlace::Before(i) => {
+                let (id, _) = node(i)?;
+                let parent = self.outline_link(id, b"Parent");
+                let parent = parent.map_or_else(|| self.outline_root(), Ok)?;
+                (parent, self.child_before(parent, id), Some(id))
             }
             BookmarkPlace::After(i) => {
                 let (id, _) = node(i)?;
@@ -152,14 +201,7 @@ impl Pdf {
         let parent = self.outline_link(id, b"Parent");
         let parent = parent.map_or_else(|| self.outline_root(), Ok)?;
         let next = self.outline_link(id, b"Next");
-        // Find the one before it by walking the list; a file's Prev links can be wrong.
-        let mut prev = None;
-        let mut seen = HashSet::new();
-        let mut at = self.outline_link(parent, b"First");
-        while let Some(a) = at.filter(|&a| a != id && seen.insert(a)) {
-            prev = Some(a);
-            at = self.outline_link(a, b"Next");
-        }
+        let prev = self.child_before(parent, id);
         let set = |d: &mut Dictionary, key: &str, to: Option<ObjectId>| match to {
             Some(to) => d.set(key, to),
             None => {
@@ -183,8 +225,90 @@ impl Pdf {
         Ok(())
     }
 
+    /// Move bookmark `index` (a position in [`Pdf::outline`]), with the bookmarks inside it,
+    /// to `place`, and return its new position. Only where it is changes: what it goes to
+    /// and everything else it holds stay as they were. A bookmark moved into a closed one
+    /// opens it. A move to where it is already changes nothing ([`bookmark_moves`] says so
+    /// beforehand); one into itself, or nesting deeper than the outline allows, is refused.
+    pub fn move_bookmark(&mut self, index: usize, place: BookmarkPlace) -> Result<usize> {
+        let nodes = self.outline_nodes();
+        let items: Vec<OutlineItem> = nodes.iter().map(|(_, i)| i.clone()).collect();
+        let Some(plan) = plan_move(&items, index, place)? else {
+            return Ok(index);
+        };
+        let moved = nodes[index].0;
+        let root = self.outline_root()?;
+        let id = |p: Option<usize>| p.map_or(root, |p| nodes[p].0);
+        // The lists it leaves and joins are linked again from the outline as read, which
+        // also puts right any wrong links a file had in them.
+        if plan.from != plan.to {
+            let left = children(&items, plan.from).into_iter();
+            let left: Vec<ObjectId> = left.filter(|&k| k != index).map(|k| nodes[k].0).collect();
+            self.relink(id(plan.from), &left)?;
+        }
+        let joined: Vec<ObjectId> = plan.level.iter().map(|&k| nodes[k].0).collect();
+        self.relink(id(plan.to), &joined)?;
+        if let Some(p) = plan.to {
+            let d = self.doc.get_dictionary_mut(nodes[p].0)?;
+            let count = d.get(b"Count").ok().and_then(|o| o.as_i64().ok());
+            if count.unwrap_or(0) <= 0 {
+                d.set("Count", 1);
+            }
+        }
+        self.fix_outline_counts()?;
+        self.outline_nodes()
+            .iter()
+            .position(|(n, _)| *n == moved)
+            .context("the moved bookmark is not in the outline")
+    }
+
+    /// Link `kids` in order as `parent`'s children, both ways.
+    pub(crate) fn relink(&mut self, parent: ObjectId, kids: &[ObjectId]) -> Result<()> {
+        let d = self.doc.get_dictionary_mut(parent)?;
+        match (kids.first(), kids.last()) {
+            (Some(&first), Some(&last)) => {
+                d.set("First", first);
+                d.set("Last", last);
+            }
+            _ => {
+                d.remove(b"First");
+                d.remove(b"Last");
+            }
+        }
+        for (n, &kid) in kids.iter().enumerate() {
+            let d = self.doc.get_dictionary_mut(kid)?;
+            d.set("Parent", parent);
+            match n.checked_sub(1) {
+                Some(b) => d.set("Prev", kids[b]),
+                None => {
+                    d.remove(b"Prev");
+                }
+            }
+            match kids.get(n + 1) {
+                Some(&next) => d.set("Next", next),
+                None => {
+                    d.remove(b"Next");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The child of `parent` before `id`, found by walking the list; a file's Prev links
+    /// can be wrong.
+    fn child_before(&self, parent: ObjectId, id: ObjectId) -> Option<ObjectId> {
+        let mut prev = None;
+        let mut seen = HashSet::new();
+        let mut at = self.outline_link(parent, b"First");
+        while let Some(a) = at.filter(|&a| a != id && seen.insert(a)) {
+            prev = Some(a);
+            at = self.outline_link(a, b"Next");
+        }
+        prev
+    }
+
     /// The outline root's object, made (or moved out of the catalog) when needed.
-    fn outline_root(&mut self) -> Result<ObjectId> {
+    pub(crate) fn outline_root(&mut self) -> Result<ObjectId> {
         let current = self.doc.catalog()?.get(b"Outlines").ok().cloned();
         if let Some(Object::Reference(id)) = current {
             if self.doc.get_dictionary(id).is_ok() {
@@ -219,7 +343,7 @@ impl Pdf {
 
     /// Set every `Count` from the tree as it now is: the number of descendants shown,
     /// negative for a closed bookmark.
-    fn fix_outline_counts(&mut self) -> Result<()> {
+    pub(crate) fn fix_outline_counts(&mut self) -> Result<()> {
         let root = self.outline_root()?;
         let shown = self.fix_counts(root, 0, &mut HashSet::new())?;
         let d = self.doc.get_dictionary_mut(root)?;
@@ -263,8 +387,10 @@ impl Pdf {
         Ok(shown)
     }
 
-    /// The bookmarks with their objects, in [`Pdf::outline`] order.
-    pub(crate) fn outline_nodes(&self) -> Vec<(ObjectId, OutlineItem)> {
+    /// The bookmarks with their objects, in [`Pdf::outline`] order. A bookmark keeps its
+    /// object when it is moved, renamed or opened, and through Undo, so the object tells
+    /// which bookmark is which from one edit to the next.
+    pub fn outline_nodes(&self) -> Vec<(ObjectId, OutlineItem)> {
         let mut out = Vec::new();
         let first = self
             .doc
@@ -397,6 +523,64 @@ impl Pdf {
         trees::name(&self.doc, tree, name).found()
     }
 
+    /// Every named destination with its value (read through a reference once): those of the
+    /// catalog's `Dests` dictionary, then those of the `Dests` name tree
+    /// ([`Pdf::tree_dests`]); a name in both is listed twice.
+    pub(crate) fn named_dests(&self) -> Vec<(Vec<u8>, Object)> {
+        let catalog = self.doc.catalog().ok();
+        let old = catalog
+            .and_then(|c| c.get(b"Dests").ok())
+            .map(|o| self.resolved_dict(Some(o)))
+            .unwrap_or_default();
+        let old = old.iter().map(|(k, v)| (k.clone(), self.resolved(v)));
+        let mut out: Vec<_> = old.collect();
+        out.extend(self.tree_dests());
+        out
+    }
+
+    fn resolved(&self, o: &Object) -> Object {
+        self.doc
+            .dereference(o)
+            .map_or_else(|_| o.clone(), |(_, o)| o.clone())
+    }
+
+    /// The named destinations of the `Dests` name tree, in its order, with their values
+    /// (read through a reference once). The whole tree is read, each node once, however
+    /// deep it is.
+    pub(crate) fn tree_dests(&self) -> Vec<(Vec<u8>, Object)> {
+        let mut out = Vec::new();
+        let resolve = |o: &Object| self.resolved(o);
+        let tree = (self.doc.catalog().ok())
+            .and_then(|c| c.get(b"Names").ok())
+            .map(|o| self.resolved_dict(Some(o)))
+            .and_then(|n| n.get(b"Dests").ok().cloned());
+        // Nodes are taken from a list, not by recursion, so depth costs no stack; nodes that
+        // are objects are read once, so loops end, and direct ones can't loop. Kids are taken
+        // in their order, so the names come in the tree's.
+        let mut todo: Vec<Object> = tree.into_iter().collect();
+        let mut seen = HashSet::new();
+        while let Some(node) = todo.pop() {
+            if node.as_reference().is_ok_and(|id| !seen.insert(id)) {
+                continue;
+            }
+            let node = self.resolved_dict(Some(&node));
+            if let Ok(names) = node.get(b"Names").map(resolve) {
+                let pairs = names.as_array().map(Vec::as_slice).unwrap_or_default();
+                for pair in pairs.chunks(2) {
+                    if let [k, v] = pair {
+                        if let Ok(k) = k.as_str() {
+                            out.push((k.to_vec(), resolve(v)));
+                        }
+                    }
+                }
+            }
+            if let Ok(Object::Array(kids)) = node.get(b"Kids").map(resolve) {
+                todo.extend(kids.into_iter().rev());
+            }
+        }
+        out
+    }
+
     /// Each page object's zero-based index.
     pub(crate) fn page_index(&self) -> HashMap<ObjectId, usize> {
         crate::doc::pages(&self.doc)
@@ -404,6 +588,95 @@ impl Pdf {
             .map(|(n, id)| (id, n))
             .collect()
     }
+}
+
+/// A move [`plan_move`] worked out, by positions in the outline before it: the bookmark it
+/// is in (`None` for the top level) and the one it goes into, and that one's children in
+/// their new order, the moved bookmark among them.
+struct Move {
+    from: Option<usize>,
+    to: Option<usize>,
+    level: Vec<usize>,
+}
+
+/// Where moving bookmark `index` of `items` to `place` puts it, or `None` when it is there
+/// already.
+fn plan_move(items: &[OutlineItem], index: usize, place: BookmarkPlace) -> Result<Option<Move>> {
+    // A list cut short at the limit would lose the bookmarks past it when linked again.
+    if items.len() >= MAX_ITEMS {
+        bail!("this document has too many bookmarks to move them");
+    }
+    let Some(item) = items.get(index) else {
+        bail!("bookmark {} does not exist", index + 1);
+    };
+    let end = subtree_end(items, index);
+    let target = |t: usize| {
+        if t >= items.len() {
+            bail!("bookmark {} does not exist", t + 1);
+        }
+        if t != index && (index..end).contains(&t) {
+            bail!("a bookmark can't go inside itself");
+        }
+        Ok(t)
+    };
+    let (to, at) = match place {
+        BookmarkPlace::End => (None, None),
+        BookmarkPlace::Before(t) | BookmarkPlace::After(t) => {
+            if target(t)? == index {
+                return Ok(None);
+            }
+            (parent(items, t), Some(t))
+        }
+        BookmarkPlace::Under(t) => {
+            if target(t)? == index {
+                bail!("a bookmark can't go inside itself");
+            }
+            (Some(t), None)
+        }
+    };
+    let depth = to.map_or(0, |p| items[p].depth + 1);
+    let below = (index..end)
+        .map(|k| items[k].depth - item.depth)
+        .max()
+        .unwrap_or(0);
+    if depth + below >= MAX_DEPTH {
+        bail!("bookmarks can't be nested deeper than {MAX_DEPTH} levels");
+    }
+    let mut level = children(items, to);
+    level.retain(|&k| k != index);
+    let k = match (place, at) {
+        (BookmarkPlace::Before(_), Some(t)) => level.iter().position(|&k| k == t),
+        (BookmarkPlace::After(_), Some(t)) => level.iter().position(|&k| k == t).map(|k| k + 1),
+        _ => None,
+    };
+    level.insert(k.unwrap_or(level.len()), index);
+    let from = parent(items, index);
+    if from == to && children(items, from) == level {
+        return Ok(None);
+    }
+    Ok(Some(Move { from, to, level }))
+}
+
+/// The bookmark bookmark `k` is in, or `None` at the top level.
+fn parent(items: &[OutlineItem], k: usize) -> Option<usize> {
+    let depth = items[k].depth;
+    (0..k).rev().find(|&j| items[j].depth < depth)
+}
+
+/// The position just past bookmark `k` and the bookmarks inside it.
+fn subtree_end(items: &[OutlineItem], k: usize) -> usize {
+    let depth = items[k].depth;
+    let inside = items[k + 1..].iter().take_while(|i| i.depth > depth);
+    k + 1 + inside.count()
+}
+
+/// The positions of the bookmarks directly inside `parent` (`None` for the top level).
+fn children(items: &[OutlineItem], parent: Option<usize>) -> Vec<usize> {
+    let (start, end, depth) = match parent {
+        None => (0, items.len(), 0),
+        Some(p) => (p + 1, subtree_end(items, p), items[p].depth + 1),
+    };
+    (start..end).filter(|&j| items[j].depth == depth).collect()
 }
 
 /// The page ranges that bookmarks down to `level` start, in page order, each titled by the first bookmark on its

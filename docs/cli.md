@@ -112,7 +112,7 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | `limarepdf-cli reorder in.pdf -o out.pdf --order 3,1,2` | Put all pages in a new order |
 | `limarepdf-cli insert-blank in.pdf -o out.pdf --after 0` | Insert a blank page after page N (0 = at the start) |
 | `limarepdf-cli crop in.pdf -o out.pdf --page 1 --rect 50,600,400,780` | Set a page's crop box in points: left, bottom, right, top |
-| `limarepdf-cli merge a.pdf b.pdf -o out.pdf` | Join PDFs in the order given. The first file's form stays fillable; a later file with form fields is refused unless `--flatten-forms` is given, which draws its fields onto its pages with their answers (they can no longer be filled in). An answer LimarePDF can't draw stops it, naming the field |
+| `limarepdf-cli merge a.pdf b.pdf -o out.pdf` | Join PDFs in the order given. Each file's bookmarks are kept, one file's after another's, and so are the places they name for their links (a name an earlier file used is renamed, `intro-2`). The first file's form stays fillable; a later file with form fields is refused unless `--flatten-forms` is given, which draws its fields onto its pages with their answers (they can no longer be filled in). An answer LimarePDF can't draw stops it, naming the field |
 | `limarepdf-cli split big.pdf --every 50 --out-dir parts` | Split into files of N pages: `parts/big-001.pdf`, … |
 | `limarepdf-cli split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
 
@@ -154,7 +154,8 @@ Bookmarks are numbered from 1 in the order `list` shows them, each followed by t
 | Command | What it does |
 | --- | --- |
 | `limarepdf-cli bookmarks list in.pdf` | List the bookmarks, numbered and indented by level, with the page each goes to (`-` for another file or a web address) |
-| `limarepdf-cli bookmarks add in.pdf -o out.pdf --title "Results" --page 12` | Add a bookmark to page 12, last at the top level. `--after N` puts it just after bookmark N, at its level; `--under N` puts it last inside bookmark N |
+| `limarepdf-cli bookmarks add in.pdf -o out.pdf --title "Results" --page 12` | Add a bookmark to page 12, last at the top level. `--before N` puts it just before bookmark N and `--after N` just after it (and the bookmarks inside it), at its level; `--under N` puts it last inside bookmark N |
+| `limarepdf-cli bookmarks move in.pdf -o out.pdf 5 --under 2` | Move bookmark 5, with the bookmarks inside it, last inside bookmark 2. `--before N` and `--after N` put it beside bookmark N, at its level; with none of the three it goes last at the top level. It still goes to the same place in the document. A bookmark can't go inside itself |
 | `limarepdf-cli bookmarks rename in.pdf -o out.pdf 3 --title "Method"` | Rename bookmark 3 |
 | `limarepdf-cli bookmarks remove in.pdf -o out.pdf 3` | Remove bookmark 3 and the bookmarks inside it |
 
@@ -165,6 +166,8 @@ Bookmarks are numbered from 1 in the order `list` shows them, each followed by t
 | `limarepdf-cli images scan.tif photo.jpg -o out.pdf` | One page per image (PNG, JPEG, TIFF; every page of a TIFF). `--dpi` overrides the resolution stored in the files |
 | `limarepdf-cli insert-images in.pdf -o out.pdf --after 2 --images a.png b.jpg` | Insert images as pages after page N |
 | `limarepdf-cli optimize-scans in.pdf -o out.pdf --mode auto --max-dpi 200 --quality 75` | Shrink and clean up scanned pages; also `--no-deskew`, `--no-despeckle` |
+| `limarepdf-cli reduce in.pdf -o out.pdf --quality web` | Make the file smaller, as Word's Compress Pictures does: pictures above the quality's resolution scaled down and saved again (`hd` 330 pixels per inch, `print` 220, the default, `web` 150, `email` 96; `high-fidelity` keeps them as they are). Says what was made smaller, what was left and why, and the sizes before and after. Also `--pages`, `--jpeg-quality`. Refuses a signed document |
+| `limarepdf-cli save-images in.pdf --out-dir pictures` | Save every picture the pages show, as `in-page-003-image-2.jpg` and so on: a JPEG shown upright as it is, any other picture, or one turned or flipped, as a PNG as it shows. A picture shown on several pages is saved once. Writes nothing when files of those names are there, unless `--overwrite` |
 | `limarepdf-cli ocr in.pdf -o out.pdf --pages all` | Add a searchable text layer to pages without text (Latin script) |
 
 See [Scans and OCR](scanning-and-ocr.md) for what these do.
@@ -288,7 +291,11 @@ See [Password protection](security.md).
 | Command | What it does |
 | --- | --- |
 | `limarepdf-cli printers` | List the printers; the default is marked |
-| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw); to print such a file without them, open it in the app and choose Print anyway |
+| `limarepdf-cli printers --paper` | Also list each printer's paper sizes, its default marked, and say when the printer doesn't report how near the edges it can print |
+| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print on the printer's default paper, each page at its own size, centred, shrunk when larger than the printable area and turned when wider than it is tall; `--as-image` sends the pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw); to print such a file without them, open it in the app and choose Print anyway |
+| `limarepdf-cli print in.pdf --paper A4 --orientation landscape --scale fit` | Print on A4 (one of the printer's sizes from `printers --paper`, by name), every page turned (`auto`, the default, turns only pages wider than they are tall; `portrait` turns none), each page filling the printable area (`shrink`, the default, shrinks only pages larger than it; `actual`; or a percentage from 1 to 400, such as `150%`). Warns, naming them, when pages reach past the printable area at the scale chosen ([details](export-and-printing.md#paper-orientation-and-scale-on-the-command-line)) |
+| `limarepdf-cli print in.pdf --pages-per-sheet 4 --page-order down --borders` | Print four pages on each sheet, each fitted to its place, top to bottom then left to right (`across`, the default, goes left to right then top to bottom; `across-from-right` and `down-from-right` start at the right), with a thin line around each page; 1, 2, 4, 6, 9 or 16 a sheet. `--scale` can't be given with more than one page a sheet, nor `--page-order` or `--borders` with one ([details](export-and-printing.md#paper-orientation-and-scale-on-the-command-line)) |
+| `limarepdf-cli print in.pdf --booklet --binding right --booklet-sides fronts` | Print as a booklet: two pages a side, in the order that reads straight through once the sheets are folded in half and stacked, on both sides flipped on the short edge. `--binding` is `left` (the default) or `right`, for a document read right to left; `--booklet-sides` is `both` (the default), or for a printer that prints only one side `fronts`, then `backs` once the printed stack is put back in. `--pages-per-sheet` above 1, `--page-order`, `--borders`, `--scale`, `--orientation` and `--sides` can't be given with `--booklet` ([details](export-and-printing.md#paper-orientation-and-scale-on-the-command-line)) |
 
 See [Export and printing](export-and-printing.md).
 

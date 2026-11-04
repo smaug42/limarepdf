@@ -3,7 +3,7 @@
 use crate::doc::{decode_shown_text, decode_text};
 use crate::form_write::parse_da;
 use crate::matrix::{self as mx, M};
-use crate::{FontChoice, Pdf};
+use crate::{Align, FontChoice, Pdf};
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 
@@ -104,6 +104,9 @@ pub struct Widget {
     /// of its "on" state).
     pub export: Option<String>,
     pub hidden: bool,
+    /// How text is set in it: left, centred or right, as its form says (its `/Q`, else its
+    /// field's).
+    pub align: Align,
 }
 
 /// Values inherited from parent fields.
@@ -438,6 +441,7 @@ impl Pdf {
             .collect();
         for wd in &mut ws {
             wd.export = wd.on_state.as_deref().map(|s| button_export(s, &opt));
+            wd.align = Align::of_q(self.widget_q(wd.id, inh.q.unwrap_or(0)));
         }
         let value = self.value_of(&kind, inh.v.as_ref(), &opt, widgets);
         let options = match &kind {
@@ -502,6 +506,7 @@ impl Pdf {
             on_state,
             export: None,
             hidden: flags & HIDDEN != 0,
+            align: Align::Left,
         })
     }
 

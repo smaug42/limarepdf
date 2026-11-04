@@ -14,13 +14,19 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 - **Tabs**, at the top: one per document, with a × inside it to close it. **Unsaved** beside the name means
   unsaved changes, from the first key you type. With many open they share the row and then scroll
   ([Opening files](#opening-files)). Text you are typing on a page (new text, a line, a note or text
-  box) stays open while you look at another tab; back on its tab, you go on typing where you were.
+  box) stays open while you look at another tab; back on its tab, you go on typing where you were. At the right
+  end of the tabs, **Minimal** switches to the [Minimal interface](#the-minimal-interface), one quiet row of
+  commands in place of the band, and **Full** switches back.
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
   **Forms and sign**, **Protect** and **View**; at the right **Print**, and a small arrow that makes the commands
-  compact. The File menu has File's commands (Open, Open recent, Save, Save As, Reload, Export, Print, Close tab,
-  recovery copies, Quit) and then one submenu for each kind of command: Edit, View, Tools, Pages, Document and
-  Help, so every command is in it.
+  compact. The File menu has File's own commands, as word processors order them (New blank document, Make a PDF
+  from images, Open, Open recent, Save, Save As, Reload, Export ▸, Reduce file size, Print preview, Print, Print
+  selected text, Properties), then one submenu for each name of the command band, with the same names in the same order and
+  laid out as the band's groups (Edit, Insert, Review, Pages, Forms and sign, Protect, View), then Help (Search
+  commands, User guide, Report a problem, About), [Settings…](#settings), Close tab and Quit. A command is under
+  the same name in both. What only keys do (moving or extending the selection with the arrow keys, Esc, F6) isn't
+  in the menu, as in word processors' menus; see [Keyboard shortcuts](#keyboard-shortcuts).
 - **The command band**, under the names: the buttons of the name you chose, in groups (see
   [The command band](#the-command-band)).
 - **Bottom:** what is selected or the tool in use (**Editing one line** while you edit a line on the page,
@@ -31,12 +37,13 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   the zoom level, such as "96%", which opens a menu of zoom and page layout (see
   [Reading and finding](reading-and-finding.md#move-around-the-pages)). In Organise, the zoom sizes the cards.
 - **Left:** a strip of icons for the side panel's views: Pages (the thumbnails), Search results, Bookmarks (the
-  document's outline), Comments and Digital signatures. Clicking a view opens it; clicking the open one folds the
+  document's outline), Comments, Spelling and Digital signatures. Clicking a view opens it; clicking the open one folds the
   panel away, and clicking it again brings it back. Documents open on Pages, unless the file asks to open on its
   bookmarks. While you organise pages the Pages view folds away, and its icon goes back to the page view. Pages are
   called by the document's page labels where it has them, unless View > Show > Use the document's page labels is
   off. See [Bookmarks](reading-and-finding.md#bookmarks), [Search](reading-and-finding.md#find-words),
-  [Comments](comments-and-markup.md#see-every-comment-and-reply) and [Digital signatures](signatures.md).
+  [Comments](comments-and-markup.md#see-every-comment-and-reply), [Spelling](spelling.md) and
+  [Digital signatures](signatures.md).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels; zooming
   turns that off. Continuous, facing or single pages: see [Page layout](reading-and-finding.md#page-layout). In
   Organise, every page as a card instead (see [Organising pages](organising-pages.md#see-every-page-at-once)).
@@ -58,8 +65,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 - **Panel widths:** drag the edge of the side panel or the inspector to make it wider or narrower. From the
   keyboard, Tab to the edge (a line shows along it), then press Left or Right to move it 10 points (50 with
   Shift), Home to make the panel as narrow as it goes, or End to make it half the window wide. Each of the side
-  panel's views keeps its own width: Pages starts narrow, and Search results, Bookmarks, Comments and Digital
-  signatures start wider, so their lines are easy to read. The widths you set are remembered for next time; a
+  panel's views keeps its own width: Pages starts narrow, and Search results, Bookmarks, Comments, Spelling and
+  Digital signatures start wider, so their lines are easy to read. The widths you set are remembered for next time; a
   panel widened to fit what it shows (some of the inspector's tools need more room) starts at your width again
   next time.
 
@@ -70,41 +77,76 @@ button. On the page, the keys go to the document (PageDown, the arrow keys, Dele
 page you are reading shows it. F6 is also the way out of a form, where Tab moves between the fields: a field keeps
 what you typed, and F6 back to the page returns to it. Text you are typing on the page (new text, a line, a note
 or a text box) stays open while you are elsewhere, so the inspector can still change it, and F6 back to the page
-lets you go on typing; a click anywhere finishes it as usual. F6 waits while a dialog, the command palette, a list
+lets you go on typing; a click anywhere finishes it as usual. F6 waits while a dialog, the command search, a list
 or a menu is open. On a Mac keyboard you may need to hold fn for F6.
 
-Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
-Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search field, then each
-command with its category and shortcut in columns. A command from a submenu shows the submenu's name before its
-own, such as "Theme › Dark" and "Page colours › Dark", and typing the submenu's name ("theme") finds its commands.
+Ctrl+Shift+P (⌘⇧P on a Mac), or ☰ > Help > Search commands…, opens the command search, which lists every command.
+Type to filter, use Up and Down to choose, and press Enter to run; Esc closes it. It looks like the dialogs,
+without a title or buttons: a search field, then each command with the File menu's name it is under (File, Edit,
+Insert…) and its shortcut in columns. A command from a submenu shows the submenu's name before its own, such as
+"Theme › Dark" and "Page colours › Dark", and typing the submenu's name ("theme") finds its commands. Ctrl+K is
+Link, as in Word, LibreOffice and Google Docs.
 
 ## The command band
 
 Click a name in the commands row to show its buttons. Edit is shown when LimarePDF starts. A small ▾ beside a
 button opens related commands; a button with ▾ in it opens a menu. A tool's button stays pressed while the tool is
-on (Edit text while the Text tool is, or while text is edited on the page; clicked again, it goes back to reading,
-what you typed kept), and in the menus the tool in use is marked. Every button names itself on
-hover, with its shortcut. A greyed button or menu item says why it can't be used just now, such as "Nothing to
-undo.", "Select some text first." or "Click in a form field first."
+on, and clicked again turns it off, back to reading, what you typed kept (Insert > Text: click Text to start adding
+text, and Text again to stop). Edit text is pressed while text is edited on the page, or while the Text tool is on
+after you chose it with Edit text; Insert > Text alone doesn't press it. In the menus the tool in use is marked.
+Every button names itself on hover, with its shortcut. A greyed button or menu item says why it can't be used just
+now on a line of its own, marked ⓘ in amber, such as "Not available now. Nothing to undo." or "Not available now.
+Click in a form field first.", then what it does.
 
 | Name | Groups and buttons |
 | --- | --- |
-| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); the **Alignment** group: Align left, Centre, Align right and Justify for the paragraph or line being edited, or the paragraphs of the words or lines selected, its own pressed ([Align text](content-editing.md#align-text)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
-| Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
-| Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
+| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic, Underline, Strikethrough and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); the **Alignment** group: Align left, Centre, Align right and Justify for the paragraph or line being edited, or the paragraphs of the words or lines selected, and the first three for new text and text boxes, its own pressed ([Align text](content-editing.md#align-text)); Edit text, Find, Replace ([a match at a time or all at once](reading-and-finding.md#replace-words)), and Select ▾ (Read and select text, the arrow, select all text, objects or pages); Text flow: **Paragraph**, pressed while text is edited a paragraph at a time ([Edit a paragraph](content-editing.md#edit-a-paragraph)), remembered between runs; Arrange: **Align objects ▾** (the six alignments, distribute horizontally or vertically, and Snap to objects, remembered between runs; [Line up objects](content-editing.md#line-up-objects)) |
+| Insert | Text and Image; Header and footer, Watermark; Link ([add or change a link](reading-and-finding.md#add-a-link)); Blank document ([a new document](#a-new-document)), From images (a new PDF from pictures) |
+| Review | Note, Comments ▾ (your name for comments), Previous, Next (comment); Highlight ▾ (underline comment, strike-out comment, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Spelling ▾ (the [spelling](spelling.md) language, Check spelling as you type, Add a dictionary…); Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
 | Forms and sign | Fill fields ▾ (next and previous field, highlight fields, clear, reset or flatten the form), Fill and sign ▾ (saved signatures and initials, Create signature…, the date, your name, text, marks); Digital signature ▾ (sign, certify, the signatures in this document, digital IDs, trusted certificates) |
 | Protect | Mark redaction ▾ (the area tool, the selected words, all search results), Apply redactions…; Passwords, Remove hidden data |
-| View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
+| View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, the Minimal interface, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
-Link and Blank document in Insert; Spelling and Export comments in Review; Create fields in Forms and sign; Your
-AI in View; Print preview and Reduce file size in the File menu. They do nothing, and Tab passes them by. Turn
+Export comments in Review; Create fields in Forms and sign; Your AI in View. They do nothing, and Tab passes them by. Turn
 off **Show planned features** in the status bar (or View > Show) to hide them all; the choice is remembered.
 
 **Compact commands.** The small arrow at the right of the commands row (or View > Show > Compact commands) puts the
 band on one row of icons, which name themselves on hover; the arrow again brings their names back. The choice is
-remembered. Windows under 600 points high show the commands compact by themselves, with the arrow greyed.
+remembered. Windows under 600 points high show the commands compact by themselves, with the arrow greyed. Compact
+commands is for the Full interface: in the Minimal interface it is greyed.
+
+## The Minimal interface
+
+The Minimal interface is the same editor with one quiet row of commands in place of the commands row and the
+band, leaving more of the window to the page. Every command is still there: the ones you use while editing are in
+the row, **Tools**, the floating toolbar and the inspector, and the rest in ☰'s groups.
+
+<img src="images/minimal.png" width="440" alt="The Minimal interface's row, with Find, Tools, the inspector's button and Print at the right, and Tools open: Edit, Insert and Review in one column, Pages, Forms and sign and Protect in the other, and All commands at the foot">
+
+- **Switching:** the button at the right end of the tab strip says where it takes you: **Minimal** in the Full
+  interface, **Full** in the Minimal one. View > Show > Minimal interface, [Settings](#settings) and Ctrl+F1 (Option+Cmd+R
+  on a Mac, as Word folds its ribbon away) do the same. The choice is remembered. Switching changes nothing else:
+  your documents, the one in front, what is selected, the zoom, Undo and anything you are typing stay as they
+  are.
+- **The row:** at the left ☰ (every command, by kind), the side panel, Open, Save, Undo and Redo; at the right
+  **Find**, **Tools**, the inspector and **Print**.
+- **Tools:** the commands a task starts from, under the band's names: Edit (Edit text, Paragraph, Select ▸, Align
+  objects ▸), Insert (Text, Image), Review (Note, Comments ▸, Highlight ▸, Text box, Draw ▸, Stamp), Pages
+  (Organise, Insert pages ▸, Rotate ▸, Move ▸), Forms and sign (Fill fields ▸, Fill and sign ▸, Digital
+  signature ▸) and Protect (Mark redaction ▸, Apply redactions…, Passwords). Each works as its button in the band,
+  and ▸ opens the same menu beside it, such as Highlight's colours, Draw's shapes or your saved signatures.
+  **All commands**, at the foot, opens ☰.
+- **The text's look:** while text is selected, being edited or being typed, the top of the inspector has the font,
+  size, Bold, Italic, Underline, Strikethrough, colour and the four alignments, as the band's Font and Alignment
+  groups have them.
+- **The bottom bar** adds the page layout (continuous, facing or single pages, and the cover page) and **Fit
+  width** beside the zoom, and leaves out Show planned features (View > Show still has it). Planned features never
+  show in the row or in Tools.
+- **Narrow windows:** under about 560 points wide Find and Print show their icons alone; Tools keeps its name. A
+  row too narrow for its commands puts the least needed under **More** (⋯), the side panel's and the inspector's
+  buttons first; ☰, Tools and the switch always show.
 
 ## The tools
 
@@ -119,23 +161,26 @@ other tools:
 | Add text (Insert > Text, or Edit > Edit text with nothing selected) | Click and type new text, or click a line to change it | [Add text](content-editing.md#add-text) |
 | Add image (Insert > Image) | Choose a picture, then drag a box | [Add a picture](content-editing.md#add-a-picture) |
 | Redact (Protect > Mark redaction) | Drag a box to mark an area for redaction | [Redaction](redaction.md) |
+| Link (Insert > Link, or Ctrl+K, with nothing selected) | Outlines the page's links; drag a box to add one, or click one to move, resize, edit or delete it. It stays on after each link, until Esc, Link again or another tool | [Links](reading-and-finding.md#add-a-link) |
 | Fill and sign (Forms and sign > Fill and sign) | Your signature, initials, the date and other items | [Fill and sign](fill-and-sign.md) |
 | Note, text box, rectangle, ellipse, line, pen (Review) | Annotations other readers list as comments | [Comments and markup](comments-and-markup.md) |
 | Stamp (Review > Stamp) | Approved, Draft, your own wording or a picture | [Stamps](headers-footers-watermarks.md#stamps) |
 
-Esc always returns to the read tool, and LimarePDF always starts with it. Pressed while something is being dragged
+Esc always returns to the read tool, and LimarePDF always starts with it; so does a tool's button clicked again.
+Pressed while something is being dragged
 (a move, a resize, a shape, a pen stroke or a word selection), Esc first cancels that, changing nothing, and the
 tool stays; Esc again leaves it. With a tool other than the read tool on,
-hold Ctrl and click to follow a link, fill in a field or select a comment.
+hold Ctrl and click to follow a link, fill in a field or select a comment. With Add text on, a plain click on a form
+field fills it in, as with the read tool, rather than putting new text over it.
 
 ### Keep tool active
 
 The tools that put something down (Add text, Add image, the note, text box, rectangle, ellipse and line, stamps,
 Redact and Fill and sign) go back to the read tool once they have put one thing down, with the new item selected
 so you can adjust it. The pin in the inspector's heading, beside the tool's name and its ×, is Keep tool active: it
-keeps that tool on instead, so you can put down several in a row; Esc or another tool leaves it. Each tool's pin is
+keeps that tool on instead, so you can put down several in a row; Esc, its button again or another tool leaves it. Each tool's pin is
 its own (pinning Redact doesn't pin Fill and sign) and is remembered between runs. The Note tool has no pin: kept on, every click would put
-down a note, so existing notes couldn't be opened or deleted. The pen always stays on until Esc or another tool,
+down a note, so existing notes couldn't be opened or deleted. The pen always stays on until Esc, Draw again or another tool,
 since a drawing takes several strokes.
 
 ## Opening files
@@ -189,10 +234,41 @@ first; closing the tab in front takes you to the next one, or the one before whe
 If a damaged file makes LimarePDF fail while showing a document, that tab shows an error page with Save a copy and
 Close this tab; other tabs carry on.
 
+### A new document
+
+**Insert > Blank document**, ☰ > New blank document, the start screen's **New blank document** or Ctrl+N opens an
+**Untitled** tab of one blank page, to add text, pictures or other documents' pages to. The page is Letter in the
+United States, Canada and the other countries that use Letter, and A4 elsewhere, as your system's region says (on
+Linux, its paper setting). A new document you haven't changed closes without asking; once changed, Save asks where
+to save it, as Save As does.
+
 ## Saving
 
 Save (Ctrl+S) writes the document over its file; Save As (Ctrl+Shift+S) writes a new file and leaves the original
-as it was. Your file is only changed when you save.
+as it was. Your file is only changed when you save. Save As starts beside the document's file, or for a new
+document in the documents folder chosen in [Settings](#settings), where Open starts too.
+
+Files are saved compactly: what the document no longer uses is left out, and a picture or font it holds twice
+(as merging files often leaves them) is kept once, so a saved file is often a little smaller than the one you
+opened, with nothing on its pages changed.
+
+### Reduce file size
+
+To make a file with many pictures smaller, as for sending it by email, choose **☰ > Reduce file size…**. As in
+Word's Compress Pictures, choose a **Picture quality**: **HD (330 ppi)**, **Print (220 ppi)**, **Web (150 ppi)**
+or **Email (96 ppi)**, the smaller the file the softer its pictures; **High fidelity** keeps them as they are.
+With pages selected, **Apply to** chooses all pages or the selected ones. While you choose, the window works out
+the size the file would be saved at now and once reduced, and shows the same part of the picture that loses the
+most, before and after, at its own size. **Reduce** makes the pictures smaller, as one change Undo takes back;
+the file is changed when you save. Text, fonts, form fields and comments stay as they are.
+
+<img src="images/reduce-file-size.png" width="472" alt="The Reduce file size window for photos.pdf: Picture quality with High fidelity, HD (330 ppi), Print (220 ppi, chosen), Web (150 ppi) and Email (96 ppi); Size: if saved now 9.3 MB, once reduced about 326 KB, 2 pictures made smaller; a Preview of the same part of a photo Before and After side by side; and the Reduce and Cancel buttons">
+
+Each picture is measured where the pages show it largest. Pictures already at or under the quality chosen are
+left as they are, and so are those of kinds LimarePDF can't make smaller (CMYK, palette and black-and-white
+pictures among them) and those also drawn where they aren't being reduced; the message after says how many and
+why. A digitally signed document can't be reduced: its saves keep exactly what was signed. On the command line:
+`limarepdf-cli reduce` ([command line](cli.md#images-and-scans)).
 
 The file is written in the background: while it is, the status bar shows **Saving** with the file's name, and you
 can go on reading and editing. A change made meanwhile isn't in the saved file, so the document stays marked
@@ -270,11 +346,14 @@ typed), where only Cancel closes it. A message's Copy button copies what it says
 technical lists in a question are under Details.
 
 A dialog fits the window, also as it is resized: narrower in a narrow one, with smaller margins under 600 points
-wide, and in a short one its content scrolls while its buttons stay in view. Very long names are cut short: a
+wide, and in a short one its content scrolls while its buttons stay in view. A dialog opens centred and then stays
+where it is: what is added to it (a field shown, a section opened) makes it grow downward, and it moves up only as
+far as keeps its buttons on the screen. Very long names are cut short: a
 file's under the title, and a printer's in Print (shown whole on hover and in the list of printers). Every dialog
 has the same look: text at 14 points, settings in headed groups, labels above the fields, fields, lists and buttons
 outlined, and radio buttons and checkboxes outlined on the dialog's background. Two short fields share a row when
-there is room (Copies and Print on, a signature's Reason and Location) and go one under the other when not. Lists
+there is room (Copies and Print on, Orientation and Scale, a signature's Reason and Location) and go one under the
+other when not; Print's preview is beside its settings when there is room and under them when not. Lists
 of documents or certificates are an outlined box with each row's buttons on its right (under it in a narrow
 window); facts to read, such as a certificate's, have their names in a column on the left.
 
@@ -344,7 +423,8 @@ copies are not autosave: **your own files are never written by them.**
   `$XDG_STATE_HOME/limarepdf/recovery`), `~/Library/Application Support/limarepdf/recovery` on macOS, and
   `%LOCALAPPDATA%\limarepdf\recovery` on Windows. At the start, LimarePDF looks only in real folders of yours there:
   a recovery folder, or a folder inside it, that is a symbolic link or belongs to another user is left untouched.
-- To stop them, turn off ☰ > **Keep recovery copies of unsaved changes** (also in the command palette).
+- To stop them, turn off **Keep recovery copies of unsaved changes** in ☰ > [Settings…](#settings) (also in the
+  command search).
   Copies already made are deleted at once, and the choice is remembered.
 - If a copy can't be written, for example when the disk would be left with less than 1 GB free, a notice on the
   document says so, with a Save button. If recovery can't start at all, a message says so when the app starts.
@@ -397,7 +477,8 @@ click a section's name to open or fold it.
 | An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (the **Editing** switch, **Paragraph** or **One line**, for page text, the one in use pressed, which turns paragraph editing on or off as Edit > Text flow's Paragraph does, Paragraph greyed with the reason for a line on its own, in a table or turned; New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
 | A form field you are typing in | Headed **Form field**. Words selected on the page before are let go, so Edit > Font and Ctrl+B don't change them meanwhile |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
-| Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, Underline, Strikethrough, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
+| Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, Underline, Strikethrough, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu, which also has **Link…** |
+| A link (clicked with the Link tool, or right-clicked with it or the read tool) | Headed **Link**: the page it is on, Link to, the address or page, and Show as a link; each change applies at once. The right-click menu has **Edit link…**, **Open link**, **Copy link address** (web and email links) and **Remove link**; Delete removes it ([Change or remove a link](reading-and-finding.md#change-or-remove-a-link)) |
 
 The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
 use a tool is in its button's tooltip and the menus, and in this guide.
@@ -429,7 +510,7 @@ tool can also be typed over or cut (see
 ### Tools in the inspector
 
 These commands open their tool in the inspector, on its own and headed by its name. They are also in the ☰ menu
-and the command palette (Ctrl+K).
+under the same names, and in the command search (Ctrl+Shift+P).
 
 | Command | Tool |
 | --- | --- |
@@ -441,7 +522,7 @@ and the command palette (Ctrl+K).
 | Pages > Recognise text | Recognise text (OCR) ([Scans and OCR](scanning-and-ocr.md#recognising-text-ocr)) |
 | Pages > Optimise | Optimise scanned pages ([Scans and OCR](scanning-and-ocr.md#optimising-scanned-pages)) |
 | Protect > Passwords | Password security ([Password protection](security.md)) |
-| ☰ > Export pages as images… | Export pages as images ([Pages as images](export-and-printing.md#pages-as-images)) |
+| ☰ > Export > Export pages as images… | Export pages as images ([Pages as images](export-and-printing.md#pages-as-images)) |
 
 - **Close a tool** with the × at the top of the inspector, beside »; the inspector goes back to what is selected, or
   the document. Opening or closing a tool changes nothing in the document. Crop also closes with Esc, Enter, a
@@ -453,8 +534,18 @@ and the command palette (Ctrl+K).
 - **Keyboard:** with a tool open, F6 to the inspector reaches its × first, and Enter closes the tool.
 - **Narrow windows:** the pop-out shows the tool the same way, with its ×.
 
-☰ > Document > Properties… isn't a tool: it lets go of the selection and opens the
+☰ > Properties… isn't a tool: it lets go of the selection and opens the
 [Properties](#document-properties) section of the document's inspector.
+
+### Number boxes
+
+Boxes that take a number (Copies, a line's width, X and Y, a margin, a resolution) work as they do in word
+processors. Type a number and press Enter or leave the box; or step it with the **▲** and **▼** at its right, or
+with Up and Down while you are in it (Page Up and Page Down go ten steps). Dragging across a box selects its text
+and doesn't change the number. A unit after the number (`pt`, `%`) can be typed or left out. A number outside what
+the box allows is replaced by the nearest it does allow, and a note under the box says so for a few seconds, as
+when Copies is given 0: "Copies can be 1 to 999, so 1 was used." Something that isn't a number leaves the box as
+it was, with a note saying what it takes. Esc leaves the box without changing it.
 
 ### Pages boxes
 
@@ -464,7 +555,7 @@ numbers replaces it.
 
 ### Document properties
 
-The inspector's Properties section, with nothing selected (or ☰ > Document > Properties…), shows the document's
+The inspector's Properties section, with nothing selected (or ☰ > Properties…), shows the document's
 title, author, subject, keywords, creator and producer. Each is kept as you type it, when you press Enter or leave
 the field, one undo step each. To remove them for good, along with other information that isn't on any page, see
 [Removing hidden information](redaction.md#removing-hidden-information).
@@ -482,11 +573,13 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 
 | Keys | Action |
 | --- | --- |
+| Ctrl+N | [New blank document](#a-new-document) |
 | Ctrl+O | Open |
 | Ctrl+S, Ctrl+Shift+S | Save, Save As |
 | Ctrl+W | Close the tab |
 | Ctrl+Tab, Ctrl+Shift+Tab (or Ctrl+F6, Ctrl+Shift+F6) | Next, previous open document, from the last round to the first (Ctrl on a Mac too) |
 | Ctrl+P | Print |
+| Ctrl+F2 (on Linux also Ctrl+Shift+O, as in LibreOffice) | Print preview: Print, with its preview ([Printing](export-and-printing.md#the-preview)) |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) | Undo, redo |
 | Ctrl+F | Find: Search results opens with the keyboard in its box; type, and the matches come once you pause |
 | Ctrl+H | Replace: Search results opens with Replace with, Replace and Replace all under its search box (Ctrl on a Mac too) |
@@ -494,7 +587,10 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | F3, Shift+F3 (or Ctrl+G, Ctrl+Shift+G) | Next, previous match, wherever the keyboard is; with nothing searched, F3 opens Find |
 | Enter in Replace with, or Alt+R in Search results | Replace the current match and go on to the next (Alt+R as in Word; not on a Mac) |
 | Alt+A in Search results | Replace all, after saying what that changes (as in Word; not on a Mac) |
-| Ctrl+K | Command palette |
+| F7 (Option+Cmd+L on a Mac) | Spelling: the side panel's Spelling view, from text being typed too ([Checking spelling](spelling.md)) |
+| Ctrl+Shift+P | Search commands: the command search |
+| Ctrl+, | [Settings](#settings) |
+| Ctrl+F1 (Option+Cmd+R on a Mac) | Switch between the Full and the [Minimal interface](#the-minimal-interface) (on KDE Plasma, Ctrl+F1 goes to the first desktop: use the switch) |
 | F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the tabs, the commands, notices, navigation, the page, the inspector, the status bar |
 | Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |
 | Ctrl+= , Ctrl+- | Zoom in, zoom out (in Organise, the cards) |
@@ -506,10 +602,14 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Up, Down, Home, End (in the Comments view's cards) | Select the comment before or after, the first or the last, and show it on the page |
 | Enter, Esc (in the Comments view's cards) | Type a reply to the selected comment; go back to the page, the comment staying selected |
 | Ctrl+Enter (in the inspector's Reply box) | Add the reply |
+| Up, Down, Home, End; Right, Left (in the Bookmarks view) | Select the bookmark above or below, the first or the last, and show its page; show the bookmarks inside one, then go in; hide them, then go out |
+| F2, Delete, Esc (in the Bookmarks view) | Rename the selected bookmark; delete it with the bookmarks inside it; go back to the page |
+| Alt+Shift+Up, Alt+Shift+Down; Alt+Shift+Left, Alt+Shift+Right (in the Bookmarks view) | Move the selected bookmark up or down among those at its level; Promote it out of the one it is in; Demote it into the one above, as Word's outline does ([Bookmarks](reading-and-finding.md#bookmarks)) |
 | Alt+Shift+Left, Alt+Shift+Right; Alt+Shift+Up, Alt+Shift+Down; Alt+Shift+Home, Alt+Shift+End | Move the selected pages a place earlier or later; a row up or down (a place, in the thumbnails); to the start or the end |
 | Ctrl+A (Organise) | Select every page |
 | Delete, Backspace | Delete the selected words, objects, comment or mark, or the selected pages |
 | Ctrl+Shift+H | Highlight the selected text |
+| Ctrl+K | Link…: link the words selected with the read tool, edit the selected link, or with nothing selected turn the Link tool on or off ([Links](reading-and-finding.md#links)) |
 | Arrow keys (Shift for 10 points) | Move the selected objects |
 | Shift+Left, Shift+Right; Shift+Up, Shift+Down; Shift+Home, Shift+End (words selected with the read tool) | Extend the selection by a word; to the line above or below; to the start or end of the line, across pages |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool or Text tool) |
@@ -523,11 +623,11 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Alt while dragging an object or one of its handles | Move or resize it freely, without snapping to the page or other objects |
 | Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle, word selection or pages being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, take back pages cut, take away Organise's insertion bar, clear the selection, or leave a tool for the read tool. In a box of Edit > Font or the inspector (the font size, say) while typing is open on the page, it drops what was typed in the box and goes back to the typing |
 | Ctrl+B, Ctrl+I, Ctrl+U | Bold, Italic, Underline for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
-| ⌘⇧X (on a Mac only) | Strikethrough, for the same text as Ctrl+U, as in Word for Mac. On Windows and Linux it has no key, as in Word: use the Font group's **S**, the right-click menu or the command palette |
-| Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J (in page text being edited, or with words or lines selected) | Align left, Centre, Align right, Justify their paragraphs, as in Word; Centre, Align right or Justify again puts them back to the left |
+| ⌘⇧X (on a Mac only) | Strikethrough, for the same text as Ctrl+U, as in Word for Mac. On Windows and Linux it has no key, as in Word: use the Font group's **S**, the right-click menu or the command search |
+| Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J (in page text being edited, or with words or lines selected; in new text or a text box) | Align left, Centre, Align right, Justify their paragraphs, as in Word; Centre, Align right or Justify again puts them back to the left. New text's lines and a text box's are aligned left, centred or right, not justified |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
-| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so is Organise's grid); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+K every command |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so are Organise's grid and the bookmarks list); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+Shift+P every command |
 
 ### Screen readers
 
@@ -564,6 +664,22 @@ These choices are remembered between runs, in `settings.txt` in the same folder 
 with the markup colours, your name for comments, planned features shown or not and compact commands. For darker
 pages too, see [Page colours for reading](reading-and-finding.md#page-colours-for-reading).
 
+### Settings
+
+☰ > **Settings…** (Ctrl+,) gathers in one window what is set for every document, as Word's Options do. Each
+change takes effect at once and is remembered, so the window has only **Close**; the same choices stay in the
+menus and the command band where they were.
+
+- **General:** your name for comments; the **Documents folder**, where Open, and Save As for a new document,
+  start (**Choose…** picks it, **Clear** goes back to the folder last used); Keep recovery copies of unsaved
+  changes ([Recovery copies](#recovery-copies)).
+- **Appearance:** theme, accent colour, page colours and Recolour pictures too, Minimal interface, Compact
+  commands, Show planned features, and Selection controls on the right.
+- **Pages:** the page layout new documents open in (and the one in front), Show cover page alone, Use the
+  document's page labels, and Highlight fields.
+- **Editing:** editing page text a paragraph at a time, Snap to objects, your name and the date on stamps, Check
+  spelling as you type, the spelling language, and Add a dictionary… ([Checking spelling](spelling.md)).
+
 The app uses the Inter font and Phosphor icons. It also includes the Liberation fonts, which have the widths of
 Helvetica, Times and Courier, to show text in its own look while it is typed on the page and to write characters
 Helvetica, Times and Courier lack; they don't add to the fonts you can choose.
@@ -574,6 +690,7 @@ Its position isn't remembered: on Linux Wayland sessions the desktop places wind
 managers choose the size themselves. On KDE Wayland, restoring a window that opened maximised puts it at the
 top-left of the screen, since the desktop never placed it at its normal size; a later start places it as usual.
 
+☰ > Help > **User guide** opens this guide in your browser, and **Report a problem** the issue tracker.
 ☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),
 links to the website, the licence and the issue tracker, which open in your browser, and Credits for the bundled
 fonts, icons and text recognition model. Contributors switches the window to the people who made LimarePDF; Back

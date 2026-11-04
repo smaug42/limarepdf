@@ -111,3 +111,35 @@ fn merge_draws_the_form_fields_of_later_inputs_only_when_asked() {
     let m = Pdf::open(&out, None).unwrap();
     assert_eq!(m.form_fields().len(), 1);
 }
+
+/// A one-page PDF with one bookmark, `title`, to its page.
+fn bookmarked_pdf(dir: &Path, name: &str, title: &str) -> PathBuf {
+    make_pdf(
+        dir,
+        name,
+        "/Outlines 4 0 R",
+        "",
+        &[
+            "<< /Type /Outlines /First 5 0 R /Last 5 0 R /Count 1 >>",
+            &format!("<< /Title ({title}) /Parent 4 0 R /Dest [3 0 R /Fit] >>"),
+        ],
+    )
+}
+
+#[test]
+fn merge_keeps_every_inputs_bookmarks() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("merge-bookmarks");
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = bookmarked_pdf(&dir, "a.pdf", "Summary");
+    let plain = make_pdf(&dir, "plain.pdf", "", "", &[]);
+    let b = bookmarked_pdf(&dir, "b.pdf", "Appendix");
+    let r = merge(&dir, &[&a, &plain, &b], &[]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let m = Pdf::open(dir.join("out.pdf"), None).unwrap();
+    let marks: Vec<(String, Option<usize>)> =
+        m.outline().into_iter().map(|i| (i.title, i.page)).collect();
+    assert_eq!(
+        marks,
+        [("Summary".into(), Some(0)), ("Appendix".into(), Some(2))]
+    );
+}

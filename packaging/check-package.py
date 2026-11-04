@@ -28,6 +28,9 @@ NEEDED = [
     "FONT-LICENSE-CedarvilleCursive.txt",
     "FONT-LICENSE-HomemadeApple.txt",
     "FONT-LICENSE-Zeyada.txt",
+    "DICTIONARY-LICENSE-English.txt",
+    "DICTIONARY-LICENSE-French.txt",
+    "LICENSE-MPL-2.0.txt",
 ]
 LINK = re.compile(r"\]\(([^)\s]+)\)")
 

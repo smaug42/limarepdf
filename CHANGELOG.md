@@ -78,11 +78,224 @@
   step, the words or lines staying selected; the alignment they share shows pressed, and Word's rule (pressed
   again, back to the left) goes over them all. Centre is on the floating toolbar for them too, not in their
   right-click menus. A line on its own, text in a table or form, turned text, invisible recognised text and
-  vertical writing are left as they were, a notice saying so ("Not aligned: 1 line on its own"). New text, text
-  boxes and form fields can't be aligned yet: the buttons are greyed for them and say where to click.
+  vertical writing are left as they were, a notice saying so ("Not aligned: 1 line on its own").
+- Alignment for new text and text boxes. New text's lines line up with each other while you type them (Ctrl+L,
+  Ctrl+E, Ctrl+R or Edit > Alignment): the longest starts where you clicked, the others start there too, are
+  centred under it or end where it ends, and they are written so, each line measured as it is written. Ctrl+Z in
+  the text takes an alignment back, and the next new text starts aligned the same way. A text box is aligned
+  left, centred or right while you type in it or when it is selected (one undo step), kept in the PDF as other
+  readers show it (`/Q`), and a new text box takes the alignment the last one had. Neither can be justified (new
+  text's lines end at Enter; a PDF text box can't keep it), so Justify is greyed and says why; a form field's
+  alignment is its form's, and the alignments are greyed while you type in one ("A field's alignment is set by
+  its form.").
+- `limarepdf-cli printers --paper` lists each printer's paper sizes as people name them ("Letter (8.5 × 11 in)",
+  "A4 (210 × 297 mm)"), the printer's default marked. On Linux and macOS LimarePDF asks the printing service
+  (CUPS) for them directly, with how near each edge the printer can print, and when it can't, reads their names
+  from `lpoptions` and says the margins aren't known; on Windows it asks the printer's driver.
+- `limarepdf-cli print` takes `--paper` (one of the printer's sizes, such as A4 or Letter; by default the
+  printer's), `--orientation auto|portrait|landscape` (auto, the default, turns a page wider than it is tall) and
+  `--scale shrink|fit|actual` or a percentage from 1 to 400 (`--scale 150%`). At a scale where pages reach past
+  the printable area, it warns, naming them, since their edges won't print.
+- **Page setup** and a **preview** in Print. Under Copies and sides, **Paper size** lists the sizes the printer
+  takes, asked of the printing service when the printer is chosen (Print is greyed until they come, and if they
+  can't be found the dialog says why, with Try again); **Orientation** is Automatic, Portrait or Landscape; and
+  **Scale** is Shrink oversized pages (the usual choice), Fit to printable area, Actual size or Custom, with a
+  percentage from 1 to 400% beside it. Beside the settings (under them in a narrow window) the preview shows each
+  sheet as it will print, drawn by the same code that lays out the printout, a sheet with its page turned onto it
+  held sideways so the page reads upright, with ‹ and › and "1 of 12" under it; it follows the page range, the
+  page setup and, for selected text, the layout. A line under it says when the printer doesn't say how near the
+  edges it can print, and which pages reach past the printable area at the scale chosen. The paper for each
+  printer, the orientation and the scale are remembered when you print, as Acrobat keeps the last scaling.
+- **Print preview** in the ☰ menu (no longer marked Planned) and the command search opens Print with its
+  preview, as in Word: Ctrl+F2 (⌘F2 on a Mac), and on Linux also Ctrl+Shift+O, as in LibreOffice, since KDE
+  keeps Ctrl+F2 for its second desktop.
+- Print opens ready after the first time: the printers and their paper sizes found are kept while LimarePDF is
+  open, and the dialog opens with them while it looks again in the background, adding any printer that has
+  appeared. The first time, on Linux and macOS, the printers set up on the computer come at once (asked of CUPS
+  directly, in milliseconds), and printers announced on the network about a second later, where the whole list
+  waited for them before. The printer last printed to is remembered and chosen next time, when it is there.
+- **Pages per sheet** in Print: a new **Layout** group under Page setup prints 1, 2, 4, 6, 9 or 16 pages on each
+  sheet, in the **Page order** chosen (left to right or right to left, top to bottom; or top to bottom, left to
+  right or right to left), with **Borders around pages** if you like. Each page is fitted to its place on the
+  sheet (so Scale is greyed meanwhile), turned in it when its shape is the other way round; with Orientation on
+  Automatic each sheet is held the way its pages come out largest, so two upright pages print side by side on a
+  sheet turned sideways. The preview shows and counts the sheets as they will print. The choices are remembered
+  when you print. `limarepdf-cli print` takes
+  `--pages-per-sheet`, `--page-order across|across-from-right|down|down-from-right` and `--borders`.
+- **Print as a booklet**, at the top of Print's Layout group: the pages go two to a side, in the order that reads
+  straight through once the printed sheets are folded in half and stacked, each fitted to its half of the sheet,
+  with blank pages added at the end to make a multiple of four. **Binding** (Left, or Right for documents read
+  right to left) takes Page order's place, and **Sides to print** (Both sides, Front sides only, Back sides only)
+  lets a printer that prints only one side print the fronts, then the backs once the stack is put back in. A
+  booklet sets the rest itself, so Pages per sheet, Borders around pages, Orientation and Scale are greyed, and
+  Print on is greyed showing the sides it uses (both, flipped on the short edge, or one); unticking brings back
+  the Print on chosen before. The preview steps through the sides ("Front of sheet 1", "Back of sheet 1").
+  Print as a booklet and Binding are remembered when you print; Sides to print always starts at Both sides.
+  `limarepdf-cli print` takes `--booklet`, `--binding left|right` and `--booklet-sides both|fronts|backs`, and
+  says why when an option that a booklet sets itself is given with it.
+- **Link** in Insert > Navigation (no longer marked Planned), ☰ > Tools > **Link…**, the command palette, Ctrl+K
+  (⌘K on a Mac) and the right-click menu of selected words adds and changes links. With words selected it opens
+  **Insert link**: **Link to** a web page, an email address or a page in this document, and **Show as a link:
+  blue underline**, ticked for words; the link covers the words' lines, one link on each page. With nothing
+  selected it turns on the **Link tool**, which outlines the page's links with a dashed line: drag a box where
+  there is none to link it (not underlined unless you tick it), or click a link to select it, then drag it or its
+  handles, move it with the arrow keys, Delete it, or double-click it or press Enter for **Edit link** (with
+  **Save link** and **Remove link**). A right-click on a link, with the read tool or the Link tool, offers
+  **Edit link…**, **Open link**, **Copy link address** and **Remove link**, as in Word, and the inspector shows a
+  selected link, headed **Link**, and changes it at once. A web address typed without `https://` gets it, an email address is written
+  as `mailto:`, and names in other alphabets are written in the plain form links need; only web pages, email
+  addresses and this document's pages can be linked to, and an address that isn't taken says why under its box.
+  The underline is drawn by the link, in Word's link blue, so the words keep their colour and font; it shows in
+  readers that draw link borders (Poppler-based ones were checked). A link LimarePDF doesn't follow says what it
+  does now and can be pointed somewhere else or removed. Each change is one undo step.
+- **Bookmarks can be moved**, the bookmarks inside one going with it, as Word moves headings in its outline and
+  Navigation pane. Drag a bookmark onto the top of another to put it before, onto the bottom to put it after, or
+  onto the middle to put it inside (a line or an outline shows where), or below the list to put it last. With
+  a bookmark selected, Alt+Shift+Up and Alt+Shift+Down (Option+Shift on a Mac) move it among the bookmarks at its
+  level, Alt+Shift+Left (Promote) moves it out of the one it is in and Alt+Shift+Right (Demote) into the one
+  above; the right-click menu has Move up, Move down, Promote and Demote too. Where it can't go, a note says why.
+  Each move is one undo step, and the bookmark still goes to the same place. One bookmark moves at a time.
+  `limarepdf-cli bookmarks move N` takes `--before`, `--after` or `--under`, and `bookmarks add` takes `--before`.
+- The Bookmarks list works from the keyboard: it is one stop for Tab, where Up and Down go through the bookmarks
+  showing their pages, Home and End go to the first and last, Right and Left show and hide the bookmarks inside
+  one and go in and out, F2 renames, Delete deletes and Esc goes back to the page.
+- **Merging keeps the bookmarks of the files added**, as Word keeps the headings of a file inserted into a
+  document. **Insert PDF pages…** puts each file's bookmarks at the top level among the document's own, in page
+  order, and **Append PDFs…** and `limarepdf-cli merge` put them after the document's own, each file's arranged
+  as it was. The places a file names for its links (named destinations) come with it too; one whose name the
+  document already uses is renamed (`intro` becomes `intro-2`), with the links and bookmarks that go to it. Undo
+  takes them away with the pages.
+- **Spelling is checked as you type**, as in word processors: a word spelt wrongly gets a red wavy line once
+  you finish it, in text edited or added on the page, paragraphs, text boxes, notes, comments and replies in the
+  inspector, and form fields. Right-click it for suggestions, **Ignore all** (until LimarePDF closes) and
+  **Add to dictionary** (kept for next time). Words in capitals, words with numbers and web, email and file
+  addresses are left out. **Review > Spelling** (no longer marked Planned; F7, Option+Cmd+L on a Mac, from text
+  being typed too) opens a Spelling view in the side panel that goes through the words spelt wrongly in the
+  comments, replies, text boxes and form fields one at a time, with **Change**, **Change all** (one undo step),
+  **Ignore**, **Ignore all** and **Add to dictionary**. LimarePDF comes with English (Canada, United States,
+  United Kingdom and Australia, SCOWL's) and French (Grammalecte's) dictionaries, about 1.1 MB; Spelling's menu
+  chooses the language (until one is chosen, the document's, then the computer's), turns the marks off, and
+  **Add a dictionary…** adds one for another language from a LibreOffice dictionary extension (`.oxt`) or a
+  Hunspell `.dic` and `.aff`. On Linux the system's Hunspell dictionaries are listed too. The pages' own text
+  isn't gone through by Review > Spelling.
+- **Saved files are smaller**: every Save and Save as packs the document's small objects together, compressed,
+  and keeps a picture or font that is in the file twice (as merging files often leaves them) only once. Nothing
+  on the page changes. Across 344 test files the saved files were 4.8% smaller, more for documents of text than
+  of pictures. A document saying it is PDF/A-1 (an archive format that doesn't allow this), a password-protected
+  one and a signed one (its changes added after what was signed) are saved as before, and a very small file is
+  saved whichever way is smaller.
+- **Reduce file size** (☰ > Reduce file size…, no longer marked Planned) makes a file with many pictures
+  smaller, as Word's Compress Pictures does. Choose a picture quality (HD, Print, Web or Email; High fidelity
+  keeps them) and, with pages selected, all pages or the selected ones; the window works out in the background
+  the size the file would be saved at now and once reduced, and shows the same part of the picture that loses
+  most, before and after. **Reduce** is one change Undo takes back, and a message says how many pictures were
+  made smaller, the size once saved, and which were left and why. The quality chosen is remembered. A signed
+  document can't be reduced ("Signed documents keep exactly what was signed, so they can't be made smaller.").
+- `limarepdf-cli reduce` makes a file smaller as Word's Compress Pictures does: `--quality` HD (330 pixels per
+  inch), Print (220, the default), Web (150), Email (96) or `high-fidelity` (the pictures as they are). Each
+  picture is measured where the pages show it largest and, above the resolution, scaled down and saved again (a
+  photo as JPEG, a drawing or chart of few colours losslessly, a JPEG at no more than its own quality), with
+  its transparency; only when that makes it smaller. Text, fonts, form fields and comments stay as they are. It
+  says how many pictures were made smaller, which were left and why (already at the resolution, of a kind it
+  can't make smaller, shared with pages or comments not being reduced), and the file's size before and after.
+  `--pages` reduces some pages only, `--jpeg-quality` sets the JPEG quality. A signed document is refused:
+  "Signed documents keep exactly what was signed, so they can't be made smaller."
+- **Settings** (☰ > Settings…, Ctrl+,) gathers in one window what is set for every document, as Word's Options
+  do: your name for comments, a **documents folder** that Open, and Save As for a new document, start in, recovery
+  copies, the theme, accent colour and page colours, Compact commands, planned features, where the selection's
+  controls go, the page layout and cover page, page labels, field highlights, paragraph editing, Snap to objects,
+  your name and the date on stamps, spell checking and its language, and Add a dictionary…. Each change takes
+  effect at once, with no document open too, and is remembered.
+- ☰ > Help > **User guide** and **Report a problem** open the guide and the issue tracker in your browser.
+- Pages can be copied, and pasted into another document: select pages in Organise or the thumbnails and press
+  Ctrl+C (or **Edit > Copy**, or **Copy** in the right-click menu), then paste in this document or another tab
+  where the insertion bar is, or after the pages selected; each paste adds another copy, selected, in one step.
+  Pages cut and pasted in another tab move there, taken out of their own document, a step to undo in each (every
+  page of a document cut is copied instead, as a document needs a page). Copying or cutting text or pages
+  replaces the pages copied, as in a word processor. Pages of a password-protected document make the document
+  pasted into protected, and pages with form fields are asked about first, as when adding pages from a file.
+  ☰ > Edit > Copy text is now **Copy**.
+- **New blank document**: Insert > Blank document (no longer marked Planned), ☰ > New blank document, the start
+  screen, the command search or Ctrl+N (⌘N on a Mac) opens an "Untitled" document of one blank page, as Word's
+  Blank document does. The page is Letter in the United States, Canada and the other countries that use Letter,
+  and A4 elsewhere, by your system's region (on Linux, its paper setting). One you haven't changed closes without
+  asking; once changed, Save asks where to save it.
+- **Save image as…**: a selected picture's right-click menu, its floating toolbar, ☰ > Edit and the command
+  search save the picture as a file, as Word's Save as Picture does. A JPEG photo shown upright is saved exactly
+  as it is in the document, with no quality lost; any other picture, or one turned or flipped on the page, is
+  saved as a PNG as it shows, with its own pixels and its transparency.
+- **Save all images…** (☰ > Export) saves every picture in the document to a folder you choose, each as
+  Save image as saves one, named by page and number (`report-page-003-image-2.jpg`). A picture shown on several
+  pages, such as a logo, is saved once. It asks before replacing files. On the command line:
+  `limarepdf-cli save-images in.pdf --out-dir pictures`.
+- **Paste a picture**: a picture or screenshot copied in another app is pasted with Ctrl+V (⌘V on a Mac) or Paste,
+  with nothing being typed, in the middle of the page in view at its own size (shrunk to fit the page), selected,
+  as Word and PowerPoint paste one; Undo takes it back. Paste can now be used in the page view whenever a document
+  is open, and says when the clipboard holds nothing it can paste there.
+- **Copy a picture**: Ctrl+C or Copy with a picture selected copies it to the clipboard as it shows on the page,
+  to paste in another app.
+- A picture added or pasted over text is in front of it: clicking or double-clicking it selects the picture
+  instead of opening the hidden text underneath, with the read tool and the arrow. A picture put over a form's
+  fields says that their answers show above it, as in every PDF reader.
+- **Minimal interface**: one quiet row of commands in place of the commands row and the band, described in the
+  guide's new "The Minimal interface" section. The switch at the right end of the tab strip, above Print, says where it takes you: **Minimal**
+  in the Full interface, **Full** in the Minimal one. View > Show > Minimal interface, Settings, the command
+  search and Ctrl+F1 (as Word folds its ribbon away; ⌘⌥R on a Mac) do the same. Minimal's row has the File menu,
+  the navigation panel, Open, Save, Undo and Redo, then Find, **Tools**, the inspector and Print; its status bar
+  adds the page layout and Fit width beside the zoom. **Tools** lists the commands a task starts from under the
+  band's names (Edit, Insert, Review, Pages, Forms and sign, Protect), each with its menu as in the band
+  (Highlight's colours, Draw's shapes, your saved signatures), and **All commands** at its foot opens ☰. While
+  text is selected, edited or typed, the inspector's top has the font, size, Bold, Italic, Underline,
+  Strikethrough, colour and the four alignments, as the band's Font group has them. A window too narrow for the
+  row puts the least needed commands under **More** (⋯); ☰, Tools and the switch always show. The choice is
+  remembered, Full until Minimal is chosen. Switching changes nothing else: the open documents, the one in
+  front, what is selected, the zoom, Undo and anything being typed stay as they are. Compact commands is for the
+  Full interface and is greyed in Minimal.
 
 ### Changed
 
+- The ☰ menu is laid out as the command band: File's own commands first, in word processors' order (New blank
+  document, Make a PDF from images, Open, Open recent, Save, Save As, Reload, Export ▸, Reduce file size, Print
+  preview, Print, Print selected text, Properties), then one submenu for each of the band's names, in the band's order and laid out as
+  its groups (Edit, Insert, Review, Pages, Forms and sign, Protect, View), then Help, Settings…, Close tab and Quit
+  last. A command is now under the same name in both: Watermark and Headers, footers, Bates are under Insert, the
+  comments and markup, Spelling and Flatten annotations under Review, Organise pages, Recognise text and Optimise
+  scanned pages under Pages, the form, fill-and-sign and digital signature commands under Forms and sign, and
+  redaction, Password security and Remove hidden information under Protect. Tools and Document are gone. What
+  only keys do (moving and extending the selection, Esc, F6) is no longer listed, as word processors leave it out,
+  and the line-end hyphens' commands are in the right-click menu where they act. Messages that name a menu say the
+  new way there. The command palette's menu item is now Help > Search commands…, as the guide calls it.
+- Save As starts beside the document's file, as word processors do.
+
+- The command palette is now Ctrl+Shift+P (⌘⇧P on a Mac): Ctrl+K is Link, as in Word, LibreOffice and Google
+  Docs.
+- Links LimarePDF doesn't follow now say what they would do when you hover over them ("Opens another file:
+  report.pdf", "Runs a program or opens a file", "Runs a script"), the pointer staying as it is. A link whose
+  address isn't a web page's or an email address (`file:`, `javascript:`, `tel:` and the like) is no longer
+  offered to your browser after asking: it is one of these, never opened. Links to web pages and email
+  addresses still ask first. A link over several lines now reacts only over its lines, not the gaps between.
+- Print is shorter, for smaller screens: the printer, pages, copies, sides, and the paper with the orientation
+  beside it are shown, and the settings used less often are folded under their titles, **Scale**, **Layout**
+  (pages per sheet and booklets) and **Advanced** (Print as image), each opened by a click, as Chrome's and
+  Windows' print dialogs fold them. Each title says what is chosen ("Scale: Shrink oversized pages", "Layout:
+  Booklet, bound on the left"). They are closed each time Print opens, and each opens by itself while it is set to
+  something other than the usual (a booklet remembered from last time, say). Printing selected text, its layout is
+  chosen in a **Selected text** group where the pages would be.
+- Every number box (Copies, the scale's percentage, line widths, X and Y, width and height, margins, the
+  resolution, Bates digits and the like) is a spin box, as in word processors: type a number and press Enter or
+  leave the box, or step it with the ▲ and ▼ at its right or with Up and Down (Page Up and Page Down, ten steps).
+  Dragging across a box no longer changes its number. A number out of range is replaced by the nearest allowed,
+  and a note under the box says so ("Copies can be 1 to 999, so 1 was used."); something that isn't a number
+  leaves the box as it was, with a note saying what it takes.
+
+- LimarePDF lays out every printout itself, the same way on every system: each page goes on a sheet of the paper
+  chosen (the printer's default unless you choose another) at its own size, centred, and is shrunk to the
+  printable area when it is larger, as Acrobat does by default. On Linux and macOS a page smaller than the paper
+  now prints at its own size, where it was enlarged to fill the sheet, and a page wider than it is tall is turned
+  anticlockwise onto the sheet, its top at the sheet's left, where it was turned clockwise; Windows printed them
+  this way already. Comments and form fields meant for printing are drawn into what is printed and the others left out;
+  pop-up notes aren't printed. When the printer doesn't say how near the edges it can print, a quarter of an inch
+  is kept clear. Print as image (`--as-image`) sends pictures of the laid-out sheets.
 - Underlines and strike-throughs that other apps drew under or through a line's words (Word, LibreOffice, web
   browsers, macOS and others draw them as thin lines on the page) now go with their words: editing the line
   moves and stretches them to where the words are, in their own colour, place and thickness; deleting the words
@@ -101,14 +314,43 @@
   example in Insert pages ▾, Fill fields ▾, Digital signature ▾, Facing pages ▾ and Page colours ▾.
 - **Paragraph** (Edit > Text flow) and **Edit as paragraph** show the ¶ icon, so they aren't mistaken for the new
   Align left.
+- A greyed button's or menu item's tooltip gives its reason on a line of its own, marked ⓘ in amber, as "Not
+  available now." and the reason, between its name and what it does, so it isn't lost in the description.
 
 ### Fixed
 
+- Shortcuts with a punctuation key were written with its name off a Mac (Zoom in "Ctrl+Equals"); menus,
+  tooltips, the command search and the start screen now write its sign, as menus do ("Ctrl+=", "Ctrl+,").
+- A picture whose file keeps its decoding settings in a separate object (as some apps write it) came out
+  scrambled, its colours shifted and streaked, when part of it was redacted or when Optimise scanned pages
+  saved it again; its settings are now read wherever the file keeps them.
+- A link in pages added from another PDF that went to a place the file named could go nowhere, or to the wrong
+  page when the document had a place of the same name; it now goes to its own page. So does one giving its page
+  by number, as some apps write it.
+- Bookmarks shown or hidden in the Bookmarks list went back to how the file had them after any change to the
+  document (renaming a bookmark, say); they now stay as you left them while the document is open.
+- Hovering over a web link showed its address as the file gave it, with any direction-changing or invisible
+  characters in it, which could make it look like another address; it is now shown cleaned of them, as the Open
+  link? window already showed it.
+- A tool's button clicked again didn't turn the tool off: Insert > Text, Note, Text box, Draw and its shapes,
+  Stamp, Image, Mark redaction, Fill and sign and the arrow stayed on, and only Esc or Edit > Edit text left them.
+  Clicked again, each now goes back to reading, as in Word and Acrobat, what was typed kept; a picture waiting to
+  be put down is let go.
+- Edit > Edit text showed pressed whenever Insert > Text was on, so it looked as if text was being edited while
+  every click on the page started new text. It is now pressed only while text is edited on the page, or while the
+  Text tool is on after being chosen with Edit text.
+- With Insert > Text on, a click on a form field put new text over the field, and the field couldn't be typed in
+  until the tool was left. The click now fills the field in, as with the read tool, keeping new text being typed.
+- Lines typed after Enter in a paragraph came apart from it once kept: each new paragraph read as a line on its
+  own, outside the paragraph's edges, so a double-click edited it as a line and an alignment said "Not aligned: 1
+  line on its own". As in Word, each paragraph Enter starts now keeps the paragraph's edges, first-line indent and
+  line spacing: opened again it is a paragraph between those edges, and can be aligned there.
+
 - A paragraph made wider by dragging its edge opened narrower the next time, its edges worked out again from its
-  lines, which didn't reach them. LimarePDF now keeps a small note of the edges and first-line indent of a
-  paragraph whose edges or alignment you set, in the page's private data (which other apps don't show, and Remove
-  hidden data's private data takes away), and opens the paragraph with them while its lines are where it wrote
-  them, after saving too. This also keeps a centred or right-aligned paragraph from moving each time it was
+  lines, which didn't reach them. LimarePDF now keeps a small note of the edges, first-line indent and line spacing
+  of a paragraph whose edges or alignment you set, in the page's private data (which other apps don't show, and
+  Remove hidden data's private data takes away), and opens the paragraph with them while its lines are where it
+  wrote them, after saving too. This also keeps a centred or right-aligned paragraph from moving each time it was
   realigned, kept and opened again. Such a paragraph is also read as one paragraph again, where its lines would
   otherwise read as several, or with a line of the text beside it.
 - In some documents a paragraph's lines written anew came out a letter wider than LimarePDF set them, as the page
@@ -124,6 +366,17 @@
 - A double-click on a word while its line's font was still loading (just after opening a document, say) could
   select the word before it, and a click with the Text tool could put the caret a few characters back. The word
   or place clicked on the page is now the one used.
+- A form field or text box whose text is centred or right-aligned showed it from the left while you typed in it,
+  and it jumped across when kept. Its lines now show where they are written as you type: a multi-line field's and
+  a text box's each placed as the PDF places it, a single-line field's text centred or at the right.
+- A dialog button's tooltip didn't show while the button was greyed (Trusted certificates' Add certificate file…,
+  say). It shows now, greyed or not.
+- A dialog that grew while open (Print's Page range chosen, Advanced opened) moved up by half of what was added,
+  as it was kept centred. It now stays where it opened and grows downward, moving up only as far as keeps its
+  buttons on the screen.
+- In a narrow window, a menu inside one of the band's folded groups (Select in a folded Editing group, or Draw's
+  shapes in a folded Markup, say) closed the group instead of opening. It now opens beside it, as ☰'s submenus
+  do.
 
 ## [0.12.0] - 2026-10-31
 

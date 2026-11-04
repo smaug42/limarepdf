@@ -14,8 +14,6 @@ as possible later work but aren't picked ahead of them, so the app doesn't fill 
 
 Small or medium additions that build on what LimarePDF already has:
 
-- **Extract images** (S–M): save a document's embedded images as files.
-- **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
 - **Shell completions** for `limarepdf-cli` (S): needs the `clap_complete` crate.
 
 ## Pages and layout
@@ -45,8 +43,9 @@ Small or medium additions that build on what LimarePDF already has:
 
 ## Content editing
 
-- Spell check (L, needs a dictionary); `replace` on the command line (S–M, on Replace all's preparation, which is
-  built: NEW-04b)
+- Spelling for the pages' own text in Review > Spelling (PF-60), and the system's spell checkers on Windows and
+  macOS (PF-61; spell checking itself is built, NEW-06); `spelling` on the command line (S); `replace` on the
+  command line (S–M, on Replace all's preparation, which is built: NEW-04b)
 - Layers: add, merge, reorder, flatten (L)
 - Right-to-left (Hebrew, Arabic) and shaped (Indic, Thai) text, beyond the Latin, Greek and Cyrillic written
   today, and Chinese, Japanese and Korean outside installed fonts that have them (L: text shaping and
@@ -116,7 +115,7 @@ Small or medium additions that build on what LimarePDF already has:
 - Export to HTML, Markdown and CSV tables (M–L)
 - Create a PDF from Markdown, text, CSV, the clipboard or a web page (M each; web pages are L)
 - Create a PDF from JSON describing tables and image boxes (M)
-- New blank PDF (S); a virtual PDF printer (L, per operating system)
+- A virtual PDF printer (L, per operating system); the new blank document is built (NEW-09's stage 1)
 - Convert from Office formats (L, very large)
 
 ## OCR and scanning

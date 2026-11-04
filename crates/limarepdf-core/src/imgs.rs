@@ -248,6 +248,17 @@ struct JpegInfo {
     luma_q: Option<u32>,
 }
 
+/// Whether JPEG `bytes` is a `w` × `h` grey or colour picture that other apps show as a PDF
+/// reader does: one or three components, the size the PDF gives it, and no EXIF turn (a PDF
+/// reader ignores one; a photo viewer applies it).
+pub(crate) fn jpeg_as_shown(bytes: &[u8], w: i64, h: i64) -> bool {
+    jpeg_info(bytes).is_some_and(|i| {
+        matches!(i.components, 1 | 3)
+            && (i.w as i64, i.h as i64) == (w, h)
+            && i.orientation == Orientation::NoTransforms
+    })
+}
+
 /// Sum of the IJG standard luminance quantisation table, which quality 50 uses as is.
 const IJG_LUMA_SUM: u32 = 3_688;
 
@@ -262,6 +273,36 @@ pub(crate) fn jpeg_quality(bytes: &[u8]) -> Option<u8> {
         5000.0 / scale
     };
     Some(q.round().clamp(1.0, 100.0) as u8)
+}
+
+/// `s` with its `/DecodeParms` written in place, when the file gives them (or an entry of
+/// their array) as a reference; `None` when nothing is a reference. lopdf reads only
+/// parameters written in place and otherwise decodes as if there were none: a PNG
+/// predictor left in, every row a byte longer, the colours shifted (pdf.js's
+/// `issue17906`). Decode the copy, never write it back.
+pub(crate) fn direct_parms(doc: &lopdf::Document, s: &Stream) -> Option<Stream> {
+    let resolve = |o: &Object| match o {
+        Object::Reference(r) => doc.get_object(*r).ok().cloned(),
+        o => Some(o.clone()),
+    };
+    let each = |a: &[Object]| {
+        Object::Array(
+            a.iter()
+                .map(|e| resolve(e).unwrap_or(Object::Null))
+                .collect(),
+        )
+    };
+    let direct = match s.dict.get(b"DecodeParms").ok()? {
+        r @ Object::Reference(_) => match resolve(r)? {
+            Object::Array(a) => each(&a),
+            o => o,
+        },
+        Object::Array(a) if a.iter().any(|e| matches!(e, Object::Reference(_))) => each(a),
+        _ => return None,
+    };
+    let mut t = s.clone();
+    t.dict.set("DecodeParms", direct);
+    Some(t)
 }
 
 /// Whether an image XObject's data looks readable, judged from its start without decoding

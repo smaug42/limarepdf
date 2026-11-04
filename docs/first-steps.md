@@ -14,7 +14,8 @@ change and saving it. Shortcuts are written with Ctrl; on a Mac, use ⌘ (Comman
 3. The document opens in a tab of its own. Open more and switch between them with the tabs, or with Ctrl+Tab.
 
 Photos and scans (PNG, JPEG or TIFF) open as a new document, one page per picture. The start screen's **Make a PDF
-from images…** does the same.
+from images…** does the same. To start from nothing, **New blank document** (Ctrl+N) opens a document of one blank
+page ([A new document](gui.md#a-new-document)).
 
 From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 
@@ -25,11 +26,14 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 1. **The commands**, under the document's tab. At the left, the File menu ☰, which holds every command, then
    Open, Save, Undo and Redo; at the right, Print. In between are the names **Edit**, **Insert**, **Review**,
    **Pages**, **Forms and sign**, **Protect** and **View**: click one to show its buttons below. Edit has copying,
-   the font and finding text; Insert adds text, pictures, headers and watermarks; Review has comments and markup;
+   the font, alignment, editing text, finding and replacing, and lining up objects; Insert adds text, pictures,
+   headers and watermarks; Review has comments and markup;
    Pages rotates, removes, adds and splits pages, and Organise shows them all as cards to put in order; Forms and
    sign fills forms and signs; Protect redacts and sets
    passwords; View has zoom, page layout and how the app looks. Hover over a button to see what it does; a greyed
-   one says why it can't be used just now. Greyed buttons marked **Planned** show features still to come.
+   one says why it can't be used just now. Greyed buttons marked **Planned** show features still to come. Prefer
+   fewer buttons? **Minimal**, at the right end of the tabs, puts one quiet row in place of the band, with
+   **Tools** for the rest ([The Minimal interface](gui.md#the-minimal-interface)); **Full** brings the band back.
 2. **The left side** shows the page thumbnails, and a strip of icons for Pages, Search results, Bookmarks, Comments
    and Digital signatures. Click an icon to open that view; click it again to fold the panel away.
 3. **The middle** shows the pages. Scroll with the mouse wheel or touchpad. Ctrl+scroll, Ctrl+= and Ctrl+- zoom,
@@ -69,13 +73,14 @@ Right-click anything for a short menu of what you can do with it.
 The other tools put something new on the page: pick one in the commands (Insert > Text or Image, Review > Note,
 Text box or Draw, Protect > Mark redaction, Forms and sign > Fill and sign), then click or drag on the page. After
 putting one thing down, a tool goes back to the read tool (the pin in the inspector's heading, beside the tool's
-name, keeps it on). Esc always returns to the read tool.
+name, keeps it on). A tool's button clicked again turns it off, and Esc always returns to the read tool.
 
 ## Find any command
 
-Press **Ctrl+K** to open the command palette. Type a few letters of what you want, such as "rotate", "watermark" or
-"split", and press Enter. The ☰ menu also has every command: File's own, then Edit, View, Tools, Pages, Document
-and Help.
+Press **Ctrl+Shift+P** to open the command search. Type a few letters of what you want, such as "rotate",
+"watermark" or "split", and press Enter. The ☰ menu also has every command: File's own, then one submenu for each
+name of the command band, in the same order (Edit, Insert, Review, Pages, Forms and sign, Protect, View), then
+Help and **Settings…**, where what is set for every document is in one place.
 
 ## Undo, save and keep your work safe
 

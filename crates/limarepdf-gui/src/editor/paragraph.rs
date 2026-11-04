@@ -95,6 +95,23 @@ pub(super) enum Then {
     Paragraph(usize, Pos2, Option<String>, Option<TextAlign>),
 }
 
+/// What the text alignment commands act on (NEW-15, [`Editor::aligns_text`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Aligns {
+    /// Nothing they act on.
+    #[default]
+    Nothing,
+    /// Page text: a paragraph or line being edited, words or lines selected.
+    PageText,
+    /// New text being typed: its lines among themselves. Not justified: each line ends at
+    /// Enter.
+    NewText,
+    /// A text box, being typed in or selected. Not justified: a PDF text box can't keep it.
+    TextBox,
+    /// A form field being typed in, which its form aligns.
+    Field,
+}
+
 /// The text an alignment left as it was, by why, for its notice.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NotAligned {
@@ -243,10 +260,11 @@ pub(super) fn covers(block: &Block) -> Vec<[f32; 4]> {
 }
 
 /// Why a block can't be edited as a paragraph, if it can't: it is one line, in a table, or
-/// a turned line (the switch stays greyed and says so).
+/// a turned line (the switch stays greyed and says so). A line LimarePDF wrote as a
+/// paragraph of its own, as Enter makes one, is read as one, confident (BUG-47).
 pub(super) fn refused(b: &Block) -> Option<&'static str> {
     match b.doubt {
-        _ if b.lines.len() < 2 => Some(ON_ITS_OWN),
+        _ if b.lines.len() < 2 && !b.confident() => Some(ON_ITS_OWN),
         Some(Doubt::OneLine) => Some(ON_ITS_OWN),
         Some(Doubt::Table) => Some("Text in a table edits a line at a time."),
         Some(Doubt::Turned) => Some(TURNED),
@@ -516,22 +534,59 @@ impl Editor {
         self.para.is_some()
     }
 
-    /// Whether there is text the alignment commands act on (NEW-15): a paragraph or line of
-    /// page text being edited, words selected with the read tool, or lines of page text
-    /// selected with the arrow. What can't be aligned among them is said when they act.
-    pub fn aligns_text(&self) -> bool {
+    /// What the alignment commands act on (NEW-15): page text (a paragraph or line being
+    /// edited, words selected with the read tool, lines selected with the arrow), new text
+    /// being typed, a text box being typed in or selected, or a form field being typed in,
+    /// which its form aligns. What can't be aligned among page text is said when they act.
+    pub fn aligns_text(&self) -> Aligns {
         let held = self.selection.objects().map_or(&[][..], |(_, held)| held);
         let lines = held.iter().any(|h| h.kind == ObjKind::Text);
-        self.editing_line() || self.selection.words().is_some() || lines
+        let text_box = |a: &Annot| a.kind == AnnotKind::TextBox && !a.locked();
+        if self.editing_line() {
+            Aligns::PageText
+        } else if self.adding.is_some() {
+            Aligns::NewText
+        } else if self.writing.as_ref().is_some_and(|w| !w.note) {
+            Aligns::TextBox
+        } else if self.form.focused_field().is_some() {
+            Aligns::Field
+        } else if self.selection.words().is_some() || lines {
+            Aligns::PageText
+        } else if self.selected_annot().is_some_and(text_box) {
+            Aligns::TextBox
+        } else {
+            Aligns::Nothing
+        }
+    }
+
+    /// Whether the alignment commands act on text being typed that they leave open, as they
+    /// leave a paragraph being edited: new text, or a text box being typed in.
+    pub fn aligns_typing(&self) -> bool {
+        match self.aligns_text() {
+            Aligns::NewText => true,
+            Aligns::TextBox => self.writing.as_ref().is_some_and(|w| !w.note),
+            _ => false,
+        }
     }
 
     /// How the text the alignment commands act on is aligned, when it is all aligned alike
-    /// (NEW-15): the paragraph being edited, else the paragraphs of the other text they act
-    /// on as far as their pages' blocks have been read ([`Self::read_blocks`]), those that
-    /// can't be aligned left out.
+    /// (NEW-15): the paragraph being edited; new text's lines; a text box's; else the
+    /// paragraphs of the other text they act on as far as their pages' blocks have been read
+    /// ([`Self::read_blocks`]), those that can't be aligned left out. A field shows none.
     pub fn text_align(&self) -> Option<TextAlign> {
         if let Some(pe) = self.para.as_ref() {
             return Some(pe.align);
+        }
+        match self.aligns_text() {
+            Aligns::NewText => return self.adding.as_ref().map(|a| a.align),
+            Aligns::TextBox => {
+                return match self.writing.as_ref().filter(|w| !w.note) {
+                    Some(w) => Some(w.align),
+                    None => self.selected_annot()?.text_style.map(|s| s.align),
+                };
+            }
+            Aligns::Field => return None,
+            Aligns::PageText | Aligns::Nothing => {}
         }
         let mut aligns = (self.lines_to_align().into_iter()).filter_map(|(page, id)| {
             let o = self.objs.get(&page)?.get(id)?;
@@ -566,15 +621,57 @@ impl Editor {
     /// document with the typing. A line edited alone opens its paragraph so aligned, what
     /// was typed kept first and paragraph editing left as it is (batch 49's Q2). The
     /// paragraphs of the words selected with the read tool, or of the lines selected with
-    /// the arrow, are aligned as one step, staying selected. Returns what to say of text left
-    /// as it was: lines on their own, in a table or turned, and what [`Chosen`] leaves.
+    /// the arrow, are aligned as one step, staying selected. New text being typed aligns its
+    /// lines among themselves, its typing open and its own Undo taking the change back, and
+    /// the next new text takes the alignment; a text box being typed in or selected is
+    /// aligned as one step (a new one as the Text box tool's look, which it is kept with).
+    /// Neither can be justified, nor a field aligned: those commands are greyed. Returns
+    /// what to say of text left as it was: lines on their own, in a table or turned, and
+    /// what [`Chosen`] leaves.
     pub fn align_text(&mut self, pdf: &Pdf, align: TextAlign) -> Option<String> {
+        // Word's rule: the alignment the text has, pressed again, gives left.
+        let word = |was: TextAlign| if was == align { TextAlign::Left } else { align };
         if let Some(pe) = self.para.as_mut() {
-            pe.align = match align {
-                a if a == pe.align => TextAlign::Left,
-                a => a,
-            };
+            pe.align = word(pe.align);
             pe.refocus = true;
+            return None;
+        }
+        let kind = self.aligns_text();
+        if matches!(kind, Aligns::NewText | Aligns::TextBox | Aligns::Field)
+            && align == TextAlign::Justified
+        {
+            return None;
+        }
+        if let Some(a) = self.adding.as_mut().filter(|_| kind == Aligns::NewText) {
+            a.align = word(a.align);
+            a.refocus = true;
+            self.talign = a.align;
+            return None;
+        }
+        if kind == Aligns::TextBox {
+            if let Some(w) = self.writing.as_mut().filter(|w| !w.note) {
+                w.align = word(w.align);
+                w.refocus = true;
+                match w.id {
+                    None => self.box_style.align = w.align,
+                    Some(id) => {
+                        let (page, to) = (w.page, w.align);
+                        let a = self.annots(pdf, page).iter().find(|a| a.id == id).cloned();
+                        if let Some(a) = a {
+                            self.align_box(&a, to);
+                        }
+                    }
+                }
+                return None;
+            }
+            let (page, id) = self.selection.annot()?;
+            let found = self.annots(pdf, page).iter().find(|a| a.id == id);
+            let a = found.cloned()?;
+            let to = word(a.text_style?.align);
+            self.align_box(&a, to);
+            return None;
+        }
+        if kind == Aligns::Field {
             return None;
         }
         if let Some((page, id)) = self.line_edit.as_ref().map(|le| (le.page, le.id)) {
@@ -621,6 +718,22 @@ impl Editor {
         let aligning = Action::AlignParagraphs(pages, align, left);
         self.actions.push(aligning);
         None
+    }
+
+    /// Align text box `a` as `align` says, as one change: changes to it in the inspector not
+    /// yet kept go with it.
+    fn align_box(&mut self, a: &Annot, align: TextAlign) {
+        let mut e = match &self.annot_insp {
+            Some((id, e)) if *id == a.id => e.clone(),
+            _ => AnnotEdit::of(a),
+        };
+        if self.annot_insp.as_ref().is_some_and(|(id, _)| *id == a.id) {
+            self.annot_insp = None;
+        }
+        if let Some(s) = e.text.as_mut() {
+            s.align = align;
+            self.actions.push(Action::SetAnnot(a.page, a.id, e));
+        }
     }
 
     /// The block of `page` line `id` is in, when it can be aligned as a paragraph; else

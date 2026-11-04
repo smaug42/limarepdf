@@ -241,7 +241,7 @@ impl Tab {
     ) {
         let ctx = ui.ctx().clone();
         let settable = p.crop.contains(&page);
-        let live = self.crop_drag.is_some() || self.forms.crop.dragged;
+        let live = self.crop_drag.is_some();
         let own = self
             .crop_view
             .as_ref()

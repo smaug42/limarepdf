@@ -11,7 +11,7 @@ later.
 ## Add page numbers, headers and footers
 
 1. Select the pages to number (or none, for every page), and choose **Insert > Header and footer** (or ☰ >
-   Document > Headers, footers, Bates…). **Headers, footers, Bates** opens in the inspector.
+   Insert > Headers, footers, Bates…). **Headers, footers, Bates** opens in the inspector.
 2. Type in the header and footer boxes: each has a left, a centre and a right part. The footer's centre starts as
    `Page {page} of {pages}`, which gives "Page 3 of 12".
 3. Check the pages: they show the headers and footers as you type.
@@ -45,7 +45,7 @@ Put `{bates}` where the number goes; without it, the number goes at the bottom r
 
 ## Add a watermark
 
-1. Select the pages (or none, for every page), and choose **Insert > Watermark** (or ☰ > Document > Watermark…).
+1. Select the pages (or none, for every page), and choose **Insert > Watermark** (or ☰ > Insert > Watermark…).
    **Watermark** opens in the inspector.
 2. Choose **Text** and type it (it starts as DRAFT), or **Picture** and choose a PNG, JPEG or TIFF file with
    **Choose…**.
@@ -97,7 +97,7 @@ added, the pages show it as written.
 A stamp is a word in a coloured frame, such as APPROVED or DRAFT, or a picture such as a company seal, put on one
 page as an annotation.
 
-1. Pick **Review > Stamp** ("Add a stamp" in the command palette).
+1. Pick **Review > Stamp** ("Add a stamp" in the command search).
 2. In the inspector, pick a stamp.
 3. Click on the page to put it down at its own size, centred on the click, or drag a box to size it (it keeps its
    shape inside the box).
@@ -110,7 +110,7 @@ The inspector offers:
 - **Ready-made stamps:** Approved, Not approved, Draft, Final, Confidential, For comment and Void, each a coloured
   frame with the word in capitals.
 - **Add my name and the date:** on by default; adds a small line under the word with your name and today's date.
-  The Name box under it is the same name as ☰ > Edit > Your name for comments, so changing either changes both. The
+  The Name box under it is the same name as ☰ > Review > Your name for comments, so changing either changes both. The
   date is today's on your computer, as headers and footers use. The name and date are fixed when the stamp is put
   down. The choice is remembered.
 - **Your own wording:** pick green, red or blue, type the wording in the box under the ready-made stamps, then click

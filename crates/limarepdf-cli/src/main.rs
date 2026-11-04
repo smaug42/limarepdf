@@ -13,8 +13,8 @@ use limarepdf_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
     ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, OpenLayout, OpenPanel, Pdf,
-    Restrictions, ScanMode, ScanOptions, ScanResult, SplitBy, Stamp, StampColor, StampKind,
-    StampPlace, ViewPrefs, Watermark,
+    PictureQuality, ReduceOptions, Restrictions, ScanMode, ScanOptions, ScanResult, SplitBy, Stamp,
+    StampColor, StampKind, StampPlace, ViewPrefs, Watermark,
 };
 use limarepdf_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
 use limarepdf_core::{
@@ -178,6 +178,21 @@ enum Cmd {
         /// Do not remove specks from black-and-white pages
         #[arg(long)]
         no_despeckle: bool,
+    },
+    /// Make the file smaller: pictures above the quality's resolution are scaled down and
+    /// saved again (Word's Compress Pictures choices); text, fonts, forms and comments stay
+    /// as they are. Every save is compact; this makes the pictures smaller too
+    Reduce {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long, default_value = "all")]
+        pages: String,
+        #[arg(long, value_enum, default_value = "print")]
+        quality: QualityArg,
+        /// JPEG quality instead of the quality's own (HD 90, Print 85, Web 80, Email 75),
+        /// 1 to 100
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+        jpeg_quality: Option<u8>,
     },
     /// Recognise text on pages that have none (scans) and add it as an invisible,
     /// searchable layer. Latin script only
@@ -537,7 +552,11 @@ enum Cmd {
         cmd: ViewPrefsCmd,
     },
     /// List the printers; the default is marked
-    Printers,
+    Printers {
+        /// Also list each printer's paper sizes, its default marked
+        #[arg(long)]
+        paper: bool,
+    },
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
     Print {
         input: PathBuf,
@@ -548,10 +567,44 @@ enum Cmd {
         pages: String,
         #[arg(long, default_value_t = 1)]
         copies: u32,
-        #[arg(long, value_enum, default_value_t = SidesArg::One)]
-        sides: SidesArg,
-        /// Send pages rendered by LimarePDF (300 dpi images) instead of the PDF itself. Windows
-        /// always prints pages rendered by LimarePDF
+        /// One side or both; default: one
+        #[arg(long, value_enum)]
+        sides: Option<SidesArg>,
+        /// Paper size from `limarepdf-cli printers --paper`, such as A4 or Letter; default: the
+        /// printer's
+        #[arg(long)]
+        paper: Option<String>,
+        /// Which way the pages go on the paper: auto (the default) turns pages wider than they
+        /// are tall, or with several pages a sheet holds each sheet the way they print largest
+        #[arg(long, value_enum)]
+        orientation: Option<OrientationArg>,
+        /// How big the pages are printed: shrink (the default: pages larger than the
+        /// printable area only), fit (to the printable area), actual, or a percentage from 1
+        /// to 400. With several pages a sheet, each is fitted to its place instead
+        #[arg(long, value_parser = parse_scale)]
+        scale: Option<print::Scale>,
+        /// How many pages go on each sheet: 1, 2, 4, 6, 9 or 16
+        #[arg(long, default_value_t = 1, value_parser = parse_pages_per_sheet)]
+        pages_per_sheet: u8,
+        /// The order the pages fill a sheet in, with several pages a sheet; default: across
+        #[arg(long, value_enum)]
+        page_order: Option<PageOrderArg>,
+        /// Draw a thin line around each page, with several pages a sheet
+        #[arg(long)]
+        borders: bool,
+        /// Print as a booklet: two pages a side, in the order that reads straight through once
+        /// the sheets are folded in half and stacked, both sides flipped on the short edge
+        #[arg(long)]
+        booklet: bool,
+        /// The edge a booklet is bound along; default: left
+        #[arg(long, value_enum)]
+        binding: Option<BindingArg>,
+        /// Which sides of a booklet's sheets print: both (the default), or for a printer that
+        /// prints one side, fronts, then backs once the sheets are put back in
+        #[arg(long, value_enum)]
+        booklet_sides: Option<BookletSidesArg>,
+        /// Send sheets rendered by LimarePDF (300 dpi images) instead of a PDF of them. Windows
+        /// always prints sheets rendered by LimarePDF
         #[arg(long)]
         as_image: bool,
         #[arg(long)]
@@ -573,6 +626,19 @@ enum Cmd {
         #[arg(long)]
         out_dir: PathBuf,
         /// Replace files already at the images' names; without it nothing is written then
+        #[arg(long)]
+        overwrite: bool,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Save every picture the pages show to out-dir/<stem>-page-<page>-image-<n>.jpg (or
+    /// .png): a JPEG upright on the page as it is, any other picture, or one turned or
+    /// flipped, a lossless PNG as it shows. A picture shown on several pages is saved once
+    SaveImages {
+        input: PathBuf,
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Replace files already at the pictures' names; without it nothing is written then
         #[arg(long)]
         overwrite: bool,
         #[arg(long)]
@@ -712,6 +778,32 @@ fn parse_open_page(s: &str) -> std::result::Result<OpenPageArg, String> {
     }
 }
 
+/// Where `bookmarks add` and `bookmarks move` put a bookmark.
+#[derive(Args)]
+#[group(multiple = false)]
+struct PlaceArgs {
+    /// Put it just before bookmark N (from `list`), at its level
+    #[arg(long, value_name = "N")]
+    before: Option<usize>,
+    /// Put it just after bookmark N (from `list`) and the bookmarks inside it, at its level
+    #[arg(long, value_name = "N")]
+    after: Option<usize>,
+    /// Put it last among the bookmarks inside bookmark N
+    #[arg(long, value_name = "N")]
+    under: Option<usize>,
+}
+
+impl PlaceArgs {
+    fn place(&self) -> Result<BookmarkPlace> {
+        Ok(match (self.before, self.after, self.under) {
+            (Some(n), _, _) => BookmarkPlace::Before(bookmark_index(n)?),
+            (_, Some(n), _) => BookmarkPlace::After(bookmark_index(n)?),
+            (_, _, Some(n)) => BookmarkPlace::Under(bookmark_index(n)?),
+            _ => BookmarkPlace::End,
+        })
+    }
+}
+
 #[derive(Subcommand)]
 enum BookmarksCmd {
     /// List the bookmarks, numbered, indented by level, with the page each goes to
@@ -720,7 +812,8 @@ enum BookmarksCmd {
         #[arg(long)]
         password: Option<String>,
     },
-    /// Add a bookmark to a page. Without --after or --under it goes last at the top level
+    /// Add a bookmark to a page. Without --before, --after or --under it goes last at the
+    /// top level
     Add {
         #[command(flatten)]
         io: Io,
@@ -729,12 +822,17 @@ enum BookmarksCmd {
         /// The page it goes to (1-based)
         #[arg(long)]
         page: usize,
-        /// Put it just after bookmark N (from `list`), at its level
-        #[arg(long, value_name = "N", conflicts_with = "under")]
-        after: Option<usize>,
-        /// Put it last among bookmark N's children
-        #[arg(long, value_name = "N")]
-        under: Option<usize>,
+        #[command(flatten)]
+        place: PlaceArgs,
+    },
+    /// Move bookmark N (from `list`), with the bookmarks inside it. Without --before,
+    /// --after or --under it goes last at the top level. What it goes to stays as it was
+    Move {
+        #[command(flatten)]
+        io: Io,
+        number: usize,
+        #[command(flatten)]
+        place: PlaceArgs,
     },
     /// Give bookmark N (from `list`) a new title
     Rename {
@@ -762,6 +860,69 @@ enum SidesArg {
 }
 
 #[derive(Copy, Clone, ValueEnum)]
+enum OrientationArg {
+    Auto,
+    Portrait,
+    Landscape,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum PageOrderArg {
+    /// Left to right, top to bottom
+    Across,
+    /// Right to left, top to bottom
+    AcrossFromRight,
+    /// Top to bottom, left to right
+    Down,
+    /// Top to bottom, right to left
+    DownFromRight,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum BindingArg {
+    /// Bound on the left, read left to right
+    Left,
+    /// Bound on the right, read right to left
+    Right,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum BookletSidesArg {
+    /// Both sides, on a printer that prints both
+    Both,
+    /// The fronts alone
+    Fronts,
+    /// The backs alone, on the sheets whose fronts are printed
+    Backs,
+}
+
+fn parse_pages_per_sheet(s: &str) -> std::result::Result<u8, String> {
+    match s.trim().parse::<u8>() {
+        Ok(n) if print::PAGES_PER_SHEET.contains(&n) => Ok(n),
+        _ => {
+            let [rest @ .., last] = print::PAGES_PER_SHEET.map(|n| n.to_string());
+            Err(format!("expected {} or {last}", rest.join(", ")))
+        }
+    }
+}
+
+fn parse_scale(s: &str) -> std::result::Result<print::Scale, String> {
+    let s = s.trim();
+    match s {
+        "shrink" => Ok(print::Scale::ShrinkOversized),
+        "fit" => Ok(print::Scale::Fit),
+        "actual" => Ok(print::Scale::ActualSize),
+        _ => match s.strip_suffix('%').unwrap_or(s).trim().parse::<u16>() {
+            Ok(p) if (1..=print::MAX_PERCENT).contains(&p) => Ok(print::Scale::Custom(p)),
+            _ => Err(format!(
+                "expected shrink, fit, actual, or a percentage from 1 to {}",
+                print::MAX_PERCENT
+            )),
+        },
+    }
+}
+
+#[derive(Copy, Clone, ValueEnum)]
 enum CipherArg {
     Rc4_40,
     Rc4_128,
@@ -776,6 +937,32 @@ enum ScanModeArg {
     Bw,
     Gray,
     Color,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum QualityArg {
+    /// Pictures as they are: only the compact saving every save does
+    HighFidelity,
+    /// 330 pixels per inch
+    Hd,
+    /// 220 pixels per inch
+    Print,
+    /// 150 pixels per inch
+    Web,
+    /// 96 pixels per inch
+    Email,
+}
+
+impl From<QualityArg> for PictureQuality {
+    fn from(q: QualityArg) -> Self {
+        match q {
+            QualityArg::HighFidelity => PictureQuality::HighFidelity,
+            QualityArg::Hd => PictureQuality::Hd,
+            QualityArg::Print => PictureQuality::Print,
+            QualityArg::Web => PictureQuality::Web,
+            QualityArg::Email => PictureQuality::Email,
+        }
+    }
 }
 
 fn kb(bytes: usize) -> String {
@@ -3021,6 +3208,52 @@ fn run(cmd: Cmd) -> Result<()> {
             out!("images: {} -> {}", kb(before_all), kb(after_all));
             Ok(())
         })?,
+        Cmd::Reduce {
+            io,
+            pages,
+            quality,
+            jpeg_quality,
+        } => {
+            let (mut p, original) = open_io(&io)?;
+            // Saving a signed document adds the changes after what was signed, so it can
+            // only grow; written whole, its signatures would break.
+            if p.signature_count() > 0 {
+                bail!(
+                    "Signed documents keep exactly what was signed, so they can't be made smaller."
+                );
+            }
+            let idx = parse_page_range(&pages, p.page_count())?;
+            let quality = PictureQuality::from(quality);
+            let r = p.reduce_pictures(
+                &idx,
+                &ReduceOptions {
+                    quality,
+                    jpeg_quality,
+                },
+            )?;
+            if quality.ppi().is_some() {
+                out!(
+                    "pictures made smaller: {}, {} -> {}",
+                    r.pictures,
+                    kb(r.before),
+                    kb(r.after)
+                );
+                for (why, n) in &r.kept {
+                    out!("kept as they are: {n}, {}", why.describe());
+                }
+            }
+            save_edited(&io, &mut p, &original, false)?;
+            let now = std::fs::metadata(&io.output).map(|m| m.len() as usize);
+            match now {
+                Ok(now) => out!(
+                    "wrote {}: {} -> {}",
+                    io.output.display(),
+                    kb(original.len()),
+                    kb(now)
+                ),
+                Err(_) => out!("wrote {}", io.output.display()),
+            }
+        }
         Cmd::Ocr { io, pages } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;
             let ocr = Ocr::bundled()?;
@@ -3793,18 +4026,17 @@ fn run(cmd: Cmd) -> Result<()> {
                 io,
                 title,
                 page,
-                after,
-                under,
+                place,
             } => run_edit(&io, |p| {
-                let place = match (after, under) {
-                    (Some(n), _) => BookmarkPlace::After(bookmark_index(n)?),
-                    (_, Some(n)) => BookmarkPlace::Under(bookmark_index(n)?),
-                    _ => BookmarkPlace::End,
-                };
+                let place = place.place()?;
                 if page == 0 {
                     bail!("pages are numbered from 1");
                 }
                 p.add_bookmark(&title, page - 1, place).map(|_| ())
+            })?,
+            BookmarksCmd::Move { io, number, place } => run_edit(&io, |p| {
+                let place = place.place()?;
+                p.move_bookmark(bookmark_index(number)?, place).map(|_| ())
             })?,
             BookmarksCmd::Rename { io, number, title } => {
                 run_edit(&io, |p| p.rename_bookmark(bookmark_index(number)?, &title))?
@@ -3857,13 +4089,37 @@ fn run(cmd: Cmd) -> Result<()> {
                 out!("flattened {n} annotation(s); wrote {}", io.output.display());
             }
         },
-        Cmd::Printers => {
+        Cmd::Printers { paper } => {
             let list = print::printers()?;
             if list.is_empty() {
                 out!("no printers are set up");
             }
             for p in list {
                 out!("{}{}", p.name, if p.default { " (default)" } else { "" });
+                if !paper {
+                    continue;
+                }
+                let sizes = match print::papers(&p.name) {
+                    Ok(sizes) => sizes,
+                    Err(e) => {
+                        eprintln!(
+                            "warning: couldn't read the paper sizes of {}: {e:#}",
+                            p.name
+                        );
+                        continue;
+                    }
+                };
+                for (i, s) in sizes.papers.iter().enumerate() {
+                    let default = if sizes.default == Some(i) {
+                        ", default"
+                    } else {
+                        ""
+                    };
+                    out!("  {}{default}", s.label);
+                }
+                if sizes.papers.iter().all(|s| s.margins.is_none()) {
+                    out!("  (the printer doesn't say how near the edges it can print)");
+                }
             }
         }
         Cmd::Print {
@@ -3872,9 +4128,63 @@ fn run(cmd: Cmd) -> Result<()> {
             pages,
             copies,
             sides,
+            paper,
+            orientation,
+            scale,
+            pages_per_sheet,
+            page_order,
+            borders,
+            booklet,
+            binding,
+            booklet_sides,
             as_image,
             password,
         } => {
+            let own = [
+                (binding.is_some(), "--binding"),
+                (booklet_sides.is_some(), "--booklet-sides"),
+            ];
+            if let Some((_, flag)) = own.iter().find(|(given, _)| *given && !booklet) {
+                bail!("{flag} is for a booklet: add --booklet");
+            }
+            let set = [
+                (pages_per_sheet > 1, "--pages-per-sheet"),
+                (page_order.is_some(), "--page-order"),
+                (borders, "--borders"),
+                (scale.is_some(), "--scale"),
+                (orientation.is_some(), "--orientation"),
+            ];
+            if let Some((_, flag)) = set.iter().find(|(given, _)| *given && booklet) {
+                bail!(
+                    "{flag} doesn't go with --booklet: a booklet sets this itself, two pages a \
+                     side in folding order, each fitted to its half of the sheet"
+                );
+            }
+            if booklet && sides.is_some() {
+                bail!(
+                    "--sides doesn't go with --booklet: a booklet prints both sides flipped on \
+                     the short edge. For a printer that prints one side, print with \
+                     --booklet-sides fronts, put the sheets back in, then --booklet-sides backs"
+                );
+            }
+            if pages_per_sheet > 1 && scale.is_some() {
+                bail!(
+                    "--scale is for one page a sheet: with --pages-per-sheet {pages_per_sheet} \
+                     each page is fitted to its place on the sheet"
+                );
+            }
+            let several = [
+                (page_order.is_some(), "--page-order"),
+                (borders, "--borders"),
+            ];
+            if let Some((_, flag)) = several.iter().find(|(given, _)| *given) {
+                if pages_per_sheet == 1 {
+                    bail!(
+                        "{flag} is for more than one page a sheet: add --pages-per-sheet with \
+                         2, 4, 6, 9 or 16"
+                    );
+                }
+            }
             let mut p = open(&input, &password)?;
             let idx = parse_page_range(&pages, p.page_count())?;
             // The app asks; here the fields are named instead.
@@ -3890,10 +4200,67 @@ fn run(cmd: Cmd) -> Result<()> {
                     limarepdf_core::quoted_list(&blank)
                 );
             }
+            let paper = match &paper {
+                Some(name) => print::paper_named(printer.as_deref(), name)?,
+                None => print::printer_paper(printer.as_deref()).context(
+                    "couldn't find out which paper the printer takes; name one with --paper",
+                )?,
+            };
+            let setup = print::PageSetup {
+                paper,
+                orientation: match orientation.unwrap_or(OrientationArg::Auto) {
+                    OrientationArg::Auto => print::Orientation::Automatic,
+                    OrientationArg::Portrait => print::Orientation::Portrait,
+                    OrientationArg::Landscape => print::Orientation::Landscape,
+                },
+                scale: scale.unwrap_or_default(),
+                per_sheet: print::PerSheet {
+                    pages: pages_per_sheet,
+                    order: match page_order.unwrap_or(PageOrderArg::Across) {
+                        PageOrderArg::Across => print::PageOrder::Across,
+                        PageOrderArg::AcrossFromRight => print::PageOrder::AcrossFromRight,
+                        PageOrderArg::Down => print::PageOrder::Down,
+                        PageOrderArg::DownFromRight => print::PageOrder::DownFromRight,
+                    },
+                    borders,
+                },
+                booklet: booklet.then(|| print::Booklet {
+                    binding: match binding.unwrap_or(BindingArg::Left) {
+                        BindingArg::Left => print::Binding::Left,
+                        BindingArg::Right => print::Binding::Right,
+                    },
+                    sides: match booklet_sides.unwrap_or(BookletSidesArg::Both) {
+                        BookletSidesArg::Both => print::BookletSides::Both,
+                        BookletSidesArg::Fronts => print::BookletSides::Fronts,
+                        BookletSidesArg::Backs => print::BookletSides::Backs,
+                    },
+                }),
+            };
+            let sizes = p.page_sizes();
+            let sizes: Vec<(f32, f32)> = idx.iter().map(|&i| sizes[i]).collect();
+            let plan = print::sheets(&sizes, &setup);
+            let placed = plan.iter().flat_map(|s| &s.pages);
+            let mut cut: Vec<usize> = placed
+                .filter(|(_, at)| at.cut)
+                .map(|(i, _)| idx[*i])
+                .collect();
+            cut.sort_unstable();
+            if !cut.is_empty() {
+                let (pages, reach, its) = match cut.len() {
+                    1 => ("page", "reaches", "its"),
+                    _ => ("pages", "reach", "their"),
+                };
+                eprintln!(
+                    "warning: at this scale {pages} {} {reach} past the printable area of {}, \
+                     so {its} edges won't print",
+                    format_page_range(&cut),
+                    setup.paper.label
+                );
+            }
             let opts = print::PrintOptions {
                 printer,
                 copies,
-                sides: match sides {
+                sides: match sides.unwrap_or(SidesArg::One) {
                     SidesArg::One => print::Sides::One,
                     SidesArg::LongEdge => print::Sides::LongEdge,
                     SidesArg::ShortEdge => print::Sides::ShortEdge,
@@ -3903,6 +4270,11 @@ fn run(cmd: Cmd) -> Result<()> {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default(),
+                paper: Some(setup.paper),
+                orientation: setup.orientation,
+                scale: setup.scale,
+                per_sheet: setup.per_sheet,
+                booklet: setup.booklet,
             };
             out!("{}", p.print(&idx, &opts)?);
         }
@@ -3969,6 +4341,38 @@ fn run(cmd: Cmd) -> Result<()> {
                     "warning: {these} empty in the images, because LimarePDF can't draw {their}: {}",
                     limarepdf_core::quoted_list(&blank)
                 );
+            }
+        }
+        Cmd::SaveImages {
+            input,
+            out_dir,
+            overwrite,
+            password,
+        } => {
+            let pdf = open(&input, &password)?;
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string();
+            let names = pdf.picture_names(&stem);
+            if names.is_empty() {
+                out!("no pictures to save");
+                return Ok(());
+            }
+            let files: Vec<PathBuf> = names.iter().map(|n| out_dir.join(n)).collect();
+            not_taken(&files, overwrite)?;
+            let done = saved(pdf.save_all_pictures(&out_dir, &stem))?;
+            out!(
+                "saved {} picture(s) to {}",
+                done.written.len(),
+                out_dir.display()
+            );
+            for (name, why) in &done.failed {
+                eprintln!("warning: {name} not saved: {why}");
+            }
+            if !done.failed.is_empty() {
+                bail!("{} picture(s) couldn't be saved", done.failed.len());
             }
         }
     }

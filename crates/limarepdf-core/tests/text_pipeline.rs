@@ -10,9 +10,10 @@ mod common;
 
 use common::saved::tools;
 use limarepdf_core::{
-    add_font_files, bundled_face, fallbacks, sign_document, typeface, BoxSetting, FieldValue,
-    FontChoice, HeaderFooter, IdStore, InkColor, NewId, ObjectKind, PageObject, Pdf, SignPlace,
-    SignRequest, Stamp, StampColor, StampPlace, TextEdit, TextStyle, UnlockedId, Watermark,
+    add_font_files, bundled_face, fallbacks, sign_document, typeface, Align, BoxSetting,
+    FieldValue, FontChoice, HeaderFooter, IdStore, InkColor, NewId, ObjectKind, PageObject,
+    PartFont, Pdf, SignPlace, SignRequest, Stamp, StampColor, StampPlace, TextEdit, TextPart,
+    TextStyle, UnlockedId, Watermark,
 };
 use lopdf::{dictionary, Object, Stream};
 use std::sync::OnceLock;
@@ -437,6 +438,185 @@ fn a_box_s_lines_as_typed_are_its_lines_as_written() {
         assert!(size < 12.0, "{text}: {size} {lines:?}");
         p.flatten_form(None).unwrap();
         compare(&format!("a field: {text}"), text, &set, &mut p);
+    }
+}
+
+/// A box's lines as typed start where they are written (PB-59): a centred text box's, and a
+/// right-aligned multi-line field's in its own font and in the fonts that replace it
+/// ([`BoxSetting::placed`]), each line read back from the page once the box is flattened,
+/// in from the box's side by its border and padding.
+#[test]
+fn a_box_s_lines_as_typed_start_where_they_are_written() {
+    installed("Limare Han Test");
+    let latin = "The walrus and the carpenter were walking close at hand; they wept like \
+                 anything to see such quantities of sand.\nIf this were only cleared away, \
+                 they said, it would be grand!";
+    let han = "The walrus 漢字 and the carpenter 日本語 were walking close at hand 한국어 \
+               and they wept like anything to see such quantities of sand";
+    // Each line's start as `set` places it, against the lines read back from `p`'s first
+    // page, the box's left side at `left`.
+    let compare = |what: &str, text: &str, set: &BoxSetting, p: &mut Pdf, left: f32| {
+        let (_, placed) = set.placed(text, None);
+        let typed: Vec<(String, f32)> = (placed.into_iter())
+            .map(|(r, x)| (plain(&text[r]), left + set.margin() + x))
+            .filter(|(t, _)| !t.is_empty())
+            .collect();
+        // A flattened box's text is in a form XObject: its words, line by line.
+        let mut written: Vec<(String, f32)> = Vec::new();
+        let mut line = None;
+        for w in reopened(p).page_words(0).unwrap() {
+            match written.last_mut() {
+                Some((t, _)) if line == Some(w.line) => *t = format!("{t} {}", w.text),
+                _ => written.push((w.text.clone(), w.bbox[0])),
+            }
+            line = Some(w.line);
+        }
+        let written: Vec<(String, f32)> =
+            (written.into_iter()).map(|(t, x)| (plain(&t), x)).collect();
+        assert!(typed.len() > 2, "{what}: {typed:?}");
+        assert_eq!(typed.len(), written.len(), "{what}: {typed:?} {written:?}");
+        for ((t, x), (w, at)) in typed.iter().zip(&written) {
+            assert_eq!(t, w, "{what}");
+            let off = x - at;
+            assert!(off.abs() < 0.05, "{what}: {t:?} off by {off}");
+        }
+    };
+    for text in [latin, han] {
+        let mut p = page();
+        let style = TextStyle {
+            border: 1.5,
+            align: Align::Centre,
+            ..TextStyle::default()
+        };
+        (p.add_text_box(0, [20.0, 20.0, 220.0, 60.0], text, &style, "Sam")).unwrap();
+        p.flatten_annotations(None).unwrap();
+        let set = BoxSetting::text_box(200.0, 1.5, 12.0).aligned(Align::Centre);
+        compare(&format!("a text box: {text}"), text, &set, &mut p, 20.0);
+
+        let mut p = page();
+        box_form(&mut p);
+        let field = p.form_fields()[0].widgets[0].id;
+        p.doc.get_dictionary_mut(field).unwrap().set("Q", 2);
+        assert_eq!(p.form_fields()[0].widgets[0].align, Align::Right);
+        p.set_field("one", FieldValue::Text(text.into())).unwrap();
+        let set = p.field_setting("one", field).expect("the field's setting");
+        p.flatten_form(None).unwrap();
+        compare(&format!("a field: {text}"), text, &set, &mut p, 20.0);
+    }
+}
+
+/// A part of new text in `font` at `size`.
+fn part(text: &str, font: FontChoice, size: f32) -> TextPart {
+    TextPart {
+        text: text.into(),
+        font: PartFont::Choice(font),
+        size,
+        color: [0.0; 3],
+        rise: 0.0,
+        from: None,
+        origins: Vec::new(),
+    }
+}
+
+/// Where each line of text on `p`'s first page reaches along it: its first character's start
+/// and its last's end, as the page reads them.
+fn reaches(p: &mut Pdf) -> Vec<(f32, f32)> {
+    let objs = reopened(p).page_objects(0).unwrap();
+    (objs.iter())
+        .filter(|o| o.kind == ObjectKind::Text)
+        .map(|o| {
+            let x = o.baseline.unwrap().0;
+            (x + o.stops[0], x + o.stops.last().unwrap())
+        })
+        .collect()
+}
+
+/// New text of several lines is aligned among its lines as they are written (NEW-15's stage
+/// 3): the widest starting where the text was put, the others starting there too, centred
+/// under it or ending where it ends, each line measured as written, here in parts of two
+/// fonts and sizes and with words that fall back to another font. Justified is written as
+/// left: each line ends where Enter ended it.
+#[test]
+fn new_text_s_lines_are_aligned_among_themselves_as_written() {
+    installed("Limare Han Test");
+    let (sans, serif) = (FontChoice::default(), installed("Source Serif 4"));
+    let first = vec![
+        part("The walrus and the ", sans, 12.0),
+        part("carpenter", serif, 14.0),
+    ];
+    let (second, third) = ("were walking 漢字", "close at hand");
+    let lines = vec![
+        (0.0, first, Vec::new()),
+        (17.0, vec![part(second, sans, 12.0)], Vec::new()),
+        (34.0, vec![part(third, sans, 12.0)], Vec::new()),
+    ];
+    let x = 100.0;
+    for align in [Align::Left, Align::Centre, Align::Right, Align::Justified] {
+        let mut p = page();
+        p.add_text_lines(0, (x, 80.0), &lines, align).unwrap();
+        let got = reaches(&mut p);
+        assert_eq!(got.len(), 3, "{align:?}: {got:?}");
+        let widest = got.iter().map(|(a, b)| b - a).fold(0.0, f32::max);
+        let first = got.iter().find(|(a, b)| b - a == widest).unwrap();
+        assert!((first.0 - x).abs() < 0.05, "{align:?}: {got:?}");
+        for &(a, b) in &got {
+            let off = match align {
+                Align::Centre => (a + b) / 2.0 - (x + widest / 2.0),
+                Align::Right => b - (x + widest),
+                Align::Left | Align::Justified => a - x,
+            };
+            assert!(off.abs() < 0.05, "{align:?}: {got:?}");
+        }
+        let read = reopened(&mut p).page_text(0);
+        assert_eq!(plain(&read), plain(&concat(&lines)));
+    }
+}
+
+/// The text of new text's `lines`, a line apiece.
+fn concat(lines: &[(f32, Vec<TextPart>, Vec<limarepdf_core::Decorated>)]) -> String {
+    (lines.iter())
+        .map(|(_, parts, _)| parts.iter().map(|p| p.text.as_str()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// New text aligned among its lines reads so in Poppler too: `pdftotext -bbox-layout`'s
+/// lines centred under the widest, or ending where it ends. Opt-in: `cargo test -p
+/// limarepdf-core --test text_pipeline -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_aligned_new_text_with_poppler() {
+    let sans = FontChoice::default();
+    let texts = [
+        "The walrus and the carpenter",
+        "were walking",
+        "close at hand",
+    ];
+    let lines: Vec<_> = (texts.iter().enumerate())
+        .map(|(i, t)| (14.4 * i as f32, vec![part(t, sans, 12.0)], Vec::new()))
+        .collect();
+    let num = |line: &str, key: &str| -> f32 {
+        let at = line.find(&format!("{key}=\"")).unwrap() + key.len() + 2;
+        line[at..].split('"').next().unwrap().parse().unwrap()
+    };
+    for align in [Align::Centre, Align::Right] {
+        let mut p = page();
+        p.add_text_lines(0, (100.0, 80.0), &lines, align).unwrap();
+        let args = ["-bbox-layout", "{}", "-"];
+        let html = tools::run("pdftotext", &args, &p.to_bytes().unwrap());
+        let got: Vec<(f32, f32)> = (html.lines())
+            .filter(|l| l.trim_start().starts_with("<line "))
+            .map(|l| (num(l, "xMin"), num(l, "xMax")))
+            .collect();
+        assert_eq!(got.len(), 3, "{align:?}: {html}");
+        let widest = got.iter().map(|(a, b)| b - a).fold(0.0, f32::max);
+        for &(a, b) in &got {
+            let off = match align {
+                Align::Centre => (a + b) / 2.0 - (100.0 + widest / 2.0),
+                _ => b - (100.0 + widest),
+            };
+            assert!(off.abs() < 0.5, "{align:?}: {got:?}");
+        }
     }
 }
 

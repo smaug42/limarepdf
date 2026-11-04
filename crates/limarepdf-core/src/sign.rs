@@ -954,6 +954,7 @@ impl Pdf {
             color: color.rgb(),
             fill: None,
             border: 0.0,
+            align: crate::Align::Left,
         };
         let rect = [x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0];
         let id = self.add_text_box(page_index, rect, text, &style, author)?;

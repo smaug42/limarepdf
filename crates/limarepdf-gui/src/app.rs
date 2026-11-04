@@ -1,6 +1,6 @@
 use crate::about;
 use crate::accent;
-use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
+use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, ACTIONS};
 use crate::band::{self, Band};
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
@@ -10,11 +10,13 @@ use crate::icon;
 use crate::incoming::Incoming;
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
+use crate::menu;
 use crate::page_text;
 use crate::panels::{self, Panel};
+use crate::print_preview;
 use crate::recent::Recent;
 use crate::regions::{self, Region, Regions};
-use crate::selection::Selection;
+use crate::selection::{ObjKind, Selection};
 use crate::settings::{Accent, Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
 use crate::styled::Switch;
@@ -24,10 +26,10 @@ use crate::timing;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use limarepdf_core::disk::{self, OnDisk};
-use limarepdf_core::render::{image_names, ImageFormat};
+use limarepdf_core::render::{image_names, Bitmap, ImageFormat};
 use limarepdf_core::{
-    parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, Query,
-    ScanResult, SplitBy, TrustEntry, TrustRole,
+    parse_page_range, part_file_name, print, ImageImport, LinkTarget, OcrResult, OpenPanel, Pdf,
+    PictureFormat, Query, ScanResult, SplitBy, TrustEntry, TrustRole,
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -105,6 +107,28 @@ struct AppendForms {
     docs: Vec<Pdf>,
     /// The names of the files with form fields.
     names: Vec<String>,
+    /// The pages come from a password-protected document (pages copied from one).
+    protected: bool,
+    /// Where the pages were cut from (PF-48), to take them out of once added.
+    cut_from: Option<CutFrom>,
+}
+
+/// Pages cut in one tab and pasted in another (PF-48): taken out of their own tab once
+/// added to the other, as text cut in one document and pasted in another moves.
+struct CutFrom {
+    tab: u64,
+    /// The pages, by object, as they were cut.
+    pages: Vec<(u32, u16)>,
+}
+
+/// Pages copied to paste in any tab (PF-48): a document of them, as Extract makes, kept
+/// while nothing else is copied or cut in LimarePDF.
+struct CopiedPages {
+    doc: Pdf,
+    /// The name of the document they were copied from, for the questions about them.
+    name: String,
+    /// They come from a password-protected document.
+    protected: bool,
 }
 
 /// Replace all's review (NEW-04b), with the copies of the document it offers: every match
@@ -165,9 +189,13 @@ enum Loaded {
     Err(PathBuf, String),
     /// Files to append were read: all of them, or as far as one that stopped the reading.
     Append(Box<Appending>, Option<AppendStop>),
-    /// Search number `.0` for the printers finished: the printers, default first, or why
-    /// they couldn't be listed.
-    Printers(u64, Result<Vec<print::Printer>, String>),
+    /// Search number `.0` for the printers found them: the printers, default first, or why
+    /// they couldn't be listed; `.2` is false for those listed at once, a fuller list to come
+    /// (ENH-47).
+    Printers(u64, Result<Vec<print::Printer>, String>, bool),
+    /// Search number `.0` for printer `.1`'s paper sizes finished: the sizes, or why they
+    /// couldn't be found.
+    Papers(u64, String, Result<print::PaperList, String>),
     /// A background job on a copy of tab `tab` at `revision` finished. On success: the
     /// changed document, whether anything changed, and a summary for the user.
     Job {
@@ -187,6 +215,55 @@ enum Loaded {
     },
     /// A save's thread finished writing (ENH-35).
     Saved(Box<save::Saved>),
+    /// Copy number `.0` of a picture finished drawing it for the system's clipboard
+    /// (NEW-09's stage 3): its pixels, or why it couldn't be drawn.
+    PictureCopied(u64, Result<Bitmap, String>),
+}
+
+/// Asks for `printer`'s paper sizes on a background thread, as [`App::find_printers`] looks
+/// for the printers, returning the search's number (`searches` counted on). Its result, sent
+/// on `tx`, fills in the Print dialog asking for it, open or waiting, and is kept for the
+/// session. A free function, as the dialog asking is borrowed from the app.
+fn ask_papers(
+    searches: &mut u64,
+    tx: &Sender<Loaded>,
+    ctx: &egui::Context,
+    printer: String,
+) -> u64 {
+    *searches += 1;
+    let (search, tx, ctx) = (*searches, tx.clone(), ctx.clone());
+    std::thread::spawn(move || {
+        let found = crate::guard(|| print::papers(&printer)).map_err(|e| format!("{e:#}"));
+        let _ = tx.send(Loaded::Papers(search, printer, found));
+        ctx.request_repaint();
+    });
+    search
+}
+
+/// The paper sizes of the printer chosen in Print `s`, when they are wanted: those found
+/// earlier in the session (`known`) at once, else asked for ([`ask_papers`]). The paper
+/// last used with the printer (`kept`, by printer) is chosen.
+fn want_papers(
+    searches: &mut u64,
+    tx: &Sender<Loaded>,
+    ctx: &egui::Context,
+    known: &std::collections::HashMap<String, print::PaperList>,
+    kept: &std::collections::BTreeMap<String, String>,
+    s: &mut dlg::Print,
+) {
+    let Some(printer) = s.papers_wanted() else {
+        return;
+    };
+    match known.get(&printer) {
+        Some(list) => {
+            let last = kept.get(&printer).map(String::as_str);
+            s.use_papers(printer, list.clone(), last);
+        }
+        None => {
+            let search = ask_papers(searches, tx, ctx, printer.clone());
+            s.papers = dlg::Papers::Asking(search, printer);
+        }
+    }
 }
 
 /// Summary of an OCR run for the user, and whether any page changed.
@@ -204,10 +281,11 @@ fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
     }
     let mut text = format!("Text added to {pages} page(s): {words} words.");
     if pages > 0 {
-        text.push_str(
-            "\n\nThe text is invisible. To see it, search for a word, or turn on \
-             View > Show recognised text; misread words can be corrected with the arrow tool.",
-        );
+        text.push_str(&format!(
+            "\n\nThe text is invisible. To see it, search for a word, or turn on {}; misread \
+             words can be corrected with the arrow tool.",
+            menu::way(Act::ToggleHidden)
+        ));
     }
     push_skipped(&mut text, &skipped);
     (pages > 0, text)
@@ -321,11 +399,19 @@ struct SplitFiles {
     stem: String,
 }
 
+/// Every picture of the document in front to save in `dir`, named from `stem` (NEW-09).
+#[derive(Clone)]
+struct PicturesTo {
+    dir: PathBuf,
+    stem: String,
+}
+
 /// Files about to be written, replacing files of the same names.
 #[derive(Clone)]
 enum Replacing {
     Images(ImageExport),
     Split(SplitFiles),
+    Pictures(PicturesTo),
 }
 
 impl Replacing {
@@ -333,6 +419,7 @@ impl Replacing {
         match self {
             Replacing::Images(e) => &e.dir,
             Replacing::Split(s) => &s.dir,
+            Replacing::Pictures(p) => &p.dir,
         }
     }
 }
@@ -407,6 +494,8 @@ enum Dialog {
     /// Draw this many fill-and-sign items into the pages?
     ConfirmFinishSigning(Asked, usize),
     RemoveHidden(Asked, dlg::RemoveHidden),
+    /// Reduce file size, with its preview (ENH-19).
+    ReduceSize(Asked, Box<dlg::Reduce>),
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
     ConfirmSaveMarks(Asked, bool, usize),
     Print(Asked, Box<dlg::Print>),
@@ -417,8 +506,12 @@ enum Dialog {
     SaveSelection(Asked, dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
+    /// Insert link, or Edit link (ENH-17): where the link goes and how it looks.
+    Link(Asked, Box<dlg::LinkAsk>),
     /// The name for comments, being edited.
     CommentName(String),
+    /// Settings (ENH-49), as chosen so far.
+    Settings(Box<dlg::Prefs>),
     About(about::Page),
     /// A message about a recovery copy, with Show file for it (or its folder).
     RecoveryFile {
@@ -450,9 +543,11 @@ impl Dialog {
             | Dialog::ConfirmApplyRedactions(a, _)
             | Dialog::ConfirmFinishSigning(a, _)
             | Dialog::RemoveHidden(a, _)
+            | Dialog::ReduceSize(a, _)
             | Dialog::ConfirmSaveMarks(a, ..)
             | Dialog::Print(a, _)
             | Dialog::SaveSelection(a, _)
+            | Dialog::Link(a, _)
             | Dialog::ConfirmSignRecovered(a)
             | Dialog::ConfirmStale(a, _)
             | Dialog::ConfirmReload(a) => Some(a),
@@ -476,9 +571,11 @@ impl Dialog {
             | Dialog::ConfirmApplyRedactions(a, _)
             | Dialog::ConfirmFinishSigning(a, _)
             | Dialog::RemoveHidden(a, _)
+            | Dialog::ReduceSize(a, _)
             | Dialog::ConfirmSaveMarks(a, ..)
             | Dialog::Print(a, _)
             | Dialog::SaveSelection(a, _)
+            | Dialog::Link(a, _)
             | Dialog::ConfirmSignRecovered(a)
             | Dialog::ConfirmStale(a, _)
             | Dialog::ConfirmReload(a) => Some(a),
@@ -560,10 +657,14 @@ fn trust_unsure(why: Option<String>) -> String {
 
 /// Why a document set to be saved with a password isn't signed: the signed file would be
 /// written without it.
-const PASSWORD_NOT_SIGNED: &str = "You set a password that applies when you save, and \
-    LimarePDF can't sign password-protected documents, so the signed file would be saved \
-    without it. To sign, take the password off first (Document > Password security). To keep \
-    the password, save without signing.";
+fn password_not_signed() -> String {
+    format!(
+        "You set a password that applies when you save, and LimarePDF can't sign \
+         password-protected documents, so the signed file would be saved without it. To sign, \
+         take the password off first ({}). To keep the password, save without signing.",
+        menu::way(Act::Security)
+    )
+}
 
 /// A signed document with its edits added after what was signed, ready to write once the
 /// user agrees that the signatures will report changes they don't allow.
@@ -621,6 +722,8 @@ impl Excerpt {
 
 /// Title of the OCR background job, also used to recognise its result.
 const OCR_JOB: &str = "Recognise text";
+/// Title of Reduce file size's background job (ENH-19).
+const REDUCE_JOB: &str = "Reduce file size";
 
 /// Title of the split background job and its messages.
 const SPLIT_JOB: &str = "Split into files";
@@ -679,7 +782,7 @@ struct Toast {
     away: Option<(f64, f64)>,
 }
 
-/// The command palette (Ctrl+K) while it is open.
+/// The command palette (Ctrl+Shift+P) while it is open.
 #[derive(Default)]
 struct Palette {
     query: String,
@@ -713,6 +816,15 @@ pub struct App {
     /// Copy, Cut or Paste clicked in the band for the text being typed (its box's id),
     /// waiting for that box to have the keyboard back.
     clip: Option<(Clip, egui::Id)>,
+    /// Pages copied, to paste in any tab (PF-48). Pages cut wait in their tab
+    /// ([`Tab::cut_pages`]); one or the other, never both.
+    copied_pages: Option<CopiedPages>,
+    /// Copies of a picture drawn on a thread for the system's clipboard (NEW-09's stage 3),
+    /// counted: what is copied or cut later replaces one still being drawn.
+    picture_copies: u64,
+    /// The frame in which Paste asked the system for its clipboard, waiting for what it
+    /// holds; nothing coming the next frame is said.
+    paste_asked: Option<u64>,
     /// The Undo and Redo buttons, as last drawn: a click on them leaves the keyboard in
     /// the text box that has it.
     undo_buttons: Vec<egui::Rect>,
@@ -734,9 +846,20 @@ pub struct App {
     front: Option<u64>,
     /// The width of the status bar's controls at its right, as last drawn.
     status_width: Option<f32>,
-    /// The width of Print and the compact commands button, at the commands' right, as last
-    /// drawn.
+    /// The width of the controls at the commands' right (Print and the compact commands
+    /// button; in Minimal, Find, Tools, the inspector, Print and More), as last drawn.
     commands_right: Option<f32>,
+    /// The width of the interface's switch at the tab strip's right end, as last drawn.
+    switch_width: Option<f32>,
+    /// The width of Minimal's Tools button, as last drawn, for the row's More (ENH-45).
+    tools_width: Option<f32>,
+    /// The File menu's button, as last drawn; and whether Tools' All commands asked for its
+    /// menu, opened in the next frame (ENH-45).
+    file_button: Option<egui::Id>,
+    open_file_menu: bool,
+    /// Frames left in which the keyboard, if a switch of interface left it nowhere, goes
+    /// back to the typing or to the switch (ENH-45).
+    refocus: u8,
     /// The desktop's accent colour being read off the window's thread ([`App::read_accent`]).
     accent_read: Option<Receiver<Option<egui::Color32>>>,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
@@ -784,6 +907,11 @@ pub struct App {
     retrying: Option<PathBuf>,
     /// The number of the last search for printers started (see [`dlg::Search`]).
     searches: u64,
+    /// The printers last found, with the number of the search that found them, and each
+    /// printer's paper sizes, kept for the session: Print opens with them while it looks
+    /// again (ENH-47).
+    printers_known: Option<(u64, Vec<print::Printer>)>,
+    papers_known: std::collections::HashMap<String, print::PaperList>,
     /// Closing a tab or quitting, once a document is saved (ENH-01).
     closing: Option<Closing>,
     /// Files the system asks to open, from Finder on macOS (BUG-28).
@@ -858,6 +986,9 @@ impl App {
             resizing: Vec::new(),
             band: Band::default(),
             clip: None,
+            copied_pages: None,
+            picture_copies: 0,
+            paste_asked: None,
             undo_buttons: Vec::new(),
             undo_held: false,
             undo_in_box: None,
@@ -867,6 +998,11 @@ impl App {
             front: None,
             status_width: None,
             commands_right: None,
+            switch_width: None,
+            tools_width: None,
+            file_button: None,
+            open_file_menu: false,
+            refocus: 0,
             accent_read: None,
             fitted: false,
             regions: Regions::default(),
@@ -888,6 +1024,8 @@ impl App {
             waiting: VecDeque::new(),
             retrying: None,
             searches: 0,
+            printers_known: None,
+            papers_known: std::collections::HashMap::new(),
             closing: None,
             incoming: Incoming::default(),
             saves: Vec::new(),
@@ -1511,7 +1649,7 @@ impl App {
                 anyhow::bail!("LimarePDF can't sign encrypted (password-protected) documents");
             }
             if t.encryption.is_some() {
-                anyhow::bail!(PASSWORD_NOT_SIGNED);
+                anyhow::bail!(password_not_signed());
             }
             // A document opened with signature fields kept its bytes: the signature is
             // added after them, with the edits made since. Any other document has no
@@ -1628,11 +1766,12 @@ impl App {
             text.push_str(&format!("\n\nThe document is signed, but {why}."));
         }
         if s.self_issued {
-            text.push_str(
+            text.push_str(&format!(
                 "\n\nOthers see you as an unknown signer until they trust your certificate: \
-                 send it to them from Document > Digital signatures > Digital IDs… (Export…, \
-                 Certificate only). LimarePDF shows the same until you trust it.",
-            );
+                 send it to them from {} (Export…, Certificate only). LimarePDF shows the same \
+                 until you trust it.",
+                menu::way(Act::DigitalIds)
+            ));
         }
         let bytes: Arc<[u8]> = Arc::from(s.bytes);
         match crate::guard(|| Pdf::from_bytes(&bytes, None)) {
@@ -1787,18 +1926,54 @@ impl App {
                     self.opened(&path);
                     self.show(Dialog::Message(CANNOT_OPEN.into(), e));
                 }
-                Loaded::Printers(search, found) => {
-                    let mut dialogs = std::iter::once(&mut self.dialog).chain(&mut self.waiting);
-                    let looking = dialogs.find_map(|d| match d {
-                        Dialog::Print(_, s) if s.search == dlg::Search::Running(search) => Some(s),
-                        _ => None,
-                    });
+                Loaded::Printers(search, found, last) => {
                     timing::mark("printers found", || match &found {
-                        Ok(list) => list.len().to_string(),
+                        Ok(list) => format!("{}{}", list.len(), if last { "" } else { " at once" }),
                         Err(_) => "failed".into(),
                     });
+                    // Kept for the session, so Print opens with them next time (ENH-47); not
+                    // an earlier search's, coming late.
+                    if let Ok(list) = &found {
+                        if self.printers_known.as_ref().is_none_or(|k| k.0 <= search) {
+                            self.printers_known = Some((search, list.clone()));
+                        }
+                    }
+                    let mut dialogs = std::iter::once(&mut self.dialog).chain(&mut self.waiting);
+                    let looking = dialogs.find_map(|d| match d {
+                        Dialog::Print(_, s)
+                            if s.search == dlg::Search::Running(search)
+                                || s.listing == Some(search) =>
+                        {
+                            Some(s)
+                        }
+                        _ => None,
+                    });
                     if let Some(s) = looking {
-                        s.found(found);
+                        s.found(found, self.settings.print_printer.as_deref());
+                        s.listing = (!last).then_some(search);
+                        // The chosen printer's paper sizes, asked for at once.
+                        let (known, kept) = (&self.papers_known, &self.settings.print_papers);
+                        want_papers(&mut self.searches, &self.tx, ctx, known, kept, s);
+                    }
+                }
+                Loaded::Papers(search, printer, found) => {
+                    timing::mark("paper sizes found", || match &found {
+                        Ok(list) => list.papers.len().to_string(),
+                        Err(_) => "failed".into(),
+                    });
+                    if let Ok(list) = &found {
+                        self.papers_known.insert(printer.clone(), list.clone());
+                    }
+                    let mut dialogs = std::iter::once(&mut self.dialog).chain(&mut self.waiting);
+                    let asking = dialogs.find_map(|d| match d {
+                        Dialog::Print(_, s) if matches!(&s.papers, dlg::Papers::Asking(n, _) if *n == search) => {
+                            Some(s)
+                        }
+                        _ => None,
+                    });
+                    if let Some(s) = asking {
+                        let last = self.settings.print_papers.get(&printer);
+                        s.papers_found(search, found, last.map(String::as_str));
                     }
                 }
                 Loaded::Append(a, stop) => {
@@ -1911,6 +2086,21 @@ impl App {
                     })));
                 }
                 Loaded::Saved(s) => self.saved(ctx, *s),
+                // Unless something was copied or cut since.
+                Loaded::PictureCopied(n, _) if n != self.picture_copies => {}
+                Loaded::PictureCopied(_, Ok(b)) => {
+                    let size = [b.width, b.height];
+                    ctx.copy_image(egui::ColorImage::from_rgba_unmultiplied(size, &b.rgba));
+                    self.status =
+                        "Copied the picture: paste it in this document or another app.".into();
+                }
+                Loaded::PictureCopied(_, Err(e)) => {
+                    self.status.clear();
+                    self.show(Dialog::Message(
+                        "Copy".into(),
+                        format!("This picture can't be copied: {e}."),
+                    ));
+                }
             }
         }
         self.next_dialog();
@@ -1927,6 +2117,158 @@ impl App {
             .pick_files()?;
         files.sort();
         Some(files)
+    }
+
+    /// Dictionary files to add: LibreOffice dictionary extensions, or Hunspell's `.dic` and
+    /// `.aff` files. Never the system's chooser in tests.
+    #[cfg(not(test))]
+    fn pick_dictionaries() -> Option<Vec<PathBuf>> {
+        rfd::FileDialog::new()
+            .add_filter(
+                "Spelling dictionaries (.oxt, .dic, .aff)",
+                &["oxt", "dic", "aff"],
+            )
+            .pick_files()
+    }
+
+    #[cfg(test)]
+    fn pick_dictionaries() -> Option<Vec<PathBuf>> {
+        None
+    }
+
+    /// What spelling follows this frame (the settings and the document in front), the words
+    /// added to the dictionary saved, and what went wrong reading a dictionary said.
+    fn spelling_frame(&mut self, ctx: &egui::Context) {
+        let s = &self.settings;
+        let config = crate::spell::Config {
+            on: s.spelling,
+            chosen: s.spelling_language.clone(),
+            folder: s.dictionaries_folder(),
+            document: self.tabs.get(self.active).and_then(|t| t.pdf.language()),
+        };
+        crate::spell::configure(ctx, config, || s.spelling_words());
+        if let Some(words) = crate::spell::take_added(ctx) {
+            self.settings.save_spelling_words(&words);
+        }
+        for text in crate::spell::take_failures(ctx) {
+            self.show(Dialog::Message("Can't check spelling".into(), text));
+        }
+    }
+
+    /// Adds the dictionaries in `files` to the dictionaries folder: each extension's, and
+    /// each `.dic` with its `.aff` (picked with it, or beside it). Says what was added, and
+    /// what couldn't be and why.
+    fn add_dictionaries(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
+        use limarepdf_core::spelling::{in_extension, Dictionary, Unpacked};
+        let Some(folder) = self.settings.dictionaries_folder() else {
+            let text = "LimarePDF has no settings folder to keep dictionaries in.".to_string();
+            self.show(Dialog::Message("Dictionary not added".into(), text));
+            return;
+        };
+        let ext = |p: &PathBuf, e: &str| p.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
+        let name = |p: &Path| {
+            p.file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into())
+        };
+        let mut found: Vec<Unpacked> = Vec::new();
+        let mut problems: Vec<String> = Vec::new();
+        for f in files.iter().filter(|f| ext(f, "oxt")) {
+            match std::fs::read(f)
+                .map_err(|e| e.to_string())
+                .and_then(|data| in_extension(&data, &name(f)).map_err(|e| e.to_string()))
+            {
+                Ok(list) => found.extend(list),
+                Err(e) => problems.push(e),
+            }
+        }
+        for dic in files.iter().filter(|f| ext(f, "dic")) {
+            let aff = (files.iter())
+                .find(|a| ext(a, "aff") && a.file_stem() == dic.file_stem())
+                .cloned()
+                .unwrap_or_else(|| dic.with_extension("aff"));
+            let read = std::fs::read(dic).and_then(|d| Ok((std::fs::read(&aff)?, d)));
+            match read {
+                Ok((aff, dic_data)) => {
+                    let stem = dic
+                        .file_stem()
+                        .map_or(String::new(), |s| s.to_string_lossy().into());
+                    found.push(Unpacked {
+                        stem,
+                        aff,
+                        dic: dic_data,
+                    });
+                }
+                Err(_) => problems.push(format!(
+                    "{} needs its .aff file beside it, of the same name",
+                    name(dic)
+                )),
+            }
+        }
+        if found.is_empty() && problems.is_empty() {
+            problems.push("No .dic file was chosen with its .aff file".into());
+        }
+        let mut added = Vec::new();
+        for u in found {
+            let file = format!("{}.dic", u.stem);
+            if let Err(e) = Dictionary::from_bytes(&file, &u.aff, &u.dic) {
+                problems.push(e.to_string());
+                continue;
+            }
+            let mut unconfirmed = None;
+            let mut written = Ok(());
+            for (kind, data) in [("aff", &u.aff), ("dic", &u.dic)] {
+                let path = folder.join(format!("{}.{kind}", u.stem));
+                match crate::settings::write_own(&path, data) {
+                    Ok(why) => unconfirmed = unconfirmed.or(why),
+                    Err(e) => {
+                        written = Err(e);
+                        break;
+                    }
+                }
+            }
+            match written {
+                Ok(()) => {
+                    if let Some(why) = unconfirmed {
+                        problems.push(format!(
+                            "{file} was added, but your system couldn't confirm it is safely \
+                             on disk ({why})"
+                        ));
+                    }
+                    added.push(u.stem);
+                }
+                Err(e) => problems.push(format!("{file} couldn't be saved ({e:#})")),
+            }
+        }
+        crate::spell::list_again(ctx);
+        let (langs, _) = crate::spell::languages(ctx);
+        let names: Vec<String> = (added.iter())
+            .map(|stem| {
+                let key = format!("file:{stem}");
+                langs
+                    .iter()
+                    .find(|l| l.key == key)
+                    .map_or(stem.clone(), |l| l.name.clone())
+            })
+            .collect();
+        if !names.is_empty() {
+            self.status = format!(
+                "Added {}. Choose it in Review > Spelling's menu.",
+                limarepdf_core::quoted_list(&names)
+            );
+        }
+        if !problems.is_empty() {
+            let title = if names.is_empty() {
+                "Dictionary not added"
+            } else {
+                "Some dictionaries not added"
+            };
+            let text = problems
+                .iter()
+                .map(|p| format!("{p}."))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.show(Dialog::Message(title.into(), text));
+        }
     }
 
     /// Read image files, reporting the first that cannot be read.
@@ -2007,16 +2349,28 @@ impl App {
         self.status = "Preparing the replacements…".into();
     }
 
-    /// Looks for the printers on a background thread, returning the search's number. Its
-    /// result fills in the Print dialog looking for it, open or waiting, or is dropped:
-    /// one closed meanwhile isn't opened again (BUG-11).
+    /// Looks for the printers on a background thread, returning the search's number: those
+    /// the printing service lists at once, then all of them ([`print::printers_in_steps`]).
+    /// Each list fills in the Print dialog looking for it, open or waiting, or is dropped:
+    /// one closed meanwhile isn't opened again (BUG-11). Either way it is kept for the
+    /// session (ENH-47).
     fn find_printers(&mut self, ctx: &egui::Context) -> u64 {
         self.searches += 1;
         let (search, tx, ctx) = (self.searches, self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let found = crate::guard(print::printers).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Loaded::Printers(search, found));
-            ctx.request_repaint();
+            let send = |found: limarepdf_core::Result<Vec<print::Printer>>, last| {
+                let found = found.map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Loaded::Printers(search, found, last));
+                ctx.request_repaint();
+            };
+            let steps = crate::guard(|| {
+                print::printers_in_steps(&send);
+                Ok(())
+            });
+            // A panic part way is said as the last answer.
+            if let Err(e) = steps {
+                send(Err(e), true);
+            }
         });
         search
     }
@@ -2052,6 +2406,123 @@ impl App {
         });
     }
 
+    /// Save the selected picture as a file, as Word's Save as Picture (NEW-09's stage 2):
+    /// named in the save chooser, then written on a background thread, a JPEG upright on the
+    /// page as it is and any other picture a PNG as it shows. The document isn't changed.
+    fn save_image(&mut self, ctx: &egui::Context) {
+        let t = &self.tabs[self.active];
+        let Some((page, id)) = t.ed.sel() else {
+            return;
+        };
+        let format = match t.pdf.picture_format(page, id) {
+            Ok(f) => f,
+            Err(e) => {
+                self.dialog = Dialog::Message(
+                    "Save image as".into(),
+                    format!("This picture can't be saved: {e:#}."),
+                );
+                return;
+            }
+        };
+        let ext = format.extension();
+        let kinds: &[&str] = match format {
+            PictureFormat::Jpeg => &["jpg", "jpeg"],
+            PictureFormat::Png => &["png"],
+        };
+        let name = format!("{}-page-{}-image.{ext}", t.stem("document"), page + 1);
+        let mut d = rfd::FileDialog::new()
+            .set_title("Save image as")
+            .add_filter(format.name(), kinds)
+            .set_file_name(name);
+        if let Some(dir) = Self::start_folder(Some(t), self.settings.folder.as_deref()) {
+            d = d.set_directory(dir);
+        }
+        let Some(mut path) = Self::save_as(d) else {
+            return;
+        };
+        // The kind's own extension, added to a name without it.
+        let given = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+        if !given.is_some_and(|e| kinds.contains(&e.as_str())) {
+            let mut named = path.into_os_string();
+            named.push(format!(".{ext}"));
+            path = named.into();
+        }
+        self.spawn_job(ctx, "Save image as", move |p| {
+            let (_, bytes) = p.picture_file(page, id)?;
+            match limarepdf_core::write_file(&path, &bytes) {
+                Ok(()) => Ok((false, format!("Saved the picture as {}.", path.display()))),
+                Err(err) if not_confirmed(&err) => Ok((
+                    false,
+                    format!(
+                        "Saved the picture as {}, but your system couldn't confirm it is safely \
+                         on disk. If the computer lost power just now, save it again.",
+                        path.display()
+                    ),
+                )),
+                Err(err) => Err(err),
+            }
+        });
+    }
+
+    /// Save every picture of the document to a folder the user picks (NEW-09's stage 2),
+    /// asking first when files there have the names they would get.
+    fn save_all_images(&mut self, ctx: &egui::Context) {
+        let t = &self.tabs[self.active];
+        let stem = t.stem("document");
+        let names = t.pdf.picture_names(&stem);
+        if names.is_empty() {
+            self.dialog = Dialog::Message(
+                "Save all images".into(),
+                "This document has no pictures to save.".into(),
+            );
+            return;
+        }
+        let start = Self::start_folder(Some(t), self.settings.folder.as_deref());
+        let asked = Asked::of(t);
+        let title = "Choose a folder for the pictures";
+        let Some(dir) = Self::pick_folder(title, start.as_deref()) else {
+            return;
+        };
+        let to = PicturesTo { dir, stem };
+        let files: Vec<PathBuf> = names.iter().map(|n| to.dir.join(n)).collect();
+        match limarepdf_core::existing(&files).len() {
+            0 => self.start_save_pictures(ctx, to),
+            n => self.dialog = Dialog::ConfirmReplace(asked, Replacing::Pictures(to), n),
+        }
+    }
+
+    /// Write every picture of the document to `to` on a background thread.
+    fn start_save_pictures(&mut self, ctx: &egui::Context, to: PicturesTo) {
+        self.spawn_job(ctx, "Save all images", move |p| {
+            match p.save_all_pictures(&to.dir, &to.stem) {
+                Ok(done) => {
+                    let n = done.written.len();
+                    let mut said = format!(
+                        "Saved {} to {}.",
+                        plural(n, "1 picture", "{n} pictures"),
+                        to.dir.display()
+                    );
+                    if let Some((name, why)) = done.failed.first() {
+                        said += &format!(
+                            "\n\n{} couldn't be saved; the first, {name}: {why}.",
+                            plural(done.failed.len(), "1 picture", "{n} pictures"),
+                        );
+                    }
+                    Ok((false, said))
+                }
+                Err(err) if not_confirmed(&err) => Ok((
+                    false,
+                    format!(
+                        "Saved the pictures to {}, but your system couldn't confirm they are \
+                         safely on disk. If the computer lost power just now, save them again.",
+                        to.dir.display()
+                    ),
+                )),
+                Err(err) => Err(err),
+            }
+        });
+    }
+
     /// Write the text of every page to a file, pages separated by form feeds.
     fn export_text(&mut self) {
         let t = &self.tabs[self.active];
@@ -2060,9 +2531,10 @@ impl App {
         if text.trim_matches(|c: char| c.is_whitespace()).is_empty() {
             self.dialog = Dialog::Message(
                 "Export text".into(),
-                "This document has no text to export. Scanned pages need \
-                 Document > Recognise text (OCR) first."
-                    .into(),
+                format!(
+                    "This document has no text to export. Scanned pages need {} first.",
+                    menu::way(Act::Ocr)
+                ),
             );
             return;
         }
@@ -2133,6 +2605,23 @@ impl App {
             Err(e) => {
                 self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
             }
+        }
+    }
+
+    /// Opens an untitled document of one blank page, on the paper of the system's region,
+    /// in front. Nothing is unsaved until it is changed, so an untouched one closes without
+    /// asking, as Word's does (NEW-09).
+    fn new_blank(&mut self, ctx: &egui::Context) {
+        let (w, h) = limarepdf_core::print::new_document_size(paper_locale().as_deref());
+        let mut pdf = Pdf::new();
+        match pdf.insert_blank(0, w, h) {
+            Ok(()) => {
+                self.add_tab(ctx, pdf, None, None, false);
+            }
+            Err(e) => self.show(Dialog::Message(
+                "Cannot make a new document".into(),
+                format!("{e:#}"),
+            )),
         }
     }
 
@@ -2231,7 +2720,7 @@ impl App {
 
     /// Where to save the tab: its file, or one the user picks (for Save as, or a document
     /// with no file yet).
-    fn save_path(tab: &Tab, as_new: bool) -> Option<PathBuf> {
+    fn save_path(tab: &Tab, as_new: bool, folder: Option<&Path>) -> Option<PathBuf> {
         if !as_new {
             if let Some(p) = &tab.path {
                 return Some(p.clone());
@@ -2243,9 +2732,7 @@ impl App {
         } else if let Some(l) = &tab.label {
             d = d.set_file_name(format!("{l}.pdf"));
         }
-        // A recovered copy is suggested beside its original.
-        let original = tab.recovered.as_ref().and_then(|r| r.original.as_ref());
-        if let Some(dir) = original.and_then(|p| p.parent()).filter(|d| d.is_dir()) {
+        if let Some(dir) = Self::start_folder(Some(tab), folder) {
             d = d.set_directory(dir);
         }
         let mut p = Self::save_as(d)?;
@@ -2253,6 +2740,22 @@ impl App {
             p.set_extension("pdf");
         }
         Some(p)
+    }
+
+    /// The folder a file chooser starts in, as word processors start Save As: beside the
+    /// original of a recovered copy, else beside the document's own file, else in the
+    /// documents folder set in Settings (`folder`, ENH-49), which is where Open starts
+    /// (`tab` none); else the system chooser's own choice (`None`).
+    fn start_folder(tab: Option<&Tab>, folder: Option<&Path>) -> Option<PathBuf> {
+        let original = tab.and_then(|t| t.recovered.as_ref()?.original.as_deref());
+        let own = tab.and_then(|t| t.path.as_deref());
+        let beside = [original, own]
+            .into_iter()
+            .flatten()
+            .filter_map(Path::parent);
+        (beside.chain(folder))
+            .find(|d| d.is_dir())
+            .map(Path::to_path_buf)
     }
 
     /// The file the user picks in the save chooser `d`, if any.
@@ -2273,7 +2776,7 @@ impl App {
     /// read or saved it, until the user says to replace it (BUG-06).
     fn save_target(&mut self, as_new: bool) -> Option<PathBuf> {
         let t = self.tabs.get(self.active)?;
-        let path = Self::save_path(t, as_new)?;
+        let path = Self::save_path(t, as_new, self.settings.folder.as_deref())?;
         if let Some(why) = self.in_other_tab(&path, Some(t.id)) {
             self.dialog = Dialog::Message("Open in another tab".into(), why);
             return None;
@@ -2428,13 +2931,15 @@ impl App {
         // command doesn't run (BUG-01). A question the command asks is then about the
         // document with the typing in it (BUG-10). The styles (Bold, Italic, Underline,
         // Strikethrough) change the line being edited on the page instead, which stays open,
-        // as Ctrl+B and Ctrl+I there do, and the alignments its paragraph; Cut cuts from the
-        // text being typed.
+        // as Ctrl+B and Ctrl+I there do, and the alignments its paragraph, or new text or a
+        // text box being typed; Cut cuts from the text being typed.
         let styles = matches!(
             a,
             Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough | Act::AlignText(_)
         );
-        let in_line = styles && has && self.tabs[self.active].ed.editing_line();
+        let aligning =
+            matches!(a, Act::AlignText(_)) && has && self.tabs[self.active].ed.aligns_typing();
+        let in_line = (styles && has && self.tabs[self.active].ed.editing_line()) || aligning;
         let in_typing = a == Act::Cut && has && self.tabs[self.active].ed.typing_id().is_some();
         let on_typing = in_line || in_typing;
         if has && a.uses_document() && !on_typing {
@@ -2455,7 +2960,11 @@ impl App {
         }
         match a {
             Act::Open => {
-                if let Some(files) = Self::pdf_dialog().pick_files() {
+                let mut d = Self::pdf_dialog();
+                if let Some(dir) = Self::start_folder(None, self.settings.folder.as_deref()) {
+                    d = d.set_directory(dir);
+                }
+                if let Some(files) = d.pick_files() {
                     for f in files {
                         self.spawn_open(ctx, f, None, None);
                     }
@@ -2467,6 +2976,7 @@ impl App {
                 }
             }
             Act::ClearRecent => self.recent.clear(),
+            Act::NewBlank => self.new_blank(ctx),
             Act::NewFromImages => {
                 if let Some(files) = Self::pick_images() {
                     self.new_from_images(ctx, &files);
@@ -2497,26 +3007,83 @@ impl App {
             }
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
-            Act::Print | Act::PrintSelection if has && !self.busy => {
-                // Open at once, with the printers looked for meanwhile (BUG-11).
+            Act::SaveAllImages if has && !self.busy => self.save_all_images(ctx),
+            Act::SaveImage if has && !self.busy => self.save_image(ctx),
+            Act::Print | Act::PrintPreview | Act::PrintSelection if has && !self.busy => {
+                // Open at once, with the printers looked for meanwhile (BUG-11), and the
+                // preview drawn from a copy of what is printed.
                 let search = self.find_printers(ctx);
                 let t = &self.tabs[self.active];
                 let selected = t.ed.selection.pages();
                 let file = t.title();
                 let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
+                let source = match selection {
+                    Some(_) => {
+                        let original = Excerpt::new(t, dlg::Layout::Original);
+                        let plain = Excerpt::new(t, dlg::Layout::Plain);
+                        let pdf = t.pdf.clone();
+                        print_preview::Source::Selection(Box::new(move |layout| match layout {
+                            dlg::Layout::Original => original.build(&pdf),
+                            _ => plain.build(&pdf),
+                        }))
+                    }
+                    None => print_preview::Source::Pages(Box::new(t.pdf.clone())),
+                };
+                let scale = self.settings.print_scale;
+                let percent = match scale {
+                    print::Scale::Custom(p) => p,
+                    _ => 100,
+                };
                 timing::mark("print dialog", String::new);
-                self.dialog = Dialog::Print(
-                    self.asked(),
-                    Box::new(dlg::Print {
-                        all: selected.is_none(),
-                        pages: selected.map(inspector::range_text).unwrap_or_default(),
-                        selection,
-                        ..dlg::Print::looking(search, file)
-                    }),
-                );
+                let mut print = Box::new(dlg::Print {
+                    page_count: t.page_count(),
+                    all: selected.is_none(),
+                    pages: selected.map(inspector::range_text).unwrap_or_default(),
+                    selection,
+                    orientation: self.settings.print_orientation,
+                    scale,
+                    percent,
+                    per_sheet: self.settings.print_per_sheet,
+                    booklet: self.settings.print_booklet,
+                    binding: self.settings.print_binding,
+                    preview: print_preview::Preview::spawn(ctx, source),
+                    ..dlg::Print::looking(search, file)
+                });
+                // The printers and paper sizes found earlier in the session at once, while
+                // the search runs again for any change (ENH-47).
+                if let Some((_, known)) = &self.printers_known {
+                    let last = self.settings.print_printer.as_deref();
+                    print.found_earlier(known.clone(), last, search);
+                    let (known, kept) = (&self.papers_known, &self.settings.print_papers);
+                    want_papers(&mut self.searches, &self.tx, ctx, known, kept, &mut print);
+                }
+                self.dialog = Dialog::Print(self.asked(), print);
             }
             Act::SaveSelection if has => {
                 self.dialog = Dialog::SaveSelection(self.asked(), dlg::Layout::Original);
+            }
+            Act::Link if has => self.tabs[self.active].link_command(),
+            Act::EditLink if has => {
+                let t = &mut self.tabs[self.active];
+                if let Some((page, id)) = t.ed.selection.link() {
+                    t.ask_edit_link(page, id);
+                }
+            }
+            Act::OpenLink if has => {
+                let t = &mut self.tabs[self.active];
+                t.ed.follow = t.ed.selected_link().map(|l| l.target.clone());
+            }
+            Act::CopyLinkAddress if has => {
+                let t = &self.tabs[self.active];
+                if let Some(LinkTarget::Uri(u)) = t.ed.selected_link().map(|l| &l.target) {
+                    ctx.copy_text(u.clone());
+                }
+            }
+            Act::RemoveLink if has => {
+                let t = &mut self.tabs[self.active];
+                if let Some((page, id)) = t.ed.selection.link() {
+                    t.remove_link(ctx, page, id);
+                }
             }
             Act::Mark(m) if has => {
                 let color = markup::color(m, &self.state(ctx));
@@ -2541,6 +3108,21 @@ impl App {
             Act::MarkResultsRedact if has => {
                 let author = self.settings.author();
                 self.tabs[self.active].mark_results_for_redaction(ctx, &author);
+            }
+            Act::ReduceSize if has && !self.busy && !self.tabs[self.active].signed => {
+                let t = &self.tabs[self.active];
+                let pages = t.ed.selection.pages();
+                let selected: Vec<usize> = pages
+                    .map(|p| p.iter().copied().collect())
+                    .unwrap_or_default();
+                let reduce = dlg::Reduce {
+                    quality: self.settings.reduce_quality,
+                    all: selected.is_empty(),
+                    selected,
+                    pages: t.page_count(),
+                    estimate: crate::reduce_size::Estimate::spawn(ctx, t.pdf.clone()),
+                };
+                self.dialog = Dialog::ReduceSize(self.asked(), Box::new(reduce));
             }
             Act::RemoveHidden if has => match self.tabs[self.active].pdf.find_hidden() {
                 Ok(found) => {
@@ -2592,13 +3174,14 @@ impl App {
                 } else if t.pdf.encrypted() {
                     self.dialog = Dialog::Message(
                         title.into(),
-                        "LimarePDF can't sign encrypted (password-protected) documents. Save a copy \
-                         without the password (Document > Password security) and sign that \
-                         instead."
-                            .into(),
+                        format!(
+                            "LimarePDF can't sign encrypted (password-protected) documents. \
+                             Save a copy without the password ({}) and sign that instead.",
+                            menu::way(Act::Security)
+                        ),
                     );
                 } else if t.encryption.is_some() {
-                    self.dialog = Dialog::Message(title.into(), PASSWORD_NOT_SIGNED.into());
+                    self.dialog = Dialog::Message(title.into(), password_not_signed());
                 } else if certify && t.pdf.signature_count() > 0 {
                     self.dialog = Dialog::Message(
                         title.into(),
@@ -2623,6 +3206,9 @@ impl App {
             Act::ShowRecoveryFile => self.show_leftover(),
             Act::Quit => self.quit(ctx),
             Act::About => self.dialog = Dialog::About(about::Page::Main),
+            Act::Settings => self.dialog = Dialog::Settings(Box::new(self.prefs(ctx))),
+            Act::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(about::GUIDE)),
+            Act::ReportProblem => ctx.open_url(egui::OpenUrl::new_tab(about::ISSUES)),
             Act::Theme(p) => {
                 ctx.set_theme(p);
                 self.settings.theme = p;
@@ -2657,6 +3243,19 @@ impl App {
                 self.settings.compact_commands = !self.settings.compact_commands;
                 self.settings.save();
             }
+            // Presentation only (ENH-45): no tab, typing, view or history changes. A control
+            // with the keyboard that the other interface hasn't drawn gives it up, and new
+            // text gives it up to the switch's click; it then goes back to the typing, else
+            // to the switch ([`App::hand_on_keyboard`]).
+            Act::ToggleMinimal => {
+                self.settings.minimal = !self.settings.minimal;
+                self.settings.save();
+                let typing =
+                    (self.tabs.get(self.active)).is_some_and(|t| t.ed.typing_id().is_some());
+                if typing || ctx.memory(|m| m.focused().is_some()) {
+                    self.refocus = 3;
+                }
+            }
             Act::Accent(accent) => {
                 self.settings.accent = accent;
                 self.settings.save();
@@ -2680,6 +3279,24 @@ impl App {
             Act::SearchView => self.show_view(Side::Search),
             Act::Bookmarks => self.show_view(Side::Bookmarks),
             Act::Comments => self.show_view(Side::Comments),
+            Act::Spelling => self.show_view(Side::Spelling),
+            // For every document, and remembered between runs.
+            Act::SpellAsYouType => {
+                self.settings.spelling = !self.settings.spelling;
+                self.settings.save();
+            }
+            Act::SpellingLanguage(i) => {
+                let (langs, _) = crate::spell::languages(ctx);
+                if let Some(l) = langs.get(i) {
+                    self.settings.spelling_language = Some(l.key.clone());
+                    self.settings.save();
+                }
+            }
+            Act::AddDictionary => {
+                if let Some(files) = Self::pick_dictionaries() {
+                    self.add_dictionaries(ctx, &files);
+                }
+            }
             Act::PrevComment | Act::NextComment => {
                 let t = &mut self.tabs[self.active];
                 if let Some(said) = t.step_comment(a == Act::NextComment) {
@@ -2735,6 +3352,11 @@ impl App {
                 } else {
                     self.dialog = Dialog::ConfirmFlattenAnnots(self.asked());
                 }
+            }
+            // A tool chosen again (its button clicked while pressed) gives way to the read
+            // tool, what was typed kept, as Word's and Acrobat's tool buttons turn off.
+            Act::Tool(tool) if tool != Tool::Read && self.tabs[self.active].ed.tool == tool => {
+                self.tabs[self.active].ed.set_tool(Tool::Read)
             }
             Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
             Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
@@ -2859,11 +3481,22 @@ impl App {
             Act::Undo => self.tabs[self.active].undo(ctx),
             Act::Redo => self.redo(ctx),
             Act::Copy | Act::Cut | Act::Paste => {
-                let t = &mut self.tabs[self.active];
                 let clip = match a {
                     Act::Copy => Clip::Copy,
                     Act::Cut => Clip::Cut,
                     _ => Clip::Paste,
+                };
+                // The clipboard holds one thing, as a word processor's: what is copied or cut
+                // now replaces the pages copied or cut before.
+                if clip != Clip::Paste {
+                    self.let_go_of_pages();
+                    self.picture_copies += 1;
+                }
+                let held = self.pages_to_paste();
+                let t = &mut self.tabs[self.active];
+                let picture = match t.ed.selection.objects() {
+                    Some((page, [one])) if one.kind == ObjKind::Image => Some((page, one.id)),
+                    _ => None,
                 };
                 match (t.ed.typing_id(), clip) {
                     // The typing takes the keyboard back, and then the system copies or cuts
@@ -2877,28 +3510,33 @@ impl App {
                     (None, Clip::Paste) if t.ed.selection.words().is_some() => {
                         ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
                     }
-                    // Pages cut move to where pages go: the insertion bar, else after the
+                    // Pages cut or copied go where pages go: the insertion bar, else after the
                     // pages selected.
+                    (None, Clip::Paste) if held => self.paste_pages(ctx),
+                    // Else what the system's clipboard holds: a picture goes on the page in
+                    // view (`App::type_over`).
                     (None, Clip::Paste) => {
-                        if let Some(said) = t.has_cut().then(|| t.paste_pages(ctx)).flatten() {
-                            t.info = Some(said.into());
-                        }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                        self.paste_asked = Some(ctx.cumulative_frame_nr());
                     }
                     // Pages are cut to paste elsewhere; the system's clipboard gets their
                     // names, so that the paste keys work wherever the clipboard was empty.
                     (None, Clip::Cut) if t.ed.selection.pages().is_some() => {
                         let chosen = t.ed.selection.pages().cloned().unwrap_or_default();
-                        let names: Vec<String> = chosen.iter().map(|&p| t.page_name(p)).collect();
+                        let chosen: Vec<usize> = chosen.into_iter().collect();
+                        ctx.copy_text(pages_named(t, &chosen));
                         let n = t.cut_selected_pages();
-                        let what = match n {
-                            1 => "1 page".to_string(),
-                            n => format!("{n} pages"),
-                        };
-                        ctx.copy_text(format!("Pages {} of {}", names.join(", "), t.name()));
                         self.status = format!(
-                            "Cut {what}: paste to put them where the insertion bar is, or after \
-                             the pages selected."
+                            "Cut {}: paste to put them where the insertion bar is, or after the \
+                             pages selected, in this document or another.",
+                            pages_said(n)
                         );
+                    }
+                    (None, Clip::Copy) if t.ed.selection.pages().is_some() => self.copy_pages(ctx),
+                    (None, Clip::Copy) if picture.is_some() => {
+                        if let Some((page, id)) = picture {
+                            self.copy_picture(ctx, page, id);
+                        }
                     }
                     (None, Clip::Copy) => match t.ed.selected_text() {
                         Some(text) => {
@@ -3049,7 +3687,7 @@ impl App {
             Act::Extract => {
                 let t = &mut self.tabs[self.active];
                 // Pages from a password-protected document get no recovery copies either.
-                let protected = t.copy.protected || t.encryption.is_some() || t.pdf.encrypted();
+                let protected = t.is_protected();
                 match t.pdf.extract(&t.targets()) {
                     Ok(p) => {
                         if self.add_tab(ctx, p, None, None, true) {
@@ -3115,7 +3753,7 @@ impl App {
                     let t = &mut self.tabs[self.active];
                     t.ed.edit_selected_text(&t.pdf);
                 } else {
-                    t.ed.set_tool(Tool::Text);
+                    t.ed.edit_text();
                 }
             }
             Act::MoveText => self.tabs[self.active].ed.move_text(),
@@ -3231,6 +3869,116 @@ impl App {
     /// Paragraph editing on or off (Edit > Text flow's Paragraph, the inspector's Editing
     /// row, the menus and the command search; NEW-01), for every tab and remembered between
     /// runs; the text being edited in the tab in front follows ([`Editor::set_paragraph`]).
+    /// What the Settings window shows: the settings as they are, the page layout the active
+    /// document's, as View's.
+    fn prefs(&self, ctx: &egui::Context) -> dlg::Prefs {
+        let s = &self.settings;
+        let tab = self.tabs.get(self.active);
+        let (languages, language) = language_names(ctx);
+        dlg::Prefs {
+            name: s.author(),
+            folder: s.folder.clone(),
+            recovery: s.recovery,
+            theme: s.theme,
+            accent: s.accent,
+            page_look: s.page_look,
+            pictures_too: s.pictures_too,
+            minimal: s.minimal,
+            compact: s.compact_commands,
+            planned: s.show_planned,
+            docked: s.controls_docked,
+            layout: tab.map_or(s.layout, |t| t.layout),
+            cover: tab.map_or(s.cover, |t| t.cover),
+            page_labels: s.page_labels,
+            fields: s.fields_shown,
+            paragraphs: s.paragraphs,
+            snap: s.snap,
+            spelling: s.spelling,
+            stamp_name_date: s.stamp_name_date,
+            languages,
+            language,
+        }
+    }
+
+    /// Takes what differs in the Settings window's `p` from the settings as they are
+    /// (`was`), as the menus' commands take it, open documents included; with no document
+    /// open too. The name is taken without spaces around it.
+    fn apply_prefs(&mut self, ctx: &egui::Context, was: &dlg::Prefs, p: &dlg::Prefs) {
+        let name = p.name.trim();
+        let same = dlg::Prefs {
+            name: name.to_string(),
+            ..p.clone()
+        };
+        if same == *was {
+            return;
+        }
+        // Those that change more than the setting.
+        if p.recovery != was.recovery {
+            self.toggle_recovery();
+        }
+        if p.theme != was.theme {
+            self.act(ctx, Act::Theme(p.theme));
+        }
+        if p.accent != was.accent {
+            self.act(ctx, Act::Accent(p.accent));
+        }
+        if p.paragraphs != was.paragraphs {
+            self.set_paragraphs(p.paragraphs);
+        }
+        if p.minimal != was.minimal {
+            self.act(ctx, Act::ToggleMinimal);
+        }
+        if (p.layout, p.cover) != (was.layout, was.cover) {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                (t.layout, t.cover) = (p.layout, p.cover);
+                t.go_to(t.current);
+            }
+        }
+        if p.language != was.language {
+            let (langs, _) = crate::spell::languages(ctx);
+            if let Some(l) = langs.get(p.language) {
+                self.settings.spelling_language = Some(l.key.clone());
+            }
+        }
+        let s = &mut self.settings;
+        if name != was.name {
+            s.author = Some(name.to_string());
+        }
+        s.folder.clone_from(&p.folder);
+        s.page_look = p.page_look;
+        s.pictures_too = p.pictures_too;
+        s.compact_commands = p.compact;
+        s.show_planned = p.planned;
+        s.controls_docked = p.docked;
+        (s.layout, s.cover) = (p.layout, p.cover);
+        s.page_labels = p.page_labels;
+        s.fields_shown = p.fields;
+        s.snap = p.snap;
+        s.spelling = p.spelling;
+        s.stamp_name_date = p.stamp_name_date;
+        for t in &mut self.tabs {
+            t.use_labels = p.page_labels;
+            t.ed.form.highlight = p.fields;
+        }
+        self.settings.save();
+    }
+
+    /// The folder the user picks in a chooser called `title`, starting in `start`. Never the
+    /// system's chooser in tests.
+    #[cfg(not(test))]
+    fn pick_folder(title: &str, start: Option<&Path>) -> Option<PathBuf> {
+        let mut d = rfd::FileDialog::new().set_title(title);
+        if let Some(dir) = start.filter(|d| d.is_dir()) {
+            d = d.set_directory(dir);
+        }
+        d.pick_folder()
+    }
+
+    #[cfg(test)]
+    fn pick_folder(_: &str, _: Option<&Path>) -> Option<PathBuf> {
+        tests::FOLDER.with(std::cell::Cell::take)
+    }
+
     fn set_paragraphs(&mut self, on: bool) {
         self.settings.paragraphs = on;
         self.settings.save();
@@ -3591,21 +4339,8 @@ impl App {
             if !d.form_fields().is_empty() {
                 let name = f.file_name().unwrap_or(f.as_os_str());
                 let name = name.to_string_lossy().into_owned();
-                // An answer that couldn't be drawn would be lost: nothing is added.
-                let lost = d.undrawable_fields();
-                if !lost.is_empty() {
-                    let (what, them) = match lost.len() {
-                        1 => ("the answer of the field", "it"),
-                        _ => ("the answers of these fields:", "them"),
-                    };
-                    self.show(Dialog::Message(
-                        "Pages not added".into(),
-                        format!(
-                            "LimarePDF can't draw {what} {} in “{name}”, so adding its pages \
-                             would lose {them}. Nothing was added.",
-                            limarepdf_core::quoted_list(&lost)
-                        ),
-                    ));
+                if let Some(stop) = undrawable(&d, &name) {
+                    self.show(stop);
                     return;
                 }
                 names.push(name);
@@ -3622,21 +4357,32 @@ impl App {
                 to: a.to,
                 docs,
                 names,
+                protected: false,
+                cut_from: None,
             })));
             return;
         }
-        self.add_pages(ctx, i, docs, a.to);
+        self.add_pages(ctx, i, docs, a.to, false);
     }
 
     /// Adds the pages of `docs` to tab `i`'s document where they go, in one step: after the
-    /// page named, first, or at the end (also when that page has gone since).
-    fn add_pages(&mut self, ctx: &egui::Context, i: usize, docs: Vec<Pdf>, to: PagesGo) {
-        let protected = docs.iter().any(Pdf::encrypted);
+    /// page named, first, or at the end (also when that page has gone since). Pages of a
+    /// password-protected document (or `protected`, from one) make the tab protected.
+    /// Whether they were added.
+    fn add_pages(
+        &mut self,
+        ctx: &egui::Context,
+        i: usize,
+        docs: Vec<Pdf>,
+        to: PagesGo,
+        protected: bool,
+    ) -> bool {
+        let protected = protected || docs.iter().any(Pdf::encrypted);
         if protected {
             let done = "added the pages of the password-protected document";
             if let Err(stop) = self.withdraw_copies(i, done) {
                 self.show(stop);
-                return;
+                return false;
             }
         }
         let t = &mut self.tabs[i];
@@ -3646,11 +4392,154 @@ impl App {
             PagesGo::After(None) => 0,
             PagesGo::After(Some(id)) => t.page_of(id).map_or(n, |p| p + 1),
         };
-        if t.arrange(ctx, &[], |p| p.insert_pages(at, docs)) {
+        let added = t.arrange(ctx, &[], |p| p.insert_pages(at, docs));
+        if added {
             t.copy.protected |= protected;
             if to != PagesGo::End {
                 t.placed(at, t.page_count() - n);
             }
+        }
+        added
+    }
+
+    /// Pages copied or cut, waiting to be pasted (PF-48).
+    fn pages_to_paste(&self) -> bool {
+        self.copied_pages.is_some() || self.tabs.iter().any(Tab::has_cut)
+    }
+
+    /// Lets go of the pages copied or cut: the clipboard holds one thing, so what is copied
+    /// or cut next replaces them. Pages cut stay where they are, no longer cut.
+    fn let_go_of_pages(&mut self) {
+        self.copied_pages = None;
+        for t in &mut self.tabs {
+            t.take_back_cut();
+        }
+    }
+
+    /// Copies the pages selected in the tab in front (PF-48): a document of them is kept to
+    /// paste in any tab, and the system's clipboard gets their names, as Cut gives it.
+    fn copy_pages(&mut self, ctx: &egui::Context) {
+        let t = &mut self.tabs[self.active];
+        let chosen: Vec<usize> =
+            (t.ed.selection.pages()).map_or(Vec::new(), |s| s.iter().copied().collect());
+        let doc = match t.pdf.extract(&chosen) {
+            Ok(doc) => doc,
+            Err(e) => {
+                t.error = Some(format!("{e:#}"));
+                return;
+            }
+        };
+        ctx.copy_text(pages_named(t, &chosen));
+        let (name, protected) = (t.name(), t.is_protected());
+        self.copied_pages = Some(CopiedPages {
+            doc,
+            name,
+            protected,
+        });
+        self.status = format!(
+            "Copied {}: paste to put a copy where the insertion bar is, or after the pages \
+             selected, in this document or another.",
+            pages_said(chosen.len())
+        );
+    }
+
+    /// Copies picture `id` of page `page` in the tab in front to the system's clipboard as it
+    /// shows (NEW-09's stage 3), drawn on a thread ([`Loaded::PictureCopied`]).
+    fn copy_picture(&mut self, ctx: &egui::Context, page: usize, id: usize) {
+        let pdf = self.tabs[self.active].pdf.clone();
+        let (n, tx, ctx) = (self.picture_copies, self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let drawn = crate::guard(|| pdf.picture_pixels(page, id)).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Loaded::PictureCopied(n, drawn));
+            ctx.request_repaint();
+        });
+        self.status = "Copying the picture…".into();
+    }
+
+    /// Pastes the pages cut or copied into the tab in front, where pages go there
+    /// ([`Tab::insert_at`]), in one step, selected (PF-48): pages cut in it move; pages cut
+    /// in another tab are added, then taken out of their own, as text cut in one document
+    /// and pasted in another moves; pages copied are added, each time. Pages with form
+    /// fields are asked about first, as Append PDFs asks.
+    fn paste_pages(&mut self, ctx: &egui::Context) {
+        let i = self.active;
+        let t = &mut self.tabs[i];
+        if t.has_cut() {
+            if let Some(said) = t.paste_pages(ctx) {
+                t.info = Some(said.into());
+            }
+            return;
+        }
+        let (doc, name, protected, cut_from) = match self.tabs.iter().find(|t| t.has_cut()) {
+            Some(s) => {
+                let pages: Vec<usize> = s.cut_pages().into_iter().collect();
+                let from = CutFrom {
+                    tab: s.id,
+                    pages: s.cut_ids().to_vec(),
+                };
+                match s.pdf.extract(&pages) {
+                    Ok(doc) => (doc, s.name(), s.is_protected(), Some(from)),
+                    Err(e) => {
+                        self.tabs[i].error = Some(format!("{e:#}"));
+                        return;
+                    }
+                }
+            }
+            None => match &self.copied_pages {
+                Some(c) => (c.doc.clone(), c.name.clone(), c.protected, None),
+                None => return,
+            },
+        };
+        let t = &self.tabs[i];
+        let at = t.insert_at();
+        let to = PagesGo::After(at.checked_sub(1).and_then(|p| t.page_id(p)));
+        if !doc.form_fields().is_empty() {
+            if let Some(stop) = undrawable(&doc, &name) {
+                self.show(stop);
+                return;
+            }
+            let asked = Asked::of(t);
+            self.show(Dialog::ConfirmAppendForms(Box::new(AppendForms {
+                asked,
+                to,
+                docs: vec![doc],
+                names: vec![name],
+                protected,
+                cut_from,
+            })));
+            return;
+        }
+        if self.add_pages(ctx, i, vec![doc], to, protected) {
+            self.take_out_cut(ctx, cut_from);
+        }
+    }
+
+    /// Takes pages cut in one tab out of it once they are pasted in another (PF-48), in
+    /// one step there. When they are all its pages it keeps them, as a document needs at
+    /// least one: the paste was a copy, and the tab in front says so.
+    fn take_out_cut(&mut self, ctx: &egui::Context, from: Option<CutFrom>) {
+        let Some(from) = from else {
+            return;
+        };
+        let Some(s) = self.tabs.iter().position(|t| t.id == from.tab) else {
+            return;
+        };
+        let src = &mut self.tabs[s];
+        if src.cut_ids() == from.pages {
+            src.take_back_cut();
+        }
+        let pages: Vec<usize> = (from.pages.iter())
+            .filter_map(|&id| src.page_of(id))
+            .collect();
+        let name = src.name();
+        if pages.len() == src.page_count() {
+            self.tabs[self.active].info = Some(format!(
+                "Pasted a copy: “{name}” keeps its pages, as a document needs at least one"
+            ));
+            return;
+        }
+        if !pages.is_empty() && src.arrange(ctx, &[], |p| p.delete_pages(&pages)) {
+            self.status = format!("Moved {} from “{name}”.", pages_said(pages.len()));
         }
     }
 
@@ -3985,6 +4874,12 @@ impl App {
             .and_then(|a| self.tabs.iter().find(|t| t.id == a.tab))
             .map(Tab::title);
         let file = file.as_deref();
+        // The paper sizes of the printer chosen in Print, once it is known: those found
+        // earlier in the session, else asked for.
+        if let Dialog::Print(_, s) = &mut dialog {
+            let (known, kept) = (&self.papers_known, &self.settings.print_papers);
+            want_papers(&mut self.searches, &self.tx, ctx, known, kept, s);
+        }
         match &mut dialog {
             Dialog::None => done = true,
             Dialog::About(page) => done = about::show(ctx, page),
@@ -3998,6 +4893,33 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::Settings(p) => {
+                let out = dlg::settings(ctx, p);
+                match out {
+                    dlg::SettingsOut::ChooseFolder => {
+                        let start = p.folder.clone().or_else(|| self.settings.folder.clone());
+                        if let Some(dir) = Self::pick_folder("Documents folder", start.as_deref()) {
+                            p.folder = Some(dir);
+                        }
+                    }
+                    dlg::SettingsOut::AddDictionary => {
+                        if let Some(files) = Self::pick_dictionaries() {
+                            self.add_dictionaries(ctx, &files);
+                        }
+                        (p.languages, p.language) = language_names(ctx);
+                    }
+                    dlg::SettingsOut::Close => done = true,
+                    dlg::SettingsOut::Open => {}
+                }
+                let was = self.prefs(ctx);
+                self.apply_prefs(ctx, &was, p);
+                // A message the change gave (recovery copies left behind) shows first; the
+                // window comes back after it.
+                if !done && !matches!(self.dialog, Dialog::None) {
+                    self.waiting.push_front(Dialog::Settings(p.clone()));
+                    done = true;
+                }
+            }
             Dialog::OpenLink(url) => match dlg::confirm(
                 ctx,
                 Ask::new(
@@ -4177,6 +5099,7 @@ impl App {
                         match r {
                             Replacing::Images(_) => "these images",
                             Replacing::Split(_) => "the split's files",
+                            Replacing::Pictures(_) => "these pictures",
                         },
                         if *n == 1 { "it" } else { "them" },
                     ),
@@ -4189,6 +5112,7 @@ impl App {
                         match r.clone() {
                             Replacing::Images(e) => self.start_export(ctx, e),
                             Replacing::Split(s) => self.start_split(ctx, s),
+                            Replacing::Pictures(p) => self.start_save_pictures(ctx, p),
                         }
                     }
                     done = true;
@@ -4302,6 +5226,28 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ReduceSize(asked, s) => match dlg::reduce_size(ctx, file, s) {
+                Outcome::Apply => {
+                    self.settings.reduce_quality = s.quality;
+                    self.settings.save();
+                    if self.still(asked) {
+                        let pages = s.chosen();
+                        let opts = limarepdf_core::ReduceOptions {
+                            quality: s.quality,
+                            jpeg_quality: None,
+                        };
+                        self.spawn_job(ctx, REDUCE_JOB, move |p| {
+                            let r = p.reduce_pictures(&pages, &opts)?;
+                            let size = p.saved_size()?;
+                            let text = crate::reduce_size::reduced_text(&r, size);
+                            Ok((r.pictures > 0, text))
+                        });
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::RemoveHidden(asked, s) => match dlg::remove_hidden(ctx, file, s) {
                 Outcome::Apply => {
                     let what: Vec<limarepdf_core::Hidden> = s
@@ -4327,9 +5273,10 @@ impl App {
                         &format!(
                             "This document has {} marked for redaction but not applied: \
                              nothing under the marks has been removed, and anyone can still \
-                             read it. Apply them first with Document > Apply redactions, or \
-                             save the marks to finish or review later.",
-                            plural(*n, "an area", "{n} areas")
+                             read it. Apply them first with {}, or save the marks to finish \
+                             or review later.",
+                            plural(*n, "an area", "{n} areas"),
+                            menu::way(Act::ApplyRedactions)
                         ),
                         Btn::danger("Save with marks"),
                     )
@@ -4504,16 +5451,37 @@ impl App {
                 Outcome::Apply if !s.ready() => {
                     s.search = dlg::Search::Running(self.find_printers(ctx));
                 }
+                Outcome::Apply if s.papers_failed().is_some() => s.papers = dlg::Papers::Unasked,
                 Outcome::Apply if !self.still(asked) => done = true,
-                Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
+                Outcome::Apply => 'print: {
+                    // Print is greyed until the paper is known.
+                    let Some(setup) = s.setup() else {
+                        break 'print;
+                    };
                     let printer = s.printers[s.printer].name.clone();
+                    // Remembered for next time, as Acrobat keeps the last scaling: the
+                    // printer, and the paper for each printer.
+                    let paper = setup.paper.id.clone();
+                    self.settings.print_printer = Some(printer.clone());
+                    self.settings.print_papers.insert(printer.clone(), paper);
+                    self.settings.print_orientation = s.orientation;
+                    self.settings.print_scale = s.scale;
+                    self.settings.print_per_sheet = s.per_sheet;
+                    self.settings.print_booklet = s.booklet;
+                    self.settings.print_binding = s.binding;
+                    self.settings.save();
+                    let t = &mut self.tabs[self.active];
                     let opts = print::PrintOptions {
                         printer: Some(printer.clone()),
                         copies: s.copies,
                         sides: s.sides,
                         as_image: s.as_image,
                         title: t.stem("Untitled"),
+                        paper: Some(setup.paper),
+                        orientation: setup.orientation,
+                        scale: setup.scale,
+                        per_sheet: setup.per_sheet,
+                        booklet: setup.booklet,
                     };
                     if let Some(layout) = s.selection {
                         let ex = Excerpt::new(t, layout);
@@ -4611,7 +5579,12 @@ impl App {
                                 .filter(|d| !d.form_fields().is_empty())
                                 .try_for_each(|d| d.flatten_form(None).map(|_| ()));
                             match drawn {
-                                Ok(()) => self.add_pages(ctx, self.active, docs, q.to),
+                                Ok(()) => {
+                                    let (i, to) = (self.active, q.to);
+                                    if self.add_pages(ctx, i, docs, to, q.protected) {
+                                        self.take_out_cut(ctx, q.cut_from.take());
+                                    }
+                                }
                                 Err(e) => self.show(Dialog::Message(
                                     "Pages not added".into(),
                                     format!("{e:#}\n\nNothing was added."),
@@ -4624,6 +5597,22 @@ impl App {
                     Outcome::Open => {}
                 }
             }
+            Dialog::Link(asked, ask) => match dlg::link(ctx, file, ask) {
+                dlg::LinkOut::Done(to, underline) => {
+                    done = true;
+                    if self.still(asked) {
+                        self.tabs[self.active].write_link(ctx, ask, &to, underline);
+                    }
+                }
+                dlg::LinkOut::Remove => {
+                    done = true;
+                    if let Some((page, id)) = ask.editing.filter(|_| self.still(asked)) {
+                        self.tabs[self.active].remove_link(ctx, page, id);
+                    }
+                }
+                dlg::LinkOut::Cancel => done = true,
+                dlg::LinkOut::Open => {}
+            },
             Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, file, layout) {
                 Outcome::Apply => {
                     let layout = *layout;
@@ -4687,6 +5676,28 @@ impl App {
     }
 
     /// The state the commands' conditions are checked against.
+    /// After a switch of interface (ENH-45): the keyboard a control gave up, as the other
+    /// interface doesn't draw it, goes back to the typing open on the page, else to the
+    /// interface's switch `switch`. A control both draw keeps it.
+    fn hand_on_keyboard(&mut self, ctx: &egui::Context, switch: Option<egui::Id>) {
+        if self.refocus == 0 {
+            return;
+        }
+        self.refocus -= 1;
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+        self.refocus = 0;
+        match self.tabs.get(self.active).and_then(|t| t.ed.typing_id()) {
+            Some(id) => page_text::give_back(ctx, id),
+            None => {
+                if let Some(id) = switch {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
+            }
+        }
+    }
+
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
             docs: self.tabs.len(),
@@ -4705,7 +5716,9 @@ impl App {
             page_labels: self.settings.page_labels,
             planned: self.settings.show_planned,
             compact: self.settings.compact_commands,
+            minimal: self.settings.minimal,
             snap: self.settings.snap,
+            spelling: self.settings.spelling,
             accent: self.settings.accent,
             layout: self.settings.layout,
             cover: self.settings.cover,
@@ -4715,6 +5728,8 @@ impl App {
         };
         if let Some(t) = self.tabs.get(self.active) {
             t.fill_ctx(&mut c);
+            // Pages cut in another tab, or copied, are pasted here too (PF-48).
+            c.cut = self.pages_to_paste();
             // In a text box with the keyboard, Undo and Redo are its typing's, as the keys;
             // on a paragraph's frame's handle, the paragraph's.
             let focused = ctx.memory(|m| m.focused());
@@ -4730,62 +5745,7 @@ impl App {
         c
     }
 
-    /// The File menu, built from the registry: File's commands, with Open recent from
-    /// `recent` (the recent files that still exist), then a submenu for each other group,
-    /// so that every command has a place in it.
-    fn menu(ui: &mut egui::Ui, c: &Ctx, recent: &[&PathBuf], acts: &mut Vec<Act>) {
-        Self::menu_group(ui, Group::File, c, recent, acts);
-        ui.separator();
-        for g in Group::MENUS.into_iter().filter(|&g| g != Group::File) {
-            ui.menu_button(g.name(), |ui| Self::menu_group(ui, g, c, recent, acts));
-        }
-    }
-
-    /// A group's commands in the menu, a run with the same submenu as one submenu; File's
-    /// with Open recent, and the planned ones where they will be.
-    fn menu_group(ui: &mut egui::Ui, g: Group, c: &Ctx, recent: &[&PathBuf], acts: &mut Vec<Act>) {
-        let items: Vec<&Action> = ACTIONS.iter().filter(|a| a.group == g && a.menu).collect();
-        let mut i = 0;
-        while i < items.len() {
-            let a = items[i];
-            if a.sep && i > 0 {
-                ui.separator();
-            }
-            if a.submenu.is_empty() {
-                menu_item(ui, a, c, acts);
-                let planned = match a.act {
-                    Act::Open => {
-                        recent_menu(ui, recent, acts);
-                        None
-                    }
-                    Act::SaveAs => Some(band::FILE_PLANNED[1]),
-                    Act::Print => Some(band::FILE_PLANNED[0]),
-                    _ => None,
-                };
-                if let Some(p) = planned.filter(|_| c.planned) {
-                    band::planned_menu_item(ui, p);
-                }
-                i += 1;
-                continue;
-            }
-            // A run of items with the same submenu becomes one submenu.
-            let n = items[i..]
-                .iter()
-                .take_while(|b| b.submenu == a.submenu)
-                .count();
-            ui.menu_button(a.submenu, |ui| {
-                for (j, b) in items[i..i + n].iter().enumerate() {
-                    if b.sep && j > 0 {
-                        ui.separator();
-                    }
-                    menu_item(ui, b, c, acts);
-                }
-            });
-            i += n;
-        }
-    }
-
-    /// The command palette (Ctrl+K): type to filter the commands, Up and Down to move,
+    /// The command palette (Ctrl+Shift+P): type to filter the commands, Up and Down to move,
     /// Enter or a click to run, Esc or a click outside to close.
     fn palette_ui(&mut self, ctx: &egui::Context, c: &Ctx, acts: &mut Vec<Act>) {
         let Some(p) = self.palette.as_mut() else {
@@ -4956,7 +5916,8 @@ impl App {
                 // not an open list or menu, which Esc closes first; F3 goes to the next match
                 // from one, as from Search results' fields.
                 let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
-                let find = matches!(a.act, Act::FindNext | Act::FindPrevious);
+                // F7 opens Spelling from text being typed too, as in Word.
+                let find = matches!(a.act, Act::FindNext | Act::FindPrevious | Act::Spelling);
                 let skip = if region || find {
                     picking
                 } else {
@@ -5003,14 +5964,57 @@ impl App {
     /// Text typed or pasted with no text box having the keyboard goes over the words
     /// selected in the tab in front, as a word processor types over a selection, or into a
     /// line just opened on its page ([`crate::editor::Editor::type_over`]).
+    ///
+    /// A picture pasted from the system's clipboard with nothing being typed goes on the page
+    /// in view ([`Tab::paste_picture`], NEW-09's stage 3).
     fn type_over(&mut self, ctx: &egui::Context) {
         if self.palette.is_some() || dlg::any_open(ctx) {
             return;
         }
+        let image = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::PasteImage(image) => Some(image.clone()),
+                _ => None,
+            })
+        });
+        // Paste asked the system for its clipboard last frame and nothing came.
+        let pasted = image.is_some()
+            || ctx.input(|i| (i.events.iter()).any(|e| matches!(e, egui::Event::Paste(_))));
+        let asked = self
+            .paste_asked
+            .take_if(|&mut at| pasted || at < ctx.cumulative_frame_nr());
+        let held = self.pages_to_paste();
+        let busy = self.busy;
         let Some(t) = self.tabs.get_mut(self.active) else {
             return;
         };
+        if asked.is_some() && !pasted {
+            t.info = Some("There's nothing on the clipboard to paste here".into());
+        }
+        if image.is_some() && t.ed.typing_id().is_some() {
+            t.info = Some(
+                "A picture can't go into text being typed: press Esc to finish typing, then \
+                 paste"
+                    .into(),
+            );
+            return;
+        }
         if ctx.egui_wants_keyboard_input() && !t.holds_keys(ctx) {
+            return;
+        }
+        if let Some(image) = image {
+            if t.organising() {
+                t.info = Some("To paste the picture, go back to the page view first".into());
+            } else if busy {
+                t.info = Some("Paste waits until the task under way finishes".into());
+            } else {
+                // The clipboard holds one thing: a picture copied after pages replaces them.
+                self.let_go_of_pages();
+                let t = &mut self.tabs[self.active];
+                if t.paste_picture(ctx, &image) {
+                    self.status = "Pasted the picture.".into();
+                }
+            }
             return;
         }
         // An input method's too: with words selected it is on ([`Editor::type_over`]).
@@ -5030,16 +6034,19 @@ impl App {
                 .collect()
         });
         let paste = typed.iter().any(|e| matches!(e, egui::Event::Paste(_)));
-        // Pages cut go where pages are selected, or in Organise where the bar is; with
-        // nothing selected or typed, after the current page, as the band's Paste puts them.
+        // Pages cut or copied, in this tab or another, go where pages are selected, or in
+        // Organise where the bar is; with nothing selected or typed, after the current page,
+        // as the band's Paste puts them.
         let none = matches!(t.ed.selection, Selection::None) && t.ed.typing_id().is_none();
         let pages = t.organising() || t.ed.selection.pages().is_some() || none;
-        if paste && pages && t.has_cut() {
+        if paste && pages && held {
             self.act(ctx, Act::Paste);
         } else if !typed.is_empty() && t.ed.type_over(ctx, &t.pdf, typed) {
             ctx.request_repaint();
         } else if paste && t.organising() {
-            t.info = Some("To move pages, cut them, then paste them where they go".into());
+            t.info = Some(
+                "To move or copy pages, cut or copy them, then paste them where they go".into(),
+            );
         } else if paste && t.ed.typing_id().is_none() {
             // Nowhere to paste: where to click.
             t.info = Some(
@@ -5048,6 +6055,42 @@ impl App {
                     .into(),
             );
         }
+    }
+}
+
+/// Why the pages of `d` (from `name`) can't be added to a document: an answer in its form
+/// fields that LimarePDF can't draw would be lost, so nothing is added.
+fn undrawable(d: &Pdf, name: &str) -> Option<Dialog> {
+    let lost = d.undrawable_fields();
+    if lost.is_empty() {
+        return None;
+    }
+    let (what, them) = match lost.len() {
+        1 => ("the answer of the field", "it"),
+        _ => ("the answers of these fields:", "them"),
+    };
+    Some(Dialog::Message(
+        "Pages not added".into(),
+        format!(
+            "LimarePDF can't draw {what} {} in “{name}”, so adding its pages would lose \
+             {them}. Nothing was added.",
+            limarepdf_core::quoted_list(&lost)
+        ),
+    ))
+}
+
+/// What the system's clipboard gets for pages cut or copied: their names, so that the
+/// paste keys work wherever the clipboard was empty.
+fn pages_named(t: &Tab, pages: &[usize]) -> String {
+    let names: Vec<String> = pages.iter().map(|&p| t.page_name(p)).collect();
+    format!("Pages {} of {}", names.join(", "), t.name())
+}
+
+/// "1 page", "3 pages".
+fn pages_said(n: usize) -> String {
+    match n {
+        1 => "1 page".into(),
+        n => format!("{n} pages"),
     }
 }
 
@@ -5603,11 +6646,12 @@ fn inspector_head(ui: &mut egui::Ui, s: &mut Settings, t: &mut Tab, collapse: bo
 
 /// The side panel's views, top to bottom on the strip at the window's left edge: each with
 /// the command that shows it, for its icon, and its name.
-const SIDE_VIEWS: [(Side, Act, &str); 5] = [
+const SIDE_VIEWS: [(Side, Act, &str); 6] = [
     (Side::Pages, Act::PagesView, "Pages"),
     (Side::Search, Act::SearchView, "Search results"),
     (Side::Bookmarks, Act::Bookmarks, "Bookmarks"),
     (Side::Comments, Act::Comments, "Comments"),
+    (Side::Spelling, Act::Spelling, "Spelling"),
     (Side::Signatures, Act::Signatures, "Digital signatures"),
 ];
 
@@ -5620,6 +6664,7 @@ fn of_the_page(a: Act) -> bool {
             | Act::EditObjectText
             | Act::MoveText
             | Act::ReplaceImage
+            | Act::SaveImage
             | Act::NextField
             | Act::PrevField
             | Act::ClearField
@@ -5644,6 +6689,7 @@ fn side_panel(side: Side) -> (&'static str, f32) {
         Side::Search => ("side-search", SIDE_TEXT_WIDTH),
         Side::Bookmarks => ("side-bookmarks", SIDE_TEXT_WIDTH),
         Side::Comments => ("side-comments", SIDE_TEXT_WIDTH),
+        Side::Spelling => ("side-spelling", SIDE_TEXT_WIDTH),
         Side::Signatures => ("side-signatures", SIDE_TEXT_WIDTH),
     }
 }
@@ -5677,12 +6723,11 @@ fn zoom_menu(ui: &mut egui::Ui, zoom: f32, c: &Ctx, acts: &mut Vec<Act>) {
                     menu_item(ui, actions::get(act), c, acts);
                 }
                 ui.separator();
-                for a in ACTIONS.iter().filter(|a| a.submenu == "Page layout") {
-                    if a.sep {
-                        ui.separator();
-                    }
-                    menu_item(ui, a, c, acts);
+                for l in [Layout::Continuous, Layout::Facing, Layout::Single] {
+                    menu_item(ui, actions::get(Act::Layout(l)), c, acts);
                 }
+                ui.separator();
+                menu_item(ui, actions::get(Act::ToggleCover), c, acts);
             })
             .0
             .on_hover_text("Zoom and page layout")
@@ -5690,8 +6735,169 @@ fn zoom_menu(ui: &mut egui::Ui, zoom: f32, c: &Ctx, acts: &mut Vec<Act>) {
     });
 }
 
+/// Minimal's status bar beside the zoom (ENH-45): the page layout's menu and Fit width, the
+/// commands the band's View has, as the reference keeps them at the bottom right.
+fn view_choices(ui: &mut egui::Ui, c: &Ctx, acts: &mut Vec<Act>) {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let size = egui::vec2(22.0, 20.0);
+        let b = egui::Button::new(theme::icon(icon::COLUMNS).size(14.0))
+            .frame_when_inactive(false)
+            .min_size(size);
+        egui::containers::menu::MenuButton::from_button(b)
+            .ui(ui, |ui| {
+                for l in [Layout::Continuous, Layout::Facing, Layout::Single] {
+                    menu_item(ui, actions::get(Act::Layout(l)), c, acts);
+                }
+                ui.separator();
+                menu_item(ui, actions::get(Act::ToggleCover), c, acts);
+            })
+            .0
+            .on_hover_text("Page layout")
+            .widget_info(|| named("Page layout"));
+        let a = actions::get(Act::FitWidth);
+        let (on, enabled) = (c.fit, (a.enabled)(c));
+        let b = egui::Button::new(theme::icon(icon::ARROWS_HORIZONTAL).size(14.0))
+            .selected(on)
+            .frame_when_inactive(on)
+            .min_size(size);
+        let r = ui.add_enabled(enabled, b);
+        r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, on, a.label));
+        let tip = tooltip(ui.ctx(), a);
+        if r.on_hover_text(tip)
+            .on_disabled_hover_ui(|ui| actions::greyed_tip(ui, a, c))
+            .clicked()
+        {
+            acts.push(Act::FitWidth);
+        }
+    });
+}
+
+/// Minimal's Tools (ENH-45): labelled at every width, as the reference has it, opening
+/// [`band::tools`] (`add`). Returns its button.
+fn tools_button(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    let glyph = theme::icon(icon::TOOLBOX).size(16.0);
+    let caret = egui::Atom::from(theme::icon(icon::CARET_DOWN).size(10.0));
+    let b = egui::Button::new((glyph, "Tools", caret))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(28.0, 28.0));
+    // Open while a command's own menu in it is used; picking a command closes it.
+    let config = egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let (r, _) = egui::containers::menu::MenuButton::from_button(b)
+        .config(config)
+        .ui(ui, add);
+    r.widget_info(|| named("Tools"));
+    r.on_hover_text("Tools: the commands a task starts from, by kind")
+}
+
+/// Minimal's row's commands in reading order, for More's menu.
+const ROW_ORDER: [Act; 8] = [
+    Act::ToggleSide,
+    Act::Open,
+    Act::Save,
+    Act::Undo,
+    Act::Redo,
+    Act::Find,
+    Act::ToggleInspector,
+    Act::Print,
+];
+
+/// The order Minimal's row's commands go under More as room runs out (ENH-45): first the
+/// panels' buttons, which their strips at the window's edges also have, then Print and
+/// Find, and the file's and history's last. The File menu and Tools always show.
+const MORE_ORDER: [Act; 8] = [
+    Act::ToggleSide,
+    Act::ToggleInspector,
+    Act::Print,
+    Act::Find,
+    Act::Redo,
+    Act::Undo,
+    Act::Save,
+    Act::Open,
+];
+
+/// How many of [`MORE_ORDER`] go under More in a row `room` wide, Tools `tools` wide: none
+/// while every command fits (always, at the window's least width today).
+fn more_folded(room: f32, tools: f32) -> usize {
+    // A button with the gap after it; the dividers either side of Undo and Redo.
+    const BUTTON: f32 = 30.0;
+    const DIVIDERS: f32 = 26.0;
+    let need = |n: usize| {
+        let history = MORE_ORDER[n..].contains(&Act::Undo) || MORE_ORDER[n..].contains(&Act::Redo);
+        // The File menu, those shown and More.
+        let buttons = 1 + (MORE_ORDER.len() - n) + usize::from(n > 0);
+        let dividers = if history { DIVIDERS } else { 0.0 };
+        buttons as f32 * BUTTON + tools + 2.0 + dividers + 8.0
+    };
+    (0..=MORE_ORDER.len())
+        .find(|&n| need(n) <= room)
+        .unwrap_or(MORE_ORDER.len())
+}
+
+/// Minimal's More (ENH-45): the row's commands without room (`folded`), in the row's order.
+fn more_button(ui: &mut egui::Ui, folded: &[Act], c: &Ctx, acts: &mut Vec<Act>) {
+    let b = egui::Button::new(theme::icon(icon::DOTS_THREE).size(16.0))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(28.0, 28.0));
+    let (r, _) = egui::containers::menu::MenuButton::from_button(b).ui(ui, |ui| {
+        for a in ROW_ORDER.into_iter().filter(|a| folded.contains(a)) {
+            menu_item(ui, actions::get(a), c, acts);
+        }
+    });
+    r.widget_info(|| named("More"));
+    r.on_hover_text("More commands, without room in the row");
+}
+
 /// The window's width under which the status bar's zoom has no slider, only its buttons.
 const SLIDER_ROOM: f32 = 900.0;
+
+/// The interface's switch at the tab strip's right end (ENH-45): labelled with what it does,
+/// as a button is (the user, 2026-11-03), the interface it goes to with arrows in or out,
+/// and named so for screen readers; View's Minimal interface, ticked or not, says which is
+/// in use. Its own id, so the keyboard stays on it through a switch.
+fn interface_switch(ui: &mut egui::Ui, minimal: bool) -> egui::Response {
+    let a = actions::get(Act::ToggleMinimal);
+    let (glyph, text, name, what) = match minimal {
+        true => (
+            icon::ARROWS_OUT_SIMPLE,
+            "Full",
+            SWITCH_TO_FULL,
+            "the band, with every command's button",
+        ),
+        false => (
+            icon::ARROWS_IN_SIMPLE,
+            "Minimal",
+            SWITCH_TO_MINIMAL,
+            "one quiet row of commands",
+        ),
+    };
+    let tip = match actions::shown_key(ui.ctx(), a) {
+        Some(k) => format!("{name} ({})\n{what}", actions::key_text(ui.ctx(), &k)),
+        None => format!("{name}\n{what}"),
+    };
+    // As wide with either word, so the tabs beside it don't move with a switch.
+    let wide = |t: egui::RichText| {
+        let (mode, style) = (Some(egui::TextWrapMode::Extend), egui::TextStyle::Button);
+        let g = egui::WidgetText::from(t).into_galley(ui, mode, f32::INFINITY, style);
+        g.size().x
+    };
+    let words = wide("Minimal".into()).max(wide("Full".into()));
+    let s = ui.spacing();
+    let room = s.icon_spacing + 2.0 * s.button_padding.x;
+    let width = wide(theme::icon(glyph).size(16.0)) + words + room;
+    let b = egui::Button::new((theme::icon(glyph).size(16.0), text))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(width, 28.0));
+    let scope = egui::UiBuilder::new().scope_id(egui::Id::unique("interface switch"));
+    let r = ui.scope_builder(scope, |ui| ui.add(b)).inner;
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+    r.on_hover_text(tip)
+}
+
+/// The interface's switch's names, by what it does.
+const SWITCH_TO_MINIMAL: &str = "Switch to the Minimal interface";
+const SWITCH_TO_FULL: &str = "Switch to the Full interface";
 
 /// The status bar's view buttons, as a word processor's: the pages as they read, and
 /// Organise's grid (NEW-14), the one showing marked.
@@ -5779,6 +6985,26 @@ fn float_button(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
     }
 }
 
+/// Minimal's inspector's top while text is the target (ENH-45): Edit's Font group and the
+/// four alignments ([`band::text_look`]), in the tab's own ids, as the inspector's body.
+fn inspector_text_look(ui: &mut egui::Ui, t: &mut Tab, c: &Ctx, acts: &mut Vec<Act>) {
+    let scope = t.ed.scope();
+    ui.push_id((scope, "text-look"), |ui| {
+        let mut font = |ui: &mut egui::Ui| t.guarded(|t| t.ed.font_band(ui, false));
+        band::text_look(ui, c, &mut font, acts);
+    });
+    ui.separator();
+}
+
+/// What Minimal's inspector's Font and Alignment groups have, which the docked buttons
+/// beside them then leave out.
+fn in_text_look(act: Act) -> bool {
+    matches!(
+        act,
+        Act::Bold | Act::Italic | Act::Underline | Act::Strikethrough | Act::AlignText(_)
+    )
+}
+
 /// The collapsed inspector: a strip with a button to expand it at the top, the docked
 /// selection buttons (`groups`, empty when floating or nothing is selected) with the
 /// float button, and a button for the inspector's contents in a pop-out. Returns
@@ -5838,6 +7064,8 @@ fn inspector_body(
         t.ed.keep.clone_from(&s.keep_tools);
         // The selected comment's page by its label, as the Comments view names it.
         t.ed.annot_page = t.ed.selection.annot().map(|(p, _)| t.page_name(p));
+        // For the selected link's page box.
+        t.ed.page_count = t.page_count();
         t.ed.inspector(ui);
         if std::mem::take(&mut t.ed.apply_redactions) {
             t.requested.push(Act::ApplyRedactions);
@@ -5889,6 +7117,7 @@ fn inspector_popout(
     s: &mut Settings,
     t: &mut Tab,
     c: &Ctx,
+    acts: &mut Vec<Act>,
 ) -> (Option<inspector::Apply>, bool, egui::Rect) {
     let mut apply = None;
     let height = (strip.height() - 16.0).max(120.0);
@@ -5902,6 +7131,9 @@ fn inspector_popout(
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(INSPECTOR_WIDTH);
                 inspector_head(ui, s, t, false);
+                if c.minimal && t.ed.text_targeted() {
+                    inspector_text_look(ui, t, c, acts);
+                }
                 ui.add_space(4.0);
                 let scope = t.ed.scope();
                 egui::ScrollArea::vertical()
@@ -5933,9 +7165,9 @@ fn palette_columns(ui: &egui::Ui, items: &[&Action]) -> (f32, f32) {
     };
     let mut columns = (0.0_f32, 0.0_f32);
     for a in items {
-        columns.0 = columns.0.max(width(a.group.name().to_string()));
+        columns.0 = columns.0.max(width(menu::category(a.act).to_string()));
         if let Some(k) = actions::shown_key(ui.ctx(), a) {
-            columns.1 = columns.1.max(width(ui.ctx().format_shortcut(&k)));
+            columns.1 = columns.1.max(width(actions::key_text(ui.ctx(), &k)));
         }
     }
     columns
@@ -5993,20 +7225,20 @@ fn palette_row(
     let key_left = rect.right() - pad - columns.1;
     if let Some(k) = actions::shown_key(ui.ctx(), a) {
         let at = egui::pos2(rect.right() - pad, y);
-        let key = ui.ctx().format_shortcut(&k);
+        let key = actions::key_text(ui.ctx(), &k);
         painter.text(at, egui::Align2::RIGHT_CENTER, key, font.clone(), weak);
     }
     let cat_left = key_left - if columns.1 > 0.0 { gap } else { 0.0 } - columns.0;
     let at = egui::pos2(cat_left, y);
-    let category = a.group.name();
+    let category = menu::category(a.act);
     painter.text(at, egui::Align2::LEFT_CENTER, category, font.clone(), weak);
     // The name after its submenu's, in the weak colour, cut short with … if it would reach
     // the category.
     let left = rect.left() + pad + 26.0;
     let mut job = egui::text::LayoutJob::default();
     let part = |colour| egui::TextFormat::simple(font.clone(), colour);
-    if !a.submenu.is_empty() {
-        job.append(&format!("{} › ", a.submenu), 0.0, part(weak));
+    if let Some(sub) = menu::submenu(a.act) {
+        job.append(&format!("{sub} › "), 0.0, part(weak));
     }
     job.append(a.label, 0.0, part(text));
     job.wrap = egui::text::TextWrapping::truncate_at_width((cat_left - gap - left).max(0.0));
@@ -6016,33 +7248,12 @@ fn palette_row(
     r
 }
 
-/// File > Open recent: the recent files that still exist, then Clear recent files.
-fn recent_menu(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
-    ui.add_enabled_ui(!recent.is_empty(), |ui| {
-        ui.menu_button("Open recent", |ui| {
-            for (i, path) in recent.iter().enumerate() {
-                let tip = path.display().to_string();
-                let row = egui::Button::new(file_name(path)).truncate();
-                if ui.add(row).on_hover_text(tip).clicked() {
-                    acts.push(Act::OpenRecent(i));
-                    ui.close();
-                }
-            }
-            ui.separator();
-            if ui.button("Clear recent files").clicked() {
-                acts.push(Act::ClearRecent);
-                ui.close();
-            }
-        });
-    });
-}
+use menu::file_name;
 
-/// A path's file name, or the whole path when it has none.
-fn file_name(path: &Path) -> String {
-    match path.file_name() {
-        Some(n) => n.to_string_lossy().into(),
-        None => path.display().to_string(),
-    }
+/// The spelling languages' names, in the Language menu's order, and which is chosen.
+fn language_names(ctx: &egui::Context) -> (Vec<String>, usize) {
+    let (langs, i) = crate::spell::languages(ctx);
+    (langs.into_iter().map(|l| l.name).collect(), i)
 }
 
 /// A tab whose document could not be shown: what happened, and ways out that don't
@@ -6067,6 +7278,19 @@ fn broken_state(ui: &mut egui::Ui, why: &str, acts: &mut Vec<Act>) {
 /// The window with no document: a card to open a PDF or start from images. The card
 /// is a drop target and is clickable as a whole; it lights up while files are dragged
 /// over the window.
+/// The locale whose region sets a new document's paper: on Linux and the BSDs the paper's
+/// own setting, in POSIX's order (`LC_ALL`, `LC_PAPER`, `LANG`); elsewhere, and when none
+/// is set, the system's language setting, which names the region on Windows and macOS.
+fn paper_locale() -> Option<String> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    for name in ["LC_ALL", "LC_PAPER", "LANG"] {
+        if let Some(v) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
+            return Some(v);
+        }
+    }
+    sys_locale::get_locale()
+}
+
 fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     let dragging = ui.input(|i| !i.raw.hovered_files.is_empty());
     let room = ui.max_rect();
@@ -6077,7 +7301,7 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     } else {
         0.0
     };
-    let size = egui::vec2(440.0, 310.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
+    let size = egui::vec2(440.0, 342.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
     let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
     let id = egui::Id::unique("empty-card");
     // A click anywhere on it opens a file; the keyboard has Open PDF… for that, so the
@@ -6115,6 +7339,12 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         acts.push(Act::Open);
     }
     ui.add_space(4.0);
+    // As Word's start screen offers Blank document.
+    let blank = egui::Button::new("New blank document").min_size(egui::vec2(180.0, 28.0));
+    if ui.add(blank).clicked() {
+        acts.push(Act::NewBlank);
+    }
+    ui.add_space(4.0);
     let images = egui::Button::new("Make a PDF from images…").min_size(egui::vec2(180.0, 28.0));
     let images = ui
         .add(images)
@@ -6148,7 +7378,7 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     ui.weak("or drop PDF and image files anywhere in this window");
     let keys = |a: Act| {
         let k = actions::get(a).keys[0];
-        ui.ctx().format_shortcut(&k)
+        actions::key_text(ui.ctx(), &k)
     };
     ui.weak(format!(
         "{} to open  ·  {} for all commands",
@@ -6172,6 +7402,7 @@ impl eframe::App for App {
         // Interface text the interface's own fonts can't draw (Chinese, Japanese, Korean,
         // emoji) in installed fonts, found on another thread at start (ENH-33).
         crate::typing_fonts::interface_fallback(&ctx);
+        self.spelling_frame(&ctx);
         // Back from another app, which may have changed the files open here.
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {
@@ -6375,25 +7606,34 @@ impl eframe::App for App {
         let recent: Vec<&PathBuf> = recent_files.iter().collect();
 
         // A document command's button in the commands' row: its icon and label, or its icon
-        // alone, named; its label, shortcut and hint as the tooltip. Returns where it is.
+        // alone, named; its label, shortcut and hint as the tooltip; pressed while a panel it
+        // shows is (Minimal's). Returns where it is.
         let quick =
             |ui: &mut egui::Ui, act: Act, glyph: &str, label: Option<&str>, acts: &mut Vec<Act>| {
                 let a = actions::get(act);
                 let glyph = theme::icon(glyph).size(16.0);
+                let on = a.checked.map(|f| f(&c));
                 let b = match label {
                     Some(label) => egui::Button::new((glyph, label)),
                     None => egui::Button::new(glyph),
                 }
-                .frame_when_inactive(false)
+                .frame_when_inactive(on == Some(true))
                 .min_size(egui::vec2(28.0, 28.0));
+                let b = match on {
+                    Some(on) => b.selected(on),
+                    None => b,
+                };
                 let enabled = (a.enabled)(&c);
                 let r = ui.add_enabled(enabled, b);
                 let name = a.label.trim_end_matches('…');
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
+                r.widget_info(|| match on {
+                    Some(on) => egui::WidgetInfo::selected(egui::Role::Button, enabled, on, name),
+                    None => egui::WidgetInfo::labeled(egui::Role::Button, enabled, name),
+                });
                 let tip = tooltip(ui.ctx(), a);
                 let at = r.rect;
                 if r.on_hover_text(tip.as_str())
-                    .on_disabled_hover_text(actions::greyed_tip(ui.ctx(), a, &c))
+                    .on_disabled_hover_ui(|ui| actions::greyed_tip(ui, a, &c))
                     .clicked()
                 {
                     acts.push(act);
@@ -6409,19 +7649,37 @@ impl eframe::App for App {
         // The tab whose close button was clicked, closed at the end of the frame: the rest
         // of it is drawn for the tabs as they were (`has`, `c`).
         let mut close = None;
-        if has {
-            let tabs = egui::Panel::top("tabs")
-                .frame(theme::tabs_frame(ui.style()))
-                .show_separator_line(false)
-                .show(ui, |ui| {
-                    regions::name(ui, Region::Tabs);
-                    let (pick, x) = tab_strip(ui, &self.tabs, self.active);
+        // The interface's switch at the tab strip's right end (ENH-45; the user's place,
+        // 2026-11-03, the nearest to the window's own buttons): the tabs share the rest. On
+        // the start screen too, alone in the strip, so it never moves.
+        let mut switch = None::<egui::Response>;
+        let switch_room = self.switch_width.unwrap_or(100.0) + TAB_GAP;
+        let tabs = egui::Panel::top("tabs")
+            .frame(theme::tabs_frame(ui.style()))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                regions::name(ui, Region::Tabs);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let room = (ui.available_width() - switch_room).max(0.0);
+                    let size = egui::vec2(room, TAB_HEIGHT);
+                    let strip = ui.allocate_ui(size, |ui| tab_strip(ui, &self.tabs, self.active));
+                    let (pick, x) = strip.inner;
                     if let Some(i) = pick {
                         self.active = i;
                     }
                     close = x;
+                    let end = egui::Layout::right_to_left(egui::Align::Center);
+                    ui.with_layout(end, |ui| {
+                        switch = Some(interface_switch(ui, c.minimal));
+                    });
                 });
-            self.regions.add(Region::Tabs, tabs.response.rect);
+            });
+        self.regions.add(Region::Tabs, tabs.response.rect);
+        let width = switch.as_ref().map(|r| r.rect.width());
+        if width.is_some_and(|w| self.switch_width.is_none_or(|was| (was - w).abs() > 0.5)) {
+            self.switch_width = width;
+            ctx.request_discard("the interface's switch measured");
         }
 
         // The commands (ENH-38), below the tabs: one row of the document's own commands as
@@ -6429,20 +7687,34 @@ impl eframe::App for App {
         // and Print and the button for compact commands at the right (the user's layout,
         // 2026-10-27, for a shorter window top); under it the chosen band's groups, compact
         // when chosen or while the window is short. (The file's name is on its tab and in
-        // the window's title.)
+        // the window's title.) The Minimal interface (ENH-45) has the one row alone: the
+        // navigation panel beside the File menu, and Find, Tools and the inspector by Print,
+        // in place of the band's names; no band. Without room for its commands, the least
+        // needed go under More ([`MORE_ORDER`]); the File menu and Tools always show.
         let short = ctx.content_rect().height() < SHORT_HEIGHT;
         let compact = c.compact || short;
+        let minimal = c.minimal;
         let room = ctx.content_rect().width();
         let label = |text: &'static str| (room >= 560.0).then_some(text);
         let active = self.active;
         let chosen = &mut self.band;
         let right_last = &mut self.commands_right;
         let undo_buttons = &mut self.undo_buttons;
+        let tools_last = &mut self.tools_width;
+        let file_button = &mut self.file_button;
+        // Tools' All commands, picked last frame: the File menu opens where it always is.
+        if std::mem::take(&mut self.open_file_menu) {
+            if let Some(id) = *file_button {
+                egui::Popup::open_id(&ctx, id.with("popup"));
+            }
+        }
+        let mut all_commands = false;
+        let mut tools_at = None::<egui::Rect>;
         let mut tab = self.tabs.get_mut(active);
         let commands = egui::Panel::top("commands")
             .frame(theme::commands_frame(ui.style()))
             .show(ui, |ui| {
-                let name = match has {
+                let name = match has && !minimal {
                     true => format!("{} commands", chosen.name()),
                     false => "Commands".into(),
                 };
@@ -6457,26 +7729,51 @@ impl eframe::App for App {
                 egui::Frame::new().inner_margin(row).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
+                        let folded = match minimal {
+                            true => more_folded(ui.available_width(), tools_last.unwrap_or(72.0)),
+                            false => 0,
+                        };
+                        let more = &MORE_ORDER[..folded];
+                        let shown = |a: Act| !more.contains(&a);
                         let file = egui::Button::new(theme::icon(icon::LIST).size(16.0))
                             .frame_when_inactive(false)
                             .min_size(egui::vec2(28.0, 28.0));
-                        egui::containers::menu::MenuButton::from_button(file)
-                            .ui(ui, |ui| Self::menu(ui, &c, &recent, &mut acts))
-                            .0
-                            .on_hover_text("File: every command, by kind")
+                        let r = egui::containers::menu::MenuButton::from_button(file)
+                            .ui(ui, |ui| menu::show(ui, &c, &recent, &mut acts))
+                            .0;
+                        *file_button = Some(r.id);
+                        r.on_hover_text("File: every command, by kind")
                             .widget_info(|| named("File"));
-                        quick(ui, Act::Open, icon::FOLDER_OPEN, None, &mut acts);
-                        quick(ui, Act::Save, icon::FLOPPY_DISK, None, &mut acts);
-                        divider(ui);
-                        *undo_buttons = vec![
-                            quick(ui, Act::Undo, icon::ARROW_U_UP_LEFT, None, &mut acts),
-                            quick(ui, Act::Redo, icon::ARROW_U_UP_RIGHT, None, &mut acts),
+                        if minimal && shown(Act::ToggleSide) {
+                            quick(ui, Act::ToggleSide, icon::SIDEBAR_SIMPLE, None, &mut acts);
+                        }
+                        for (act, glyph) in [
+                            (Act::Open, icon::FOLDER_OPEN),
+                            (Act::Save, icon::FLOPPY_DISK),
+                        ] {
+                            if shown(act) {
+                                quick(ui, act, glyph, None, &mut acts);
+                            }
+                        }
+                        let history = [
+                            (Act::Undo, icon::ARROW_U_UP_LEFT),
+                            (Act::Redo, icon::ARROW_U_UP_RIGHT),
                         ];
-                        divider(ui);
+                        let undo_shown = history.iter().any(|&(a, _)| shown(a));
+                        if undo_shown {
+                            divider(ui);
+                        }
+                        *undo_buttons = (history.into_iter())
+                            .filter(|&(a, _)| shown(a))
+                            .map(|(a, glyph)| quick(ui, a, glyph, None, &mut acts))
+                            .collect();
+                        if undo_shown {
+                            divider(ui);
+                        }
                         // The names, leaving room for the controls at the right as they
                         // were last drawn; then those, in reading order.
                         let right = right_last.unwrap_or(110.0);
-                        if has {
+                        if has && !minimal {
                             let names = (ui.available_width() - right - 8.0).max(0.0);
                             ui.scope(|ui| {
                                 ui.set_max_width(names);
@@ -6486,8 +7783,36 @@ impl eframe::App for App {
                         let end = egui::Layout::right_to_left(egui::Align::Center);
                         ui.with_layout(end, |ui| {
                             let width = dlg::reading_order(ui, *right_last, |ui| {
-                                quick(ui, Act::Print, icon::PRINTER, label("Print"), &mut acts);
-                                if has {
+                                if minimal && shown(Act::Find) {
+                                    let find = label("Find");
+                                    quick(ui, Act::Find, icon::MAGNIFYING_GLASS, find, &mut acts);
+                                }
+                                if minimal {
+                                    let r = tools_button(ui, |ui| {
+                                        let mut font = |_: &mut egui::Ui| {};
+                                        let mut parts = band::Parts {
+                                            c: &c,
+                                            sign: sign_menu.as_ref(),
+                                            font: &mut font,
+                                            compact: false,
+                                        };
+                                        all_commands = band::tools(ui, &mut parts, &mut acts);
+                                    });
+                                    *tools_last = Some(r.rect.width());
+                                    tools_at = Some(r.rect);
+                                }
+                                if minimal && shown(Act::ToggleInspector) {
+                                    let glyph = icon::SLIDERS_HORIZONTAL;
+                                    quick(ui, Act::ToggleInspector, glyph, None, &mut acts);
+                                }
+                                if shown(Act::Print) {
+                                    let print = label("Print");
+                                    quick(ui, Act::Print, icon::PRINTER, print, &mut acts);
+                                }
+                                if !more.is_empty() {
+                                    more_button(ui, more, &c, &mut acts);
+                                }
+                                if has && !minimal {
                                     toggled = band::compact_toggle(ui, compact, short);
                                 }
                             });
@@ -6498,8 +7823,14 @@ impl eframe::App for App {
                 if toggled {
                     acts.push(Act::ToggleCompact);
                 }
-                let Some(t) = tab.as_deref_mut() else {
-                    return Vec::new();
+                // A click on the interface's switch, in the tab strip, leaves the typing open,
+                // as the band's Font group's do; so does one on Tools, whose Paragraph switches
+                // the line being edited, as the band's does (its other commands end the typing
+                // themselves, choosing a tool).
+                let keep: Vec<egui::Rect> =
+                    (switch.iter().map(|r| r.rect)).chain(tools_at).collect();
+                let Some(t) = tab.as_deref_mut().filter(|_| !minimal) else {
+                    return keep;
                 };
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(8, 4))
@@ -6513,7 +7844,7 @@ impl eframe::App for App {
                             font: &mut font,
                             compact,
                         };
-                        band::show(ui, *chosen, &mut parts, &mut acts)
+                        [band::show(ui, *chosen, &mut parts, &mut acts), keep].concat()
                     })
                     .inner
             });
@@ -6521,6 +7852,14 @@ impl eframe::App for App {
             t.ed.keep_typing = commands.inner;
         }
         self.regions.add(Region::Commands, commands.response.rect);
+        if all_commands {
+            self.open_file_menu = true;
+            ctx.request_repaint();
+        }
+        if switch.as_ref().is_some_and(egui::Response::clicked) {
+            acts.push(Act::ToggleMinimal);
+        }
+        self.hand_on_keyboard(&ctx, switch.map(|r| r.id));
 
         // The status bar: what is selected or the tool in use, and messages, at the left;
         // the page, Show planned features and the zoom at the right.
@@ -6582,11 +7921,18 @@ impl eframe::App for App {
                             _ if name == n.to_string() => format!("Page {n} of {count}"),
                             _ => format!("Page {name} ({n} of {count})"),
                         }));
-                        let text = small("Show planned features");
-                        let r = ui.add(egui::Checkbox::new(show_planned, text));
-                        planned_changed = r.changed();
-                        r.on_hover_text(actions::get(Act::TogglePlanned).hint);
+                        // Minimal has no Planned controls to show (ENH-45); the setting stays
+                        // under View.
+                        if !c.minimal {
+                            let text = small("Show planned features");
+                            let r = ui.add(egui::Checkbox::new(show_planned, text));
+                            planned_changed = r.changed();
+                            r.on_hover_text(actions::get(Act::TogglePlanned).hint);
+                        }
                         view_buttons(ui, t.organising(), &mut acts);
+                        if c.minimal && !t.organising() {
+                            view_choices(ui, &c, &mut acts);
+                        }
                         let zoom = if t.organising() { grid_zoom } else { t.zoom };
                         zoom_bar(ui, zoom, t.organising(), &c, &mut acts);
                     }));
@@ -6679,6 +8025,7 @@ impl eframe::App for App {
                         Side::Pages => t.show_thumbs(ui, &c),
                         Side::Bookmarks => t.show_outline(ui),
                         Side::Comments => t.show_comments(ui),
+                        Side::Spelling => t.show_spelling(ui),
                         Side::Signatures => t.show_signatures(ui),
                         Side::Search => acts.extend(t.show_results(ui, &c)),
                     });
@@ -6717,6 +8064,17 @@ impl eframe::App for App {
             } else {
                 Vec::new()
             };
+            // Minimal has no band: while text is the target, Edit's Font and Alignment
+            // groups head its inspector (ENH-45), and the docked buttons above the panel
+            // leave out the styles and Centre they have. The strip keeps them all.
+            let text_look = c.minimal && t.ed.text_targeted();
+            let top: Vec<Vec<&Action>> = match text_look {
+                true => (groups.iter())
+                    .map(|g| g.iter().copied().filter(|a| !in_text_look(a.act)).collect())
+                    .filter(|g: &Vec<&Action>| !g.is_empty())
+                    .collect(),
+                false => groups.clone(),
+            };
             let mut open = self.inspector.shown();
             let (mut toggle, mut pop) = (false, false);
             let mut strip = None;
@@ -6743,10 +8101,15 @@ impl eframe::App for App {
                 // The heading stays put above the scrolling content, with the
                 // button that hides the panel at its right.
                 toggle = inspector_head(ui, s, t, true);
+                if text_look {
+                    inspector_text_look(ui, t, &c, &mut panel_acts);
+                }
                 if !groups.is_empty() {
                     ui.horizontal_wrapped(|ui| {
-                        actions::context_buttons(ui, &groups, &c, &mut panel_acts);
-                        ui.separator();
+                        if !top.is_empty() {
+                            actions::context_buttons(ui, &top, &c, &mut panel_acts);
+                            ui.separator();
+                        }
                         float_button(ui, &mut panel_acts);
                     });
                     ui.separator();
@@ -6786,7 +8149,8 @@ impl eframe::App for App {
             }
             if let Some(strip) = strip.filter(|_| self.popout) {
                 let t = &mut self.tabs[self.active];
-                let (apply, keep, at) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
+                let s = &mut self.settings;
+                let (apply, keep, at) = inspector_popout(&ctx, strip, s, t, &c, &mut acts);
                 t.ed.inspector_drawn(&ctx, at);
                 panel_apply = panel_apply.or(apply);
                 self.popout = keep;
@@ -6854,6 +8218,9 @@ impl eframe::App for App {
             }
             if let Some(url) = t.open_link.take() {
                 self.dialog = link_dialog(url);
+            }
+            if let Some(ask) = t.ask_link.take() {
+                self.dialog = Dialog::Link(Asked::of(t), Box::new(ask));
             }
         }
 
@@ -7025,11 +8392,11 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
             ));
         }
     }
-    out.push_str(
-        "\n\nTo also remove metadata, attachments and other hidden information, choose Document > \
-         Remove hidden information.\n\nSave the document to keep the changes; Undo brings \
-         everything back.",
-    );
+    out.push_str(&format!(
+        "\n\nTo also remove metadata, attachments and other hidden information, choose \
+         {}.\n\nSave the document to keep the changes; Undo brings everything back.",
+        menu::way(Act::RemoveHidden).trim_end_matches('…')
+    ));
     out
 }
 
@@ -7041,18 +8408,29 @@ mod tests {
 
     mod align;
     mod backdrop;
+    mod bookmarks;
+    mod clipboard_pictures;
     mod forms;
     mod history;
     mod input_methods;
+    mod links;
+    mod minimal;
+    mod minimal_tasks;
+    mod new_document;
     mod organise;
     mod overflow;
     mod paragraphs;
     mod redact_marks;
+    mod reduce;
     mod replace;
     mod review;
+    mod save_image;
+    mod settings_window;
     mod sign;
+    mod spelling;
     mod tabs;
     mod text_align;
+    mod tools;
     mod typing_box;
     mod typing_menus;
     mod underline;
@@ -7063,6 +8441,9 @@ mod tests {
     thread_local! {
         /// The file the save chooser gives next, once (see [`App::save_as`]).
         pub(super) static SAVE_AS: std::cell::Cell<Option<PathBuf>> =
+            const { std::cell::Cell::new(None) };
+        /// The folder the folder chooser gives next, once (see [`App::pick_folder`]).
+        pub(super) static FOLDER: std::cell::Cell<Option<PathBuf>> =
             const { std::cell::Cell::new(None) };
     }
 
@@ -7342,12 +8723,15 @@ mod tests {
         window(&mut app, &ctx, 1400.0, esc.clone());
 
         // Print with all pages, with a page range it can't print, with its Print on list
-        // open, and for the selected text.
+        // open, for the selected text, and as a booklet.
         let printer = print::Printer {
             name: "limarepdf-test-no-such-printer".into(),
             default: true,
         };
-        let print = || Box::new(dlg::Print::new(vec![printer.clone()], "test.pdf".into()));
+        let print = || {
+            let printers = vec![printer.clone()];
+            Box::new(dlg::Print::with_papers(printers, "test.pdf".into()))
+        };
         app.dialog = Dialog::Print(app.asked(), print());
         clear_names(&mut app, &ctx, "Print", &mut bad);
         let mut range = print();
@@ -7365,6 +8749,10 @@ mod tests {
         selected.selection = Some(dlg::Layout::Original);
         app.dialog = Dialog::Print(app.asked(), selected);
         clear_names(&mut app, &ctx, "Print selected text", &mut bad);
+        let mut booklet = print();
+        booklet.booklet = true;
+        app.dialog = Dialog::Print(app.asked(), booklet);
+        clear_names(&mut app, &ctx, "Print as a booklet", &mut bad);
         app.dialog = Dialog::None;
 
         app.act(&ctx, Act::Palette);
@@ -7544,13 +8932,11 @@ mod tests {
             .flatten()
             .find(|n| n.to_lowercase().contains("digital") && *n != "Digital signatures");
         assert_eq!(digital, None);
-        // Signing and certifying are still in Document > Digital signatures.
+        // Signing and certifying are still in Forms and sign > Digital signatures.
         for act in [Act::SignDigital, Act::Certify] {
             let a = actions::get(act);
-            assert_eq!(
-                (a.group, a.submenu),
-                (Group::Document, "Digital signatures")
-            );
+            let path = menu::path(act).unwrap();
+            assert_eq!(path, ["Forms and sign", "Digital signatures", a.label]);
             app.act(&ctx, act);
             assert_eq!(app.tabs[0].ed.tool, Tool::DigitalSign);
             assert_eq!(app.tabs[0].ed.digital_certify, act == Act::Certify);
@@ -7570,10 +8956,11 @@ mod tests {
         // Redo is disabled, as nothing was undone, and Paste, Copy and the Font group as
         // nothing is typed or selected; planned features are no Tab stops. The status
         // bar's view buttons and zoom (NEW-14) before the strip; the thumbnails are one
-        // stop, their list.
+        // stop, their list. The interface's switch ends the tab strip (ENH-45).
         let bars = [
             "Untitled, unsaved",
             "Close Untitled",
+            SWITCH_TO_MINIMAL,
             "File",
             "Open",
             "Save",
@@ -7587,6 +8974,7 @@ mod tests {
             "View",
             "Print",
             "Compact commands",
+            "Paste",
             "Edit text",
             "Find",
             "Replace",
@@ -7603,6 +8991,7 @@ mod tests {
             "Search results",
             "Bookmarks",
             "Comments",
+            "Spelling",
             "Digital signatures",
             "Page thumbnails",
         ];
@@ -7723,7 +9112,8 @@ mod tests {
     }
 
     /// ENH-10: in a narrow window the folded panels' strips are regions in their place;
-    /// with no document open, F6 goes between the top bar and the start screen.
+    /// with no document open, F6 goes between the tab strip (the interface's switch alone,
+    /// ENH-45), the top bar and the start screen.
     #[test]
     fn f6_goes_round_narrow_windows_and_the_start_screen() {
         let ctx = egui::Context::default();
@@ -7747,9 +9137,10 @@ mod tests {
 
         let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
         settled_at(&mut app, &ctx, 1400.0);
-        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("File"));
-        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Open PDF…"));
-        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("File"));
+        let round = [SWITCH_TO_MINIMAL, "File", "Open PDF…", SWITCH_TO_MINIMAL];
+        for want in round {
+            assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some(want));
+        }
         assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Open PDF…"));
     }
 
@@ -8374,13 +9765,13 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
-        app.band = Band::Insert;
+        app.band = Band::Review;
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        let name = "Link — Planned";
-        let (at, _) = node(&tree, name).expect("Link");
+        let name = "Export comments — Planned";
+        let (at, _) = node(&tree, name).expect("Export comments");
         let link = (tree.nodes.iter()).find(|(_, n)| n.label() == Some(name));
         assert!(link.is_some_and(|(_, n)| n.is_disabled()), "not greyed");
-        let before = "Header and footer";
+        let before = "Stamp";
         let (marks, _) = node(&tree, before).expect(before);
         let undo = app.tabs[0].can_undo();
         window(&mut app, &ctx, 1400.0, click_at(at.center()));
@@ -8402,7 +9793,7 @@ mod tests {
             let shown = (tree.nodes.iter()).find(|(_, n)| planned(&n.label().map(str::to_string)));
             assert!(shown.is_none(), "{}: {shown:?}", band.name());
         }
-        app.band = Band::Insert;
+        app.band = Band::Review;
         let tree = settled_at(&mut app, &ctx, 1400.0);
         // Those before the planned ones stay where they were.
         let now = node(&tree, before).map(|(r, _)| r);
@@ -8551,15 +9942,19 @@ mod tests {
             assert!(node(&tree, group).is_none(), "{group} folded to its name");
             assert!(node(&tree, one).is_some(), "no {one} at 900");
         }
-        // Planned features alone go first: Review's Proofing (Spelling) before the Review
-        // group to its right.
-        app.band = Band::Review;
-        let spelling = "Spelling — Planned";
+        // Planned features alone go first: Forms and sign's Authoring (Create fields) before
+        // the groups of built commands. Review's Proofing went first while Spelling was
+        // planned; built (NEW-06), it folds as the others do.
+        app.band = Band::Forms;
+        let fields = "Create fields — Planned";
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        assert!(node(&tree, spelling).is_some());
-        let tree = settled_at(&mut app, &ctx, 1200.0);
-        assert!(node(&tree, spelling).is_none(), "shown at 1200");
-        assert!(node(&tree, "Flatten…").is_some(), "Review folded at 1200");
+        assert!(node(&tree, fields).is_some());
+        let tree = settled_at(&mut app, &ctx, 600.0);
+        assert!(node(&tree, fields).is_none(), "shown at 600");
+        assert!(node(&tree, "Digital signature").is_some(), "folded at 600");
+        app.band = Band::Review;
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(node(&tree, "Spelling").is_some(), "no Spelling at 1400");
         app.band = Band::Edit;
         let tree = settled_at(&mut app, &ctx, 700.0);
         let (at, _) = node(&tree, "Editing").expect("Editing folded");
@@ -8568,6 +9963,16 @@ mod tests {
         let tree = settled_at(&mut app, &ctx, 700.0);
         assert!(egui::Popup::is_any_open(&ctx), "Editing didn't open");
         assert!(node(&tree, "Find").is_some(), "no Find in it");
+        // Its Select opens beside it, the group staying open, and runs its choice (egui
+        // keeps one popup open: a menu of its own closed both, ENH-45's stage 3).
+        let (select, _) = node(&tree, "Select").expect("Select in Editing");
+        window(&mut app, &ctx, 700.0, click_at(select.center()));
+        let tree = settled_at(&mut app, &ctx, 700.0);
+        let choice = actions::get(Act::Tool(Tool::Select)).label;
+        let (at, _) = node(&tree, choice).expect("Select's menu");
+        window(&mut app, &ctx, 700.0, click_at(at.center()));
+        settled_at(&mut app, &ctx, 700.0);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Select, "Select's choice");
     }
 
     /// The screen bounds of the node named `name` in `tree`, and whether it has the keyboard.
@@ -8840,7 +10245,8 @@ mod tests {
         let ed = &mut app.tabs[0].ed;
         // Nothing typed: Esc closes the editor, adding nothing; Esc again leaves the tool.
         let new = |ed: &crate::editor::Editor, at| {
-            Some(page_text::PageText::new(ed.scope(), 0, at, ed.new_look()))
+            let look = ed.new_look();
+            Some(page_text::PageText::new(ed.scope(), 0, at, look, ed.talign))
         };
         ed.adding = new(ed, (72.0, 72.0));
         ed.escape();
@@ -8864,7 +10270,7 @@ mod tests {
         ed.escape();
         assert!(matches!(
             ed.actions.as_slice(),
-            [EdAction::AddText(0, (72.0, 90.0), t)] if t.text() == "Walrus"
+            [EdAction::AddText(0, (72.0, 90.0), t, _)] if t.text() == "Walrus"
         ));
         app.tabs[0].apply_actions(&ctx);
         let objs = app.tabs[0].pdf.page_objects(0).unwrap();
@@ -9371,14 +10777,16 @@ mod tests {
     }
 
     /// Draw the window 1400 by [`TEST_HEIGHT`] with `events`, at `time` moved on a twentieth
-    /// of a second (as double-clicks need), and return its AccessKit tree.
+    /// of a second (as double-clicks need), and return its AccessKit tree. Frames drawn
+    /// without a time (`click`'s) move egui's clock on by themselves, so `time` first catches
+    /// up with it: egui's pointer history panics on a time earlier than the last (PB-80).
     fn timed_frame(
         app: &mut App,
         ctx: &egui::Context,
         time: &std::cell::Cell<f64>,
         events: Vec<egui::Event>,
     ) -> egui::accesskit::TreeUpdate {
-        time.set(time.get() + 0.05);
+        time.set(time.get().max(ctx.input(|i| i.time)) + 0.05);
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -11650,7 +13058,8 @@ mod tests {
         app.act(&ctx, Act::Tool(Tool::Text));
         let ed = &mut app.tabs[0].ed;
         ed.tsize = 30.0;
-        let mut a = page_text::PageText::new(ed.scope(), 0, (100.0, 200.0), ed.new_look());
+        let look = ed.new_look();
+        let mut a = page_text::PageText::new(ed.scope(), 0, (100.0, 200.0), look, ed.talign);
         a.text.sync("Walrus\nseal\nfish", None);
         ed.adding = Some(a);
         ed.escape();
@@ -11879,6 +13288,14 @@ mod tests {
         }
     }
 
+    /// Tool `t` chosen as one would: its command, unless it is on already (chosen again, it
+    /// would turn off).
+    fn choose(app: &mut App, ctx: &egui::Context, t: Tool) {
+        if app.tabs[app.active].ed.tool != t {
+            app.act(ctx, Act::Tool(t));
+        }
+    }
+
     /// The comments of the document's annotations.
     fn comments(app: &App) -> Vec<String> {
         let annots = app.tabs[0].pdf.annotations();
@@ -11901,7 +13318,7 @@ mod tests {
         };
         // Put a note down at (x, y) with the Note tool and type `text` into it.
         let note = |app: &mut App, x: f32, y: f32, text: &str| {
-            app.act(&ctx, Act::Tool(Tool::Note));
+            choose(app, &ctx, Tool::Note);
             window(app, &ctx, 1400.0, click_at(at(x, y)));
             let tree = window(app, &ctx, 1400.0, vec![]);
             assert!(typing(app), "the note doesn't have the keyboard");
@@ -12082,7 +13499,7 @@ mod tests {
         // Put a text box down at (x, y) (a click gives the default size) and type `text`
         // into it.
         let text_box = |app: &mut App, x: f32, y: f32, text: &str| {
-            app.act(&ctx, Act::Tool(Tool::TextBox));
+            choose(app, &ctx, Tool::TextBox);
             window(app, &ctx, 1400.0, click_at(at(x, y)));
             window(app, &ctx, 1400.0, vec![]);
             let id = app.tabs[0].ed.writing_id().expect("the box");
@@ -12334,9 +13751,10 @@ mod tests {
             let p = middle(&tree, name);
             ty.frame(&mut app, vec![egui::Event::PointerMoved(p)]);
             let tree = ty.pause(&mut app);
-            let key = ctx.format_shortcut(&actions::get(act).keys[0]);
-            let tip = format!("{name} ({key})\nSource Serif 4 has no {face}.");
-            assert!(noted(&tree, &tip), "{name} on hover, {os:?}");
+            let key = actions::key_text(&ctx, &actions::get(act).keys[0]);
+            let why = format!("Not available now. Source Serif 4 has no {face}.");
+            assert!(noted(&tree, &format!("{name} ({key})")), "{name}, {os:?}");
+            assert!(noted(&tree, &why), "{name} on hover, {os:?}");
         }
         assert!(
             app.tabs[0].ed.adding.is_some(),
@@ -12345,7 +13763,8 @@ mod tests {
     }
 
     /// The commands say what is in use: the Edit band's Select menu ticks the tool, and Edit
-    /// text is pressed while the Text tool is on. A form field with the keyboard heads the
+    /// text is pressed while the Text tool chosen with it is on (not Insert > Text's alone,
+    /// the user's finding on NEW-15's stage 3). A form field with the keyboard heads the
     /// inspector, and the words selected before it are let go, so the band and Ctrl+B act
     /// on one thing.
     #[test]
@@ -12375,10 +13794,12 @@ mod tests {
         }
         app.act(&ctx, Act::Tool(Tool::Text));
         let tree = ty.pause(&mut app);
-        assert!(
-            toggled(&tree, "Edit text", Role::Button),
-            "Edit text isn't pressed"
-        );
+        let edit_text = toggled(&tree, "Edit text", Role::Button);
+        assert!(!edit_text, "Edit text pressed for Insert > Text");
+        app.act(&ctx, Act::EditObjectText);
+        let tree = ty.pause(&mut app);
+        let edit_text = toggled(&tree, "Edit text", Role::Button);
+        assert!(edit_text, "Edit text isn't pressed");
         // Words selected, then a form field clicked.
         app.act(&ctx, Act::Tool(Tool::Read));
         app.tabs[0].ed.selection = Selection::word((0, 0));
@@ -12440,7 +13861,7 @@ mod tests {
             let (r, _) = node(&tree, name).expect(name);
             ty.frame(&mut app, vec![egui::Event::PointerMoved(r.center())]);
             let tree = ty.pause(&mut app);
-            let key = ctx.format_shortcut(&actions::get(act).keys[0]);
+            let key = actions::key_text(&ctx, &actions::get(act).keys[0]);
             let tip = format!("{name} ({key})");
             assert!(says(&tree, &tip), "{name}'s tooltip, {os:?}");
             assert!(says(&tree, why), "{name}: no reason, {os:?}");
@@ -12523,9 +13944,20 @@ mod tests {
             name: "limarepdf-test-no-such-printer".into(),
             default: true,
         };
-        let print = dlg::Print::new(vec![printer], "test.pdf".into());
+        let print = dlg::Print::with_papers(vec![printer], "test.pdf".into());
         app.dialog = Dialog::Print(app.asked(), Box::new(print));
-        let mut want = vec!["Printer", "All pages", "Page range", "Copies", "Print on"];
+        // Scale, Layout and Advanced are folded under their titles, which say what is chosen.
+        let mut want = vec![
+            "Printer",
+            "All pages",
+            "Page range",
+            "Copies",
+            "Print on",
+            "Paper size",
+            "Orientation",
+            "Scale: Shrink oversized pages",
+            "Layout: 1 page per sheet",
+        ];
         if !cfg!(windows) {
             want.push("Advanced");
         }
@@ -12539,6 +13971,29 @@ mod tests {
             ctx.memory_mut(|m| m.surrender_focus(id));
         }
         want.insert(3, "Pages to print");
+        assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
+        // Each open: its controls after its title (Page order and Borders around pages greyed
+        // with one page a sheet), Print as image but on Windows.
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.folds = dlg::Folds {
+                scale: true,
+                layout: true,
+                advanced: true,
+            };
+        }
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        let at = want
+            .iter()
+            .position(|&n| n == "Layout: 1 page per sheet")
+            .unwrap();
+        want.insert(at, "Scale");
+        want.splice(at + 2..at + 2, ["Print as a booklet", "Pages per sheet"]);
+        if !cfg!(windows) {
+            let at = want.iter().position(|&n| n == "Advanced").unwrap();
+            want.insert(at + 1, "Print as image");
+        }
         assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
 
         app.dialog = Dialog::None;
@@ -12697,7 +14152,7 @@ mod tests {
                 two("Print"),
                 Dialog::Print(
                     app.asked(),
-                    Box::new(dlg::Print::new(vec![printer()], "test.pdf".into())),
+                    Box::new(dlg::Print::with_papers(vec![printer()], "test.pdf".into())),
                 ),
             ),
             14 => (
@@ -12713,6 +14168,7 @@ mod tests {
                         sides: print::Sides::One,
                         as_image: false,
                         title: "test".into(),
+                        ..Default::default()
                     },
                 })),
             ),
@@ -12814,7 +14270,7 @@ mod tests {
             ),
             27 => {
                 let mut print = dlg::Print::looking(1, "test.pdf".into());
-                print.found(Err(format!("lpstat: {long}")));
+                print.found(Err(format!("lpstat: {long}")), None);
                 let print = Dialog::Print(app.asked(), Box::new(print));
                 ("Print".into(), two("Try again"), print)
             }
@@ -12841,6 +14297,8 @@ mod tests {
                     to: PagesGo::End,
                     docs: Vec::new(),
                     names: vec![format!("{long}.pdf"), "form.pdf".into()],
+                    protected: false,
+                    cut_from: None,
                 })),
             ),
             // Replace all's review (NEW-04b), its query and replacement the user's.
@@ -12864,6 +14322,66 @@ mod tests {
                         fits: true,
                     },
                     prepared: None,
+                })),
+            ),
+            // Insert link over words, and Edit link for another app's link (ENH-17).
+            32 => (
+                "Insert link".into(),
+                two("Insert link"),
+                Dialog::Link(
+                    app.asked(),
+                    Box::new(dlg::LinkAsk {
+                        form: dlg::LinkForm {
+                            web: format!("example.com/{long}"),
+                            ..dlg::LinkForm::new(3, 0, true)
+                        },
+                        areas: vec![(0, vec![[72.0, 90.0, 300.0, 110.0]])],
+                        editing: None,
+                        was: None,
+                    }),
+                ),
+            ),
+            33 => (
+                "Edit link".into(),
+                vec!["Save link", "Remove link", "Cancel"],
+                Dialog::Link(
+                    app.asked(),
+                    Box::new(dlg::LinkAsk {
+                        form: dlg::LinkForm {
+                            to: dlg::LinkTo::Email,
+                            email: format!("{long}@example.com"),
+                            ..dlg::LinkForm::new(3, 0, false)
+                        },
+                        areas: Vec::new(),
+                        editing: Some((0, limarepdf_core::LinkId::Object((1, 0)))),
+                        was: Some(format!("Opens another file: {long}.pdf")),
+                    }),
+                ),
+            ),
+            34 => (
+                "Reduce file size".into(),
+                two("Reduce"),
+                Dialog::ReduceSize(
+                    app.asked(),
+                    Box::new(dlg::Reduce {
+                        quality: limarepdf_core::PictureQuality::Web,
+                        all: false,
+                        selected: vec![0, 1],
+                        pages: 3,
+                        estimate: crate::reduce_size::Estimate::spawn(
+                            &egui::Context::default(),
+                            app.tabs[app.active].pdf.clone(),
+                        ),
+                    }),
+                ),
+            ),
+            35 => (
+                "Settings".into(),
+                vec!["Close"],
+                Dialog::Settings(Box::new(dlg::Prefs {
+                    name: long.into(),
+                    folder: Some(PathBuf::from(format!("/home/sam/{long}"))),
+                    ..app.prefs(&egui::Context::default())
                 })),
             ),
             _ => return None,
@@ -13021,7 +14539,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 32, "a question was left out");
+                assert_eq!(i, 36, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -13034,7 +14552,11 @@ mod tests {
                     ctx.memory_mut(|m| m.surrender_focus(id));
                 }
                 app.dialog = dialog;
-                let one_field = matches!(app.dialog, Dialog::Password(..) | Dialog::CommentName(_));
+                // Enter in their field answers them, as in Word's Insert Hyperlink.
+                let one_field = matches!(
+                    app.dialog,
+                    Dialog::Password(..) | Dialog::CommentName(_) | Dialog::Link(..)
+                );
                 let mut tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
                 for _ in 0..4 {
                     tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
@@ -13076,7 +14598,12 @@ mod tests {
                     assert!(!matches!(app.dialog, Dialog::None), "{at}: Enter answered");
                 }
                 let mut reached = Vec::new();
-                for _ in 0..buttons.len() + 12 {
+                // Settings' twenty choices come before its Close.
+                let presses = match app.dialog {
+                    Dialog::Settings(_) => 30,
+                    _ => buttons.len() + 12,
+                };
+                for _ in 0..presses {
                     let tree = dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Tab)]);
                     let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
                     reached.push(focus.and_then(|(_, n)| n.label()).map(str::to_string));
@@ -13353,7 +14880,7 @@ mod tests {
             name: "limarepdf-test-no-such-printer".into(),
             default: true,
         };
-        let print = dlg::Print::new(vec![printer], "test.pdf".into());
+        let print = dlg::Print::with_papers(vec![printer], "test.pdf".into());
         app.dialog = Dialog::Print(app.asked(), Box::new(print));
 
         click(&mut app, &ctx, "Print");
@@ -13423,10 +14950,10 @@ mod tests {
         for _ in 0..3 {
             frame(&mut app, vec![]);
         }
-        frame(&mut app, vec![key(Key::K, egui::Modifiers::COMMAND)]);
+        frame(&mut app, vec![key(Key::P, CTRL_SHIFT)]);
         assert!(
             app.palette.is_none(),
-            "Ctrl+K opened the palette behind the question"
+            "Ctrl+Shift+P opened the palette behind the question"
         );
         frame(&mut app, vec![key(Key::Escape, egui::Modifiers::NONE)]);
         assert!(matches!(app.dialog, Dialog::None));
@@ -13434,7 +14961,7 @@ mod tests {
         for _ in 0..2 {
             frame(&mut app, vec![]);
         }
-        frame(&mut app, vec![key(Key::K, egui::Modifiers::COMMAND)]);
+        frame(&mut app, vec![key(Key::P, CTRL_SHIFT)]);
         assert!(
             app.palette.is_some(),
             "shortcuts stayed off after the question"
@@ -13942,7 +15469,9 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         app.tabs[0].set_encryption(password());
         app.act(&ctx, Act::SignDigital);
-        assert_eq!(message(&app), ("Sign with digital ID", PASSWORD_NOT_SIGNED));
+        let why = password_not_signed();
+        assert_eq!(message(&app), ("Sign with digital ID", why.as_str()));
+        assert!(why.contains("(Protect > Password security…)"), "{why}");
         assert!(app.tabs[0].ed.tool != Tool::DigitalSign);
         // Set after the place was chosen: refused when Sign is pressed, before asking where
         // to save the signed file.
@@ -13954,7 +15483,7 @@ mod tests {
         };
         let mut w = SignWindow::new(t.id, t.revision, place, "a box".into(), false, false);
         app.start_signing(&ctx, &mut w);
-        assert_eq!(w.error.as_deref(), Some(PASSWORD_NOT_SIGNED));
+        assert_eq!(w.error, Some(why));
         assert!(!w.busy());
         assert!(app.tabs[0].encryption.is_some());
     }
@@ -14026,8 +15555,7 @@ mod tests {
             ..signed_copy()
         };
         app.signed(&ctx, s, id, revision);
-        let ids = actions::get(Act::DigitalIds);
-        let way = format!("{} > {} > {}", ids.group.name(), ids.submenu, ids.label);
+        let way = menu::way(Act::DigitalIds);
         let text = message(&app).1;
         assert!(text.contains(&way), "{text}");
     }
@@ -14276,6 +15804,27 @@ mod tests {
         }
     }
 
+    /// PB-80: a typist's frame after frames drawn without a time (as `click` draws a dialog)
+    /// moves the clock on, never back, so egui's pointer history keeps its order.
+    #[test]
+    fn a_typists_frame_after_untimed_frames_moves_the_clock_on() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let ty = Typist::new(&ctx);
+        ty.frame(&mut app, vec![]);
+        // A third of a second on egui's own clock, more than a typist's step.
+        for _ in 0..20 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.dialogs(ui.ctx()));
+            out.textures_delta.clear();
+        }
+        let before = ctx.input(|i| i.time);
+        ty.frame(&mut app, vec![]);
+        let after = ctx.input(|i| i.time);
+        assert!(after > before, "the clock went from {before} to {after}");
+    }
+
     /// A 40 x 20 JPEG, red on the left and blue on the right, whose EXIF orientation 6
     /// says to show it turned a quarter clockwise: 20 wide and 40 high, red at the top.
     fn turned_photo() -> Vec<u8> {
@@ -14428,7 +15977,7 @@ mod tests {
             ty.pause(app);
         };
         for (x, text) in [(100.0, "Walrus"), (300.0, "")] {
-            app.act(&ctx, Act::Tool(Tool::Note));
+            choose(&mut app, &ctx, Tool::Note);
             ty.click(&mut app, at(x, 100.0));
             ty.text(&mut app, text);
             ty.key(&mut app, Key::Z, CTRL);
@@ -14440,7 +15989,7 @@ mod tests {
         }
         assert_eq!(comments(&app), ["Walrus"]);
         // Existing notes opened for typing: one changed, then the other.
-        app.act(&ctx, Act::Tool(Tool::Note));
+        choose(&mut app, &ctx, Tool::Note);
         ty.click(&mut app, at(300.0, 100.0));
         ty.text(&mut app, "Seal");
         esc(&mut app);
@@ -14496,8 +16045,16 @@ mod tests {
             !says.iter().any(|s| s == "Comment"),
             "a second editor: {says:?}"
         );
-        // The slider's middle, pressed and let go as people do, a frame apart.
-        let p = middle(&tree, "Opacity");
+        // The slider's middle, pressed and let go as people do, a frame apart. (Its number
+        // box has the same name.)
+        let slider = (tree.nodes.iter())
+            .find(|(_, n)| n.label() == Some("Opacity") && n.role() == egui::Role::Slider)
+            .and_then(|(_, n)| n.bounds())
+            .expect("the slider");
+        let p = egui::pos2(
+            ((slider.x0 + slider.x1) / 2.0) as f32,
+            ((slider.y0 + slider.y1) / 2.0) as f32,
+        );
         ty.frame(&mut app, vec![egui::Event::PointerMoved(p), press(p, true)]);
         ty.frame(&mut app, vec![press(p, false)]);
         ty.pause(&mut app);
@@ -14882,7 +16439,7 @@ mod tests {
 
     /// Run the command `name` from the command palette, typed there.
     fn from_palette(app: &mut App, ty: &Typist, name: &str) {
-        ty.key(app, Key::K, CTRL);
+        ty.key(app, Key::P, CTRL_SHIFT);
         ty.text(app, name);
         ty.key(app, Key::Enter, egui::Modifiers::NONE);
         ty.pause(app);
@@ -15218,7 +16775,8 @@ mod tests {
 
     /// Runs the ignored test `test` in a copy of the tests with the stand-ins in `dir` first
     /// on its PATH, so no job reaches a real printer and the rest of the tests keep their
-    /// PATH.
+    /// PATH. The printing service it would ask over IPP is a socket nothing listens on, so
+    /// the paper sizes come from the stand-in `lpoptions`.
     #[cfg(not(windows))]
     fn rerun_with_cups(dir: &Path, test: &str) {
         let path = std::env::var("PATH").unwrap_or_default();
@@ -15226,6 +16784,7 @@ mod tests {
             .args(["--exact", test])
             .args(["--ignored", "--test-threads=1", "--nocapture"])
             .env("PATH", format!("{}:{path}", dir.display()))
+            .env("CUPS_SERVER", dir.join("nothing.sock"))
             .env(STAND_IN_CUPS, dir)
             .output()
             .unwrap();
@@ -15245,15 +16804,19 @@ mod tests {
                       -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
         let lp = "#!/bin/sh\ncat > \"$(dirname \"$0\")/job.pdf\"\n\
                   echo 'request id is limarepdf-test-1 (1 file(s))'\n";
+        let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *A4 Letter'\n";
         let dir = stand_in_cups(
             "print",
-            &[("lpstat", lpstat), ("lp", lp), ("lpoptions", "#!/bin/sh\n")],
+            &[("lpstat", lpstat), ("lp", lp), ("lpoptions", lpoptions)],
         );
         let job = dir.join("job.pdf");
         rerun_with_cups(&dir, "app::tests::print_with_stand_in_cups");
         let printed = Pdf::open(&job, None).expect("the job sent to lp");
         let text = printed.page_text(0);
         assert!(text.contains("Walrus"), "the job holds {text:?}");
+        // On a sheet of the printer's default paper.
+        let (w, h) = printed.page_size(0).unwrap();
+        assert_eq!((w.round(), h.round()), (595.0, 842.0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -15291,7 +16854,7 @@ mod tests {
         ty.key(&mut app, Key::P, CTRL);
         assert!(matches!(app.dialog, Dialog::Print(..)), "Print didn't open");
         assert_eq!(saved_field(&app.tabs[0], "name"), "Walrus");
-        wait_for(&mut app, &ctx, print_ready);
+        wait_for(&mut app, &ctx, papers_found);
         click(&mut app, &ctx, "Print");
         // Its frames moved the clock on.
         ty.time.set(ty.time.get() + 10.0);
@@ -15313,10 +16876,16 @@ mod tests {
         );
     }
 
-    /// Whether Print is open with the printers found, ready to print.
+    /// Whether Print is open with the printers found.
     #[cfg(not(windows))]
     fn print_ready(app: &App) -> bool {
         matches!(&app.dialog, Dialog::Print(_, s) if s.ready())
+    }
+
+    /// Whether Print is open with the chosen printer's paper sizes found, ready to print.
+    #[cfg(not(windows))]
+    fn papers_found(app: &App) -> bool {
+        matches!(&app.dialog, Dialog::Print(_, s) if s.setup().is_some())
     }
 
     /// A stand-in `lpstat`. Listing the printers (`-e`), it waits the seconds in the file
@@ -15379,8 +16948,12 @@ mod tests {
             Dialog::Print(_, s) => s.search.clone(),
             _ => panic!("Print isn't open"),
         };
+        // This dialog's search done: Print opens with the printers found earlier in the
+        // session while it looks again (ENH-47).
         let done = |a: &App| match &a.dialog {
-            Dialog::Print(_, s) => !matches!(s.search, dlg::Search::Running(_)),
+            Dialog::Print(_, s) => {
+                !matches!(s.search, dlg::Search::Running(_)) && s.listing.is_none()
+            }
             _ => false,
         };
         let found = |app: &App| -> Vec<String> {
@@ -15481,6 +17054,430 @@ mod tests {
         wait_for(&mut app, &ctx, waits_ready);
         click(&mut app, &ctx, "Cancel");
         assert!(print_ready(&app), "Print isn't back");
+    }
+
+    /// ENH-14: Print preview opens Print, which asks for the chosen printer's paper sizes as
+    /// soon as the printers are found, and for another printer's when it is chosen; the
+    /// paper, orientation and scale chosen reach `lp` and the sheets sent, and are
+    /// remembered: the paper for each printer. Run with stand-ins for `lpstat`, `lpoptions`
+    /// and `lp`, which keeps its arguments.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_sends_the_page_setup_chosen() {
+        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) printf 'limarepdf-test\\nsecond\\n' ;;\n  \
+                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+        let lpoptions = "#!/bin/sh\ncase \"$2\" in\n  \
+                         second) echo 'PageSize/Media Size: Letter *Legal' ;;\n  \
+                         *) echo 'PageSize/Media Size: *A4 Letter Legal' ;;\nesac\n";
+        let lp = "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$@\" > \"$d/args\"\n\
+                  cat > \"$d/job.pdf\"\necho 'request id is limarepdf-test-2 (1 file(s))'\n";
+        let dir = stand_in_cups(
+            "page-setup",
+            &[("lpstat", lpstat), ("lpoptions", lpoptions), ("lp", lp)],
+        );
+        rerun_with_cups(&dir, "app::tests::page_setup_with_stand_in_cups");
+        let args = std::fs::read_to_string(dir.join("args")).expect("lp's arguments");
+        let args: Vec<&str> = args.lines().collect();
+        let given = |o: &str| args.windows(2).any(|a| a == ["-o", o]);
+        assert!(given("media=Letter"), "{args:?}");
+        assert!(given("print-scaling=none"), "{args:?}");
+        let printed = Pdf::open(dir.join("job.pdf"), None).expect("the job sent to lp");
+        // A sheet of Letter, the page on it at half its size, turned a quarter turn.
+        let (w, h) = printed.page_size(0).unwrap();
+        assert_eq!((w.round(), h.round()), (612.0, 792.0));
+        let page = printed.page_ids()[0];
+        let content = printed.doc.get_page_content(page);
+        let content = String::from_utf8_lossy(&content);
+        let half_turned = content.contains("0.0000 0.5000 -0.5000 0.0000");
+        assert!(half_turned, "{content}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`print_sends_the_page_setup_chosen`] run with the stand-ins first on
+    /// PATH; without them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_sends_the_page_setup_chosen"]
+    fn page_setup_with_stand_in_cups() {
+        if std::env::var_os(STAND_IN_CUPS).is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let paper_id = |app: &App| match &app.dialog {
+            Dialog::Print(_, s) => s.setup().map(|p| p.paper.id),
+            _ => panic!("Print isn't open"),
+        };
+        app.act(&ctx, Act::PrintPreview);
+        let opened = matches!(app.dialog, Dialog::Print(..));
+        assert!(opened, "Print preview opened nothing");
+        wait_for(&mut app, &ctx, papers_found);
+        // The printer's default.
+        assert_eq!(paper_id(&app).as_deref(), Some("A4"));
+        // Another printer chosen: its paper sizes asked for, its default chosen.
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.printer = 1;
+        }
+        let asked =
+            |a: &App| matches!(&a.dialog, Dialog::Print(_, s) if s.papers_wanted().is_none());
+        dialogs_until(&mut app, &ctx, asked);
+        wait_for(&mut app, &ctx, papers_found);
+        assert_eq!(paper_id(&app).as_deref(), Some("Legal"));
+        // Back to the first, Letter, held sideways, at half size.
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.printer = 0;
+        }
+        dialogs_until(&mut app, &ctx, asked);
+        wait_for(&mut app, &ctx, papers_found);
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            let dlg::Papers::Found(_, list) = &s.papers else {
+                panic!("{:?}", s.papers);
+            };
+            s.paper = list.papers.iter().position(|p| p.id == "Letter").unwrap();
+            s.orientation = print::Orientation::Landscape;
+            s.percent = 50;
+            s.scale = print::Scale::Custom(50);
+        }
+        click(&mut app, &ctx, "Print");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_loads(&ctx);
+        }
+        let said = match &app.dialog {
+            Dialog::Message(_, m) => m.clone(),
+            _ => "no message".into(),
+        };
+        let n = app.tabs[0].page_count();
+        let sent = format!("Sent {n} page(s) to limarepdf-test.");
+        assert!(said.starts_with(&sent), "{said}");
+        // Remembered: the paper for the printer, the orientation and the scale.
+        let s = &app.settings;
+        assert_eq!(s.print_papers["limarepdf-test"], "Letter");
+        // Not the printer only looked at.
+        assert!(!s.print_papers.contains_key("second"));
+        assert_eq!(s.print_orientation, print::Orientation::Landscape);
+        assert_eq!(s.print_scale, print::Scale::Custom(50));
+        app.dialog = Dialog::None;
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, papers_found);
+        assert_eq!(paper_id(&app).as_deref(), Some("Letter"));
+        match &app.dialog {
+            Dialog::Print(_, s) => {
+                assert_eq!(s.orientation, print::Orientation::Landscape);
+                assert_eq!((s.scale, s.percent), (print::Scale::Custom(50), 50));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// NEW-05: pages per sheet as chosen in Print reach the sheets sent, and are
+    /// remembered: both pages on one sheet, each a drawing of its own. Run with stand-ins
+    /// for `lpstat`, `lpoptions` and `lp`, which keeps the job.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_sends_several_pages_a_sheet() {
+        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+        let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *Letter A4'\n";
+        let lp = "#!/bin/sh\ncat > \"$(dirname \"$0\")/job.pdf\"\n\
+                  echo 'request id is limarepdf-test-4 (1 file(s))'\n";
+        let dir = stand_in_cups(
+            "several-a-sheet",
+            &[("lpstat", lpstat), ("lpoptions", lpoptions), ("lp", lp)],
+        );
+        rerun_with_cups(&dir, "app::tests::several_a_sheet_with_stand_in_cups");
+        let printed = Pdf::open(dir.join("job.pdf"), None).expect("the job sent to lp");
+        assert_eq!(printed.page_count(), 1);
+        let objects = printed.page_objects(0).unwrap();
+        let form = limarepdf_core::ObjectKind::Form;
+        assert_eq!(objects.iter().filter(|o| o.kind == form).count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// NEW-05: a booklet chosen in Print reaches the sheets sent, both sides flipped on the
+    /// short edge whatever Print on says; the booklet and its binding are remembered, the
+    /// sides to print not. Run with stand-ins for `lpstat`, `lpoptions` and `lp`, which
+    /// keeps the job and its arguments.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_sends_a_booklet() {
+        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+        let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *Letter A4'\n";
+        let lp = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args.txt\"\n\
+                  cat > \"$(dirname \"$0\")/job.pdf\"\n\
+                  echo 'request id is limarepdf-test-5 (1 file(s))'\n";
+        let dir = stand_in_cups(
+            "booklet",
+            &[("lpstat", lpstat), ("lpoptions", lpoptions), ("lp", lp)],
+        );
+        rerun_with_cups(&dir, "app::tests::booklet_with_stand_in_cups");
+        let printed = Pdf::open(dir.join("job.pdf"), None).expect("the job sent to lp");
+        // Two pages: the first on the front, the second on the back, the rest blank.
+        assert_eq!(printed.page_count(), 2);
+        let form = limarepdf_core::ObjectKind::Form;
+        for i in 0..2 {
+            let objects = printed.page_objects(i).unwrap();
+            assert_eq!(objects.iter().filter(|o| o.kind == form).count(), 1, "{i}");
+        }
+        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+        assert!(args.contains("sides=two-sided-short-edge\n"), "{args}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`print_sends_a_booklet`] run with the stand-ins first on PATH; without
+    /// them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_sends_a_booklet"]
+    fn booklet_with_stand_in_cups() {
+        if std::env::var_os(STAND_IN_CUPS).is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, papers_found);
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.sides = print::Sides::LongEdge;
+            s.booklet = true;
+            s.binding = print::Binding::Right;
+        }
+        click(&mut app, &ctx, "Print");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_loads(&ctx);
+        }
+        assert!(app.settings.print_booklet);
+        assert_eq!(app.settings.print_binding, print::Binding::Right);
+        app.dialog = Dialog::None;
+        app.act(&ctx, Act::Print);
+        match &app.dialog {
+            Dialog::Print(_, s) => {
+                assert!(s.booklet && s.binding == print::Binding::Right);
+                assert_eq!(s.booklet_sides, print::BookletSides::Both);
+            }
+            _ => panic!("Print isn't open"),
+        }
+    }
+
+    /// The part of [`print_sends_several_pages_a_sheet`] run with the stand-ins first on
+    /// PATH; without them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_sends_several_pages_a_sheet"]
+    fn several_a_sheet_with_stand_in_cups() {
+        if std::env::var_os(STAND_IN_CUPS).is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, papers_found);
+        let two = print::PerSheet {
+            pages: 2,
+            order: print::PageOrder::Down,
+            borders: true,
+        };
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.per_sheet = two;
+        }
+        click(&mut app, &ctx, "Print");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_loads(&ctx);
+        }
+        assert_eq!(app.settings.print_per_sheet, two);
+        app.dialog = Dialog::None;
+        app.act(&ctx, Act::Print);
+        match &app.dialog {
+            Dialog::Print(_, s) => assert_eq!(s.per_sheet, two),
+            _ => panic!("Print isn't open"),
+        }
+    }
+
+    /// ENH-47: Print opens ready with the printers and paper sizes found earlier in the
+    /// session while it looks again: a printer added meanwhile joins the list, the printer
+    /// chosen kept. The printer last printed to is chosen in a new session. Run with stand-ins
+    /// for `lpstat` (slow), `lpoptions` and `lp`.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_opens_ready_with_the_printers_found_before() {
+        let lpoptions = "#!/bin/sh\necho 'PageSize/Media Size: *A4 Letter'\n";
+        let lp = "#!/bin/sh\ncat > /dev/null\necho 'request id is limarepdf-test-3 (1 file(s))'\n";
+        let scripts = [
+            ("lpstat", SLOW_LPSTAT),
+            ("lpoptions", lpoptions),
+            ("lp", lp),
+        ];
+        let dir = stand_in_cups("session", &scripts);
+        std::fs::write(dir.join("printers"), "limarepdf-test\n").unwrap();
+        rerun_with_cups(&dir, "app::tests::printers_kept_with_stand_in_cups");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ENH-47: printers listed at once fill Print in, ready, the fuller list after them
+    /// joining it with the choice kept; the session keeps the latest search's list, not an
+    /// earlier search's coming late.
+    #[test]
+    fn printers_listed_at_once_are_joined_by_the_rest() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let p = |name: &str, default| print::Printer {
+            name: name.into(),
+            default,
+        };
+        // Their paper sizes known, so the system isn't asked.
+        let letter = print::Paper {
+            id: "na_letter_8.5x11in".into(),
+            label: "Letter (8.5 × 11 in)".into(),
+            size: (612.0, 792.0),
+            margins: None,
+        };
+        for name in ["Office", "Hall"] {
+            let list = print::PaperList {
+                papers: vec![letter.clone()],
+                default: Some(0),
+            };
+            app.papers_known.insert(name.into(), list);
+        }
+        let print = dlg::Print::looking(41, "test.pdf".into());
+        app.dialog = Dialog::Print(app.asked(), Box::new(print));
+        let send = |app: &mut App, search, list: Vec<print::Printer>, last| {
+            let found = Loaded::Printers(search, Ok(list), last);
+            app.tx.send(found).unwrap();
+            app.poll_loads(&ctx);
+        };
+        fn print_of(app: &App) -> &dlg::Print {
+            match &app.dialog {
+                Dialog::Print(_, s) => s,
+                _ => panic!("Print isn't open"),
+            }
+        }
+        send(&mut app, 41, vec![p("Office", true)], false);
+        let s = print_of(&app);
+        assert!(s.ready() && s.listing == Some(41) && s.setup().is_some());
+        let both = vec![p("Office", true), p("Hall", false)];
+        send(&mut app, 41, both, true);
+        let s = print_of(&app);
+        assert_eq!((s.printers.len(), s.printer, s.listing), (2, 0, None));
+        assert_eq!(app.printers_known.as_ref().map(|k| k.1.len()), Some(2));
+        // An earlier search's list, coming late, leaves the dialog and the session's alone.
+        send(&mut app, 40, vec![p("Stale", true)], true);
+        assert_eq!(print_of(&app).printers.len(), 2);
+        assert_eq!(app.printers_known.as_ref().map(|k| k.0), Some(41));
+    }
+
+    /// The part of [`print_opens_ready_with_the_printers_found_before`] run with the
+    /// stand-ins first on PATH; without them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_opens_ready_with_the_printers_found_before"]
+    fn printers_kept_with_stand_in_cups() {
+        use std::time::{Duration, Instant};
+        let Some(dir) = std::env::var_os(STAND_IN_CUPS).map(PathBuf::from) else {
+            return;
+        };
+        fn print_of(app: &App) -> &dlg::Print {
+            match &app.dialog {
+                Dialog::Print(_, s) => s,
+                _ => panic!("Print isn't open"),
+            }
+        }
+        let names = |app: &App| -> Vec<String> {
+            let printers = &print_of(app).printers;
+            printers.iter().map(|p| p.name.clone()).collect()
+        };
+        let chosen = |app: &App| print_of(app).printers[print_of(app).printer].name.clone();
+        let set = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let settings = dir.join("settings.txt");
+        let new_app = || {
+            let kept = Settings::from_file(Some(settings.clone()));
+            let mut app = App::with(kept, Recent::from_file(None));
+            let mut pdf = Pdf::new();
+            pdf.insert_blank(0, 612.0, 792.0).unwrap();
+            assert!(app.add_tab(&ctx, pdf, None, None, false));
+            app
+        };
+
+        // The first time, Print waits for the printers (a second here).
+        let mut app = new_app();
+        set("delay", "1");
+        app.act(&ctx, Act::Print);
+        assert!(!print_ready(&app), "printers before lpstat answered");
+        wait_for(&mut app, &ctx, papers_found);
+        click(&mut app, &ctx, "Cancel");
+
+        // Opened again: ready at once with the printers and paper sizes found, while lpstat
+        // is asked again; a printer added meanwhile joins the list, the choice kept.
+        set("delay", "3");
+        set("printers", "limarepdf-test\nsecond\n");
+        let start = Instant::now();
+        app.act(&ctx, Act::Print);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(papers_found(&app), "Print isn't ready at once");
+        assert_eq!(names(&app), ["limarepdf-test"]);
+        let refreshed = |a: &App| matches!(&a.dialog, Dialog::Print(_, s) if s.listing.is_none());
+        wait_for(&mut app, &ctx, refreshed);
+        assert_eq!(names(&app), ["limarepdf-test", "second"]);
+        assert_eq!(chosen(&app), "limarepdf-test");
+
+        // The other printer chosen and printed to: remembered.
+        set("delay", "0");
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.printer = 1;
+        }
+        dialogs_until(&mut app, &ctx, papers_found);
+        click(&mut app, &ctx, "Print");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_loads(&ctx);
+        }
+        let said = match &app.dialog {
+            Dialog::Message(_, m) => m.clone(),
+            _ => "no message".into(),
+        };
+        assert!(said.starts_with("Sent 1 page(s) to second."), "{said}");
+        assert_eq!(app.settings.print_printer.as_deref(), Some("second"));
+
+        // A new session: the printer last printed to, not the default.
+        let mut app = new_app();
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, papers_found);
+        assert_eq!(chosen(&app), "second");
+    }
+
+    /// Draws the dialogs, taking in background results, until `done`, for a few seconds at
+    /// most.
+    #[cfg(not(windows))]
+    fn dialogs_until(app: &mut App, ctx: &egui::Context, done: impl Fn(&App) -> bool) {
+        for _ in 0..500 {
+            app.poll_loads(ctx);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.dialogs(ui.ctx()));
+            out.textures_delta.clear();
+            if done(app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("never done");
     }
 
     /// Add a tab of `n` blank pages, with nothing unsaved, and bring it to the front.

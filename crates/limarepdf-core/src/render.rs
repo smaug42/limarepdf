@@ -14,7 +14,7 @@ use hayro::hayro_interpret::{InterpreterCache, InterpreterSettings, InterpreterW
 use hayro::hayro_syntax::page::Page;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf as HPdf};
 use hayro::kurbo::Affine;
-use hayro::vello_cpu::color::palette::css::WHITE;
+use hayro::vello_cpu::color::palette::css::{TRANSPARENT, WHITE};
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
 use hayro::{render_into, RenderCache, RenderSettings};
 use image::codecs::jpeg::{JpegEncoder, PixelDensity};
@@ -242,6 +242,34 @@ impl<'a> Renderer<'a> {
         scale: f32,
         stop: &dyn Fn() -> bool,
     ) -> Result<Option<Bitmap>> {
+        self.render_bands(index, scale, false, stop)
+    }
+
+    /// Page `index` at 72 dpi on a clear backdrop, for a picture drawn alone on a page of its
+    /// size: the bitmap keeps the picture's transparency, its colours not multiplied by it.
+    pub(crate) fn render_clear(&self, index: usize) -> Result<Bitmap> {
+        let mut b = self
+            .render_bands(index, 1.0, true, &|| false)?
+            .ok_or_else(|| anyhow!("drawing page {} was stopped", index + 1))?;
+        for px in b.rgba.as_chunks_mut::<4>().0 {
+            let a = px[3] as u32;
+            if a != 0 && a != 255 {
+                for c in &mut px[..3] {
+                    *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
+                }
+            }
+        }
+        Ok(b)
+    }
+
+    /// [`Renderer::render_unless`], on white or, `clear`, on a clear backdrop.
+    fn render_bands(
+        &self,
+        index: usize,
+        scale: f32,
+        clear: bool,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<Bitmap>> {
         let page = self.page(index)?;
         let scale = scale.clamp(0.05, 16.0);
         // The bitmap's size as `hayro::render` works it out.
@@ -263,7 +291,7 @@ impl<'a> Renderer<'a> {
                 width,
                 height: rows.min(height - y),
             };
-            rgba.extend_from_slice(self.draw(page, scale, band).data_as_u8_slice());
+            rgba.extend_from_slice(self.draw(page, scale, band, clear).data_as_u8_slice());
             y += band.height;
         }
         Ok(Some(Bitmap {
@@ -304,7 +332,7 @@ impl<'a> Renderer<'a> {
             .within((w * scale) as u32, (h * scale) as u32)
             .ok_or_else(|| anyhow!("the region is outside page {}", index + 1))?;
         check_pixels(index, r.width, r.height)?;
-        let pm = self.draw(page, scale, r);
+        let pm = self.draw(page, scale, r, false);
         Ok(Bitmap {
             width: pm.width() as usize,
             height: pm.height() as usize,
@@ -313,8 +341,9 @@ impl<'a> Renderer<'a> {
     }
 
     /// Draw the part `r` (within the bitmap, at most `u16::MAX` a side) of `page` drawn at
-    /// `scale`, on white, as `hayro::render` draws a whole page.
-    fn draw(&self, page: &'a Page<'a>, scale: f32, r: Region) -> Pixmap {
+    /// `scale`, on white, as `hayro::render` draws a whole page, or, `clear`, on a clear
+    /// backdrop (the pixels' colours multiplied by their alpha).
+    fn draw(&self, page: &'a Page<'a>, scale: f32, r: Region, clear: bool) -> Pixmap {
         let mut ctx = RenderContext::new(r.width as u16, r.height as u16);
         render_into(
             page,
@@ -330,7 +359,7 @@ impl<'a> Renderer<'a> {
             &mut pm,
             &mut Resources::default(),
             RasterizerSettings {
-                target_init: TargetInit::Clear(WHITE),
+                target_init: TargetInit::Clear(if clear { TRANSPARENT } else { WHITE }),
                 ..Default::default()
             },
         );

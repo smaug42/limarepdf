@@ -44,6 +44,9 @@ cp crates/limarepdf-gui/assets/fonts/LICENSE-Phosphor.txt "$res/FONT-LICENSE-Pho
 for f in OFL-Liberation OFL-Caveat OFL-CedarvilleCursive LICENSE-HomemadeApple OFL-Zeyada; do
   cp "crates/limarepdf-core/assets/fonts/$f.txt" "$res/FONT-LICENSE-${f#*-}.txt"
 done
+cp crates/limarepdf-core/assets/dictionaries/README_en_CA.txt "$res/DICTIONARY-LICENSE-English.txt"
+cp crates/limarepdf-core/assets/dictionaries/README_dict_fr.txt "$res/DICTIONARY-LICENSE-French.txt"
+cp crates/limarepdf-core/assets/dictionaries/LICENSE-MPL-2.0.txt "$res/LICENSE-MPL-2.0.txt"
 
 # lipo drops the linker's ad hoc signatures; Apple Silicon won't run unsigned code.
 codesign --force --sign - "$app/Contents/MacOS/limarepdf-cli"

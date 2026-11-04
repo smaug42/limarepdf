@@ -2,7 +2,7 @@
 
 # Reading and finding
 
-Move through a document, find and replace words in it, follow its bookmarks and links, and copy its text.
+Move through a document, find and replace words in it, follow its bookmarks and links, add and change links, and copy its text.
 Shortcuts are written with Ctrl; on a Mac, use ⌘ (Command) instead.
 
 ## Move around the pages
@@ -96,8 +96,8 @@ set them, even if the search is still running.
 
 The headings in Search results, like the page thumbnails, use the document's own page numbering when it has one
 (such as iii or A-1; see [Number pages your own way](organising-pages.md#number-pages-your-own-way)). To number the pages 1, 2, 3 from the first
-page instead, turn off View > Show > **Use the document's page labels** (also in ☰ > View). The status bar shows
-both.
+page instead, turn off View > Show > **Use the document's page labels** (also in ☰ > View > Show). The status bar
+shows both.
 
 On the command line, `limarepdf-cli search` lists the matches, one a line, as `page 3: …the words around it…`, then
 the count; `--boxes` also prints where each one is on its page, and `--match-case` and `--whole-words` work as the
@@ -175,15 +175,32 @@ left, or choose ☰ > View > Bookmarks. A document opens on its page thumbnails,
 bookmarks.
 
 - **Go to a bookmark's page** by clicking it. The arrow beside a bookmark shows or hides the bookmarks inside it,
-  which start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out.
+  which start shown or hidden as the file asks; what you show or hide stays so while the document is open, and
+  isn't saved in the file. Bookmarks that go to another file or a web address are greyed out.
 - **Add a bookmark** for the page you are on with Add bookmark. It goes after the bookmark you clicked last (or at
   the end, when you haven't clicked one), and its name opens for typing: Enter keeps what you typed, Esc keeps
   "Page N".
-- **Rename a bookmark** by double-clicking it.
-- **Right-click a bookmark** to rename it, add a bookmark inside it, or delete it along with the bookmarks inside
-  it.
+- **Rename a bookmark** by double-clicking it, or by selecting it and pressing F2.
+- **Move a bookmark** by dragging it; the bookmarks inside it go with it. Drop it on the top of another bookmark to
+  put it before that one, on the bottom to put it after, or on the middle to put it inside, last of the bookmarks
+  there. A line shows where it will go, or an outline round the bookmark it will go inside. Dropped below the
+  list, it goes last. A moved bookmark still goes to the same place in the document, and each move can be undone.
+- **Right-click a bookmark** to rename it, move it (**Move up**, **Move down**, **Promote**, **Demote**, each
+  showing its key), add a bookmark inside it, or delete it along with the bookmarks inside it.
 
-Undo reverses each of these. Bookmarks can't be moved or reordered yet. On the command line:
+The bookmarks list works from the keyboard too: click a bookmark, or press Tab until the list has the keyboard.
+
+- **Up** and **Down** go to the bookmark above or below, showing its page; **Home** and **End** to the first and
+  last. **Right** shows the bookmarks inside one, then goes to the first of them; **Left** hides them, then goes
+  to the bookmark it is in. **Enter** shows its page again, **F2** renames it, **Delete** deletes it, and **Esc**
+  goes back to the page.
+- **Alt+Shift+Up** and **Alt+Shift+Down** (Option+Shift on a Mac) move the selected bookmark up or down among the
+  bookmarks at its level, as Word's outline moves headings. **Alt+Shift+Left** (Promote) moves it out of the
+  bookmark it is in, to just after that one; **Alt+Shift+Right** (Demote) moves it inside the bookmark above it,
+  last. When it can't go that way (it is already first or last at its level, or already at the top), a note says
+  so and nothing changes.
+
+Undo reverses each of these. One bookmark moves at a time. On the command line:
 [`limarepdf-cli bookmarks`](cli.md#bookmarks).
 
 ## Links
@@ -195,10 +212,64 @@ the way of editing.
 - A link to another page goes there.
 - A link to a web or email address asks first, showing the full address, and then opens it in your browser or
   email program. LimarePDF itself never connects to the network.
-- Links to anything else, such as a file or a program, are shown but not opened. Links to another PDF file aren't
-  followed.
+- Links to anything else are never opened: another file (another PDF too), a program, a script, or an address
+  that isn't a web page's or an email address (such as `file:`). Hovering over one says what it would do; the
+  pointer stays as it is, and a click there works as if the link weren't there.
 
-Links can't be added or edited yet.
+### Add a link
+
+**Link** is in **Insert > Navigation**, ☰ > Insert > **Link…**, the command search, and Ctrl+K (⌘K on a Mac).
+
+To link words:
+
+1. Select the words with the read tool.
+2. Choose **Link**, or right-click the words and choose **Link…**. The **Insert link** window opens.
+3. Under **Link to**, choose **Web page**, **Email address** or **Page in this document**, then type the address
+   (such as example.com), the email address (such as name@example.com), or the page number.
+4. Press **Insert link**, or Enter in the address box.
+
+<img src="images/insert-link.png" width="472" alt="The Insert link window: Link to with Web page chosen, Email address and Page in this document beside it; the Address box holding example.com/august-storms; Show as a link: blue underline ticked; Insert link and Cancel at the bottom">
+
+The link covers the words' lines, one area a line; words across pages get one link on each page.
+
+To link an area of the page, choose **Link** with nothing selected. The **Link tool** comes on (Link shows
+pressed), and every link on the page is outlined with a dashed line; hovering over one says where it goes. Drag a
+box where there is no link, and Insert link opens for it. The tool stays on for the next link; Link again, Ctrl+K
+again or Esc goes back to the read tool.
+
+**Show as a link: blue underline** draws a blue underline under each line of the link, in Word's link blue. It is
+ticked for words and not for a box drawn with the Link tool. The underline belongs to the link: the words keep
+their own colour and font. It shows in LimarePDF and in readers that draw link borders (those based on Poppler
+were checked; Acrobat, browsers and macOS Preview not yet). Without it nothing shows on the page, though readers
+show a hand pointer over the link.
+
+About addresses:
+
+- A web address typed without `http://` or `https://` gets `https://` in front: example.com becomes
+  `https://example.com/`.
+- An email address works with or without `mailto:` in front, and a `?subject=` after it is kept.
+- Names and paths in other alphabets work (bücher.example, say): they are written in the plain form links need.
+- Only web pages (`http` and `https`), email addresses and this document's pages can be linked to. Insert link is
+  greyed while the box is empty, and an address it doesn't take says why under the box, such as "LimarePDF links to
+  web pages and email addresses only." for `javascript:`, `file:` or `tel:`.
+
+### Change or remove a link
+
+- **With the Link tool**, click a link to select it: it is framed, with handles. Drag it to move it, or a handle to
+  resize it; the arrow keys move it a point (ten with Shift). Delete removes it. Double-click it, press Enter, or
+  choose Link (Ctrl+K) to open **Edit link**. Esc lets go of the link, and Esc again goes back to the read tool.
+- **With the read tool or the Link tool**, right-click a link to select it, then choose **Edit link…**, **Open link**, **Copy link
+  address** (web and email links) or **Remove link**, as in Word. Open link follows it as a click does.
+- **Edit link** is the Insert link window, with **Save link** and **Remove link**.
+- **The inspector** shows the selected link, headed **Link**: its page, Link to, the address or page, and Show as a
+  link. A change applies at once; an address when you leave its box or press Enter.
+
+A link LimarePDF doesn't follow (to another file, a program or a script) says what it does now ("Now: …") in the
+inspector and in Edit link; point it to a page, web page or email address instead, or remove it.
+
+Undo reverses each link added, changed or removed. Not yet: links to another PDF file, or to a bookmark or named
+place; a link colour of your own or a box around the link (the underline or nothing are the only looks); links
+from the command line.
 
 ## Copy text
 
@@ -224,7 +295,7 @@ Selected words can also be typed over, deleted or cut, as in a word processor (s
 [Type over, delete or cut words](content-editing.md#type-over-delete-or-cut-words)).
 
 Words are copied in reading order, with spaces between words and line breaks between lines and pages. Recognised
-(OCR) text is selected and copied like any other text. **Edit > Copy** (or ☰ > Edit > Copy text) does the same as
+(OCR) text is selected and copied like any other text. **Edit > Copy** (or ☰ > Edit > Copy) does the same as
 Ctrl+C, and **Edit > Cut** (Ctrl+X) copies the words and then takes them out of the page.
 
 On Linux, as in other Linux apps, the selected text can also be pasted into another app (or a LimarePDF text box)
@@ -232,8 +303,8 @@ by clicking there with the middle mouse button, without copying it first.
 
 ### Print or save just the selection
 
-Right-click the selection and choose **Print selected text…** or **Save selected text…** (also under ☰ > Edit).
-Both offer two layouts:
+Right-click the selection and choose **Print selected text…** or **Save selected text…** (also in ☰ and ☰ >
+Export). Both offer two layouts:
 
 - **As it looks (cropped pages):** each page with selected words, at its full width with its margins, cut down
   from the top and bottom to the selected lines. Fonts, pictures and layout stay as they are, but anything else

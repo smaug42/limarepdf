@@ -530,6 +530,54 @@ fn blacks_out_the_covered_part_of_a_picture() {
     assert!(at(170, 120) > 100, "the rest of the picture still shows");
 }
 
+/// A picture whose `/DecodeParms` is a reference (as some writers give it, pdf.js's
+/// `issue17906` among them): its PNG predictor is undone before it is cut, so the rest of
+/// it keeps its colours.
+#[test]
+fn cuts_a_picture_whose_decode_parameters_are_a_reference() {
+    let mut p = make(&["q 100 0 0 100 100 50 cm /Im1 Do Q"]);
+    // Each row: PNG's "no filter" byte, then its pixels.
+    let row: Vec<u8> = [0u8].into_iter().chain([200, 30, 60].repeat(10)).collect();
+    let rows = row.repeat(10);
+    let parms = p.doc.add_object(dictionary! {
+        "Predictor" => 15, "Colors" => 3, "BitsPerComponent" => 8, "Columns" => 10,
+    });
+    let mut s = Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 10, "Height" => 10,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8,
+        },
+        rows,
+    );
+    s.compress().unwrap();
+    s.dict.set("DecodeParms", parms);
+    let im = p.doc.add_object(s);
+    let page = p.page_ids()[0];
+    let res = p
+        .doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .get_mut(b"Resources")
+        .unwrap();
+    res.as_dict_mut()
+        .unwrap()
+        .set("XObject", dictionary! {"Im1" => im});
+    // The top two rows' first two pixels (marks are measured from the page's top).
+    let rep = p.redact(&[(0, [100.0, 50.0, 120.0, 70.0])]).unwrap();
+    assert_eq!(rep.pages[0].images_cut, 1);
+    let pics = pictures(&mut p);
+    assert_eq!(pics.len(), 1);
+    let (n, data) = (pics[0].1, &pics[0].2);
+    for y in 0..10 {
+        for x in 0..10 {
+            let px = &data[(y * 10 + x) * n..(y * 10 + x + 1) * n];
+            let cut = x < 2 && y < 2;
+            let want = if cut { [0, 0, 0] } else { [200, 30, 60] };
+            assert_eq!(px, want, "pixel ({x}, {y})");
+        }
+    }
+}
+
 #[test]
 fn keeps_a_jpeg_picture_as_jpeg() {
     let mut p = make(&[""]);

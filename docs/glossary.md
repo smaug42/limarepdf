@@ -9,8 +9,8 @@ shape, drawing or stamp. Other apps can show, move or remove annotations. Flatte
 See [Comments and markup](comments-and-markup.md).
 
 **Arrow.** The tool for selecting, moving and resizing anything on the page, lines of page text and full-page
-scans included, one or several at a time; in Edit > Select (or ☰ > Tools > Select, move and resize objects). See
-[Editing text and pictures](content-editing.md#select-several-objects).
+scans included, one or several at a time; in Edit > Select (or ☰ > Edit > Select > Select, move and resize
+objects). See [Editing text and pictures](content-editing.md#select-several-objects).
 
 **Bates number.** A number stamped on every page of a set of documents, such as `ABC000123`, so that each page can
 be referred to exactly. Common in legal work.
@@ -31,11 +31,12 @@ form). A document can be certified only before anyone else signs it.
 and below them the buttons of the name chosen, in groups. This guide writes a button as name > button, such as
 Pages > Split. See [The command band](gui.md#the-command-band).
 
-**Command palette.** The list of every command, opened with Ctrl+K: type to find one, Enter to run it.
+**Command search.** The list of every command, opened with Ctrl+Shift+P (⌘⇧P on a Mac) or ☰ > Help > Search
+commands…: type to find one, Enter to run it.
 
 **Compact commands.** The command band on one row of icons, which name themselves on hover. The small arrow at the
 right of the commands row, or View > Show > Compact commands, turns it on and off; windows under 600 points high
-show the commands compact by themselves.
+show the commands compact by themselves. It belongs to the Full interface and is greyed in the Minimal one.
 
 **Crop.** Trimming the margins of a page as it is shown. The content outside is hidden, not deleted.
 
@@ -79,7 +80,15 @@ is. See [Add pages](organising-pages.md#add-pages-and-merge-documents).
 **Inspector.** The panel on the right of the window, which shows the options for what is selected, or for the
 whole document when nothing is. Tools such as Watermark and Crop open in it on their own, with a × to close them.
 
+**Link tool.** The tool for adding and changing links, turned on by Link (Insert > Link or Ctrl+K) with nothing
+selected. It outlines the page's links: drag a box to add one, or click one to move, resize, edit or delete it.
+See [Links](reading-and-finding.md#add-a-link).
+
 **Metadata.** Information about the document stored in it, such as its title, author and the program that made it.
+
+**Minimal interface.** The same editor with one quiet row of commands in place of the commands row and the
+command band; Tools, the floating toolbar, the inspector and ☰ hold the rest. The button at the right end of the
+tabs switches between it and the Full interface. See [The Minimal interface](gui.md#the-minimal-interface).
 
 **OCR (text recognition).** Reading the text in a scan or photo, so that it can be searched and copied. LimarePDF
 adds the recognised text as an invisible layer over the picture.
@@ -101,7 +110,7 @@ Turning off Show planned features, in the status bar or View > Show, hides them.
 
 **Read tool.** The tool every document opens with (the text cursor): it selects text, follows links, fills in
 forms, and selects and moves pictures, shapes and comments on the page (Shift+click for several pictures and
-shapes).
+shapes). Words it selects can be made a link with Link (Ctrl+K).
 
 **Recovery copy.** A private copy LimarePDF keeps of a document with unsaved changes, so it can offer the document
 back if the app stops unexpectedly. It never changes your own file.

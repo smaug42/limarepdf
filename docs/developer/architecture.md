@@ -38,6 +38,11 @@ It uses:
   `unicode-segmentation` and `unicode-normalization` for words, grapheme clusters and NFC (the app uses both too,
   `unicode-normalization` since batch 45): the text pipeline below;
 - [`image`](https://crates.io/crates/image) for images;
+- [`url`](https://crates.io/crates/url) 2.5.8 for the addresses new links are written with (ENH-17: IDNA and
+  percent-encoding; already in the tree through `webbrowser`);
+- [`spellbook`](https://crates.io/crates/spellbook) 0.4.2 (MPL-2.0) for spelling, with Hunspell dictionaries, and
+  [`zip`](https://crates.io/crates/zip) 9.3 to read the dictionary extensions added (NEW-06; "Spelling" below);
+  the app asks the system's language of [`sys-locale`](https://crates.io/crates/sys-locale) 0.3;
 - [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scans and OCR](../scanning-and-ocr.md));
   the usual scanner and OCR libraries, SANE and Tesseract, are C/C++, so LimarePDF doesn't drive scanners;
 - [`serde_json`](https://crates.io/crates/serde_json) in the command line, for form values as JSON.
@@ -73,7 +78,12 @@ through `theme::field`), `columns` (two fields side by side, one under the other
 smaller in windows under 600 points wide. A button on a list's row is named with what the row is (`set_name`), and
 `list_rows` gives each row its own id for what it remembers. Tests draw a dialog with `dialogs::drawn_window` and
 check it with `fits` (inside the screen, its buttons inside it) and `unclear_names`. The command palette (`palette_ui` in `app.rs`) uses the same look
-without `Shell`, as a launcher with no title or buttons. Tab goes round a dialog (PB-15): at Tab on the last
+without `Shell`, as a launcher with no title or buttons. egui's `Modal` centres its window each frame, so a dialog
+whose content grew moved up by half of what was added (BUG-50): `Shell::show` keeps the window's top from the
+first frame it was seen (in egui's data under the dialog's id, with the screen's rect) and anchors it there
+(`Modal::area`, `CENTER_TOP`), so it grows downward; the top moves up only as far as keeps the bottom `EDGE`
+(8 points) above the screen's, and a dialog newly shown, or a screen of another size, is centred again. Tab goes
+round a dialog (PB-15): at Tab on the last
 control egui gives up the keyboard (and marks it for the next control that asks), so `Shell::show`, finding no
 focus after a Tab, offers it to the first enabled focusable widget on the dialog's layer
 (`Memory::interested_in_focus`, which also clears egui's mark), or gives it outright when that is the only control
@@ -426,7 +436,7 @@ end; the result is one `Action::Restyle` across lines and pages, nothing left se
 written as an empty `() Tj` in place of its first show (core's one-style in-place path): it reads and draws as
 nothing, saved too. Lines aren't joined (paragraph editing, NEW-01). `Act::EditObjectText` with words selected is
 `Editor::edit_words` (the moving end's line, its part selected). Shift with the arrows, Home and End is
-`Act::Extend(selection::Toward)` (☰ > Edit > Extend selected text, keys only, not in the palette):
+`Act::Extend(selection::Toward)` (keys only: not in ☰ since ENH-49, nor in the palette):
 `Editor::extend_by` moves the selection's moving end by a word, to the word on the line above or below nearest
 across (`editor::across`), or to the line's start or end, reading the next or previous page with words when it
 crosses one; `Tab::reveal` (from `Editor::words_end`) then scrolls the least that brings the end into view, against
@@ -474,10 +484,17 @@ text), puts a line break after each line core broke that has none, lays out with
 (`BoxSetting::leading`, 1.15; `job` keeps 1.2 elsewhere), then clears those rows' `ends_with_newline` and gives
 the galley the text as typed (sections' bytes mapped back), so the caret, selection and egui's double-click read
 the text the user typed; it adds the margin that puts the text where it is written (sides: border and padding,
-`BoxSetting::margin`; the first baseline 0.8 times the size below that). `writing_ui` (text boxes, with
-`Writing::border`) and `fields.rs`'s `text_box` (multi-line fields; the field's `BoxSetting` from
-`Pdf::field_setting`, kept in `Edit::Text`'s `set`, a `OnceCell` read when the box is first drawn) use it;
-single-line fields and passwords lay out on one line. The caret and deletes go by grapheme cluster:
+`BoxSetting::margin`; the first baseline 0.8 times the size below that). Its rows go where `/Q` places the lines
+as written (PB-59, batch 49's stage 3): `BoxSetting::placed` gives each line's start in from the text's left as
+`form_ap::draw` aligns it (`align` over `shown`'s width, one `Metrics` for both), and `moved_rows` moves each row
+by it, leaving the galley's `rect` as laid out: a right-aligned row's trailing space hangs past the side, and a
+galley widened by it would be centred in the field by `Ui::put`, moving every row (found in the stage, 2 px).
+`writing_ui` (text boxes, with `Writing::border` and `Writing::align` from the box's `TextStyle`, its setting
+`aligned`) and `fields.rs`'s `text_box` (multi-line fields; the field's `BoxSetting` from `Pdf::field_setting`,
+which sets `/Q` as the writer does, `widget_q`, kept in `Edit::Text`'s `set`, a `OnceCell` read when the box is
+first drawn) use it; single-line fields and passwords lay out on one line, a single-line field (not a comb) placed
+by `TextEdit::align` from `Widget::align` (centred, or at the right less the 2-pixel margin, where the writer puts
+it less the border and padding). The caret and deletes go by grapheme cluster:
 `page_text::Clusters` is the `TextBuffer` of every typing box (Delete and Backspace take a cluster, Backspace only
 the last mark of a letter typed with separate accents, variation selectors excepted; its `type_id` is
 `Clusters<'static>`'s), and `snap_to_clusters` (`snap_drawn`) moves a caret egui left inside a cluster to its
@@ -501,9 +518,8 @@ a new or existing text box and the form field typed in (`FormUi::typed_text`); `
 which can show beside it) names the words, as typed, each once, that a line's own font can't write ("Not in this
 PDF's font: größe Maße. Those words use Helvetica."). Not covered: a composition left in the inspector's
 annotation text box reaches core, which refuses it with BUG-39's message; form fields have no typing filter at
-all (core refuses what can't be written when the value is written); a field's `/Q` alignment isn't shown while
-typing (PB-59); another app's text box with `/RD`, a cloud or a callout can wrap otherwise while typed than as
-written (PB-60).
+all (core refuses what can't be written when the value is written); another app's text box with `/RD`, a cloud or
+a callout can wrap otherwise while typed than as written (PB-60).
 
 The interface's own text falls back to installed fonts too (ENH-33, built in batch 45's 1b instead of eframe's
 `system_fonts`): `typing_fonts::interface_fallback`, called each frame from `App::ui`, starts once a thread that
@@ -535,15 +551,26 @@ saving, a file, undo, redo, words, typing, a line, a picture, an object, a movab
 and sign, redaction marks, a form, a field, the Select
 tool, the Read tool, facing pages), and returns the reason of the first that alone enables the command, else of
 the one that does with all those before it, else `NOT_NOW` ("Not available just now."); without a document, "Open
-a document first." `actions::greyed_tip` (the tooltip, then the reason) is the disabled hover text of the band's
-buttons, its menu buttons (their first item's reason), the commands row and `menu_item`. `font_list::styles` names
+a document first." `actions::greyed_tip` is the disabled hover UI of the band's buttons, the commands row, the
+command search and Search results' Replace buttons; `greyed_ui` draws it (since the user's findings on NEW-15's
+stage 3, whose reason was lost as the tooltip's third line): the name and shortcut (`titled`), then the reason after
+`icon::INFO`, both in `theme::Tone::Caution`'s colour, as `unavailable` says it ("Not available now. " and the
+reason, its capitals kept for a font's name; `NOT_NOW` alone), then the hint. The band's menu buttons give their
+label and first item's reason, `menu_item` the reason and hint (the label is the item), `font_list::styles` the
+reason through `greyed_why`. `font_list::styles` names
 B and I with their keys, and greyed says the family has no such face while the group is enabled, else the group's
 reason. Ctrl+B and Ctrl+I in new text and in a line go through `page_text::switch_styles`: `Styled::switches` says
 whether the switch would change anything, and if not `Refused` marks "<family> has no bold." at the caret.
 `page_text::note` gives `SCRIPT` for a character core's `unwritten_script` (right to left, or shaped) marks,
 outside an emoji sequence. `App::type_over` with a paste and no box to type in sets `Tab::info`, saying where to
-click. Tool commands in menus are `egui::RadioButton`s (`menu_item`), so the tool in use is marked; `band::is_on`
-presses Edit text while the Text tool is on; `inspector::title` is "Form field" while a field has the keyboard
+click. Tool commands in menus are `egui::RadioButton`s (`menu_item`), so the tool in use is marked. A tool's
+command chosen again (`App::act`'s `Act::Tool` with that tool on, not the read tool) is `set_tool(Tool::Read)`, as
+Edit text and Crop already were, so a pressed tool button turns off; `set_tool` lets go of `pending_image` for any
+tool but Image. `band::is_on` presses Edit text by `Ctx::edit_text` (`Editor::edit_text_on`): a line or
+paragraph being edited, or the Text tool chosen with Edit text (`Editor::edit_text`, its `by_edit_text`, which
+every `set_tool` clears), so Insert > Text's tool alone doesn't press it. `Editor::page_ui` gives form fields the
+Text tool's plain click as the read tool's (`typing_tool` beside `filling`; links still take Ctrl+click), keeping
+new text being typed first (`finish_adding`). `inspector::title` is "Form field" while a field has the keyboard
 (`form.focused_field()`), and the app clears the selected words then, after `settle_look`.
 
 Selected objects (ENH-06, batch 25; design `limarepdf-multiselect-design.md`) are one `Selection::Objects`: a page
@@ -598,7 +625,7 @@ turn it off; comments (`Drag::annot`), a line's ends and turns never snap, nor d
 (Word's Align, named by its tooltip so it isn't read as aligning text) is a menu button (`band::ALIGN_MENU`), the
 objects' right-click menu shows `actions::ALIGNS` as an Align objects submenu (`menu_of`), which `toolbar_items`
 leaves off the floating bar and the docked buttons (as word processors' bars do), and the band's menus draw the
-registry's separators (`actions::menu_list`). `Ctx::objects` counts the objects held,
+File menu's separators (`actions::menu_list`, `menu::line_before`). `Ctx::objects` counts the objects held,
 for Distribute's three (`why_not`: "Select three or more objects first.").
 
 Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a selection
@@ -768,8 +795,10 @@ can't differ. They replace the three space splitters (`form_ap`'s wrapper, `exce
 excerpt starts no line after a final line break, and the signature's name shrinks before a word is broken.
 `BoxSetting` (`form_ap.rs`, public) lays a box out as `form_ap::draw` writes it, for the app to wrap typed text on
 the same lines: `lines(text, lang)` (the size, a field's auto size fitted as `draw` fits it, and each line's
-bytes; `draw`'s `Body::Lines` uses the same `wrapped`), `margin()` (border and `PAD`), `leading()` (1.15); made by
-`BoxSetting::text_box(width, border, size)` (Helvetica) or `Pdf::field_setting(name, widget)` (read only: the
+bytes; `draw`'s `Body::Lines` uses the same `wrapped`), `placed(text, lang)` (those lines, each with its start as
+`/Q` aligns it), `margin()` (border and `PAD`), `leading()` (1.15); made by
+`BoxSetting::text_box(width, border, size)` (Helvetica; `.aligned(align)` sets its `/Q`) or
+`Pdf::field_setting(name, widget)` (read only: the
 field's own font as `pick_font` keeps it, its widths unkerned, else the standard font nearest; `OwnFont` and
 `form_write::own_font` shared with `pick_font`; `Widget::id` names the widget). Core's other public text API:
 `fallbacks(f, text)` (the words set in another font, and the font: what the inspector names), `set_in(f, text,
@@ -845,8 +874,8 @@ character no installed font has; since batch 45 its Chinese, say, falls back to 
 does): `Pdf::check_box_drawable` refuses whatever would draw it again
 into the file (a new look in `set_annotation`, `set_text_style`, a resize in `move_annotation`; BUG-39), and
 `flatten_annotations` refuses when such a box has no drawing, naming its page (`embed::box_refusal` words the
-reason). `annot_ap.rs`'s `typeset` draws such characters as `?` only in drawings in a copy: the app's view,
-printing and page images (`snapshot_hiding`).
+reason). `annot_ap.rs`'s `typeset` draws such characters as `?` only in drawings in a copy: the app's view and
+page images (`snapshot_hiding`), and printing (`Pdf::print_sheets`).
 
 Installed fonts for writing text are listed by `crates/limarepdf-core/src/typefaces.rs`: the families in
 `InstalledFonts::system()`'s `fontdb` database whose fonts allow embedding, each with
@@ -966,6 +995,22 @@ such document with `flatten_form` before `App::add_pages` adds them in one step.
 for its second and later inputs with `--flatten-forms`, and refuses them without it; the first input's form is
 the result's.
 
+The added files' bookmarks and named destinations come with their pages (ENH-18, `merge.rs`).
+`Pdf::insert_pages` starts with `carrying(at)`: where the bookmarks go among the document's top-level ones (after
+the last going to a page before `at`, first when none does, after all of them when the pages go at the end), how
+much room the outline has left (`outline::MAX_ITEMS`), and the names taken (`named_dests`: the catalog's `Dests`,
+then the name tree, `tree_dests`, which `pages_gone`'s `dead_names` reads too). Each file, once renumbered and
+before its objects join, goes through `carry`: each name gets one not taken (its own, else `-2`, `-3` and so on, in
+UTF-16 for a name written in it; the catalog's `Dests` first, as `named_dest` looks there first); `Fix` walks every
+object's direct values and changes each `Dest`, and each `GoTo` action's `D`, that gives a name (now always a
+string, as the name tree holds it, renamed where taken) or a page number from 0 (to the file's page itself, or
+null when it has none, so it can't land on the document's page of that number); then the bookmarks are linked
+again as `outline_nodes` reads them (`relink` on each), so a loop or nesting past the limits is left out rather
+than joined. `put_carried`, after `set_page_order`, splices the files' top-level bookmarks into the root's list and
+fixes the counts, and writes one sorted name tree of a single node holding the document's tree names and the
+carried ones (the catalog's own `Dests` stays as it is), into the catalog's `Names` whether direct or an object.
+Undo needs nothing of its own: the history compares the whole document.
+
 Fill-and-sign signatures (`crates/limarepdf-core/src/sign.rs`) are stamp annotations whose artwork LimarePDF draws once:
 pen strokes smoothed into curves, typed names as the glyph outlines of a bundled handwriting font (read with the
 `skrifa` crate, so no font goes into the PDF), or a picture with its paper made transparent. Finish signing
@@ -1024,6 +1069,121 @@ Annotation drawings LimarePDF makes are built in `annot_ap.rs`. A line's endings
 pen of their own: on a dashed line it sets an empty dash pattern (`[] 0 d`) before the ending, as `Pen::paint`
 only writes `d` when the pen has a pattern and the shaft's dashes would otherwise carry on into it. The same
 drawing is what flattening writes into the page.
+
+Links (ENH-17) are `links.rs`, kept apart from comments: `AnnotKind::of` leaves them out, so they are never in
+the Comments view or `Pdf::annotations`. `Pdf::page_links` reads every link of a page with an area: its id
+(`LinkId::Object`, or `LinkId::Inline` for a link written inside the page's `/Annots` rather than as an object,
+which a change makes an object first through `own_direct_annots` and returns the new id), its box, its areas
+(each `/QuadPoints` quadrilateral's box, else the box; the app finds a link under the pointer by them), its
+target and whether it is underlined (`/BS /S /U`, a width above 0). A target LimarePDF doesn't follow is
+`LinkTarget::Unfollowed`: another file (`GoToR`, `GoToE`, named by `/F`, a file specification's `/UF` first),
+a program (`Launch`, Windows' `/Win /F` too), a script, an address whose scheme isn't `http`, `https` or
+`mailto` (`file:`, `javascript:`, `tel:`; an address without a scheme is followed, as before), another action
+(`Print`, `SubmitForm`) or nowhere (a page or name the document hasn't). The rule for new addresses is in one
+place: `web_link` and `email_link` turn what was typed into the address written (`https://` put in front of one
+without a scheme; the `url` crate writes a name or path in other alphabets in ASCII, IDNA and percent-encoding,
+as PDF's URI strings must be), refusing other schemes; every writer checks the address again (`checked`), so
+nothing but a web or email address and this document's pages is ever written, whatever the caller passes.
+`add_link`, `set_link`, `move_link` and `remove_links` write and change them: a page target is `/Dest [page /XYZ
+null top null]`, the page's top with the zoom left alone, as `add_bookmark` writes; an address is a URI action.
+Every new link has `/QuadPoints` (one area a line, in Acrobat's corner order as text markup's), `/H /I` and the
+Print flag. Its look is set by `set_look`: underlined, `/BS << /W 1 /S /U >>`, `/C` Word's hyperlink blue
+(`LINK_BLUE`) and a drawing LimarePDF makes (`annot_ap.rs`'s `Link` arm: Underline markup's line under each
+area, so it shows in LimarePDF, which hayro draws any annotation's appearance for, and in readers that draw
+appearances or link borders; Poppler draws it, `cross_check_links_with_poppler`); not underlined, `/BS` width 0,
+`/Border [0 0 0]` and no drawing, so nothing shows. A link isn't in `annot_ap.rs`'s `DRAWN`, so other apps'
+links are never given a drawing (`missing_appearances`); `move_link` draws an underlined one again at its new
+size. The page's words are never restyled for a link (ENH-17's Q2).
+
+In the app (ENH-17's stage 2), `Act::Link` (Ctrl+K, Word's key; the palette moved to Ctrl+Shift+P) goes through
+`Tab::link_command`: words selected open the Insert link window over `Editor::selected_lines` (one area a line,
+a link a page), underlined; a link selected opens Edit link (`Tab::ask_edit_link`); otherwise it turns
+`Tool::Link` on or off (`band::is_on` shows Link pressed while it is on). The window is `dialogs::link` over a
+`LinkAsk` (its `LinkForm`, the new link's areas or the link being changed, and what an unfollowed one does),
+asked for through `Tab::ask_link` and opened by the app as `Dialog::Link(Asked, …)`, answered through
+`Tab::write_link` or `remove_link`, each one `edit_pages` step. `LinkForm` holds Link to, the address or page and
+Show as a link; its `target` is core's `web_link`/`email_link`, its `refusal` says why once something is typed,
+and its `ui` draws the same controls in the window and in the inspector (`Editor::link_inspector`, applying a
+change at once, an address when its box is left or at Enter, as `Action::SetLink`). A selected link is
+`Selection::Link { page, id }` (a `LinkId`): its right-click menu (`context_items`) is Edit link…, Open link,
+Copy link address and Remove link, greyed through `Ctx::link`, `link_opens` and `link_address` (`why_not` says
+which is missing); Delete removes it (`deletable`, `Editor::delete_selected`); `Editor::selected_link` reads it
+from the page's links cache (`Editor::page_links`, cleared with every change in `invalidate`), and a selected
+link gone from its page (taken away by Undo) is let go where the page is drawn. `select_for_menu` selects a link
+under a right-click before a comment or word (Word's link menu over its words). The Link tool is
+`Editor::link_tool`: every link's areas dashed; a press on the selected link's handle resizes it (`resize`), on a
+link selects and moves it (`LinkDrag`), elsewhere draws a box (`Draw`) for `Action::NewLink`; a double-click or
+Enter gives `Action::EditLink`; the arrow keys move a selected link (`nudge`, `nudgeable`). `change_link` keeps a
+changed link selected by the id core returns (an inline link becomes an object). The read tool's hover and
+following find a link by its areas (`on_link`) and show `link_tip`.
+
+**Bookmarks** are core's `outline.rs`. `Pdf::outline_nodes` walks the outline once (loops end the walk, at most
+100,000 items and 64 levels) and gives each bookmark's object with its `OutlineItem`, in reading order, each
+followed by those inside it; `outline` drops the objects. Positions in that list name bookmarks for
+`add_bookmark`, `rename_bookmark`, `remove_bookmark` and `move_bookmark`, and `BookmarkPlace` says where:
+`End`, `Before(i)`, `After(i)` (past those inside `i`) or `Under(i)` (last inside it). A move (ENH-16) is worked
+out on the items alone by `plan_move` (the list it leaves and the one it joins, by position): `bookmark_moves`
+gives the same answer beforehand, false when it would stay put and an error when it can't go (into itself, or so
+deep that something inside it would pass the 64th level), so the app asks before making an undo step. The move
+writes only the links: the list it leaves and the list it joins are linked again from the outline as read
+(`relink`: the parent's `First` and `Last`, each child's `Parent`, `Prev` and `Next`), which puts right any wrong
+`Prev` or `Parent` a file had in those lists, then every `Count` is set again from the tree (`fix_outline_counts`);
+moving into a closed bookmark opens it. Its `Title`, `Dest`, `A`, `C` and `F` are never touched, so it goes where
+it went. `bookmark_step` turns Word's outline keys into places: Up before the bookmark above at its level, Down
+after the one below, Promote after the one it is in, Demote into the one above, last; `None` at the edges, so a
+bookmark changes level only when promoted or demoted (ENH-16's Q2).
+
+In the app, the Bookmarks view is `tab/bookmarks.rs`. `Outline` holds the bookmarks as read for a revision
+(`Read`: objects and items), which ones the list has opened or closed (`open`, by object, over the file's own
+`Count`; kept across edits and never written), the selection (`sel`, by object, so it follows a moved bookmark
+and comes back with Undo), a rename and a drag. The list is one stop for Tab (`outline_id`, in `holds_keys` and
+`list_keys`), its rows and carets sensing clicks and drags only, drawn for the rows in view at a fixed pitch.
+`outline_keys` takes the tree's keys and, first, Alt+Shift with an arrow (`MOVE`, `STEPS`), before the page
+commands with the same keys see them. A drag is followed by the pointer, not the row that started it (so it
+survives the row scrolling out of view): `Read::drop_place` takes the row under the pointer, its top third
+`Before`, middle `Under`, bottom third `After` (or `Before` the first one inside, when those are shown), below the
+rows `End`, and keeps a place only where `bookmark_moves` says it moves. `Tab::move_bookmark` makes the move one
+`edit_setting` step (bookmarks aren't drawn on the pages, so nothing is redrawn); a refused step or move says why
+through `Tab::info`. The right-click menu's Move up, Move down, Promote and Demote are greyed by `bookmark_step`.
+
+**Spelling** (NEW-06) is core's `spelling.rs` over [`spellbook`](https://crates.io/crates/spellbook) 0.4 (pure Rust,
+MPL-2.0, used unmodified), which reads Hunspell's dictionaries; Nuspell's suggestions, without the sounds-alike
+ones. The bundled dictionaries (`BUILT_IN`: SCOWL's English for Canada, the US, the UK with -ise and Australia,
+Grammalecte's French, `assets/dictionaries/README.md`) are packed with zlib by `build.rs` and unpacked by
+`BuiltIn::files` when first read; `Dictionary::from_bytes` decodes the files in the character set the `.aff`
+names (UTF-8, ISO 8859-1, its default, or 15; others refused with `SpellingError::Encoding`). `words` gives the
+words checked (UAX #29 word bounds through `unicode-segmentation`; words joined by a hyphen are one, checked whole
+then by part), leaving out, as Word does, words in capitals, words with digits and runs between spaces that read
+as web, email or file addresses. A `Speller` keeps each word's answer (`is_known`), so a box typed in looks up
+only new words; `Exceptions` are the words added (kept, a lower-case entry covering any capitals, curly
+apostrophes made straight) and ignored (the session). `Dictionary::suggest` gives at most five, and for a word
+with a capital first also its small-letter form's capitalised: spellbook alone gave "Eh" and no "The" for "Teh".
+`find` lists the `.dic` files with an `.aff` of the same name in folders (Linux's `system_folders`; none on
+Windows and macOS), naming them from their file names (`tag_of`, `language_name`); `in_extension` takes the pairs
+from a LibreOffice `.oxt` (a zip, read through [`zip`](https://crates.io/crates/zip) 9.3 with only the zlib-rs
+deflate; each file at most 64 MB); `best_match` matches a `/Lang` or locale to a dictionary by region, then
+language.
+
+In the app, `spell.rs` holds the state in the context's data (as `typing_fonts` holds its loads, so each test's
+context has its own): `App::spelling_frame` sets each frame what spelling follows (`Config`: Check spelling as you
+type, the language chosen, the dictionaries folder beside the settings, the front document's `/Lang`), saves the
+added words to `words.txt` when they change (`take_added`, through `settings::write_own`, a failure said once as
+other settings are) and says a dictionary that can't be read (`take_failures`). The language checked is the one
+chosen, else the document's, the system's (`sys-locale`) or US English. A dictionary is read on a thread of its
+own the first time it is needed, which bumps `revision` and asks for a frame; meanwhile nothing is marked. Each
+typing box calls `spell::apply` before it is drawn (a suggestion picked for it goes into its text, as typing
+would, so the box's own keeping, undo and `Styled::sync` treat it as typed) and `spell::marks` after, with its
+`TextEditOutput`: the box's text is checked only when it, the language or `revision` changed (`Checked`), and a
+wavy line is drawn under each word in the galley's rows (`rows_of`, `wave`, the theme's `Tone::Bad` red), except
+the word ending at the caret while the box has the keyboard. A right-click on a marked word keeps it with its
+suggestions (`Pick`, worked out then, never while typing) for `spell::menu`: the typing menu (`Tab::typing_menu`)
+puts it first, and the boxes with no menu of their own (the inspector's comment and reply boxes, form fields) open
+one with it alone (`menu_on`). The form field's box is shown as `Ui::put` lays it out but through `TextEdit::show`,
+for its output. The Spelling view (`tab/spelling.rs`, `Side::Spelling`) lists what was written (`written`:
+comments, replies and text boxes not locked, text fields not read-only or passwords, by page) and its words spelt
+wrongly for the document's and spelling's revisions; Change and Change all write through one `Tab::edit`
+(`set_annotation`, `set_field`), Change all every word alike in any capitals, each keeping its first letter's.
+F7 joins F3 among the keys that work from a text box (`App::shortcuts`).
 
 Digital signatures are checked in `crates/limarepdf-core/src/sig_verify.rs` (finding them, the byte-range rules, and
 tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
@@ -1140,10 +1300,222 @@ dialog already open fills it in place, matched by a number, or is dropped: Print
 dialog open or waiting, BUG-11); core's `print::run_within` bounds every CUPS command (`print::ASK_WITHIN` 10 s,
 `SEND_WITHIN` 2 minutes for `lp`, the whole process group killed). A Windows job makes synchronous spooler and GDI
 calls that can't be stopped, so `Pdf::print` runs it through `print::while_beating` (PB-17): `print_win::print`
-beats after each step (the printer's settings, opening it, starting the document, each page), and the wait gives
+beats after each step (the printer's settings, opening it, starting the document, each sheet), and the wait gives
 up when no beat comes for `SEND_WITHIN`, leaving the thread to finish on its own, so `App::busy` clears and other
-background jobs run. The snapshot is taken before the thread starts, so the document isn't copied again. A page
-takes seconds to draw, so a long job isn't given up on.
+background jobs run. The sheets are made and written out before the thread starts, so the document isn't copied
+again. A sheet takes seconds to draw, so a long job isn't given up on.
+
+A printer's paper sizes (ENH-14's stage 1) come from `print::papers` as a `PaperList` of `Paper`s (an id to send,
+a label such as "Letter (8.5 × 11 in)", the size in points, the margins when known) and the default. On Linux and
+macOS `paper::cups_papers` asks CUPS over IPP with LimarePDF's own client (`ipp.rs`: one Get-Printer-Attributes
+request, IPP/1.1, over HTTP to the server `CUPS_SERVER` or `client.conf` names, else CUPS's local socket, else
+`localhost:631`; the answer read whole, collections nested at most 8 deep, at most 16 MiB). `media-supported`'s
+PWG names give the sizes and labels (`paper::pwg_label`), each taking the size and margins of the nearest
+`media-col-database` entry within a millimetre, the bordered one where a size is borderless too (a PPD queue's
+sizes are the PPD's own, A4 210.06 × 296.93 mm); custom sizes and the duplex variants CUPS lists as custom are
+left out, but for the default. When IPP fails, `lpoptions -l`'s PPD names are read with a table of standard sizes,
+margins unknown; when CUPS doesn't know the queue yet (one it found on the network, made on first use by its own
+commands), IPP is asked again after `lpoptions` has run. Each question is bounded: the request by
+`print::ASK_WITHIN` and its thread by `print::within`, which leaves a call that can't be stopped to finish on its
+own (Windows' `printers` uses it too). `ipp::post` sets the socket's waits to the time left before each read; macOS
+refuses that (EINVAL, `InvalidInput`) once CUPS has closed its end after answering, so that refusal is passed over,
+the wait set before still ending by the deadline (BUG-48: the answer was given up on, and every Mac fell back to
+`lpoptions`). On Windows `print_win::papers` reads the driver's lists
+(`DeviceCapabilitiesW`: numbers, names, sizes in tenths of a millimetre), the default from its settings, and each
+paper's printable area held portrait from an information context (`CreateICW`, `GetDeviceCaps`), measuring for
+at most 3 seconds in all. `paper::listed` keeps each label once, the default's over others of its label.
+
+Every printout is laid out by LimarePDF itself (ENH-14's stage 2), on every platform, so what reaches the printer is
+what the placements say, and Print's preview draws the same sheets. The design pass found the platforms
+printing differently: CUPS enlarged a page smaller than the paper to fill the printable area and turned landscape
+pages clockwise, where Windows (the old `print::place`, now gone) printed them at their size and anticlockwise; and
+CUPS shrinks a sheet exactly the paper's size into the printable area unless sent `print-scaling=none`. The
+placement model is `sheets.rs`'s `print::place(size, &PageSetup)`: a page's size as shown (after its `/Rotate`)
+and a `PageSetup` (a `Paper`, an `Orientation` Automatic, Portrait or Landscape, a `Scale` ShrinkOversized, Fit,
+ActualSize or Custom from 1 to `MAX_PERCENT`, 400) give a `Placed`: the sheet's size (the paper's as reported, never
+swapped), whether the page is turned a quarter turn anticlockwise (Automatic: when its shape is the other way round
+from the sheet's, a square page never; Portrait and Landscape: as the sheet is held; `Placed::turns`, quarter
+turns anticlockwise, 0 or 1 here), its scale against the
+printable area (the paper less its margins, or `ASSUMED_MARGIN`, a quarter of an inch a side as GTK assumes, when
+the printer doesn't say: `Paper::margins_or_assumed`), its box on the sheet (centred on the sheet and kept within
+the printable area by `min` then `max`, not `f32::clamp`, whose bounds rounding can cross for a page scaled to the
+area's width or height, BUG-49; one larger than the area centred on it, losing as much on each side) and `cut`
+when part of it falls outside the area.
+
+**The plan of the sheets** (NEW-05's stage 1) is `print::sheets(sizes, &setup)`: the pages printed, by their sizes
+as shown, give a `SheetPlan` a sheet (its size, the paper's; `sideways`, held sideways to be read, its left edge at
+the top; its pages by their place among those printed, each with its `Placed`; `borders`). `PageSetup::per_sheet`
+is a `PerSheet` (`pages`, one of `PAGES_PER_SHEET` 1, 2, 4, 6, 9, 16, another number taken as the next above it;
+`order`, a `PageOrder`: `Across` left to right then top to bottom, `AcrossFromRight`, `Down` top to bottom then left
+to right, `DownFromRight`; `borders`). One page a sheet is `place` as above, a sheet `sideways` when its page is
+turned. With more, the pages go `count()` a sheet in a grid (`PerSheet::grid`: 2 × 1, 2 × 2, 3 × 2, 3 × 3, 4 × 4,
+its longer side along the sheet's longer side as held). `places` works on the sheet as held: held sideways, its
+size swapped and its margins turned with it (the paper's left margin at the top); the printable area split evenly,
+no gap, the places in `order`, rows counted from the top. `fit` puts each page in its place, larger or smaller,
+centred, turned a quarter turn anticlockwise (as the sheet is held) when its shape is the other way round from the
+place's (Acrobat's "Auto-rotate pages"); `Scale` isn't used. Automatic holds each sheet the way its pages, fitted
+upright, cover the most area (by more than a thousandth; otherwise as the paper comes), so two upright pages go
+side by side on a sheet held sideways and the order reads as held; Portrait and Landscape hold it as for one page
+a sheet. A box on a sheet held sideways goes onto the paper as (x, y) to (paper width − y, x), and its `turns` are
+its turn in its place plus one, so a page turned in its place on a sheet held sideways is turned twice
+(`Placed::matrix` handles 0 to 3 turns). Nothing is `cut`; `borders` only with more than one page a sheet.
+
+**A booklet** (NEW-05's stage 2) is `PageSetup::booklet`, an `Option<Booklet>` (`binding`, a `Binding` Left or
+Right; `sides`, a `BookletSides` Both, Fronts or Backs). Set, `sheets` gives `booklet`'s plan instead, and
+`orientation`, `scale` and `per_sheet` aren't used. The pages are padded with blank places to a multiple of four,
+the blanks at the end (`last`, the count so padded); sheet k's front holds pages last − 1 − 2k and 2k (as it is
+held, left to right), its back 2k + 1 and last − 2 − 2k, so the sheets folded in half and stacked read straight
+through; bound on the right, each side is mirrored. The sides are planned in the order printed, a `SheetPlan` each:
+Both a sheet's front then its back, sheet by sheet; Fronts the fronts alone and Backs the backs alone, each in the
+sheets' order (Acrobat's "Booklet subset": the fronts printed, the stack put back in, then the backs; Acrobat's
+manual says the stack may need turning and reordering, by printer, and there is no option to print in reverse
+order yet). A side with no pages (a blank back) is still a sheet. `Booklet::sides_printed(pages)` counts the sides
+from the page count alone and `Booklet::side(i)` names the sheet and whether it is the front, so the preview can
+count and name them before the sizes come. Each sheet is held with its longer side across: sideways for portrait
+paper, as it comes for paper listed wider than it is tall (Ledger, as some printers list it). `held` (shared with
+`places`) gives the sheet's size and margins as held; the two halves meet at the fold in the paper's middle, each
+as wide as the narrower side's margin allows (`(middle − left).min(w − right − middle)`), so with uneven margins
+the fold stays in the middle and the side with the smaller margin has room to spare. Each page is `fit` to its half,
+larger or smaller, centred, and never turned in it, as Acrobat does (bindings along the top, Acrobat's Tall
+bindings, are left for later, PF-56); `onto_paper` (shared with the grid) puts its box on the paper, its `turns` 1
+on a sheet held sideways. No borders, nothing `cut`. `Booklet::sides_used` is how the printer prints the sides:
+Both two-sided flipped on the short edge (`Sides::ShortEdge`), Fronts and Backs one-sided (`Sides::One`). Short
+edge because the sheets are sent portrait with their pages laid out sideways: turning a sheet held sideways over
+like a book's page is a flip about the paper's short edge, so both sides laid out the same way read the right way
+up. `PrintOptions::sides_used` gives it for a booklet, whatever `PrintOptions::sides` says, and `sides` otherwise.
+
+`Pdf::print_sheets(pages, &setup)` refuses no pages ("no pages selected"), plans the sheets from `page_sizes` (one
+walk) and makes them with `Pdf::print_planned(pages, &plan)`, the plan's pages by their place in `pages`; the
+preview makes one sheet at a time with it, from only that sheet's pages. Given no pages (a booklet's blank side made
+alone), `print_planned` starts from `Pdf::new()` in place of `extract`, so the side is still a sheet of the paper.
+It works on a copy: `extract`, unencrypted;
+`flatten_form_for_print` (Print-flagged widgets drawn, the others and the form removed); the annotations without a
+drawing given LimarePDF's (`missing_appearances`, `draw_annotations`); then for each page `flatten_page` with
+`print_annot` (an annotation with the Print flag drawn into the content, pop-ups and the rest dropped) and
+`as_drawing`. That makes the page's content and resources a form XObject whose `BBox` is the
+visible box (`page_box`), with the page's `/Group` copied: a page with one content stream keeps it as stored, with
+its filter; several are joined (`get_page_content_with_limit`, within `MAX_CONTENT`) and compressed at flate2's
+fast level. `make_sheet` then makes each sheet a new page drawing its pages with `q M cm /LimarePage Do Q`
+(`LimarePage1`, `LimarePage2` and so on for the others), M being the inverse of `visual_matrix` (the page's user
+space to the page as shown) followed by `Placed::matrix` (the turns, the scale, the move to the box), so text stays
+text, then the borders (half-point black lines round each page's box, `BORDER`). The sheet's own `MediaBox`,
+`CropBox`, `Rotate` 0 and `Resources` are set so nothing comes from the page tree, with the `/Group` of its first
+page that has one. The catalog's `PageLabels`, `OpenAction`, `Outlines` and `StructTreeRoot` go (they name the
+pages, which the sheets replace), the sheets become the page tree (`set_page_order`), and the pages' own objects
+are removed, so what they alone used is left out of what is written.
+`Pdf::print` takes the paper from `PrintOptions::paper`, else `print::printer_paper` (the printer's default from
+`print::papers`, else the first listed; the default printer from `printers`), and when that fails sends nothing
+and says why. `print::paper_named` finds the command line's `--paper` by id, label, or label without its size
+(`paper::named`, refusing a name several sizes share and naming them), and when the printer's list can't be read,
+on CUPS only, a standard size by its PPD name or its name for people (`paper::standard`). CUPS gets
+`Pdf::print_data`'s sheets (with `as_image` their pictures at `IMAGE_DPI`, through `Pdf::from_images`), `lp_args`
+naming `media=` the paper's id and `print-scaling=none`, and `sides=` from `PrintOptions::sides_used`. Windows
+(`print_win::print`) gets the sheets written out and their count, sets the paper's number, portrait and the sides
+(`dmDuplex`, from `PrintOptions::sides_used`) in the printer's settings (`settings`, a DEVMODE), draws
+each sheet at `print::sheet_scale` (the printer's resolution, at most 600 dpi and `render::MAX_PIXELS`), and
+`print::printable_part` finds the part of the picture on the printable area, the sheet's top-left on the paper's,
+pixels straddling its edges kept whole, and where it goes there; `print::to_bgra` turns that part into BGRA for
+`StretchDIBits`. The command line warns of the pages `place` says are `cut` at the scale chosen. Its `--booklet`,
+`--binding` and `--booklet-sides` set `PageSetup::booklet`; `run` refuses, before anything is sent,
+`--pages-per-sheet`, `--page-order`, `--borders`, `--scale`, `--orientation` or `--sides` with `--booklet`, and
+`--binding` or `--booklet-sides` without it. `--sides` and `--orientation` are `Option`s, their defaults (one side,
+auto) applied in `run`, so that one given explicitly can be refused.
+
+Print's page setup and preview (ENH-14's stage 3). `dialogs.rs`'s `Print` holds `papers: Papers` for the printer
+chosen (`Unasked`, `Asking(search, printer)`, `Found(printer, PaperList)`, `Failed(printer, why)`), the paper
+(an index into the list), `orientation`, `scale` and `percent` (Custom's, kept while another scale is chosen; the
+list's Custom is `Scale::Custom(percent)`, set back each frame from the percentage box). `Print::papers_wanted`
+names the printer chosen once the printers are found whose papers aren't asked for, found or failed;
+`want_papers` (a free function, as are `ask_papers`, so they run while the dialog is borrowed) gives the papers
+found earlier in the session (`App::papers_known`, by printer) at once, else asks `print::papers` on a thread, as
+soon as `Loaded::Printers` fills the dialog in, and from `App::dialogs`, before the dialogs are drawn, when the
+printer changes or Try again sets `Unasked`; `Loaded::Papers(search, printer, found)` keeps what was found in
+`papers_known` and fills in the Print dialog open or waiting whose search number it is, and
+`Print::papers_found` (`Print::use_papers`) chooses the paper last printed on with that printer
+(`Settings::print_papers`, by id) when it is listed, else the printer's default, else the first.
+
+The printers (ENH-47): `App::find_printers` runs `print::printers_in_steps` on a thread, which on Linux and macOS
+first asks CUPS over IPP for its queues and default (`ipp::cups_printers`: CUPS-Get-Printers and CUPS-Get-Default,
+posted to `/`, each printer's `printer-name` in a group of its own; 4.7 ms here) and gives them unless there are
+none, then `print::printers` (`lpstat -e`, which waits about a second for printers the network announces), each
+as `Loaded::Printers(search, found, last)`. The dialog is matched by `Search::Running(search)` or
+`Print::listing == Some(search)`, the search whose fuller list is still to come. `Print::found` keeps the printer
+chosen when it is still listed, else the one last printed to (`Settings::print_printer`, saved on Print), else the
+default; it leaves a failure unsaid while this search has listed printers, not while those shown came from earlier
+in the session (`Print::earlier`), when the service no longer answering is said with Try again. Each list found is
+kept in `App::printers_known` with its search number (not replaced by an earlier search's, coming late); Print
+opens with it (`Print::found_earlier`) and the papers known, ready, while its search looks again. `Print::setup`
+gives the `PageSetup` only for papers found for the printer chosen: until then Print is greyed with its tooltip
+("Finding the printer's paper sizes…"; `footer` shows a `Btn`'s tip with `on_disabled_hover_text` too, which egui's
+`on_hover_text` doesn't on a disabled widget), Enter in the page range doesn't print, and a failure says why with
+Try again in Print's place. On Print, `PrintOptions` carries `paper`, `orientation` and `scale` from the setup,
+and the paper (for that printer), orientation and scale are kept in `Settings` and saved (`print_paper = <id>
+<printer>`, the id having no spaces and the printer's name the rest of the line; `print_orientation =
+automatic|portrait|landscape`; `print_scale = shrink|fit|actual|<percent>`, clamped to 1 to `MAX_PERCENT`), as
+Acrobat keeps the last scaling. Print opens with the orientation and scale kept. `Act::PrintPreview` (File,
+`uses_document`) opens the same dialog; its keys are `actions::PREVIEW_KEYS`, Word's Ctrl+F2 (⌘F2), with
+LibreOffice's Ctrl+Shift+O first on Linux, as KDE takes Ctrl+F2 for its second desktop. With room for both
+(`PRINT_SETTINGS` 470 and `PREVIEW_WIDTH` 330 within the window less 32 points), the settings and the preview are
+columns under the title, the settings' content measured from the window's top (`content_below`, so a short
+window still scrolls them with the buttons in view) and the preview as tall as the settings; the row's item
+spacing is set to nothing and put back inside each column, as the columns' own controls need it. Otherwise the
+preview is under the settings in the scrolling content, `PREVIEW_UNDER` (300) tall.
+
+Print as a booklet (NEW-05's stage 2) is at the top of Layout (`print_layout`): `Print::booklet`, with `binding` and
+`booklet_sides`, both kept while it is unticked. Ticked, Pages per sheet is greyed and Binding (Left, Right) takes
+Page order's place as `columns`' second column (beside it when wide, under it when narrow); "Sides to print" (Both
+sides, Front sides only, Back sides only) is under them, named so rather than "Print", which would clash with the
+Print button's name. Borders around pages, Orientation and Scale are greyed with `BOOKLET_SETS` as their tooltip,
+and Print on is greyed showing `Print::sides_used` (the booklet's sides, tooltip `BOOKLET_SIDES`), its own choice
+kept for when the booklet is unticked. `Print::booklet_chosen` gives `Print::setup`'s `booklet`, and on Print
+`PrintOptions::booklet` carries it. The booklet and binding are kept in `Settings::print_booklet` and
+`print_binding` and saved (`print_booklet = true|false`, `print_binding = left|right`; anything else read as no
+booklet, bound on the left); the sides to print aren't, so a later printout never prints the backs alone unasked.
+
+**Folded sections** (2026-11-02, after booklets made Print too long for a small screen; the user's answers: Paper
+size stays shown, each section starts closed every time, Scale and Layout their own sections with no level above
+them, Print as image back under Advanced, each title saying what is chosen). `print_body` shows the printer, Pages
+(or, printing selected text, its layout radios in a group of their own, "Selected text", in Pages' place), Copies
+and sides, and Page setup (`page_setup`: Paper size with Orientation beside it, as wide as its longest choice,
+through `columns`; one under the other where Paper size would be narrower than `PAPER_BESIDE`, 180 points, which a
+400-point window still allows). Then `fold`, an egui `CollapsingHeader` titled in the groups' look, for each of
+**Scale** (`scale_field`: the list, named "Scale" for screen readers, and the Custom percentage), **Layout**
+(`print_layout`) and, on Linux and macOS, **Advanced** (Print as image, its tooltip `AS_IMAGE`), as Chrome's and
+Windows 11's print dialogs fold what is less used. Each header's text, which is its accessible name, says what is
+chosen (`scale_title`: "Scale: Shrink oversized pages", "Scale: Custom, 65%", "Scale: Each page fitted to its
+place" with several a sheet or a booklet; `layout_title`: "Layout: 1 page per sheet", "Layout: 4 pages per sheet",
+"Layout: Booklet, bound on the left, back sides only"), so it never shares the list's name; its id is fixed
+(`id_salt`) as the text changes. `Print::folds` (`Folds`: scale, layout, advanced) holds which are open, all closed
+each time Print opens; a header is drawn `open(Some(..))` and a click flips its own. `Print::needs_open` gives
+those set to something other than the usual (Scale with a scale other than Shrink oversized pages; Layout with
+more than one page a sheet or a booklet; Advanced with Print as image): each is opened every frame while it is,
+a click on its header doing nothing and its tooltip (`KEPT_OPEN`) saying why, so a setting changing the printout,
+remembered from last time, is never hidden; set back to the usual, it stays open until clicked. The closed dialog
+fits a 1366 × 700-point window, the last section above the buttons (`sections_fold_what_is_less_used`).
+
+The preview is `print_preview.rs`. Opening Print spawns a `Preview` with a `Source`: a copy of the document
+(`Source::Pages(Box<Pdf>)`, cloned on the window's thread as a print job's copy is), or for selected text a
+`Make` closure holding the copy and both layouts' `Excerpt`s, which makes the selection's document on the
+preview's thread the first time a layout is wanted. Each frame `Print::preview_ask` gives an `Ask`: what is
+printed (`What::Pages` from the page range, the last pages kept while the range can't be read; `What::Selection`
+in its layout) and the `PageSetup`. A different `Ask` starts a new generation: the drawings and the queued jobs are
+dropped, and the thread skips jobs of earlier generations; a selection whose document isn't made yet sets
+`Queue::make`, so it is made and its sheets counted before any is asked for. The thread sends each document's
+page sizes first (`Came::Sizes`); with them `Preview::replan` plans the sheets (`print::sheets`), which give the
+sheet count (before the sizes come, the pages over `PerSheet::count`, rounded up, or a booklet's sides,
+`Booklet::sides_printed`), whether each sheet is held
+sideways (shown so, the paper's sides swapped) and the notes: the margins unknown, and the pages the plan says are
+`cut`, named with `format_page_range` (sheets for a selection). A sheet's `Job` carries its own pages and its
+plan, renumbered to them, and is drawn by `print_planned`, `to_bytes`, `render::load` and `Renderer::render` at a
+step of a twentieth of a pixel a point (rounded up from what the space shown needs), the picture turned a quarter
+turn clockwise when the sheet is held sideways, so it reads upright. Jobs are taken newest first: the neighbours are
+asked for, then the sheet shown, so it is drawn first; sheets more than two from the one shown, and drawings at
+another step once the step shown has come, are dropped (a drawing at another step stands in meanwhile). Drawing
+failures show on the sheet. ‹ and › ("Previous sheet", "Next sheet") page through; one greyed as it is clicked
+hands the keyboard to the other. For a booklet each side is a sheet (a blank side's `Job` has no pages), the arrows
+are "Previous side" and "Next side", and `counter` names the side, "Front of sheet 2" or "Back of sheet 2"
+(`Booklet::side`), above "3 of 4": added after the row, as the column is laid out from the bottom. Dropping the
+`Preview` (the dialog closed) stops its thread after the sheet it is drawing.
 
 Closing and quitting (ENH-01) ask `Dialog::ConfirmClose(asked, quitting)`, Save (Save as… for a tab with no file) /
 Discard / Cancel; quitting with several unsaved documents asks `Dialog::ConfirmQuit` first, Review… / Discard all /
@@ -1156,6 +1528,131 @@ after Cancel). It closes the saved tab, asks about the next document or quits; a
 the app quits, so stopping part way keeps every document open. Answering a quit question drops waiting save
 questions and a tab's closing in progress, since quitting asks about every unsaved document anyway. Tests never
 open the save chooser: `App::save_as` takes the tests' `SAVE_AS` instead.
+
+**Compact saving** (ENH-19's stage 1; `compact.rs`, `Pdf::write_to` in `doc.rs`): every write of the whole
+document (`save`, `to_bytes`) prunes and compresses as before, then `compact::merge_identical` keeps each set of
+identical streams once (same data, same dictionary but `/Length`; rounds until none, since pictures become
+identical once their masks are merged; never object or cross-reference streams), every reference pointed at the
+first. The document is written with lopdf's `save_with_options` (object streams of up to 100 objects at Flate
+level 6, a cross-reference stream, the version raised to 1.5), and then `compact::put_back` returns the copies
+and every object whose references changed, and `put_header` the version, `max_id`, trailer and cross-reference
+kind lopdf's writer changed: the document in memory keeps each object where it was, so edits after a save (the
+CLI's later steps, the tab's own document when a copy wasn't handed over) find them, and Undo's `Before` compares
+like with like. Left as before: an encrypted document is written one object at a time (lopdf encrypts objects
+before its writer would pack them, so an object stream it made would go out in the clear; the merging runs on the
+copy encryption makes), a document whose XMP says `pdfaid:part` 1 with a table (`claims_pdfa1`; PDF/A-1 is PDF
+1.4), and one of under 32 objects lopdf could pack (`few_to_pack`) is written both ways in memory and the smaller
+kept (three corpus files of 4 to 6 objects grew by 9 to 31 bytes otherwise). `snapshot`, `pruned_snapshot` and the
+render copies don't go through it. The saved-output checker (`tests/common/saved.rs`) checks each object packed in
+an object stream by the stream's header, and searches object streams decoded as every Flate segment.
+
+**Reducing pictures** (ENH-19's stage 1; `reduce.rs`, `Pdf::reduce_pictures`, `limarepdf-cli reduce`): every page
+is walked (its content after `inline::extract`, through the form XObjects it draws, 12 deep, with `q`/`Q`/`cm` and
+each form's `/Matrix`), recording for each picture where it is drawn (`Use`: page, transform, and the object
+holding the `/XObject` dictionary its name was found in: a resources object, the `/XObject` dictionary's own, or
+the page or form holding it directly). A picture with a use on a chosen page is reduced only when every use is on
+a chosen page and every object referring to it (`referrers`, one pass over the objects) is one of those holders;
+otherwise (a page not chosen, a comment's or field's appearance, a pattern) it is counted `Shared` and left, since
+a copy beside the original the rest still needs makes the file larger (pdfbox's `2990` grew by half when copies
+were tried). Its resolution is the lowest over its uses of `min(width / drawn width, height / drawn height)` in
+pixels per inch (`shown_ppi`, the lengths of the transform's axes, so turns and skews count); above the choice's
+by more than 5% it is decoded through `redact_img::decode`, scaled with Catmull-Rom (`image`'s `resize`) and saved
+through `redact_img::encode` (which now writes the new `/Width` and `/Height`): a JPEG as JPEG at the lower of its
+own quality (`imgs::jpeg_quality`) and the choice's, a picture of at most 256 colours losslessly (Flate), others
+as JPEG at the choice's (HD and High fidelity 90, Print 85, Web 80, Email 75). A soft mask is scaled with it (to
+the picture's new size when it had the picture's, as `/Matte` needs) into a new object, Flate. The new picture
+replaces the old in place (`objects.insert`, so Undo's comparison keeps the old), only when it and its mask are
+smaller than before. Left and counted by `KeptWhy`: other spaces than grey and RGB (`plain_components`: Device,
+Cal, ICCBased of 1 or 3; never Indexed, Separation, DeviceN, Lab), not 8 bits, `/Decode`, `/Mask`, `/ImageMask`,
+filters other than DCT, Flate, LZW, run length and the ASCII ones, a JPEG whose components don't match its space,
+a mask that isn't 8-bit grey, inline pictures. `Reduced::most` names the picture that lost the most bytes, for the
+app's preview.
+
+**Reduce file size in the app** (ENH-19's stage 2): `Act::ReduceSize` (File group, so no band place; greyed by
+`reducible` while busy, saving or for a signed tab, `Ctx::signed` from `Tab::signed`, whose `why_not` fix gives
+`actions::SIGNED_KEEPS`) opens `Dialog::ReduceSize(Asked, Box<dlg::Reduce>)`. `dlg::Reduce` holds the quality
+(`Settings::reduce_quality`, saved on Reduce), all or the selected pages, and a `reduce_size::Estimate`: a thread of
+its own on a copy of the document (as Print's preview), which first sends `Pdf::saved_size` and then, for each
+choice `Estimate::ask`s (numbered; only the newest is worked out, older ones drained, older answers ignored), core's
+`Pdf::reduce_preview` (reduces a copy, writes it for the size, cuts `PREVIEW_SIDE`-square parts of `most`'s picture
+before and after with `picture_part`); `collect` turns the parts into textures. Dropping the dialog drops the
+sender, so the thread ends after what it is doing. Reduce goes through `App::spawn_job` (`REDUCE_JOB`):
+`reduce_pictures` and `saved_size` on the tab's copy, applied as one undo step when a picture changed, and
+`reduce_size::reduced_text` as the job's message; nothing changed, nothing is applied.
+
+**A new blank document** (NEW-09's stage 1): `Act::NewBlank` (Ctrl+N; Insert > Blank document, ☰ first, the start
+screen's `empty_state`) runs `App::new_blank`: `Pdf::new` with one page of core's `print::new_document_size` (the
+`paper.rs` part: Letter for CLDR's `LETTER_REGIONS`, else A4, the region read from the locale's first two-letter
+subtag before any extension), added by `add_tab` with no path and `dirty` false, so `Tab::unsaved` is false and
+`close_asking` closes it at once until it is changed; its Save goes to the chooser as any tab without a file does.
+The locale is app.rs's `paper_locale`: on Linux and the BSDs `LC_ALL`, `LC_PAPER`, then `LANG` (POSIX's order for
+the paper; `sys-locale` reads `LC_MESSAGES` instead), else `sys_locale::get_locale` (Windows and macOS name the
+region there).
+
+**Saving pictures** (NEW-09's stage 2; core's `pictures.rs`, `limarepdf-cli save-images`): every picture is a
+picture object (an inline one through `redact_img::inline_stream`) and where it shows, `shown`, its unit square
+to the displayed page (the object's `ctm` times the inverse of `vis_down`, so a page's `/Rotate` counts).
+`format_of` writes it byte for byte (`PictureFormat::Jpeg`) only when `upright` (x along the page's x, y up, no
+turn beyond a thousandth, stretched or not) and `jpeg_as_is`: `/DCTDecode` alone, no `/SMask`, `/Mask`,
+`/Decode`, `/ImageMask` or `/ColorTransform` (each would show differently outside the PDF), a grey or RGB space
+(`/DeviceGray`, `/DeviceRGB`, `/CalGray`, `/CalRGB`, `/ICCBased` of 1 or 3) matching the JPEG's components, and
+`imgs::jpeg_as_shown` (the JPEG's own size, no EXIF turn, which a photo viewer would apply and a PDF reader
+ignores). Anything else is `picture_png`: `placed` lays the picture on a page of its own, each side as many
+points as its pixels in the direction it shows (a side within 1e-4 of upright or across taken as exactly so),
+the page the bounding box; `alone` writes a one-page document of the picture with every object its dictionary
+reaches copied under the same numbers (`/OC`, `/Metadata`, `/Alternates`, `/OPI`, `/StructParent` dropped), and
+`render.rs`'s `Renderer::render_clear` draws it at 72 dpi on a clear backdrop (`render_bands` with
+`TargetInit::Clear(TRANSPARENT)`, then the colours divided by alpha). Drawn 1:1 on whole pixels, the renderer
+samples each pixel as stored, so a Flate RGB or grey picture comes out exactly (core's `tests/pictures.rs`, and a
+flipped RGB picture of Ghostscript's `GS9_Color_Management.pdf` equal to pdfimages' flipped); its colours are the
+renderer's, so CMYK, ICC, Lab, palettes, JPEG 2000, JBIG2 and masks show as on the page. A picture the renderer
+reports it couldn't decode (`take_missing`) is an error, not an empty file. `png_of` writes grey, grey and alpha,
+RGB or RGBA, whichever holds the pixels. Save all images walks the pages with reduce.rs's `walk_pages`, whose
+`Walk::seen` now records each picture drawn, page content and the drawings it uses, in drawing order, an inline
+one as a picture object; `found` keeps an object's first use only and numbers each picture by its place among
+its page's (`names`: `<stem>-page-<page>-image-<n>`, pages padded to three digits at least as `image_names` pads
+them, `n` to the most on a page). `save_all_pictures` draws them in parallel in batches of about 1 GB of bitmaps,
+writes each whole (`write_file`), reports one that can't be saved by name and goes on, and returns a
+`NotConfirmed` as `write_images` does. The app: `Act::SaveImage` (the Objects group of `context_items` beside
+Replace image, so the right-click menu and the floating bar; ☰ > Edit) asks `picture_format` for the chooser's
+kind, then `App::save_image` spawns the job (`picture_file`, `write_file`); `Act::SaveAllImages` (☰ > Export)
+says when `picture_names` is empty, else `pick_folder` (now given its title) and `Replacing::Pictures` when
+`existing` finds files, then `start_save_pictures`. Neither changes the document (`changed` false).
+
+**Pictures and the clipboard** (NEW-09's stage 3): egui-winit sends Ctrl+V as `Event::PasteImage` when the
+clipboard holds a picture and no text (arboard's `get_image`), and eframe answers `ViewportCommand::RequestPaste`
+the same way, so both reach `App::type_over`. There, before the check that a text box has the keyboard, a picture
+with text being typed (`Editor::typing_id`) gets a note; then, in the page view and not busy, `let_go_of_pages`
+(the clipboard holds one thing: a picture copied after pages replaces them) and `Tab::paste_picture`: the
+`ColorImage`'s pixels unmultiplied, core's `png_file` (as Save image as writes one: grey, RGB, with alpha only
+when some pixel needs it), `pasted_rect` (96 pixels an inch, as Word sizes a screenshot, shrunk to fit inside
+half-inch margins or a tenth of a small page's side, centred on the page in view, `Tab::current`), `add_image`
+through `edit_pages` (one step), then the new object selected loose (`select_new`, the arrow kept, any other tool
+the read tool). The band's Paste (`pasteable` now true in the page view, as the clipboard can't be read ahead)
+with no pages held sends `RequestPaste` and keeps the frame in `App::paste_asked`; a later frame with no `Paste`
+or `PasteImage` says the clipboard holds nothing to paste here. Copy (`Act::Copy`, `copyable`'s `one_picture`)
+with one picture selected is `App::copy_picture`: core's `Pdf::picture_pixels` (`picture_bitmap`, the drawing
+`picture_png` makes for Save image as) on a thread, `Loaded::PictureCopied` carrying `App::picture_copies`'s
+number, then `ctx.copy_image`; Copy and Cut count `picture_copies` on, so a picture still being drawn when
+something else is copied is dropped.
+
+**A picture in front of text** (NEW-09's stage 3, the user's find): `Editor::picture_over_text` is the last
+picture whose box holds the pointer drawn after every line of page text whose box holds it (the page's objects
+are in drawing order), not hidden and under 0.8 of the page (`Editor::page_areas`, kept as each page is drawn),
+so a scan with its recognised text under it, or text drawn after the picture (recognised text of a pasted
+screenshot), still takes the click. Where it finds one, `hit_where` leaves page text out (so the arrow's
+smallest-box rule can't pick a hidden line, and `text_hit` finds none), the read tool's `on_text` is false (no
+text cursor, `object_at` selects the picture), and a double-click, a triple-click or a drag started there
+selects the picture rather than the words. A drag started on visible text still selects the words across the
+picture. `Tab::over_fields` (a visible widget of `Editor::form`'s fields overlapping the box) gives the note
+`OVER_FIELDS` after `add_image` from Paste or the Image tool: widgets are annotations, drawn above the page's
+content by every reader.
+
+**Decoding parameters given as a reference**: lopdf's `decompressed_content` reads `/DecodeParms` only when it is
+written in place (a dictionary, or an array of them); given as a reference (pdf.js's `issue17906`) it decodes as
+if there were none, leaving a PNG predictor's byte at the start of every row, so the samples read shifted.
+`imgs::direct_parms` makes a copy with them resolved, decoded by `redact_img::decode` (redaction, reducing) and
+`scan.rs`'s `decode` (Optimise scanned pages, the CCITT parameters too); the copy is never written back.
 
 Saving writes on a thread of its own (ENH-35, batch 37; `app/save.rs`). The window's thread does what comes
 before the write as it always did: keeping the typing, the questions (`App::save`, `save_unmarked`, `save_signed`,
@@ -1231,9 +1728,10 @@ kept for the Digital signatures view as the base, and fall back to a full rewrit
 set, damaged, a read-back failure, or `Tab::scrubbed`: redactions applied or hidden information removed since the
 last save, tracked through undo and redo, since the signed version would keep what was removed). A signed
 document's fields are not drawn into it when it opens (`Tab::new`); the snapshots for display and printing draw
-them on a copy instead (`snapshot_hiding`), so a save adds only real edits. The command line never draws fields
-when opening a file, so `render_snapshot` (`limarepdf-cli render`) and `print_snapshot` draw every document's fields
-on their copy; `app_snapshot` draws them only for signed documents, the app having drawn the others when opening.
+them on a copy instead (`snapshot_hiding`, and for printing `Pdf::print_sheets`), so a save adds only real edits.
+The command line never draws fields when opening a file, so `render_snapshot` (`limarepdf-cli render`) and
+`print_sheets` (through `flatten_form_for_print`) draw every document's fields on their copy; `app_snapshot`
+draws them only for signed documents, the app having drawn the others when opening.
 `Pdf::unshown_fields` and `unprintable_fields` name the values neither can draw (BUG-23).
 
 In the app, `crates/limarepdf-gui/src/digital.rs` holds the Digital IDs window and the signing window; making, importing
@@ -1246,6 +1744,34 @@ replaces the tab and is checked like any opened file.
 In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the File menu, the commands
 row, the command band, the command palette, the right-click menus, the floating toolbar and the keyboard shortcuts
 are all built from that list.
+
+Where each command sits in the File menu (☰) is `crates/limarepdf-gui/src/menu.rs`'s alone (ENH-49): `menu::MENU`,
+a static tree of `Entry`s (`Cmd(Act)`, `Sub(name, entries)`, `Sep`, and `Recent` for Open recent), drawn by
+`menu::show`: File's own commands, then a `Sub` for each of the band's names in `band::Band::ALL`'s order and Help
+(`KINDS`), then Settings…, Close tab and Quit. Registry entries no longer carry a group, submenu, separator or
+"in the menu" flag. `menu::LEFT_OUT` lists the commands deliberately not in it, each with the kind the palette files
+it under: what keys alone do (`Escape`, `Nudge`, `Extend`, the regions), `JoinHyphen` and `KeepHyphen` (the typing
+right-click menu's), `DeleteObject` and `ToggleRecovery` (Settings'). From the tree come `menu::path` (the
+submenus' names and the label), `menu::way` (a message's "Protect > Password security…", "File > Properties…", so
+the messages that name a menu can't go stale), `menu::category` and `menu::submenu` (the palette's column and
+"Theme › Dark", and what `actions::matches` searches), and `menu::line_before`, which `actions::menu_list` uses so
+the band's menus and the right-click submenus divide their commands as ☰ does. The tests in `menu.rs` keep it
+honest: every registry entry in the tree once or left out, each submenu name once, no line at a submenu's ends,
+the submenus the band's names in order, each band command under its band's name (or another band's holding it,
+or File's own), and each band's groups in the band's order (`band::Group::acts`, test-only). Every shortcut
+shown is written by `actions::key_text`, not `Context::format_shortcut` directly: egui off a Mac writes a
+punctuation key by its name ("Ctrl+Comma"), which `key_text` turns into its sign ("Ctrl+,"), the arrows aside.
+
+The Settings window (`dialogs::settings`, `Dialog::Settings(Box<dlg::Prefs>)`, ENH-49) shows `dlg::Prefs`, built
+by `App::prefs` from the settings (the page layout and cover from the active tab, as View's). Each frame
+`App::apply_prefs` compares the window's choices with the settings as they are, and takes what differs, the name
+trimmed: through `toggle_recovery`, `Act::Theme`, `Act::Accent` and `set_paragraphs` where more than the setting
+changes, else by setting it directly and passing page labels and field highlights to the open tabs, because many
+of `App::act`'s handlers do nothing with no document open. A message a change gives (recovery copies that couldn't
+be removed) is shown first and the window put back in `waiting`. The documents folder is `Settings::folder`
+(`documents_folder` in `settings.txt`); `App::start_folder` gives the folder a chooser starts in: beside a
+recovered copy's original, else beside the document's file, else the documents folder, when it still exists.
+`App::pick_folder`, like `pick_dictionaries`, never opens the system's chooser in tests (`tests::FOLDER`).
 
 The floating toolbar (`Tab::floating_toolbar`, ENH-20) shows `actions::toolbar_items`: the right-click menu's
 commands that have icons, or, while a line is edited on the page (`Ctx::line_edit`), Bold, Italic | Cut, Copy,
@@ -1278,16 +1804,15 @@ version docked it at the view's top by a column heading with text all round it);
 only when neither is in view. Bold and Italic there change what is selected in the line editor
 (`Editor::switch_style` reads it with `page_text::held`, then sets the editor's `refocus`), and `App::act` doesn't
 keep the typing before them as it does for other commands that use the document.
-The menus show an entry's short `label` inside its `submenu`; the palette, which has no submenus, shows the
+The menus show an entry's short `label` inside its submenu; the palette, which has no submenus, shows the
 submenu's name before it in the weak colour ("Theme › Dark"), names the row `actions::spoken_title` for screen
-readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
+readers ("Theme: Dark") and searches the label, submenu and kind (`actions::matches`; BUG-34, audit A18). A test
 keeps every palette entry's name its own.
 
 The workspace (batch 39, ENH-38 and ENH-41; build plan 2.2's approved mockup, adjusted by the user's checks) is
 drawn by `App::ui` as panels from the top: the tabs (`tab_button`, the line under them broken under the tab shown),
 then the commands panel: one row of the document's commands (`quick`, icons named in words; the File menu,
-`App::menu`, lists File's commands then one submenu per `Group`, so every command is in it, with `band::FILE_PLANNED`
-greyed in place), the band's names (`band::names`) and, at the right in reading order (`dialogs::reading_order`, its
+`menu::show`, laid out as the band, above), the band's names (`band::names`) and, at the right in reading order (`dialogs::reading_order`, its
 width from the last frame in `App::commands_right`), Print and `band::compact_toggle`; under it `band::show`.
 `crates/limarepdf-gui/src/band.rs` holds the seven bands as static tables of groups of `Item`s: `Button` (a
 registered `Act` with the band's own short label and icon, and a `menu` of related `Act`s behind a caret; no `act`
@@ -1304,6 +1829,53 @@ a folded group being a menu button with its name holding its controls. `Parts::c
 `Act::ToggleCompact`, or a window under `SHORT_HEIGHT`) draws icons alone and the Font group on one row (`controls`
 gives the row's height). Tests: `band`'s own (every button a registered command; every command placed in a band, the
 File menu, a right-click menu or a key; planned items named for plan items; folding), and the app's band tests.
+
+The Minimal interface (ENH-45, batch 48, the completed log) is the same commands panel drawn another way, not a
+second shell: `Settings::minimal` (settings.txt `interface = minimal`, any other value Full), `Act::ToggleMinimal`
+(View > Show, Ctrl+F1, ⌘⌥R on a Mac) and `Ctx::minimal`. With it `App::ui` draws the row alone: `quick` adds
+`ToggleSide` after ☰ and `Find` and `ToggleInspector` before Print (pressed while their panel shows, from the
+command's `checked`), and skips `band::names`, `compact_toggle` and `band::show`. Both interfaces end the tab
+strip with `interface_switch` (the user's place, nearest the window's own buttons; a panel app can't add a button
+to the system's title bar): the tabs panel is drawn on the start screen too, `tab_strip` gets the row less the
+switch's width from the last frame (`App::switch_width`, the frame drawn again when it changes), and the switch,
+labelled with where it goes (`SWITCH_TO_MINIMAL`, `SWITCH_TO_FULL`, a plain button for screen readers; View's
+choice is the ticked state), is as wide with either word, so the tabs don't move. Its widget sits in a scope of
+its own id (`UiBuilder::scope_id`), so the keyboard on it survives the widgets before it changing. The switch's
+rect joins `Editor::keep_typing`, so its click doesn't end the typing, as a click in the Font group doesn't. A focused widget the other interface doesn't draw loses the keyboard at egui's
+end of frame; `App::refocus` (set by the command when something had the keyboard or typing is open, as the switch's
+click takes the keyboard from new text) then lets `App::hand_on_keyboard` give it back to the typing
+(`page_text::give_back` on `Editor::typing_id`), else to the switch, within three frames. The status bar leaves out
+Show planned features and adds `view_choices` (the page layout's menu and Fit width) in Minimal. Nothing else reads
+the interface: the tabs, panels (`navigation_panel`, `inspector_panel`, `panel_widths`), docking and pins are one set
+for both. `actions::why_not` says `FULL_ONLY` for Compact commands in Minimal before its document check, so the
+start screen says it too. Tests: `app/tests/minimal.rs`, and `app/tests/minimal_tasks.rs` for everyday tasks
+done by Minimal's routes (Tools > Image asks the system for a file, which tests never reach: its task arms the
+tool with `Tab::arm_image`, as the chooser does).
+
+Stage 3 adds Tools, the inspector's Font group and More. **Tools** is `band::TOOLS`, each band's name with
+`Item`s that are the band's own: the buttons both have are `const` items (`EDIT_TEXT`, `SELECT`, `DRAW`, ...)
+that the band's statics and `TOOLS` share, so they can't drift apart. `band::tools` draws them through `items`
+(which takes a slice of items since then, a group's or one), labelled, in two columns of three bands (one
+column was taller than a laptop's window), in a `ScrollArea` that leaves room for **All commands**, and closes
+itself (`ui.close()`) when a command was pushed. All commands sets `App::open_file_menu`; the next frame opens
+☰'s popup by its id (`App::file_button`, the ☰ button's id kept each frame, `with("popup")`, as
+`Popup::default_response_id` makes it). `tools_button` is a `MenuButton` with
+`PopupCloseBehavior::CloseOnClickOutside`, its rect added to `keep_typing` beside the switch's, so Tools'
+Paragraph switches the line being edited; the other entries end the typing themselves (`Editor::set_tool`).
+egui keeps one popup open at a time: a `MenuButton` inside a popup closes the one it is in. `band::menu_button`
+uses a `SubMenuButton` when `menu::is_in_menu`, for the act-less buttons' menus and `caret`; that also mended
+the carets inside Full's folded groups, which had the same fault. **The inspector's Font group**:
+`Editor::text_targeted` mirrors `font_band`'s branches (new text or the Text tool's next, `Chosen` restylable,
+`editing_line`, a text object selected); with it in Minimal, `inspector_text_look` draws `band::text_look`
+(`font_band` on two rows, then `TEXT_ALIGNS` as `Item::Icons`) under the heading of the panel and of the
+pop-out, in the tab's scope, and the docked `toolbar_items` above the panel drop what it has (`in_text_look`;
+the strip keeps them). Clicks there keep the typing as any click in the inspector does (`insp_rect`).
+`editor::font_field` narrows below its 136 points when the row has less than that and 84 for the size box
+and its list: a resizable egui panel takes the width its content needs, so a fixed field widened the
+inspector, a few points each frame. **More**: `more_folded` counts how many of `MORE_ORDER` (the panels'
+buttons, which their strips repeat, then Print, Find, Redo, Undo, Save, Open) go under `more_button` for the
+row's width and Tools' last width (`App::tools_width`), each button 30 points and the dividers 26; ☰ and
+Tools always show. More's menu lists the folded commands in `ROW_ORDER` through `menu_item`.
 
 Edit's Font group is `Editor::font_band`, which moved the text look controls out of the inspector: the same
 `styles_ui` acts on new text being typed (`PageText`, with `page_text::held`'s selection, `refocus` after a change),
@@ -1339,15 +1911,26 @@ matched in `App::shortcuts` as a page-only key like Copy. A plain key's command 
 command took in the same frame (`shifted`), since egui's `matches_logically` ignores Shift: with words selected,
 Shift+Home extends them and doesn't also go to the first page.
 
-The inspector's number fields (egui's `DragValue`) that show a document's value are built with
-`clamp_existing_to_range(false)`: one shape's outline width, several shapes' width, Position and size, several
-objects' X and Y, an annotation's line width and a text box's border. egui 0.37 clamps a value already outside a
-field's range by default and marks the field changed, so showing a hairline outline (under 0.25 pt) raised it to
-0.25: `insp_change` saw a change, `Editor::pending` made the tab unsaved, and `commit_insp` made it as soon as the
-inspector settled, an undo step nobody asked for; for a filled shape, whose width isn't written, it was made again
-every settled frame, so the revision moved under a quit question ("The document changed while the question was
-open"). A rule under 1 pt tall was likewise made 1 pt tall (moving it down) with the next X typed. A value set by
-dragging or typing is still kept in range. Any new field showing a document value needs the same.
+Every number box is `spin.rs`'s `Spin` (ENH-48), a spin box as in word processors, added with `ui.add` (or
+`ui.add_enabled`): a single-line `TextEdit` with ▲ and ▼ painted in its right margin and sensed with
+`Sense::CLICK` (not Tab stops; named "Increase …" and "Decrease …"). Its value changes only when typed (Enter, or
+leaving the box; Esc leaves it unchanged) or stepped (the arrows, Up and Down, Page Up and Page Down ten steps,
+read with `count_and_consume_key` before the `TextEdit` sees them and kept from moving the keyboard by a focus
+lock filter set after it), and the response is then marked changed: callers keep a change on `changed()`, never on
+a drag or `lost_focus`. What is typed is kept in egui's data under the box's id while it has the keyboard, all of
+it selected as it gains it so typing replaces it. A unit after the number may be typed or not; commas between
+thousands are thousands', otherwise a decimal point. A number out of range is replaced by the nearest allowed (a
+fraction where whole numbers are wanted, the nearest whole number), and a note under the box, in an `Area` of
+tooltip order with its label a polite live region, says so for six seconds, as for something that isn't a
+number, which leaves the value. A value already outside the range is shown as it is and never changed by being
+shown (one shape's outline width, several shapes' width, Position and size, several objects' X and Y, an
+annotation's line width, a text box's border): egui's `DragValue`, which did that only with
+`clamp_existing_to_range(false)`, raised a hairline outline (under 0.25 pt) to 0.25, and `insp_change`,
+`Editor::pending` and `commit_insp` made an undo step nobody asked for, again every settled frame for a filled
+shape, so the revision moved under a quit question; a rule under 1 pt tall was made 1 pt tall with the next X
+typed. `Spin::mixed` shows nothing for objects whose values differ. Its width is that of the range's ends shown,
+so it doesn't change with the value. `spin.rs`'s `every_number_box_is_a_spin_box` fails when egui's `DragValue`
+appears anywhere else in the app's source, so a new box is a spin box too.
 
 A note or text box open for typing on the page (`Editor::writing`, drawn by `Editor::writing_ui`) closes on Esc,
 Ctrl+Enter or a click on the page outside it (a click on the page's own layer, outside the note's comment box). A
@@ -1430,9 +2013,20 @@ pages selected (grid or thumbnails) keeps their objects in `Tab::cut` and puts "
 clipboard: egui-winit sends Ctrl+V as a paste only when the clipboard holds text or an image, and the page names
 make sure it does. Paste (`Act::Paste`, never matched as a key: the paste arrives through `App::type_over`, which
 gives it to the pages cut while organising, with pages selected, or with nothing selected or typed, as the band's
-Paste does) is `Tab::paste_pages`, a move to
-`Tab::insert_at`; with nowhere else for them it says so. `Ctx::cut` enables Paste; `why_not` tries "Cut pages first."
-and "Select pages first." before the page view's reasons while organising. A click on the background between cards
+Paste does) is `App::paste_pages`: pages cut in the tab in front are `Tab::paste_pages`, a move to
+`Tab::insert_at` (with nowhere else for them it says so). PF-48: Copy with pages selected (`App::copy_pages`)
+keeps a document of them (`Pdf::extract`, as Extract makes) in `App::copied_pages` with the source's name and
+whether it is protected (`Tab::is_protected`), the clipboard getting their names as for Cut; pages cut in another
+tab are extracted from it at the paste, with a `CutFrom` (the tab, the pages by object as cut). Either goes in
+through Append PDFs' path: `undrawable` refuses pages whose form answers can't be drawn, form fields go through
+`Dialog::ConfirmAppendForms` (`AppendForms` now carries `protected` and `cut_from`), and `App::add_pages` (taking
+`protected`, saying whether it added) inserts them at a `PagesGo` naming the page before `insert_at`. Once added,
+`App::take_out_cut` deletes the cut pages still in their tab by object (its own `Tab::arrange` step), unless they
+are all its pages, which stay (the paste was a copy, said in the tab in front). The clipboard holds one thing:
+Copy and Cut of anything first `App::let_go_of_pages` (the copy dropped, every tab's cut taken back), so at most
+one tab has pages cut and never with a copy. `Ctx::cut` (`App::pages_to_paste`: a copy, or any tab's cut) enables
+Paste; `why_not` tries "Cut or copy pages first." and "Select pages first." before the page view's reasons while
+organising. A click on the background between cards
 puts the insertion bar there (`Organise::bar`, the place and whether it is drawn after the card before it) and lets
 go of the selection, as a slide sorter; `Tab::insert_at` is the bar, else after the selected pages, else after the
 current page, for Insert blank page (at the page before's size), Insert images…, Paste and Insert PDF pages…
@@ -1708,19 +2302,27 @@ form XObject, and per inline image.
   user's finding in batch 49's stage 1): a PDF keeps no paragraph's edges, so a centred paragraph read again took
   its widest line's extent as its frame, and each realignment, kept and read again, moved it on (a justified
   72–512 frame went 87–500 centred, then 87–504, 95–504...); a widened one narrowed back. After a write whose
-  edges or alignment differ from the frame read, or whose frame was itself kept (`Paragraph::kept`, so the record
-  follows its lines), `keep_set_frame` records `[top bottom left right indent]` (first and last baselines, the
-  frame's edges, `frame_in`'s indent) in the page's `/PieceInfo /LimarePDF /Private /Frames` (ISO 32000's
-  page-piece dictionary; other apps' entries kept; its `/LastModified` and the page's, as the standard asks),
-  replacing records of lines overlapping it before or now, at most 500 a page; nothing is written for an edit in
-  the frame read, so plain typing adds nothing. `Pdf::paragraph` takes a record's edges and indent
+  edges or alignment differ from the frame read, whose frame was itself kept (`Paragraph::kept`, so the record
+  follows its lines), or that writes more than one paragraph (BUG-47: Enter typed, U+2029 before a set line's
+  first character), `keep_set_frame` records `[top bottom left right indent spacing]` for each paragraph written
+  (its first and last baselines, the frame's edges, `frame_in`'s indent, which Enter's paragraphs take too, and
+  `ParagraphSetting::leading`, the spacing the lines were set at) in the page's `/PieceInfo /LimarePDF /Private
+  /Frames` (ISO 32000's page-piece dictionary; other apps' entries kept; its `/LastModified` and the page's, as
+  the standard asks), replacing records of lines overlapping the edit's before or now (`keep_frames`, all of one
+  edit's together), at most 500 a page; nothing is written for an edit of one paragraph in the frame read, so
+  plain typing and Shift+Enter add nothing. A record of five numbers (none written since BUG-47) reads with no
+  spacing. `Pdf::paragraph` takes a record's edges and indent, and its spacing where the paragraph has one line
   (`kept_for`: first and last baselines within 0.5 points, every line within its edges to its size, a hanging
   first line its indent further) and marks it kept, and `frame_in` then keeps the indent whatever the alignment
   read. `Pdf::page_blocks_by` reads the paragraphs recorded on its page as one block each (`regroup`): where
-  detection splits their lines (a centred paragraph's shorter lines read as paragraph ends) or joins a
-  neighbour's line to them, the lines between a record's first and last baselines within its edges become a
-  confident block in its frame, aligned as they sit there (`frame_of`: justified, left, right or centred within
-  0.15 of a size or a point, else the alignment read), the blocks they came from keeping the rest, in doubt.
+  detection splits their lines (a centred paragraph's shorter lines read as paragraph ends), joins a
+  neighbour's line to them, or joins the one-line paragraphs Enter made into one narrow block, the lines between
+  a record's first and last baselines within its edges become a confident block in its frame, aligned as they
+  sit there (`frame_of`: justified, left, right or centred within 0.15 of a size or a point, else the alignment
+  read; spacing the lines' median gap, the record's for one line), the blocks they came from keeping the rest,
+  in doubt; a block that is a record's lines already gets that frame and is confident too, so a line LimarePDF
+  wrote as a paragraph of its own isn't "on its own" (the app's `paragraph::refused` refuses a one-line block
+  only when it isn't confident).
   Lines moved by other means stop matching and the frame is read from them again. Undo restores the page's
   dictionary with the content; Remove hidden data's private data drops `PieceInfo` and `LastModified`
   everywhere; redaction drops a redacted page's `PieceInfo`. The finding's other causes, found by realigning 406
@@ -1862,7 +2464,24 @@ form XObject, and per inline image.
   `paragraph::refound` (shared with Replace all). A block that fails is left and counted, the error only when none
   is written. Afterwards words are selected again (`reselect`) and selected lines found where they moved
   (`Editor::lines_moved` sets each one's expected box to the line of its text in its row before the page is read
-  again, as `Selection::refind` needs boxes that meet).
+  again, as `Selection::refind` needs boxes that meet). **New text, text boxes and fields** (batch 49's stage 3):
+  `Editor::aligns_text` gives what the commands act on (`editor::Aligns`: page text, new text, a text box typed in
+  or selected, a field typed in, nothing), in `Ctx::aligns`; `text_alignable` enables Left, Centre and Right for
+  all but a field and nothing, `justifiable` Justify for page text only, and `why_not` says the reason for a field,
+  and for Justify on new text or a text box, before its list. `App::act` leaves new text or a text box being typed
+  open for them (`Editor::aligns_typing`). New text (`PageText::align`, from `Editor::talign`, the alignment last
+  chosen, carried on as the style is by `carry_on`) aligns its rows among themselves while typed
+  (`page_text::aligned_rows` in `field`'s layouter through `Style::align`: each row moved by the room its letters,
+  measured from the pen as `band_rects` measures, leave beside the widest, `moved_rows`), its own `History` taking
+  each change as a step (`History::aligned`, `observe_align`, put back on Ctrl+Z); `Action::AddText` carries it to
+  core's `Pdf::add_text_lines`, which measures each line with the `Setter` the pen writes it with (the parts in one
+  font by one setter, as `written_lines` makes them, `new_text_width`) and writes each with `add_text_decorated`
+  (the widest at the point clicked, the others moved by `Align::share` of the room). A text box: `TextStyle::align`
+  (`/Q` read by `Align::of_q`, written by `text_style`, removed for left, justified written left by `Align::q`);
+  a new one changes the Text box tool's `box_style`, which `AddTextBox` writes; one typed in or selected gets an
+  `Action::SetAnnot` (`align_box`, taking the inspector's changes not yet kept with it), the typing staying open
+  as with the inspector's changes (ENH-13); `AnnotEdit::same_as` compares the alignment. A field's is its form's
+  (`Widget::align`, its `/Q` else its field's), only shown.
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.
@@ -2023,7 +2642,8 @@ form XObject, and per inline image.
   colour (`Cover::Flat`, the ring's), which also stands in until the first drawing comes and stays if it fails
   (the failure in the timing log). Nothing is drawn again as the text is typed.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
-  text line each, their baselines 1.2 times the size apart (Acrobat's spacing). In a standard font it is written
+  text line each, their baselines 1.2 times the size apart (Acrobat's spacing), aligned among themselves as chosen
+  (`Pdf::add_text_lines`, the widest starting at the point clicked; Alignment above). In a standard font it is written
   in one of the 12 standard fonts with the WinAnsi encoding, kerned with its Liberation face's pairs; a line with
   characters WinAnsi lacks (Polish, Czech, Vietnamese, Greek, Cyrillic and so on) is written in the bundled
   Liberation face of that font instead, embedded in the file and cut down to the characters used, shaped; one font

@@ -110,7 +110,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> Object {
 /// (Walrus grey, Otter brown, Seal blue) beside the list box "Pets" (Newt, Toad, Frog);
 /// the checkboxes of [`CHECKS`] in a row; and the radio group "Size" (S, M and L) in a
 /// row under them.
-fn mixed_form() -> Pdf {
+pub(super) fn mixed_form() -> Pdf {
     let mut p = Pdf::new();
     p.insert_blank(0, 612.0, 792.0).unwrap();
     let page = p.page_ids()[0];

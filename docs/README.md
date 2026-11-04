@@ -18,6 +18,8 @@ no network connection, no subscription. This guide takes you from installing it 
   merge, split and crop pages.
 - [Comments and markup](comments-and-markup.md): highlights, notes, text boxes, shapes, drawings and replies.
 - [Editing text and pictures](content-editing.md): change what is on the page, and add text and pictures.
+- [Checking spelling](spelling.md): words spelt wrongly marked as you type, Review > Spelling, languages and
+  dictionaries.
 - [Filling in forms](forms.md): fill in, reset and flatten forms.
 - [Fill and sign](fill-and-sign.md): put your signature, initials and the date on any document.
 - [Headers, footers, watermarks and stamps](headers-footers-watermarks.md): page numbers, Bates numbers, DRAFT

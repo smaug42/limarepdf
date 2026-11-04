@@ -13,6 +13,9 @@ use crate::signing::SignKit;
 use anyhow::Context as _;
 use eframe::egui::ThemePreference;
 use limarepdf_core::page_colours::PageColours;
+use limarepdf_core::print::{
+    Binding, Orientation, PageOrder, PerSheet, Scale, MAX_PERCENT, PAGES_PER_SHEET,
+};
 pub use limarepdf_core::settings_dir;
 use limarepdf_core::{OpenLayout, StampColor};
 use std::collections::BTreeMap;
@@ -228,6 +231,9 @@ pub struct Settings {
     pub show_planned: bool,
     /// The band's commands on one row, as icons (their names on hover); off unless chosen.
     pub compact_commands: bool,
+    /// The Minimal interface: one quiet row of commands in place of the commands row and
+    /// the band (ENH-45); off, the Full interface, unless chosen.
+    pub minimal: bool,
     /// Page text is edited a paragraph at a time where it can be (Edit > Text flow's
     /// Paragraph, NEW-01); off, a line at a time, unless chosen.
     pub paragraphs: bool,
@@ -236,7 +242,32 @@ pub struct Settings {
     pub snap: bool,
     /// The zoom Organise shows the pages at, as cards (NEW-14).
     pub organise_zoom: f32,
+    /// Spelling is checked as one types (Review > Proofing > Language's Check spelling as
+    /// you type, NEW-06; on unless turned off).
+    pub spelling: bool,
+    /// The language chosen in Review > Proofing > Language, by its key (`spell::Language`);
+    /// `None` until one is chosen.
+    pub spelling_language: Option<String>,
+    /// The printer last printed to, chosen in Print when it is listed (ENH-47).
+    pub print_printer: Option<String>,
+    /// The paper last printed on with each printer, by the printer's name: the paper's id
+    /// (ENH-14).
+    pub print_papers: BTreeMap<String, String>,
+    /// The orientation and scale last printed with.
+    pub print_orientation: Orientation,
+    pub print_scale: Scale,
+    /// The pages a sheet last printed with, their order and borders (NEW-05).
+    pub print_per_sheet: PerSheet,
+    /// Whether the last printout was a booklet, and the binding last chosen; which sides it
+    /// printed isn't kept, so that a later printout never prints the backs alone unasked.
+    pub print_booklet: bool,
+    pub print_binding: Binding,
+    /// The picture quality Reduce file size last used (ENH-19), as Word remembers it.
+    pub reduce_quality: limarepdf_core::PictureQuality,
     pub accent: Accent,
+    /// The folder Open and Save As start in, set in Settings (ENH-49), as Word's default
+    /// file location; `None` for the one the system's chooser last used.
+    pub folder: Option<PathBuf>,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
     pub window: [f32; 2],
@@ -305,10 +336,22 @@ impl Settings {
             page_labels: true,
             show_planned: true,
             compact_commands: false,
+            minimal: false,
             paragraphs: false,
             snap: true,
             organise_zoom: ORGANISE_ZOOM,
+            spelling: true,
+            spelling_language: None,
+            print_printer: None,
+            print_papers: BTreeMap::new(),
+            print_orientation: Orientation::Automatic,
+            print_scale: Scale::ShrinkOversized,
+            print_per_sheet: PerSheet::default(),
+            print_booklet: false,
+            print_binding: Binding::Left,
+            reduce_quality: limarepdf_core::PictureQuality::Print,
             accent: Accent::Desktop,
+            folder: None,
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
@@ -382,13 +425,77 @@ impl Settings {
                 "page_names" => s.page_labels = value != "numbers",
                 "planned_features" => s.show_planned = value != "hidden",
                 "commands" => s.compact_commands = value == "compact",
+                "interface" => s.minimal = value == "minimal",
                 "text_editing" => s.paragraphs = value == "paragraphs",
                 "snap_to_objects" => s.snap = value != "false",
+                "spelling_as_you_type" => s.spelling = value != "false",
+                "spelling_language" if !value.is_empty() => {
+                    s.spelling_language = Some(value.into());
+                }
                 "organise_size" => {
                     if let Ok(percent) = value.parse::<f32>() {
                         let zoom = percent / 100.0;
                         s.organise_zoom = zoom.clamp(ORGANISE_MIN, ORGANISE_MAX);
                     }
+                }
+                "print_printer" if !value.is_empty() => s.print_printer = Some(value.into()),
+                "documents_folder" if !value.is_empty() => s.folder = Some(value.into()),
+                "print_paper" => {
+                    if let Some((paper, printer)) = value.split_once(' ') {
+                        let printer = printer.trim();
+                        if !paper.is_empty() && !printer.is_empty() {
+                            s.print_papers.insert(printer.into(), paper.into());
+                        }
+                    }
+                }
+                "print_orientation" => {
+                    s.print_orientation = match value {
+                        "portrait" => Orientation::Portrait,
+                        "landscape" => Orientation::Landscape,
+                        _ => Orientation::Automatic,
+                    };
+                }
+                "print_scale" => {
+                    s.print_scale = match value {
+                        "fit" => Scale::Fit,
+                        "actual" => Scale::ActualSize,
+                        v => match v.parse::<u16>() {
+                            Ok(p) => Scale::Custom(p.clamp(1, MAX_PERCENT)),
+                            Err(_) => Scale::ShrinkOversized,
+                        },
+                    };
+                }
+                "print_pages_per_sheet" => {
+                    s.print_per_sheet.pages = match value.parse::<u8>() {
+                        Ok(n) if PAGES_PER_SHEET.contains(&n) => n,
+                        _ => 1,
+                    };
+                }
+                "print_page_order" => {
+                    s.print_per_sheet.order = match value {
+                        "across-from-right" => PageOrder::AcrossFromRight,
+                        "down" => PageOrder::Down,
+                        "down-from-right" => PageOrder::DownFromRight,
+                        _ => PageOrder::Across,
+                    };
+                }
+                "print_borders" => s.print_per_sheet.borders = value == "true",
+                "print_booklet" => s.print_booklet = value == "true",
+                "reduce_quality" => {
+                    use limarepdf_core::PictureQuality as Q;
+                    s.reduce_quality = match value {
+                        "high-fidelity" => Q::HighFidelity,
+                        "hd" => Q::Hd,
+                        "web" => Q::Web,
+                        "email" => Q::Email,
+                        _ => Q::Print,
+                    }
+                }
+                "print_binding" => {
+                    s.print_binding = match value {
+                        "right" => Binding::Right,
+                        _ => Binding::Left,
+                    };
                 }
                 "accent_colour" => {
                     s.accent = match value {
@@ -451,6 +558,32 @@ impl Settings {
     /// What couldn't be saved last, said once taken.
     pub fn take_unsaved(&mut self) -> Option<Unsaved> {
         self.unsaved.take()
+    }
+
+    /// The folder of spelling dictionaries added to LimarePDF, beside the settings; `None`
+    /// without a settings folder.
+    pub fn dictionaries_folder(&self) -> Option<PathBuf> {
+        Some(self.file.as_ref()?.parent()?.join("dictionaries"))
+    }
+
+    /// The words added to the dictionary in earlier runs (`words.txt` beside the settings, a
+    /// word a line); none without a settings folder.
+    pub fn spelling_words(&self) -> std::collections::HashSet<String> {
+        let file = self.file.as_ref().map(|f| f.with_file_name("words.txt"));
+        let text = file.and_then(|f| std::fs::read_to_string(f).ok());
+        limarepdf_core::spelling::read_word_list(&text.unwrap_or_default())
+    }
+
+    /// Saves the words added to the dictionary, for next time.
+    pub fn save_spelling_words(&mut self, words: &std::collections::HashSet<String>) {
+        let Some(file) = self.file.as_ref().map(|f| f.with_file_name("words.txt")) else {
+            return;
+        };
+        let text = limarepdf_core::spelling::word_list(words);
+        let written = write_own(&file, text.as_bytes());
+        if let Some(u) = unsaved("the words you added to the dictionary", written) {
+            self.unsaved = Some(u);
+        }
     }
 
     /// A signature or initials saved for next time that couldn't be, said once taken.
@@ -533,7 +666,9 @@ impl Settings {
             Accent::Desktop => "desktop",
             Accent::LimarePdf => "limarepdf",
         };
-        text += &format!("commands = {commands}\naccent_colour = {accent}\n");
+        let interface = if self.minimal { "minimal" } else { "full" };
+        text +=
+            &format!("commands = {commands}\ninterface = {interface}\naccent_colour = {accent}\n");
         let editing = if self.paragraphs {
             "paragraphs"
         } else {
@@ -541,7 +676,72 @@ impl Settings {
         };
         text += &format!("text_editing = {editing}\n");
         text += &format!("snap_to_objects = {}\n", self.snap);
+        text += &format!("spelling_as_you_type = {}\n", self.spelling);
+        if let Some(lang) = &self.spelling_language {
+            let lang = lang.lines().next().unwrap_or("").trim();
+            if !lang.is_empty() {
+                text += &format!("spelling_language = {lang}\n");
+            }
+        }
         text += &format!("organise_size = {:.0}\n", self.organise_zoom * 100.0);
+        let orientation = match self.print_orientation {
+            Orientation::Automatic => "automatic",
+            Orientation::Portrait => "portrait",
+            Orientation::Landscape => "landscape",
+        };
+        let scale = match self.print_scale {
+            Scale::ShrinkOversized => "shrink".to_string(),
+            Scale::Fit => "fit".to_string(),
+            Scale::ActualSize => "actual".to_string(),
+            Scale::Custom(p) => p.to_string(),
+        };
+        text += &format!("print_orientation = {orientation}\nprint_scale = {scale}\n");
+        let per = self.print_per_sheet;
+        let order = match per.order {
+            PageOrder::Across => "across",
+            PageOrder::AcrossFromRight => "across-from-right",
+            PageOrder::Down => "down",
+            PageOrder::DownFromRight => "down-from-right",
+        };
+        text += &format!(
+            "print_pages_per_sheet = {}\nprint_page_order = {order}\nprint_borders = {}\n",
+            per.pages, per.borders
+        );
+        let binding = match self.print_binding {
+            Binding::Left => "left",
+            Binding::Right => "right",
+        };
+        text += &format!(
+            "print_booklet = {}\nprint_binding = {binding}\n",
+            self.print_booklet
+        );
+        let quality = {
+            use limarepdf_core::PictureQuality as Q;
+            match self.reduce_quality {
+                Q::HighFidelity => "high-fidelity",
+                Q::Hd => "hd",
+                Q::Print => "print",
+                Q::Web => "web",
+                Q::Email => "email",
+            }
+        };
+        text += &format!("reduce_quality = {quality}\n");
+        if let Some(folder) = &self.folder {
+            text += &format!("documents_folder = {}\n", folder.display());
+        }
+        if let Some(printer) = &self.print_printer {
+            let printer = printer.lines().next().unwrap_or("").trim();
+            if !printer.is_empty() {
+                text += &format!("print_printer = {printer}\n");
+            }
+        }
+        for (printer, paper) in &self.print_papers {
+            // One line: the paper's id has no spaces, the printer's name may.
+            let printer = printer.lines().next().unwrap_or("").trim();
+            if !paper.contains(char::is_whitespace) && !printer.is_empty() {
+                text += &format!("print_paper = {paper} {printer}\n");
+            }
+        }
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
             self.window[0], self.window[1], self.window_maximized
@@ -701,6 +901,31 @@ mod tests {
         assert!(!s.navigation_panel && s.inspector_panel && s.controls_docked);
     }
 
+    /// NEW-06: spelling is checked as one types unless turned off; the language chosen and
+    /// the words added are kept, the words in a file of their own.
+    #[test]
+    fn spelling_choices_and_added_words_are_remembered() {
+        let f = file("spelling");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.spelling && s.spelling_language.is_none() && s.spelling_words().is_empty());
+        (s.spelling, s.spelling_language) = (false, Some("fr".into()));
+        s.save();
+        let words = ["Limare".to_string(), "o'clocks".into()].into();
+        s.save_spelling_words(&words);
+        assert!(s.take_unsaved().is_none());
+        let back = Settings::from_file(Some(f.clone()));
+        assert!(!back.spelling);
+        assert_eq!(back.spelling_language.as_deref(), Some("fr"));
+        assert_eq!(back.spelling_words(), words);
+        let list = std::fs::read_to_string(f.with_file_name("words.txt")).unwrap();
+        assert_eq!(list, "Limare\no'clocks\n");
+        assert_eq!(
+            back.dictionaries_folder(),
+            Some(f.with_file_name("dictionaries"))
+        );
+        assert_eq!(Settings::from_file(None).dictionaries_folder(), None);
+    }
+
     /// ENH-36: page labels are used unless turned off, and the choice is kept.
     #[test]
     fn page_numbers_or_labels_are_remembered() {
@@ -773,6 +998,34 @@ mod tests {
         assert_eq!(s.accent, Accent::Desktop);
     }
 
+    /// ENH-45: the Full interface unless Minimal is chosen, the choice kept both ways; a
+    /// missing or unknown value is Full.
+    #[test]
+    fn the_interface_is_remembered() {
+        let f = file("interface");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(!s.minimal);
+        s.minimal = true;
+        s.save();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("interface = minimal\n"), "{text}");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.minimal);
+        s.minimal = false;
+        s.save();
+        assert!(!Settings::from_file(Some(f.clone())).minimal);
+        for text in [
+            "interface = full\n",
+            "interface = walrus\n",
+            "interface = Minimal\n",
+        ] {
+            std::fs::write(&f, text).unwrap();
+            assert!(!Settings::from_file(Some(f.clone())).minimal, "{text}");
+        }
+        std::fs::write(&f, "interface = minimal\n").unwrap();
+        assert!(Settings::from_file(Some(f)).minimal);
+    }
+
     /// NEW-14: the size of Organise's cards is kept, within its range; nonsense gives the
     /// default.
     #[test]
@@ -790,6 +1043,102 @@ mod tests {
         std::fs::write(&f, "organise_size = walrus\n").unwrap();
         let s = Settings::from_file(Some(f));
         assert_eq!(s.organise_zoom, ORGANISE_ZOOM);
+    }
+
+    /// ENH-14 and ENH-47: the printer last printed to, the paper last printed on with each
+    /// printer, a name with spaces too, the orientation and the scale are remembered; a
+    /// custom scale out of range is brought into it, and anything unreadable is the default.
+    #[test]
+    fn print_choices_are_remembered() {
+        let f = file("print");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.print_papers.is_empty() && s.print_printer.is_none());
+        s.print_printer = Some("Office laser".into());
+        assert_eq!(s.print_orientation, Orientation::Automatic);
+        assert_eq!(s.print_scale, Scale::ShrinkOversized);
+        let papers = &mut s.print_papers;
+        papers.insert("Office laser".into(), "iso_a4_210x297mm".into());
+        papers.insert("Hall".into(), "na_legal_8.5x14in".into());
+        s.print_orientation = Orientation::Landscape;
+        s.print_scale = Scale::Custom(65);
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.print_printer.as_deref(), Some("Office laser"));
+        assert_eq!(s.print_papers["Office laser"], "iso_a4_210x297mm");
+        assert_eq!(s.print_papers["Hall"], "na_legal_8.5x14in");
+        assert_eq!(s.print_orientation, Orientation::Landscape);
+        assert_eq!(s.print_scale, Scale::Custom(65));
+        for (value, scale) in [
+            ("fit", Scale::Fit),
+            ("actual", Scale::ActualSize),
+            ("shrink", Scale::ShrinkOversized),
+            ("900", Scale::Custom(MAX_PERCENT)),
+            ("0", Scale::Custom(1)),
+            ("walrus", Scale::ShrinkOversized),
+        ] {
+            std::fs::write(&f, format!("print_scale = {value}\n")).unwrap();
+            let s = Settings::from_file(Some(f.clone()));
+            assert_eq!(s.print_scale, scale, "{value}");
+        }
+        std::fs::write(&f, "print_orientation = sideways\nprint_paper = A4\n").unwrap();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.print_orientation, Orientation::Automatic);
+        assert!(s.print_papers.is_empty());
+        // NEW-05: the pages a sheet, their order and borders; a count that can't be printed
+        // is one a sheet.
+        let mut s = s;
+        assert_eq!(s.print_per_sheet, PerSheet::default());
+        s.print_per_sheet = PerSheet {
+            pages: 6,
+            order: PageOrder::DownFromRight,
+            borders: true,
+        };
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.print_per_sheet.pages, 6);
+        assert_eq!(s.print_per_sheet.order, PageOrder::DownFromRight);
+        assert!(s.print_per_sheet.borders);
+        let odd = "print_pages_per_sheet = 5\nprint_page_order = sideways\nprint_borders = 1\n";
+        std::fs::write(&f, odd).unwrap();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.print_per_sheet, PerSheet::default());
+        // The booklet and its binding; anything else read is no booklet, bound on the left.
+        let mut s = s;
+        assert!(!s.print_booklet && s.print_binding == Binding::Left);
+        s.print_booklet = true;
+        s.print_binding = Binding::Right;
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.print_booklet && s.print_binding == Binding::Right);
+        std::fs::write(&f, "print_booklet = yes\nprint_binding = top\n").unwrap();
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(!s.print_booklet && s.print_binding == Binding::Left);
+        // Reduce file size's quality (ENH-19); anything else read is Print.
+        use limarepdf_core::PictureQuality as Q;
+        let mut s = s;
+        assert_eq!(s.reduce_quality, Q::Print);
+        for q in Q::ALL {
+            s.reduce_quality = q;
+            s.save();
+            assert_eq!(Settings::from_file(Some(f.clone())).reduce_quality, q);
+        }
+        std::fs::write(&f, "reduce_quality = tiny\n").unwrap();
+        assert_eq!(Settings::from_file(Some(f)).reduce_quality, Q::Print);
+    }
+
+    /// ENH-49: the documents folder set in Settings is kept, spaces and all; none set, or an
+    /// empty one read, is the folder last used.
+    #[test]
+    fn the_documents_folder_is_remembered() {
+        let f = file("folder");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.folder, None);
+        s.folder = Some("/home/me/My documents".into());
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.folder, Some(PathBuf::from("/home/me/My documents")));
+        std::fs::write(&f, "documents_folder = \n").unwrap();
+        assert_eq!(Settings::from_file(Some(f)).folder, None);
     }
 
     #[test]

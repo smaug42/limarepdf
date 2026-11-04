@@ -615,7 +615,7 @@ impl Tab {
 
     /// Show a comment's mark on the page: on the page being read, scrolled only as far as
     /// it must be; on another, that page at the mark.
-    fn show_mark(&mut self, page: usize, bbox: [f32; 4]) {
+    pub(super) fn show_mark(&mut self, page: usize, bbox: [f32; 4]) {
         if page == self.current {
             self.reveal = Some((page, bbox));
         } else {
