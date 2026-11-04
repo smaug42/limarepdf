@@ -2686,7 +2686,7 @@ from the RustCrypto project unless noted, pinned to exact versions where they ar
 | Crate | Version | Status | Used for |
 | --- | --- | --- | --- |
 | `rsa` | 0.10.0-rc.19 | pre-release | RSA keys and signatures |
-| `pkcs1` | 0.8.0-rc.5 | pre-release | RSA key encoding |
+| `pkcs1` | 0.8.0 | stable (pinned exactly with `rsa`; final since 0.13.0) | RSA key encoding |
 | `der`, `spki`, `x509-cert` | 0.8.2, 0.8.1, 0.3.0 | stable | certificates; making self-signed ones |
 | `p256`, `p384` | 0.14.0 | stable | ECDSA keys and signatures |
 | `sha1`, `sha2` | 0.11.0, 0.11.1 | stable | digests |
