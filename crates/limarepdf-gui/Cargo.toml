@@ -3,6 +3,7 @@ name = "limarepdf-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "PDF viewer and editor"
 homepage = "https://github.com/smaug42/limarepdf"
 repository = "https://github.com/smaug42/limarepdf"

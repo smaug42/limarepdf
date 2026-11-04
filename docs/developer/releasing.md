@@ -11,7 +11,11 @@ How a release is made, for maintainers.
      Unreleased as they are made;
    - check the signature crates listed in [How it is built](architecture.md#signature-crates): if a pinned
      pre-release (`rsa`, `pkcs1`) has a final version, move to it; if RUSTSEC-2023-0071 has a fixed `rsa`, take it
-     and remove the `--ignore` from the `audit` job in `ci.yml`; read any new advisory the `audit` job reports;
+     and remove its line from `deny.toml`'s `ignore`;
+   - run `cargo deny check` (`cargo install cargo-deny --locked --version` with the version `ci.yml`'s `deny` job
+     sets) and read any new advisory or licence it reports. An advisory set aside in `deny.toml` whose crate has
+     gone or been fixed is reported as no longer needed: remove it. Move the `deny` job's cargo-deny version to the
+     latest release here, after reading its changelog for changes to `deny.toml`'s settings;
    - take compatible dependency updates (`cargo update`, then the signing cross-checks with
      `-- --ignored cross_check`); move to a new major version only as planned work. After a hayro upgrade, run the
      two ignored transparency group tests (`non_isolated_group_blends_against_page_backdrop`,
@@ -39,9 +43,9 @@ How a release is made, for maintainers.
    the two run side by side. The `main` run is still worth having, because it refreshes the build cache that pull
    requests and tags start from.
 
-4. CI runs again for the tag. Its `release` job starts only once the `audit` job and every build have passed, so a
-   new advisory published since the pull request stops the release: fix it (an update, or an `--ignore` with its
-   reason in `ci.yml` and `docs/signatures-in-depth.md` when it doesn't apply), then delete the tag
+4. CI runs again for the tag. Its `release` job starts only once the `deny` job and every build have passed, so a
+   new advisory published since the pull request stops the release: fix it (an update, or an `ignore` entry with
+   its reason in `deny.toml`, and in `docs/signatures-in-depth.md` for a signing crate, when it doesn't apply), then delete the tag
    (`git push --delete origin vX.Y.Z`, `git tag -d vX.Y.Z`) and tag the fixed `main` again. It checks that the tag
    matches `Cargo.toml`, takes the release notes
    from the matching `CHANGELOG.md` section, ends them with a link comparing the tag with the previous version tag,
@@ -58,7 +62,7 @@ release already there and fails.
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and `v*` tags. Each platform job runs the tests
 in the `ci-test` profile (`Cargo.toml`: optimised with overflow checks, as released, but without link-time
 optimisation, which every test executable would otherwise go through on its own), then builds the binaries with
-`--release` and packages (both with `--locked`: built from `Cargo.lock` exactly, the versions the `audit` job
+`--release` and packages (both with `--locked`: built from `Cargo.lock` exactly, the versions the `deny` job
 checked; a `Cargo.lock` out of date with `Cargo.toml` fails the job instead of being updated on the runner)
 `limarepdf-<version>-<platform>.tar.gz` (`.zip` on Windows), holding the binaries, the README, `CHANGELOG.md`, `SECURITY.md`, `docs/` and
 the licences. The archives are made on the runner because Actions artifacts lose Unix file permissions; on the
@@ -103,6 +107,12 @@ check; uninstalling; the desktop shortcut asked for, kept by an upgrade and remo
 `DESKTOPSHORTCUT=0`; and uninstalling again, leaving nothing. The screens themselves are only checked by hand
 (testing.md's platform smoke checks).
 
+The `deny` job runs `cargo deny check` with `deny.toml` on every crate in `Cargo.lock`, for every platform: known
+advisories (RustSec; those set aside are listed in `deny.toml` with their reasons), licences (an allow list matching
+what the packages carry; a new licence fails until it is looked at), crates from crates.io only, and two versions of
+one crate (reported, not refused). The workspace's crates are `publish = false`, which lets them use each other by
+path.
+
 The `release` job writes `SHA256SUMS`, signs it and every file with the signing subkey (below), checks each signature
 against `docs/limarepdf-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which
 users check with `gh attestation verify`.
@@ -111,8 +121,8 @@ users check with `gh attestation verify`.
 
 To try the release job without making a release, start the workflow by hand (Actions > ci > Run workflow) on a
 branch with "dry_run" ticked. It builds, signs and attests as a release would, then uploads the files as the
-`release-dry-run` artifact instead of creating a release. Like a release, it waits for the `audit` job: the run's
-graph shows `release` after `audit`, `build` and `macos-dmg`, and a failed audit skips it. Its attestations are real but harmless: they name the
+`release-dry-run` artifact instead of creating a release. Like a release, it waits for the `deny` job: the run's
+graph shows `release` after `deny`, `build` and `macos-dmg`, and a failed `deny` skips it. Its attestations are real but harmless: they name the
 branch, not a tag.
 
 Without the `GPG_SIGNING_KEY` secret (a fork, say), a dry run still builds every package and writes `SHA256SUMS`,

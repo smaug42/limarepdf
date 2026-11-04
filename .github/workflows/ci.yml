@@ -29,19 +29,21 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
-  # Known security advisories (RustSec) against every crate in Cargo.lock. Ignored, with
-  # the reason in docs/signatures-in-depth.md: RUSTSEC-2023-0071, an RSA timing leak in `rsa` with
-  # no fixed version, which needs someone timing many signings on the signer's machine.
-  # The release job waits for it: a release never ships with a known advisory.
-  audit:
+  # cargo deny (deny.toml) against every crate in Cargo.lock, for every platform: known
+  # security advisories (RustSec), licences, crates.io as the only source, duplicate versions
+  # (reported only). The advisories set aside are in deny.toml, each with its reason. The
+  # release job waits for it: a release never ships with a known advisory.
+  deny:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - name: cargo audit
+      # A set version, so a new cargo-deny can't change the check unseen; releasing.md says
+      # when to move it.
+      - name: cargo deny
         run: |
-          cargo install cargo-audit --locked
-          cargo audit --ignore RUSTSEC-2023-0071
+          cargo install cargo-deny --locked --version 0.20.2
+          cargo deny --locked check
 
   build:
     strategy:
@@ -58,7 +60,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Optimised as released, without link-time optimisation (Cargo.toml's ci-test profile).
-      # --locked here and below: built from Cargo.lock exactly, the versions the audit job
+      # --locked here and below: built from Cargo.lock exactly, the versions the deny job
       # checked, failing if it is out of date rather than updating it.
       - name: Test
         run: cargo test --workspace --profile ci-test --locked
@@ -242,10 +244,10 @@ jobs:
   # Publish it on GitHub. A dry run (workflow_dispatch) does everything but the release
   # and uploads the signed files as an artifact instead. Without the signing key (a fork),
   # a dry run only checksums the files, with no signatures or attestations, and says so; a
-  # tag run always needs the key. Both wait for the audit job, so neither starts after a
+  # tag run always needs the key. Both wait for the deny job, so neither starts after a
   # known advisory.
   release:
-    needs: [audit, build, macos-dmg]
+    needs: [deny, build, macos-dmg]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run
     runs-on: ubuntu-latest
     permissions:
