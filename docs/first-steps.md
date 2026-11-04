@@ -31,7 +31,9 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
    Pages rotates, removes, adds and splits pages, and Organise shows them all as cards to put in order; Forms and
    sign fills forms and signs; Protect redacts and sets
    passwords; View has zoom, page layout and how the app looks. Hover over a button to see what it does; a greyed
-   one says why it can't be used just now. Greyed buttons marked **Planned** show features still to come.
+   one says why it can't be used just now. Greyed buttons marked **Planned** show features still to come. Prefer
+   fewer buttons? **Minimal**, at the right end of the tabs, puts one quiet row in place of the band, with
+   **Tools** for the rest ([The Minimal interface](gui.md#the-minimal-interface)); **Full** brings the band back.
 2. **The left side** shows the page thumbnails, and a strip of icons for Pages, Search results, Bookmarks, Comments
    and Digital signatures. Click an icon to open that view; click it again to fold the panel away.
 3. **The middle** shows the pages. Scroll with the mouse wheel or touchpad. Ctrl+scroll, Ctrl+= and Ctrl+- zoom,

@@ -716,7 +716,7 @@ fn an_unsaved_choice_is_said_and_still_holds() {
 
 /// Where the control `name` is in a window `size`: of that name exactly, else the first
 /// whose name starts with it (a menu item's name is its label, then its key's text).
-fn place(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<egui::Rect> {
+pub(super) fn place(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<egui::Rect> {
     let exact = node(tree, name).map(|(r, _)| r);
     exact.or_else(|| {
         (tree.nodes.iter())
@@ -726,7 +726,7 @@ fn place(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<egui::Rect> {
 }
 
 /// Click the control `name` in a window `size`, then settle.
-fn click_in(app: &mut App, ctx: &egui::Context, size: egui::Vec2, name: &str) {
+pub(super) fn click_in(app: &mut App, ctx: &egui::Context, size: egui::Vec2, name: &str) {
     let tree = drawn(app, ctx, size, vec![]);
     let at = place(&tree, name).unwrap_or_else(|| panic!("no {name}"));
     drawn(app, ctx, size, click_at(at.center()));
@@ -739,7 +739,7 @@ fn label_at(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<egui::Rect
         .find_map(|(_, n)| n.bounds().map(rect))
 }
 
-const WIDE: egui::Vec2 = egui::vec2(1400.0, 800.0);
+pub(super) const WIDE: egui::Vec2 = egui::vec2(1400.0, 800.0);
 
 /// Tools: under the band's names, in the band's order down two columns, the commands a task
 /// starts from, labelled, with no planned feature, all inside a 1000 × 660 window; a
@@ -956,4 +956,205 @@ fn more_holds_the_commands_without_room() {
     }
     click_in(&mut app, &ctx, size, actions::get(Act::Find).label);
     assert_eq!(app.tabs[0].side, Side::Search, "Find from More");
+}
+
+// ENH-45's stage 4: the acceptance's remaining checks.
+
+/// Closing tabs in Minimal is Full's: the tab in front closed, a neighbour comes to the
+/// front; an unsaved one asks first; the last closed leaves the start screen, the switch
+/// still at the strip's end.
+#[test]
+fn closing_tabs_in_minimal_is_as_in_full() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    app.settings.minimal = true;
+    let ids = named_tabs(&mut app, &ctx);
+    app.active = 1;
+    close_by_button(&mut app, &ctx, "b.pdf");
+    let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+    assert_eq!(left, [ids[0], ids[2]]);
+    assert!(app.active < 2, "no tab in front");
+    app.tabs[0].dirty = true;
+    close_by_button(&mut app, &ctx, "a.pdf *");
+    assert!(matches!(app.dialog, Dialog::ConfirmClose(..)), "didn't ask");
+    click(&mut app, &ctx, "Discard");
+    assert_eq!(app.tabs.len(), 1);
+    close_by_button(&mut app, &ctx, "c.pdf");
+    assert!(app.tabs.is_empty());
+    let tree = settle(&mut app, &ctx);
+    assert!(node(&tree, "Open PDF…").is_some(), "no start screen");
+    assert_eq!(goes_to_minimal(&tree), Some(false), "the switch");
+    assert!(app.settings.minimal);
+}
+
+/// A new text box being typed stays open with the keyboard through a switch, by the key and
+/// by the switch; Esc then ends it as usual, what was typed kept as the text box.
+#[test]
+fn a_switch_leaves_a_new_text_box_open() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let mut app = app_with(&ctx, 1);
+    app.act(&ctx, Act::Tool(Tool::TextBox));
+    settled_at(&mut app, &ctx, 1400.0);
+    click_page(&mut app, &ctx, (100.0, 100.0), false);
+    let typed = vec![egui::Event::Text("Walrus".into())];
+    window(&mut app, &ctx, 1400.0, typed);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(app.tabs[0].ed.writing.is_some(), "no text box");
+    let typing = app.tabs[0].ed.typing_id();
+    let steps = app.tabs[0].history();
+    let boxes = app.tabs[0].pdf.annotations().len();
+    for how in ["the key", "the switch"] {
+        match how {
+            "the key" => {
+                window(&mut app, &ctx, 1400.0, vec![minimal_key_event()]);
+            }
+            _ => click_switch(&mut app, &ctx),
+        }
+        settled_at(&mut app, &ctx, 1400.0);
+        let open = app.tabs[0].ed.writing.is_some();
+        assert!(open, "{how}: the text box was ended");
+        assert_eq!(app.tabs[0].history(), steps, "{how}: a change");
+        assert_eq!(ctx.memory(|m| m.focused()), typing, "{how}: the keyboard");
+    }
+    let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+    window(&mut app, &ctx, 1400.0, vec![esc]);
+    settled_at(&mut app, &ctx, 1400.0);
+    assert!(app.tabs[0].ed.writing.is_none(), "Esc didn't end it");
+    let now = app.tabs[0].pdf.annotations().len();
+    assert_eq!(now, boxes + 1, "the text box wasn't kept");
+}
+
+/// Docked controls stay docked through switches and narrow windows, in the panel or its
+/// strip; floating, the bar shows with a selection only. The panels' choices are one set,
+/// unchanged by switching or by a narrow window folding them.
+#[test]
+fn docking_and_panels_hold_through_switches_and_narrow_windows() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let mut app = app_with(&ctx, 1);
+    with_notes(&mut app, &ctx);
+    let id = app.tabs[0].pdf.annotations()[0].id;
+    let note = Selection::Annot { page: 0, id };
+    app.tabs[0].ed.selection = note.clone();
+    let dock = Some("Dock controls on the right".to_string());
+    let float = Some("Float controls near selection".to_string());
+    // Floating: the bar with the note selected, in either interface; none without it.
+    for minimal in [false, true] {
+        app.settings.minimal = minimal;
+        let names = focusable(&mut app, &ctx, 1400.0);
+        assert!(names.contains(&dock), "no floating bar, Minimal {minimal}");
+    }
+    app.tabs[0].ed.selection = Selection::default();
+    let names = focusable(&mut app, &ctx, 1400.0);
+    assert!(!names.contains(&dock), "a bar with nothing selected");
+    // Docked: kept through switches and resizes.
+    app.tabs[0].ed.selection = note;
+    app.act(&ctx, Act::ToggleDock);
+    let ways = [
+        (true, 1400.0),
+        (true, 700.0),
+        (false, 700.0),
+        (true, 1400.0),
+    ];
+    for (minimal, width) in ways {
+        app.settings.minimal = minimal;
+        let names = focusable(&mut app, &ctx, width);
+        let docked = names.contains(&float) && !names.contains(&dock);
+        assert!(docked, "Minimal {minimal} at {width}");
+    }
+    assert!(app.settings.controls_docked);
+    // The navigation panel closed by its button stays closed; the inspector stays open.
+    app.act(&ctx, Act::ToggleSide);
+    let kept = |app: &App| (app.settings.navigation_panel, app.settings.inspector_panel);
+    let chosen = kept(&app);
+    assert_eq!(chosen, (false, true));
+    for (minimal, width) in [(false, 1400.0), (true, 700.0), (true, 1400.0)] {
+        app.settings.minimal = minimal;
+        settled_at(&mut app, &ctx, width);
+        assert_eq!(kept(&app), chosen, "Minimal {minimal} at {width}");
+    }
+    assert!(!app.side.shown() && app.inspector.shown());
+}
+
+/// The whole window `size` at `scale` pixels a point, settled; its AccessKit tree.
+fn drawn_scaled(
+    app: &mut App,
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    scale: f32,
+    events: Vec<egui::Event>,
+) -> egui::accesskit::TreeUpdate {
+    let mut events = Some(events);
+    let mut tree = None;
+    for _ in 0..6 {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events: events.take().unwrap_or_default(),
+            ..Default::default()
+        };
+        let viewport = raw.viewports.entry(egui::ViewportId::ROOT).or_default();
+        viewport.native_pixels_per_point = Some(scale);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut frame));
+        out.textures_delta.clear();
+        tree = out.platform_output.accesskit_update;
+    }
+    tree.expect("the window's widgets")
+}
+
+/// Minimal at scales 1 and 2, in the light, dark and System themes with each accent: the
+/// row and Tools inside the window, nothing overlapping, every control clearly named, and
+/// the row's buttons as big as Full's.
+#[test]
+fn minimal_holds_at_each_scale_theme_and_accent() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let mut app = app_with(&ctx, 1);
+    let size = egui::vec2(1000.0, 660.0);
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    let full = drawn_scaled(&mut app, &ctx, size, 1.0, vec![]);
+    let (open_full, _) = node(&full, "Open").unwrap();
+    app.act(&ctx, Act::ToggleMinimal);
+    let themes = [
+        egui::ThemePreference::Light,
+        egui::ThemePreference::Dark,
+        egui::ThemePreference::System,
+    ];
+    for scale in [1.0, 2.0] {
+        for theme in themes {
+            for accent in [Accent::Desktop, Accent::LimarePdf] {
+                let at = format!("scale {scale}, {theme:?}, {accent:?}");
+                app.act(&ctx, Act::Theme(theme));
+                app.act(&ctx, Act::Accent(accent));
+                let tree = drawn_scaled(&mut app, &ctx, size, scale, vec![]);
+                let r = row(&tree);
+                assert_eq!(r.len(), 10, "{at}: {:?}", names(&r));
+                for pair in r.windows(2) {
+                    assert!(pair[0].1.right() <= pair[1].1.left(), "{at}: {pair:?}");
+                }
+                assert!(r.iter().all(|(_, b)| window.contains_rect(*b)), "{at}");
+                assert_eq!(dlg::unclear_names(&tree), [""; 0], "{at}");
+                let (open, _) = node(&tree, "Open").unwrap();
+                let big = open.height() >= open_full.height() - 0.5
+                    && open.width() >= open_full.width() - 0.5;
+                assert!(big, "{at}: {open:?}");
+            }
+        }
+        // Tools open at this scale, inside the window, its foot too.
+        let tree = drawn_scaled(&mut app, &ctx, size, scale, vec![]);
+        let tools = place(&tree, "Tools").unwrap();
+        drawn_scaled(&mut app, &ctx, size, scale, click_at(tools.center()));
+        let tree = drawn_scaled(&mut app, &ctx, size, scale, vec![]);
+        let foot = place(&tree, "All commands").expect("Tools open");
+        assert!(window.contains_rect(foot), "scale {scale}: {foot:?}");
+        assert_eq!(dlg::unclear_names(&tree), [""; 0], "Tools at scale {scale}");
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        drawn_scaled(&mut app, &ctx, size, scale, vec![esc]);
+    }
 }

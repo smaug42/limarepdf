@@ -8415,6 +8415,7 @@ mod tests {
     mod input_methods;
     mod links;
     mod minimal;
+    mod minimal_tasks;
     mod new_document;
     mod organise;
     mod overflow;

@@ -14,7 +14,9 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 - **Tabs**, at the top: one per document, with a × inside it to close it. **Unsaved** beside the name means
   unsaved changes, from the first key you type. With many open they share the row and then scroll
   ([Opening files](#opening-files)). Text you are typing on a page (new text, a line, a note or text
-  box) stays open while you look at another tab; back on its tab, you go on typing where you were.
+  box) stays open while you look at another tab; back on its tab, you go on typing where you were. At the right
+  end of the tabs, **Minimal** switches to the [Minimal interface](#the-minimal-interface), one quiet row of
+  commands in place of the band, and **Full** switches back.
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
   **Forms and sign**, **Protect** and **View**; at the right **Print**, and a small arrow that makes the commands
@@ -112,7 +114,39 @@ off **Show planned features** in the status bar (or View > Show) to hide them al
 
 **Compact commands.** The small arrow at the right of the commands row (or View > Show > Compact commands) puts the
 band on one row of icons, which name themselves on hover; the arrow again brings their names back. The choice is
-remembered. Windows under 600 points high show the commands compact by themselves, with the arrow greyed.
+remembered. Windows under 600 points high show the commands compact by themselves, with the arrow greyed. Compact
+commands is for the Full interface: in the Minimal interface it is greyed.
+
+## The Minimal interface
+
+The Minimal interface is the same editor with one quiet row of commands in place of the commands row and the
+band, leaving more of the window to the page. Every command is still there: the ones you use while editing are in
+the row, **Tools**, the floating toolbar and the inspector, and the rest in ☰'s groups.
+
+<img src="images/minimal.png" width="440" alt="The Minimal interface's row, with Find, Tools, the inspector's button and Print at the right, and Tools open: Edit, Insert and Review in one column, Pages, Forms and sign and Protect in the other, and All commands at the foot">
+
+- **Switching:** the button at the right end of the tab strip says where it takes you: **Minimal** in the Full
+  interface, **Full** in the Minimal one. View > Show > Minimal interface, [Settings](#settings) and Ctrl+F1 (Option+Cmd+R
+  on a Mac, as Word folds its ribbon away) do the same. The choice is remembered. Switching changes nothing else:
+  your documents, the one in front, what is selected, the zoom, Undo and anything you are typing stay as they
+  are.
+- **The row:** at the left ☰ (every command, by kind), the side panel, Open, Save, Undo and Redo; at the right
+  **Find**, **Tools**, the inspector and **Print**.
+- **Tools:** the commands a task starts from, under the band's names: Edit (Edit text, Paragraph, Select ▸, Align
+  objects ▸), Insert (Text, Image), Review (Note, Comments ▸, Highlight ▸, Text box, Draw ▸, Stamp), Pages
+  (Organise, Insert pages ▸, Rotate ▸, Move ▸), Forms and sign (Fill fields ▸, Fill and sign ▸, Digital
+  signature ▸) and Protect (Mark redaction ▸, Apply redactions…, Passwords). Each works as its button in the band,
+  and ▸ opens the same menu beside it, such as Highlight's colours, Draw's shapes or your saved signatures.
+  **All commands**, at the foot, opens ☰.
+- **The text's look:** while text is selected, being edited or being typed, the top of the inspector has the font,
+  size, Bold, Italic, Underline, Strikethrough, colour and the four alignments, as the band's Font and Alignment
+  groups have them.
+- **The bottom bar** adds the page layout (continuous, facing or single pages, and the cover page) and **Fit
+  width** beside the zoom, and leaves out Show planned features (View > Show still has it). Planned features never
+  show in the row or in Tools.
+- **Narrow windows:** under about 560 points wide Find and Print show their icons alone; Tools keeps its name. A
+  row too narrow for its commands puts the least needed under **More** (⋯), the side panel's and the inspector's
+  buttons first; ☰, Tools and the switch always show.
 
 ## The tools
 
@@ -556,6 +590,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | F7 (Option+Cmd+L on a Mac) | Spelling: the side panel's Spelling view, from text being typed too ([Checking spelling](spelling.md)) |
 | Ctrl+Shift+P | Search commands: the command search |
 | Ctrl+, | [Settings](#settings) |
+| Ctrl+F1 (Option+Cmd+R on a Mac) | Switch between the Full and the [Minimal interface](#the-minimal-interface) (on KDE Plasma, Ctrl+F1 goes to the first desktop: use the switch) |
 | F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the tabs, the commands, notices, navigation, the page, the inspector, the status bar |
 | Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |
 | Ctrl+= , Ctrl+- | Zoom in, zoom out (in Organise, the cards) |

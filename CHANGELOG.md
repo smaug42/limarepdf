@@ -237,8 +237,8 @@
 - A picture added or pasted over text is in front of it: clicking or double-clicking it selects the picture
   instead of opening the hidden text underneath, with the read tool and the arrow. A picture put over a form's
   fields says that their answers show above it, as in every PDF reader.
-- **Minimal interface** (being built; most of it done): one quiet row of commands in place of the commands row
-  and the band. The switch at the right end of the tab strip, above Print, says where it takes you: **Minimal**
+- **Minimal interface**: one quiet row of commands in place of the commands row and the band, described in the
+  guide's new "The Minimal interface" section. The switch at the right end of the tab strip, above Print, says where it takes you: **Minimal**
   in the Full interface, **Full** in the Minimal one. View > Show > Minimal interface, Settings, the command
   search and Ctrl+F1 (as Word folds its ribbon away; ⌘⌥R on a Mac) do the same. Minimal's row has the File menu,
   the navigation panel, Open, Save, Undo and Redo, then Find, **Tools**, the inspector and Print; its status bar

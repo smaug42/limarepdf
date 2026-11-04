@@ -36,7 +36,7 @@ commands…: type to find one, Enter to run it.
 
 **Compact commands.** The command band on one row of icons, which name themselves on hover. The small arrow at the
 right of the commands row, or View > Show > Compact commands, turns it on and off; windows under 600 points high
-show the commands compact by themselves.
+show the commands compact by themselves. It belongs to the Full interface and is greyed in the Minimal one.
 
 **Crop.** Trimming the margins of a page as it is shown. The content outside is hidden, not deleted.
 
@@ -85,6 +85,10 @@ selected. It outlines the page's links: drag a box to add one, or click one to m
 See [Links](reading-and-finding.md#add-a-link).
 
 **Metadata.** Information about the document stored in it, such as its title, author and the program that made it.
+
+**Minimal interface.** The same editor with one quiet row of commands in place of the commands row and the
+command band; Tools, the floating toolbar, the inspector and ☰ hold the rest. The button at the right end of the
+tabs switches between it and the Full interface. See [The Minimal interface](gui.md#the-minimal-interface).
 
 **OCR (text recognition).** Reading the text in a scan or photo, so that it can be searched and copied. LimarePDF
 adds the recognised text as an invisible layer over the picture.

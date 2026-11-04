@@ -1830,7 +1830,7 @@ a folded group being a menu button with its name holding its controls. `Parts::c
 gives the row's height). Tests: `band`'s own (every button a registered command; every command placed in a band, the
 File menu, a right-click menu or a key; planned items named for plan items; folding), and the app's band tests.
 
-The Minimal interface (ENH-45, build plan 4.4; stages 2 and 3 built) is the same commands panel drawn another way, not a
+The Minimal interface (ENH-45, batch 48, the completed log) is the same commands panel drawn another way, not a
 second shell: `Settings::minimal` (settings.txt `interface = minimal`, any other value Full), `Act::ToggleMinimal`
 (View > Show, Ctrl+F1, ⌘⌥R on a Mac) and `Ctx::minimal`. With it `App::ui` draws the row alone: `quick` adds
 `ToggleSide` after ☰ and `Find` and `ToggleInspector` before Print (pressed while their panel shows, from the
@@ -1848,7 +1848,9 @@ click takes the keyboard from new text) then lets `App::hand_on_keyboard` give i
 Show planned features and adds `view_choices` (the page layout's menu and Fit width) in Minimal. Nothing else reads
 the interface: the tabs, panels (`navigation_panel`, `inspector_panel`, `panel_widths`), docking and pins are one set
 for both. `actions::why_not` says `FULL_ONLY` for Compact commands in Minimal before its document check, so the
-start screen says it too. Tests: `app/tests/minimal.rs`.
+start screen says it too. Tests: `app/tests/minimal.rs`, and `app/tests/minimal_tasks.rs` for everyday tasks
+done by Minimal's routes (Tools > Image asks the system for a file, which tests never reach: its task arms the
+tool with `Tab::arm_image`, as the chooser does).
 
 Stage 3 adds Tools, the inspector's Font group and More. **Tools** is `band::TOOLS`, each band's name with
 `Item`s that are the band's own: the buttons both have are `const` items (`EDIT_TEXT`, `SELECT`, `DRAW`, ...)
