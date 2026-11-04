@@ -118,6 +118,28 @@ entry whose object is missing or isn't a typed dictionary, as a blank stand-in p
 so taking lopdf's list would shift page numbers between editing and drawing, and a tree with no real page would
 no longer be repaired.
 
+hayro (0.8) sets aside memory for a picture from its stated width and height, not from its data: an inline image of
+78 bytes stating 255,555,555 × 2 pixels made it ask for about 4 GB (PB-81, found by REL-12's `draw` fuzz target). So
+every copy pages are drawn from leaves out a picture whose data can't come near filling it
+(`crates/limarepdf-core/src/unfillable.rs`): `Pdf::render_snapshot`, `app_snapshot` and `uncropped_app_snapshot`
+(through `snapshot_hiding`), `Pdf::drawing_snapshot` (OCR, Print as image, Windows printing and the Print preview,
+on the sheets' copy) and `page_without` (the page under text being edited). A picture is left out when it states
+more than 16 million pixels (`LARGE`) and its data, decoded through lopdf with the output capped at an eighth of what
+the stated size needs, comes to less than that eighth (`PART`); unsure counts (bits, colours) take the smallest, so
+the check errs towards drawing. A fax (CCITT) picture's rows are bounded by its data, at least a bit each, against
+`/Rows` or its height, whichever is more, as hayro allocates; its width isn't (a blank row is one bit however wide).
+Data in JPEG, JPEG 2000 or JBIG2, or that lopdf can't decode, is left to hayro. Picture objects are any stream with
+`/Subtype /Image`; inline images are looked for in page contents, form XObjects, tiling patterns and Type 3 glyphs,
+cut out with `inline::extract` and put back with `Inline::restore`, the content written decoded in the copy. In
+the copy a picture left out becomes a one-pixel `DCTDecode` picture whose data isn't a JPEG, so hayro reports
+`ImageDecodeFailure` and the renderer `Missing::Picture`, the notice any undecodable picture gets; the document
+keeps the picture. The app takes a snapshot after every edit, and looking for inline images decodes every content
+stream (up to 56 ms on a 107-page test file), so the streams found fine are remembered on the `Pdf` by a
+fingerprint (`Checked`: number, dictionary, length and 16 spans of 32 bytes spread over the data); after the first
+snapshot the check costs at most 2 ms on the 104 test files measured (0.06 ms on average). A changed stream gets a
+new fingerprint and is checked again; what LimarePDF writes never states more than its data holds, so only what a
+file brings needs it. None of the 1,080 test files that open has a picture left out. `tests/unfillable.rs`.
+
 The page colour modes (View > Page colours; [Rendering](../rendering.md#page-colour-modes)) are worked out on the
 drawn page, pixel by pixel, in `crates/limarepdf-core/src/page_colours.rs` (`PageColours::pixel`, `recolour`). Only
 `Renderer::render_in` and `render_region_in`, which draw pages and tiles for display, call it, so printing, exports

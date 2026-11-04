@@ -61,6 +61,32 @@ impl Inline {
         }
         Ok(out)
     }
+
+    /// `stripped`, the stream [`extract`] made, with each placeholder operator replaced by
+    /// what `put` makes of its raw inline image; the rest stays byte for byte.
+    pub fn restore(&self, stripped: &[u8], mut put: impl FnMut(&[u8]) -> Vec<u8>) -> Vec<u8> {
+        let tag = self.tag.as_bytes();
+        let mut out = Vec::with_capacity(stripped.len());
+        let mut i = 0;
+        while i < stripped.len() {
+            if stripped[i..].starts_with(tag) {
+                let code = stripped[i + tag.len()..]
+                    .iter()
+                    .take_while(|b| (b'A'..=b'J').contains(b))
+                    .count();
+                let end = i + tag.len() + code;
+                let op = std::str::from_utf8(&stripped[i..end]).unwrap_or("");
+                if let Some(raw) = self.raw(op) {
+                    out.extend_from_slice(&put(raw));
+                    i = end;
+                    continue;
+                }
+            }
+            out.push(stripped[i]);
+            i += 1;
+        }
+        out
+    }
 }
 
 /// [`TAG`] with enough `K`s after it that it occurs nowhere in `d`: one more than the

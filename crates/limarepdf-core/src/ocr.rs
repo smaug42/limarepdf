@@ -153,7 +153,7 @@ impl Pdf {
                 Err(e) => out.push((p, OcrResult::Skipped(format!("cannot read the page: {e}")))),
             }
         }
-        let hp = render::load(self.snapshot()?, None)?;
+        let hp = render::load(self.drawing_snapshot()?, None)?;
         let found: Vec<(usize, PageRead)> = todo
             .par_iter()
             .map(|&p| {

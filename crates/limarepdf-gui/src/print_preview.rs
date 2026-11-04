@@ -186,7 +186,7 @@ fn run(source: Source, shared: Shared, tx: Sender<Came>, ctx: egui::Context) {
 /// point, and held as it is read: turned a quarter turn clockwise when held sideways.
 fn draw(doc: &Pdf, pages: &[usize], plan: &SheetPlan, step: u32) -> limarepdf_core::Result<Bitmap> {
     let mut sheet = doc.print_planned(pages, std::slice::from_ref(plan))?;
-    let hp = render::load(sheet.to_bytes()?, None)?;
+    let hp = render::load(sheet.drawing_snapshot()?, None)?;
     let b = Renderer::new(&hp).render(0, step as f32 / STEPS)?;
     Ok(if plan.sideways { clockwise(&b) } else { b })
 }

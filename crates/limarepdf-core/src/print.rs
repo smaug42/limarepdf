@@ -497,7 +497,7 @@ impl Pdf {
             return sheets.to_bytes();
         }
         let all: Vec<usize> = (0..sheets.page_count()).collect();
-        let hp = render::load(sheets.to_bytes()?, None)?;
+        let hp = render::load(sheets.drawing_snapshot()?, None)?;
         let images = render::encode_pages(&hp, &all, IMAGE_DPI, ImageFormat::Jpeg(92))?;
         let opts = ImageImport {
             dpi: Some(IMAGE_DPI),
@@ -531,7 +531,7 @@ impl Pdf {
         #[cfg(windows)]
         {
             let mut sheets = self.print_sheets(pages, &setup)?;
-            let (count, data) = (sheets.page_count(), sheets.to_bytes()?);
+            let (count, data) = (sheets.page_count(), sheets.drawing_snapshot()?);
             let opts = opts.clone();
             while_beating(SEND_WITHIN, move |beat| {
                 crate::print_win::print(data, count, &setup.paper, &opts, beat)

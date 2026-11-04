@@ -83,6 +83,7 @@ mod tounicode;
 mod trees;
 mod trust;
 mod typefaces;
+mod unfillable;
 mod viewprefs;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle, MAX_ANNOTS};

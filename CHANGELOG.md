@@ -7,6 +7,13 @@
 - The About window has a Support LimarePDF line under its other links, with **Patreon** and **Buy Me a
   Coffee**, which open LimarePDF's pages there in your browser; the GitHub page has a Sponsor button for them.
 
+### Fixed
+
+- A picture in a damaged or made-up file that says it is far larger than the data it holds (a few bytes claiming
+  hundreds of millions of pixels) no longer makes LimarePDF ask for gigabytes of memory when it draws the page,
+  prints it as a picture or reads it with OCR. The picture is left out, and the page's notice says a picture
+  can't be shown, as for any picture LimarePDF can't read; the document keeps it, and saving doesn't change it.
+
 ## [0.13.0] - 2026-11-03
 
 ### Added

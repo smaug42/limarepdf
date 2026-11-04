@@ -156,6 +156,7 @@ impl Pdf {
         }
         let catalog = out.add_object(catalog);
         out.trailer.set("Root", catalog);
+        crate::unfillable::leave_out(&mut out);
         let mut bytes = Vec::new();
         out.save_to(&mut bytes)?;
         Ok(bytes)
