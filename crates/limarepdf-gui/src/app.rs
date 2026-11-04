@@ -8402,7 +8402,6 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/audit-gui-repro.rs"));
     use super::*;
     use crate::page_text;
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
