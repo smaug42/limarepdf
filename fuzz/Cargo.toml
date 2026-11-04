@@ -1,0 +1,56 @@
+# Fuzzing LimarePDF's readers with cargo-fuzz (REL-12): fuzz/README.md. Development only:
+# built by `cargo +nightly fuzz`, outside the workspace, never part of a release.
+[package]
+name = "limarepdf-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+limarepdf-core = { path = "../crates/limarepdf-core" }
+
+# A workspace of its own, so the main one (its builds, CI, cargo deny) never takes it in.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "open"
+path = "fuzz_targets/open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "content"
+path = "fuzz_targets/content.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "draw"
+path = "fuzz_targets/draw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "readers"
+path = "fuzz_targets/readers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "images"
+path = "fuzz_targets/images.rs"
+test = false
+doc = false
+bench = false

@@ -185,6 +185,15 @@ the scan). A run taking longer than `--timeout` seconds (600) is stopped; a task
 so in the table, the others still run, and the script then exits with an error naming them. A full run takes about five minutes, and one
 of the test files needed about 10 GB of memory before pages were drawn in bands (about 1.5 GB since).
 
+Fuzzing (REL-12): `fuzz/` holds cargo-fuzz targets for the readers, in a workspace of its own that nothing else
+builds; its `README.md` has the targets and commands (nightly Rust and cargo-fuzz, run here only,
+minutes per target). `fuzz/seed.sh` starts each corpus from the repository's own test files. A failure found becomes
+a test in the crate it concerns, failing first, as any bug's does; one in hayro or lopdf is recorded in the backlog.
+The first runs (2026-11-04, 4 minutes each, 2 GB, 20 seconds an input): `open`, `content`, `readers` and `images`
+found nothing; `draw` found PB-81 (a picture's stated size setting hayro's buffer: a 78-byte content stream asking
+for about 4 GB while drawn, the panic caught by LimarePDF's guards), and 4 minutes more of `draw` past it
+(`-fork=1 -ignore_ooms=1 -ignore_timeouts=1`, about 94,000 inputs) found nothing else.
+
 The desktop app's startup and responsiveness figures in
 [Performance](performance.md#startup-and-responsiveness) (REL-07) come from the app's
 [timing log](architecture.md) and screenshot polling, driven by a script on an Xvfb display: each
