@@ -1,0 +1,3 @@
+// A build script's output, included the usual way.
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+const DATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/blank.pdf"));

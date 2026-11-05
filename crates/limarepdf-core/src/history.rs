@@ -181,7 +181,7 @@ impl std::fmt::Debug for Restore {
 /// Whether two objects are the same, as written: a dictionary's keys in the same order
 /// (lopdf's own comparison ignores the order), reals to the bit (0.0 and -0.0 are written
 /// differently), and a stream's flags as well as its content.
-fn same(a: &Object, b: &Object) -> bool {
+pub(crate) fn same(a: &Object, b: &Object) -> bool {
     match (a, b) {
         (Object::Real(x), Object::Real(y)) => x.to_bits() == y.to_bits(),
         (Object::Array(x), Object::Array(y)) => {
@@ -198,7 +198,7 @@ fn same(a: &Object, b: &Object) -> bool {
     }
 }
 
-fn same_dict(x: &Dictionary, y: &Dictionary) -> bool {
+pub(crate) fn same_dict(x: &Dictionary, y: &Dictionary) -> bool {
     x.len() == y.len()
         && (x.iter().zip(y.iter())).all(|((xk, xv), (yk, yv))| xk == yk && same(xv, yv))
 }

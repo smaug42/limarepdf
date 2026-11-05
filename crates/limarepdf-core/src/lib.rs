@@ -77,6 +77,8 @@ mod sign;
 pub mod spelling;
 mod stamps;
 mod stand_in;
+#[cfg(any(test, feature = "test-seams"))]
+mod state;
 mod std14;
 mod text;
 mod tounicode;
@@ -147,6 +149,8 @@ pub use sign::{
 };
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use stand_in::{InstalledQuery, StandIn};
+#[cfg(any(test, feature = "test-seams"))]
+pub use state::{StateBefore, StateDifference};
 pub use text::{
     match_count, HitPart, Matches, Query, SearchHit, SearchOptions, Snippet, TextIndex,
 };

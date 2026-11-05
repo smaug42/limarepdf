@@ -1,0 +1,9 @@
+// A comment may mention include!("../../target/x.rs") without including it.
+/* So may a block comment: #[path = "../target/y.rs"] /* nested */ include_str!("target/z") */
+/// And a doc comment: `include_bytes!("../../target/w.pdf")`.
+fn folders() -> [&'static str; 2] {
+    let quote = '"';
+    let _ = quote;
+    // A string naming the folder is not an include.
+    ["target/release/limarepdf", "include!(\"target/x.rs\")"]
+}
