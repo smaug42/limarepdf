@@ -89,7 +89,8 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
 #[derive(Clone, Debug)]
 pub struct Identity {
     /// The path made absolute, with links and `..` followed: the file's own, or for a file
-    /// not there yet, its folder's with its name.
+    /// not there yet, its folder's with its name (or the deepest folder's that is there,
+    /// with the names below it).
     path: PathBuf,
     /// The device and inode of a file that is there, as a hard link to it shares.
     #[cfg(unix)]
@@ -152,7 +153,8 @@ pub fn identity(path: &Path) -> Identity {
 }
 
 /// `path` made absolute with `.` and `..` taken out by their names alone, for a path whose
-/// folder isn't there to follow.
+/// folder isn't there to follow; the deepest folder in it that is there is followed, links
+/// and all, and the names below it added.
 fn lexical(path: &Path) -> PathBuf {
     use std::path::Component;
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
@@ -164,6 +166,21 @@ fn lexical(path: &Path) -> PathBuf {
                 out.pop();
             }
             c => out.push(c),
+        }
+    }
+    let mut below = Vec::new();
+    let mut base = out.as_path();
+    loop {
+        if let Ok(mut real) = base.canonicalize() {
+            real.extend(below.iter().rev());
+            return real;
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                below.push(name);
+                base = parent;
+            }
+            _ => break,
         }
     }
     out
@@ -324,9 +341,28 @@ mod tests {
         assert!(!x.matches(&upper));
         assert!(x.matches_ignoring_case(&upper));
         assert!(!x.matches_ignoring_case(&identity(&dir.join("y.pdf"))));
-        // Nor is its folder there: known by its names alone.
+        // Nor is its folder there: known through the folder that is, by the names below it.
         let gone = identity(&dir.join("none/../none/z.pdf"));
         assert_eq!(gone.path(), dir.canonicalize().unwrap().join("none/z.pdf"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A file whose folder isn't there either is known through the deepest folder that is,
+    /// with its links followed: macOS's `/var` is a link to `/private/var`, and a Windows
+    /// short name such as `RUNNER~1` is its long one.
+    #[cfg(unix)]
+    #[test]
+    fn identity_of_a_file_not_there_yet_follows_the_folders_that_are() {
+        let dir = test_dir("identity-absent-link");
+        std::fs::create_dir(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        let through_link = identity(&dir.join("link/none/z.pdf"));
+        let direct = identity(&dir.join("real/none/z.pdf"));
+        assert!(through_link.matches(&direct));
+        assert_eq!(
+            through_link.path(),
+            dir.canonicalize().unwrap().join("real/none/z.pdf")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
