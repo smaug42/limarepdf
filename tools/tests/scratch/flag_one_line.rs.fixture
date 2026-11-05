@@ -1,0 +1,5 @@
+// The form d157ec3 committed by accident.
+#[test]
+fn repro() {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/audit-gui-repro.rs"));
+}

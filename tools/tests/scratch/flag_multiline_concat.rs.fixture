@@ -1,0 +1,9 @@
+fn repro() {
+    include!(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../",
+            "target/x.rs"
+        )
+    );
+}

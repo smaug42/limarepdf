@@ -6,9 +6,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Tests only (REL-10): `sync_seam`, which makes folder syncs fail so the app's and the CLI's
-# tests reach "saved, not confirmed". Turned on only by their dev-dependencies, never in a
-# release build.
+# Tests only: `sync_seam` (REL-10), which makes folder syncs fail so the app's and the CLI's
+# tests reach "saved, not confirmed", and `Pdf::state_since` (`state.rs`), the tests' one
+# meaning of "the document is unchanged". Turned on only by dev-dependencies (core's own,
+# below, for its integration tests), never in a release build.
 test-seams = []
 
 [dependencies]
@@ -88,6 +89,11 @@ subtle = "2.6"
 # above.
 [build-dependencies]
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+
+# Core's own integration tests (`tests/`) with the test seams, as the app's and the CLI's
+# tests have them; `cargo test -p limarepdf-core` alone then builds them too.
+[dev-dependencies]
+limarepdf-core = { path = ".", features = ["test-seams"] }
 
 # Printing through the Windows print spooler and GDI (system DLLs; no C code is built), and
 # a disk's free space for crash recovery copies (disk.rs).

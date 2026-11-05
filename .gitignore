@@ -1,4 +1,8 @@
 /target
+# Agents' local state and worktrees; never committed.
+/.claude/
+# Python's compiled copies of the repository tools.
+__pycache__/
 # Downloaded by crates/limarepdf-core/tools/fetch-dss-samples.sh; never committed (LGPL, real names).
 /crates/limarepdf-core/tests/data/signatures/dss/
 # Downloaded by crates/limarepdf-core/tools/fetch-render-samples.sh; never committed.

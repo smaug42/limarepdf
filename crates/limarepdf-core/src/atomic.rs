@@ -694,7 +694,10 @@ pub(crate) mod tests {
         let e = p.split(crate::SplitBy::Every(1), part).unwrap_err();
         super::sync_seam::stop_failing_in(&dir);
         let n = e.downcast_ref::<NotConfirmed>().expect("not confirmed");
-        assert!(n.path.starts_with(dir.canonicalize().unwrap()), "{e:#}");
+        // A new part is named as given, not resolved (on macOS the temporary folder is behind
+        // a link, on Windows resolving adds `\\?\`), so both sides are resolved to compare.
+        let named = n.path.canonicalize().unwrap();
+        assert!(named.starts_with(dir.canonicalize().unwrap()), "{e:#}");
         assert!(!format!("{e:#}").contains("were written before"), "{e:#}");
         for n in 1..=6 {
             let part = std::fs::read(dir.join(format!("part-{n}.pdf"))).unwrap();

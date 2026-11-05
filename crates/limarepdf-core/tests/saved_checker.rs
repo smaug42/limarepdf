@@ -5,7 +5,7 @@ mod common;
 
 use common::saved::{tools, Saved};
 use limarepdf_core::Pdf;
-use lopdf::{dictionary, Dictionary, Object, Stream};
+use lopdf::{dictionary, Dictionary, Object, Stream, StringFormat};
 
 /// A one-page 300×200 pt document drawing `content` with `/F1` (Helvetica), saved.
 fn saved(content: &str) -> Saved {
@@ -89,6 +89,55 @@ fn text_that_is_not_there_is_not_found() {
     // A segment that isn't content is still searched as bytes.
     let s = saved("not ( content SECRET");
     assert!(!s.places("SECRET").is_empty());
+}
+
+/// `text` as a PDF text string in UTF-16BE with its byte order mark, as ActualText and Alt
+/// often are.
+fn utf16(text: &str) -> Vec<u8> {
+    let mut out = vec![0xFE, 0xFF];
+    out.extend(text.encode_utf16().flat_map(|u| u.to_be_bytes()));
+    out
+}
+
+/// A saved one-page document whose page dictionary also holds `key` set to `value`.
+fn saved_with(key: &str, value: Object) -> Saved {
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let page = p.page_ids()[0];
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set(key.as_bytes().to_vec(), value);
+    Saved::of(&mut p)
+}
+
+#[test]
+fn utf16_text_strings_in_objects_are_found() {
+    for format in [StringFormat::Literal, StringFormat::Hexadecimal] {
+        let s = saved_with("Alt", Object::String(utf16("SECRET"), format));
+        assert!(!s.places("SECRET").is_empty(), "{format:?}: not found");
+    }
+}
+
+#[test]
+fn utf16_actual_text_in_content_is_found() {
+    let hex: String = utf16("SECRET").iter().map(|b| format!("{b:02X}")).collect();
+    let s = saved(&format!(
+        "/Span << /ActualText <{hex}> >> BDC {} EMC",
+        show("(xxxxxx) Tj")
+    ));
+    assert!(!s.places("SECRET").is_empty());
+}
+
+#[test]
+fn names_are_found_written_plainly_or_escaped() {
+    // lopdf writes a space in a name as `#20`, as other writers may write any character.
+    for name in ["SECRET", "SEC RET"] {
+        let s = saved_with("Tag", Object::Name(name.as_bytes().to_vec()));
+        assert!(!s.places(name).is_empty(), "the name {name:?} not found");
+        let s = saved_with(name, Object::Integer(1));
+        assert!(!s.places(name).is_empty(), "the key {name:?} not found");
+    }
 }
 
 /// Every hidden form is one another reader finds, so the checker must too.

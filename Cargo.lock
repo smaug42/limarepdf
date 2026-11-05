@@ -2429,6 +2429,7 @@ dependencies = [
  "hayro",
  "hmac",
  "image",
+ "limarepdf-core",
  "lopdf",
  "ocrs",
  "p256",

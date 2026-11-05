@@ -71,7 +71,8 @@ impl Saved {
     }
 
     /// Every place `needle` is in the file: in its raw bytes, in a decoded stream segment, in a
-    /// string the segment shows as content, or in a string of an object (escapes undone).
+    /// string the segment shows as content, or in a string or a name of an object (escapes
+    /// undone).
     pub fn places(&self, needle: &str) -> Vec<String> {
         let forms = forms(needle);
         let mut out = Vec::new();
@@ -95,6 +96,12 @@ impl Saved {
             each_string(o, 0, &mut |s| hit |= forms.iter().any(|f| contains(s, f)));
             if hit {
                 out.push(format!("a string in object {} {}", id.0, id.1));
+            }
+            // Names and keys as read (`#xx` undone), which the raw bytes may not hold as such.
+            let mut hit = false;
+            each_name(o, 0, &mut |n| hit |= forms.iter().any(|f| contains(n, f)));
+            if hit {
+                out.push(format!("a name in object {} {}", id.0, id.1));
             }
         }
         out
@@ -786,6 +793,27 @@ fn each_string(o: &Object, depth: usize, f: &mut dyn FnMut(&[u8])) {
             .dict
             .iter()
             .for_each(|(_, v)| each_string(v, depth + 1, f)),
+        _ => {}
+    }
+}
+
+/// `f` for every name in `o`, dictionary keys included, as lopdf read it (`#xx` undone).
+fn each_name(o: &Object, depth: usize, f: &mut dyn FnMut(&[u8])) {
+    assert!(
+        depth < MAX_DEPTH,
+        "objects nest deeper than the checker follows"
+    );
+    let dict = |d: &Dictionary, f: &mut dyn FnMut(&[u8])| {
+        for (k, v) in d.iter() {
+            f(k);
+            each_name(v, depth + 1, f);
+        }
+    };
+    match o {
+        Object::Name(n) => f(n),
+        Object::Array(a) => a.iter().for_each(|x| each_name(x, depth + 1, f)),
+        Object::Dictionary(d) => dict(d, f),
+        Object::Stream(s) => dict(&s.dict, f),
         _ => {}
     }
 }

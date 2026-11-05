@@ -1,0 +1,2 @@
+#[path = "../../target/x.rs"]
+mod x;
