@@ -4,6 +4,7 @@
 //! its line, so that a line's edits, moves and deletion take it along. Reading is careful:
 //! a band LimarePDF isn't sure of is left a drawing.
 
+use crate::budget::{TooComplex, Work};
 use crate::colour::Paint;
 use crate::edit::{op, r, Check};
 use crate::fonts::FontChoice;
@@ -546,53 +547,101 @@ struct Grid {
 }
 
 impl Grid {
-    fn new(boxes: impl IntoIterator<Item = (usize, [f32; 4])>) -> Grid {
+    fn new(
+        boxes: impl IntoIterator<Item = (usize, [f32; 4])>,
+        work: &mut Work,
+    ) -> Result<Grid, TooComplex> {
         let mut g = Grid {
             cell: 64.0,
             cells: Default::default(),
         };
         let cell = g.cell;
         for (i, b) in boxes {
-            each_cell(cell, b, |c| g.cells.entry(c).or_default().push(i));
+            each_cell(cell, b, work, |c| g.cells.entry(c).or_default().push(i))?;
         }
-        g
+        Ok(g)
     }
 
     /// The indices of boxes in the cells box `b` touches, each once, in `out`.
-    fn near_into(&self, b: [f32; 4], out: &mut Vec<usize>) {
+    fn near_into(
+        &self,
+        b: [f32; 4],
+        out: &mut Vec<usize>,
+        work: &mut Work,
+    ) -> Result<(), TooComplex> {
         out.clear();
-        each_cell(self.cell, b, |c| {
+        each_cell(self.cell, b, work, |c| {
             out.extend(self.cells.get(&c).into_iter().flatten())
-        });
+        })?;
         out.sort_unstable();
         out.dedup();
+        Ok(())
     }
 
     /// [`Grid::near_into`], in a list of its own.
-    fn near(&self, b: [f32; 4]) -> Vec<usize> {
+    fn near(&self, b: [f32; 4], work: &mut Work) -> Result<Vec<usize>, TooComplex> {
         let mut out = Vec::new();
-        self.near_into(b, &mut out);
-        out
+        self.near_into(b, &mut out, work)?;
+        Ok(out)
     }
 }
 
-/// Calls `f` with each `cell`-sized square cell box `b` touches. A box over very many cells
-/// (a page-wide background) touches only its edge rows and columns, where it can meet a
-/// band.
-fn each_cell(cell: f32, b: [f32; 4], mut f: impl FnMut((i32, i32))) {
+/// The most cells one box may touch in a [`Grid`] (S1-07): a box drawn hundreds of metres
+/// across, past them, touches none, so it meets nothing.
+const MOST_CELLS: u64 = 1 << 15;
+
+/// Calls `f` with each `cell`-sized square cell box `b` touches, and returns the cells it
+/// went through. A box over very many cells (a page-wide background) touches only its edge
+/// rows and columns, where it can meet a band, going through those alone, each cell once;
+/// a box with more than [`MOST_CELLS`] even so touches none. The cells are steps of `work`,
+/// taken before any is touched.
+fn each_cell(
+    cell: f32,
+    b: [f32; 4],
+    work: &mut Work,
+    mut f: impl FnMut((i32, i32)),
+) -> Result<u64, TooComplex> {
     if !b.iter().all(|x| x.is_finite()) {
-        return;
+        return Ok(0);
     }
     let k = |x: f32| (x / cell).floor().clamp(-1e6, 1e6) as i32;
     let (x0, y0, x1, y1) = (k(b[0]), k(b[1]), k(b[2]), k(b[3]));
-    let many = (x1 - x0 + 1) as i64 * (y1 - y0 + 1) as i64 > 4096;
-    for x in x0..=x1 {
-        for y in y0..=y1 {
-            if !many || x == x0 || x == x1 || y == y0 || y == y1 {
+    if x1 < x0 || y1 < y0 {
+        return Ok(0);
+    }
+    let (w, h) = ((x1 - x0 + 1) as u64, (y1 - y0 + 1) as u64);
+    // With a side of one or two cells, every cell is an edge's.
+    let whole = w * h <= 4096 || w.min(h) <= 2;
+    let n = match whole {
+        true => w * h,
+        false => 2 * (w + h) - 4,
+    };
+    if n > MOST_CELLS {
+        return Ok(0);
+    }
+    work.take(n)?;
+    let mut passes = 0;
+    let mut f = |c| {
+        passes += 1;
+        f(c)
+    };
+    if whole {
+        for x in x0..=x1 {
+            for y in y0..=y1 {
                 f((x, y));
             }
         }
+    } else {
+        for x in x0..=x1 {
+            f((x, y0));
+            f((x, y1));
+        }
+        for y in y0 + 1..y1 {
+            f((x0, y));
+            f((x1, y));
+        }
     }
+    Ok(passes)
 }
 
 fn grown(b: [f32; 4], by: f32) -> [f32; 4] {
@@ -661,14 +710,16 @@ impl Lite {
 /// overlaps it or sits centred under it within its ends (a fraction's denominator).
 /// `form_text` is the text inside forms the page draws, which counts as other text. Two
 /// bands of one kind over the same characters are one decoration (a double underline).
+/// The cells its grids touch are steps of the page's `work` (S1-07).
 pub(crate) fn read(
     objs: &[Obj],
     painted: &[Painted],
     ops: &[Operation],
     form_text: &[TextData],
-) -> Vec<(usize, Decoration)> {
+    work: &mut Work,
+) -> Result<Vec<(usize, Decoration)>, TooComplex> {
     if painted.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // Each line's frame, largest size and reach along it: enough to pass over the bands
     // that can't be its, before its characters are laid out (when first needed).
@@ -677,7 +728,7 @@ pub(crate) fn read(
         .collect();
     let biggest = lines.iter().fold(0.0f32, |m, l| m.max(l.size));
     if lines.is_empty() || biggest <= 0.0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // The ways the page's lines run: a band running none of them (a table's column rule
     // beside lines across) is no line's.
@@ -701,11 +752,12 @@ pub(crate) fn read(
         .filter_map(|p| Some((objs.binary_search_by_key(&p.first, |o| o.first).ok()?, p)))
         .collect();
     if bands.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let by_line = Grid::new(
         (lines.iter().enumerate()).map(|(k, l)| (k, grown(objs[l.obj].bbox, 0.5 * l.size))),
-    );
+        work,
+    )?;
     let mut straight_of: Option<std::collections::HashMap<usize, Straight>> = None;
     let mut laid: Vec<Option<Option<Laid>>> = (0..lines.len()).map(|_| None).collect();
     let mut others: Option<Grid> = None;
@@ -717,7 +769,7 @@ pub(crate) fn read(
         let Some(colour) = p.colour else { continue };
         let bb = grown(mx::aabb([st.a, st.b]), st.width / 2.0);
         let mut best: Option<(usize, Fit)> = None;
-        by_line.near_into(bb, &mut near);
+        by_line.near_into(bb, &mut near, work)?;
         for &k in &near {
             if !lines[k].may_take(&st) {
                 continue;
@@ -733,13 +785,15 @@ pub(crate) fn read(
         let Some((k, f)) = best else { continue };
         let line = &lines[k].obj;
         let l = laid[k].as_ref().and_then(Option::as_ref).expect("laid out");
-        let others = others.get_or_insert_with(|| {
-            Grid::new(
+        if others.is_none() {
+            others = Some(Grid::new(
                 (objs.iter().enumerate())
                     .filter(|(_, o)| o.kind != ObjectKind::Text)
                     .map(|(i, o)| (i, o.bbox)),
-            )
-        });
+                work,
+            )?);
+        }
+        let others = others.as_ref().expect("built");
         let straight_of =
             straight_of.get_or_insert_with(|| bands.iter().map(|(i, p)| (*i, p.band)).collect());
         let form_boxes = form_boxes.get_or_insert_with(|| {
@@ -762,7 +816,8 @@ pub(crate) fn read(
         // Another drawing meeting either end, but a band under this line's text, or a fill
         // reaching past both ends behind it.
         let ends = [st.a, st.b].map(|p| grown([p.0, p.1, p.0, p.1], d + st.width / 2.0));
-        let joined = others.near(grown(bb, d + st.width)).into_iter().any(|q| {
+        let joined = others.near(grown(bb, d + st.width), work)?;
+        let joined = joined.into_iter().any(|q| {
             let o = &objs[q];
             if q == pi || !ends.iter().any(|e| meets(*e, o.bbox)) {
                 return false;
@@ -786,7 +841,7 @@ pub(crate) fn read(
             continue;
         }
         // Other text: its box over the band, or centred under it within its ends.
-        let other_boxes = (by_line.near(grown(bb, 0.6 * s + d)).into_iter())
+        let other_boxes = (by_line.near(grown(bb, 0.6 * s + d), work)?.into_iter())
             .filter(|&j| j != k)
             .map(|j| objs[lines[j].obj].bbox)
             .chain(
@@ -840,7 +895,7 @@ pub(crate) fn read(
         }
     }
     found.sort_by_key(|(line, d)| (*line, d.chars.0));
-    found
+    Ok(found)
 }
 
 /// A font's underline and strike-out, where LimarePDF draws its own ([`decoration_lines`],
@@ -1315,5 +1370,107 @@ impl Pdf {
             }
         }
         (ops, kept)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A box `w` by `h` cells of 64 from cell (0, 0).
+    fn of_cells(w: u32, h: u32) -> [f32; 4] {
+        [0.0, 0.0, w as f32 * 64.0 - 1.0, h as f32 * 64.0 - 1.0]
+    }
+
+    /// The cells [`each_cell`] gives `b` (cells of 64), the passes it made, and the steps it
+    /// took, with no limit.
+    fn walked(b: [f32; 4]) -> (Vec<(i32, i32)>, u64, u64) {
+        let mut work = Work::new("walking", u64::MAX);
+        let mut cells = Vec::new();
+        let passes = each_cell(64.0, b, &mut work, |c| cells.push(c)).unwrap();
+        (cells, passes, work.taken())
+    }
+
+    /// The cells on the edges of a box `w` by `h` cells, from (0, 0), each once: worked out
+    /// apart from [`each_cell`].
+    fn edges(w: i32, h: i32) -> Vec<(i32, i32)> {
+        let mut out: Vec<_> = (0..w)
+            .flat_map(|x| (0..h).map(move |y| (x, y)))
+            .filter(|&(x, y)| x == 0 || y == 0 || x == w - 1 || y == h - 1)
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// A box over 5,000 by 5,000 cells goes through its edges only (H-08: it went through
+    /// all 25 million), each cell once, a step each.
+    #[test]
+    fn a_box_over_many_cells_goes_through_its_edges_only() {
+        let (mut cells, passes, taken) = walked(of_cells(5000, 5000));
+        assert!(passes <= 4 * 5001, "{passes} passes");
+        assert_eq!(cells.len() as u64, passes);
+        assert_eq!(taken, passes);
+        cells.sort_unstable();
+        assert_eq!(cells, edges(5000, 5000));
+        // Just over the 4,096 cells a box goes through whole, and strips, all edge.
+        for (w, h) in [(65, 64), (1, 5000), (2, 5000)] {
+            let (mut cells, passes, taken) = walked(of_cells(w as u32, h as u32));
+            cells.sort_unstable();
+            assert_eq!(cells, edges(w, h), "{w} by {h}");
+            assert_eq!((passes, taken), (cells.len() as u64, cells.len() as u64));
+        }
+    }
+
+    /// A box of up to 4,096 cells touches each, as it always did.
+    #[test]
+    fn a_box_of_few_cells_touches_every_one() {
+        let (mut cells, passes, taken) = walked(of_cells(64, 64));
+        cells.sort_unstable();
+        let all: Vec<_> = (0..64).flat_map(|x| (0..64).map(move |y| (x, y))).collect();
+        assert_eq!(cells, all);
+        assert_eq!((passes, taken), (4096, 4096));
+    }
+
+    /// A box whose edges cross [`MOST_CELLS`] touches none and takes no steps; one at them
+    /// touches them all.
+    #[test]
+    fn a_box_past_the_most_cells_touches_none() {
+        // 2 × (8,193 + 8,193) − 4 edge cells, and a strip.
+        for (w, h) in [(8193, 8193), (1, MOST_CELLS as u32)] {
+            let (cells, passes, taken) = walked(of_cells(w, h));
+            assert_eq!(
+                (cells.len() as u64, passes, taken),
+                (MOST_CELLS, MOST_CELLS, MOST_CELLS)
+            );
+        }
+        for (w, h) in [(8193, 8194), (1, MOST_CELLS as u32 + 1)] {
+            let (cells, passes, taken) = walked(of_cells(w, h));
+            assert_eq!((cells.len(), passes, taken), (0, 0, 0), "{w} by {h}");
+        }
+    }
+
+    /// A box as big as can be (its cells kept to ±10⁶, about four million million of them)
+    /// is passed over at once.
+    #[test]
+    fn a_box_as_big_as_can_be_is_passed_over_at_once() {
+        let (cells, passes, taken) = walked([-1e30, -1e30, 1e30, 1e30]);
+        assert_eq!((cells.len(), passes, taken), (0, 0, 0));
+    }
+
+    /// A box's cells are taken from the budget before any is touched: one step short, the
+    /// walk is refused and touches none.
+    #[test]
+    fn a_box_short_of_steps_touches_no_cell() {
+        let edge = edges(65, 64).len() as u64;
+        let mut work = Work::new("walking", edge - 1);
+        let mut touched = 0;
+        let e = each_cell(64.0, of_cells(65, 64), &mut work, |_| touched += 1).unwrap_err();
+        assert_eq!(e.limit, edge - 1);
+        assert_eq!((touched, work.taken()), (0, 0));
+        let mut work = Work::new("walking", edge);
+        assert_eq!(
+            each_cell(64.0, of_cells(65, 64), &mut work, |_| ()),
+            Ok(edge)
+        );
     }
 }

@@ -5,6 +5,7 @@
 
 mod common;
 
+use common::apart::{self, Ran};
 use common::saved::tools;
 use limarepdf_core::{
     decoration_lines, DecoKind, Decorated, FontChoice, FontLines, ObjectKind, PageObject, Pdf,
@@ -12,6 +13,7 @@ use limarepdf_core::{
 };
 use lopdf::content::Content;
 use lopdf::{dictionary, Dictionary, Object, Stream};
+use std::time::{Duration, Instant};
 
 const LINE: &str = "This has an underlined phrase in it.";
 /// Where the lines are drawn: their baseline's left end, in user space.
@@ -366,6 +368,108 @@ fn a_form_s_underlined_text_is_not_the_page_s() {
     assert!(objs
         .iter()
         .all(|o| o.decorations.is_empty() && o.decorates.is_none()));
+}
+
+/// Started by [`huge_text_beside_a_line_is_read_at_once`] in a process of its own: an "A"
+/// drawn 10⁵ times over, and 10⁹ times (its cells kept to ±10⁶), beside a line.
+#[test]
+#[ignore = "started by huge_text_beside_a_line_is_read_at_once"]
+fn huge_text_child() {
+    if std::env::var("HUGE_TEXT_CHILD").is_err() {
+        return;
+    }
+    for s in ["100000", "1000000000"] {
+        let p = page(&format!(
+            "q {s} 0 0 {s} 0 0 cm BT /F1 12 Tf (A) Tj ET Q 0 0 m 10 0 l S\n"
+        ));
+        let text: Vec<_> = lines(&p).into_iter().filter_map(|o| o.text).collect();
+        println!("huge|{s}|{}", text.join(" "));
+    }
+}
+
+/// Text drawn hundreds of metres across beside a line is read at once (S1-07, H-08: finding
+/// the lines near the line went through every cell of 64 points the text's box covers,
+/// billions, up to four million million).
+#[test]
+fn huge_text_beside_a_line_is_read_at_once() {
+    let start = Instant::now();
+    let env = [("HUGE_TEXT_CHILD", "1".to_string())];
+    let ran = apart::run("huge_text_child", &env, Duration::from_secs(30));
+    let Ran::Ended(text, status) = ran else {
+        panic!("not read within 30 s");
+    };
+    let said = apart::reports(&text, "huge|");
+    let want = ["100000|A", "1000000000|A"];
+    assert_eq!(said, want, "{}", apart::why_stopped(status));
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+/// [`LINE`] in Helvetica 2,400 at (X, Y), with LibreOffice's band under its phrase (as
+/// [`libreoffice`] draws it at 12, 200 times over), `width` thick at 12.
+fn big(width: f32) -> Pdf {
+    let k = 200.0;
+    let (a, b) = span(LINE, "underlined phrase");
+    let (x0, len) = (X + (a - X) * k, (b - a) * k);
+    page(&format!(
+        "BT /F1 {} Tf {X} {Y} Td ({LINE}) Tj ET\n\
+         q 1 0 0 1 {x0} {Y} cm {} w 0 0 0 RG 0 {v} m {len} {v} l S Q\n",
+        12.0 * k,
+        width * k,
+        v = -1.4 * k,
+    ))
+}
+
+/// The cells of 64 points box `b` touches in the grids that find what is near a band, by
+/// the rule: each, up to 4,096 of them, or else its edges'.
+fn grid_cells(b: [f32; 4]) -> u64 {
+    let k = |x: f32| (x / 64.0).floor() as i64;
+    let w = (k(b[2]) - k(b[0]) + 1) as u64;
+    let h = (k(b[3]) - k(b[1]) + 1) as u64;
+    match w * h > 4096 && w.min(h) > 2 {
+        true => 2 * (w + h) - 4,
+        false => w * h,
+    }
+}
+
+/// The cells the grids go through to find what is near a band are steps of the page's
+/// budget (S1-07): a line in Helvetica 2,400 with a thin band under it takes at least its
+/// box's edge cells more than with a band too thick to be an underline (no grid made; the
+/// same operators), and the page is refused a step short of what it takes. (The thin band
+/// isn't read as an underline at this size either: that is the backlog's, not the grid's.)
+#[test]
+fn the_cells_near_a_band_are_steps_of_the_page_s_budget() {
+    use limarepdf_core::{budget_seam, TooComplex};
+    let steps = |p: &Pdf| {
+        let (objs, taken) = budget_seam::with_limit(u64::MAX, || p.page_objects(0).map(|_| ()));
+        objs.unwrap();
+        assert_eq!(taken.len(), 1, "one budget for the page: {taken:?}");
+        taken[0]
+    };
+    let (thin, thick) = (big(0.7), big(3.0));
+    let b = lines(&thin)[0].bbox;
+    let own = grid_cells(b);
+    let area = ((b[2] - b[0]) / 64.0) * ((b[3] - b[1]) / 64.0);
+    assert!(
+        area > 4096.0 && own > 1000,
+        "the line's box, {own} edge cells"
+    );
+    let (with, without) = (steps(&thin), steps(&thick));
+    assert!(
+        with >= without + own,
+        "{with} steps with the grids, {without} without, the line's box {own} cells"
+    );
+    let (got, taken) = budget_seam::with_limit(with, || thin.page_objects(0).map(|_| ()));
+    got.unwrap();
+    assert_eq!(taken, [with]);
+    let (got, taken) = budget_seam::with_limit(with - 1, || thin.page_objects(0).map(|_| ()));
+    let e = got.unwrap_err();
+    let too = e.downcast_ref::<TooComplex>().expect("too complex");
+    assert_eq!(too.limit, with - 1, "{e:#}");
+    assert!(taken.len() == 1 && taken[0] < with, "{taken:?}");
 }
 
 /// The page's content as operators.

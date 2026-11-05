@@ -340,11 +340,14 @@ available.
   (compared ignoring case on every system, so `Result.pdf` is refused while `result.pdf` is written, also on
   Linux, where they are two files). Not yet covered (WP-01): exporting a digital ID or certificate, the recovery
   store, and other apps writing the file.
-- Reading a page has a limit (S1-06): a page whose drawings draw one another over and over, past about 4 s of
-  reading (14 times the most any page of the test files takes), isn't read. Search names it with why,
+- Reading a page has a limit (S1-06): a page whose drawings draw one another over and over, or where looking for
+  underlines takes too long (S1-07), past about 4 s of reading (13 times the most any page of the test files
+  takes), isn't read. Search names it with why,
   redaction over it refuses and changes nothing, and editing it is refused; its text counts as none for copying,
   text export and paragraph finding. The editor shows nothing on such a page to select, and doesn't yet say why
-  (no message). A drawing drawn again inside itself is read once where it repeats, as pdf.js reads it.
+  (no message). A drawing drawn again inside itself is read once where it repeats, as pdf.js reads it. Text or a
+  drawing whose width and height come to more than about 370 m together (S1-07) is passed over when looking for underlines: none under it or
+  touching it is read.
 - Undo keeps up to 100 steps within 1 GB per document, each the size of what its change changed, so a few steps
   are larger than a copy of the document would be: the first page change on a long document (moving, deleting,
   turning or adding pages) changes every page's entry and keeps 28 MB on 10,000 pages, and a watermark on 10,000
