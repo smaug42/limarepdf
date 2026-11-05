@@ -34,6 +34,9 @@
   for minutes or hours when it is edited, searched or redacted. A drawing that draws itself is read once; a page
   that would take more than a few seconds to read is refused instead. Search results name each page they couldn't
   read and say why, and redacting over such a page refuses with nothing changed.
+- A page with text or a drawing scaled to an enormous size beside a line no longer keeps LimarePDF reading it for
+  hours when it is edited, searched or redacted, while looking for underlines and strike-throughs. A page where
+  that looking would take more than a few seconds is refused like any other page too complex to read.
 
 ## [0.13.0] - 2026-11-03
 

@@ -922,7 +922,7 @@ impl Pdf {
         objs.sort_by_key(|o| o.first);
         objs.retain(|o| o.bbox.iter().all(|x| x.is_finite()));
         let decorations = match forms.len() {
-            0 => decorate::read(&objs, &painted, &ops, &form_text),
+            0 => decorate::read(&objs, &painted, &ops, &form_text, work)?,
             _ => Vec::new(),
         };
         Ok(Parsed {
