@@ -30,6 +30,10 @@
   capitals too; the message names the file and says to wait or choose another name.
 - Split, Export pages as images and Save all images no longer write over a file open in a tab; like Save As, they
   say so and write nothing.
+- A page whose drawings draw one another over and over, or draw themselves, no longer keeps LimarePDF reading it
+  for minutes or hours when it is edited, searched or redacted. A drawing that draws itself is read once; a page
+  that would take more than a few seconds to read is refused instead. Search results name each page they couldn't
+  read and say why, and redacting over such a page refuses with nothing changed.
 
 ## [0.13.0] - 2026-11-03
 

@@ -2464,6 +2464,27 @@ impl Tab {
         }
     }
 
+    /// What Search results says of the pages the search shown couldn't read, if any, and
+    /// each one's reason, for its tooltip.
+    fn unread_said(&self) -> Option<(String, String)> {
+        let unread = &self.search.unread;
+        if unread.is_empty() || !self.search.shows(&self.query, self.search_options) {
+            return None;
+        }
+        const LISTED: usize = 20;
+        let mut why: Vec<String> = (unread.iter().take(LISTED))
+            .map(|(p, why)| format!("Page {}: {why}", self.page_name(*p)))
+            .collect();
+        if unread.len() > LISTED {
+            why.push(format!("and {} more", unread.len() - LISTED));
+        }
+        let said = match unread.as_slice() {
+            [(p, why)] => format!("Page {} isn't searched: {why}", self.page_name(*p)),
+            _ => format!("{} pages aren't searched: they can't be read", unread.len()),
+        };
+        Some((said, why.join("\n")))
+    }
+
     /// The Search results view: the search field and its options, Replace's field and
     /// button while it is shown, the steps between matches and their count, then the
     /// matches under their pages' headings, the match in bold. Only the rows in view are
@@ -2507,6 +2528,9 @@ impl Tab {
             }
             ui.label(self.results_said());
         });
+        if let Some((said, why)) = self.unread_said() {
+            ui.label(said).on_hover_text(why);
+        }
         if !self.hits.is_empty() {
             let a = actions::get(Act::MarkResultsRedact);
             let label = "Mark all for redaction";

@@ -27,10 +27,12 @@ struct Job {
 
 /// What the search thread sends back about search number `n`.
 pub enum Found {
-    /// The matches on the pages before `upto` (0-based) not sent before, of `of` pages.
+    /// The matches on the pages before `upto` (0-based) not sent before, of `of` pages, and
+    /// those pages that couldn't be read, with why.
     Some {
         n: u64,
         hits: Vec<SearchHit>,
+        unread: Vec<(usize, String)>,
         upto: usize,
         of: usize,
     },
@@ -76,6 +78,8 @@ pub struct Search {
     pub progress: Option<(usize, usize)>,
     /// The search shown stopped with an internal error: why.
     pub failed: Option<String>,
+    /// The pages the search shown couldn't read (0-based), with why, in order.
+    pub unread: Vec<(usize, String)>,
     /// Scroll Search results to the current match's row.
     pub reveal: bool,
 }
@@ -93,6 +97,7 @@ impl Search {
             changed: Some(None),
             progress: None,
             failed: None,
+            unread: Vec::new(),
             reveal: false,
         }
     }
@@ -158,6 +163,7 @@ impl Search {
         self.asked = Some((n, query.to_owned(), options));
         self.progress = Some((0, pdf.page_count()));
         self.failed = None;
+        self.unread.clear();
         self.typed = None;
     }
 
@@ -170,6 +176,7 @@ impl Search {
         self.asked = None;
         self.progress = None;
         self.failed = None;
+        self.unread.clear();
         self.typed = None;
     }
 
@@ -183,7 +190,12 @@ impl Search {
         let found: Vec<Found> = t.rx.try_iter().filter(|f| Some(f.n()) == shown).collect();
         for f in &found {
             match f {
-                Found::Some { upto, of, .. } => self.progress = Some((*upto, *of)),
+                Found::Some {
+                    upto, of, unread, ..
+                } => {
+                    self.progress = Some((*upto, *of));
+                    self.unread.extend(unread.iter().cloned());
+                }
                 Found::Done { .. } => self.progress = None,
                 Found::Failed { why, .. } => {
                     self.progress = None;
@@ -289,6 +301,7 @@ fn search(
         let some = Found::Some {
             n,
             hits: m.hits,
+            unread: m.unread,
             upto: end,
             of: pages,
         };

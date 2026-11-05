@@ -1267,6 +1267,22 @@ blocks fewer, the run sharing the machine with the test suite. Its timings aren'
   was taken out in turn and its tests failed. Core's `disk.rs`: `identity_of_a_file_not_there_yet`,
   `identity_lasts_through_writing_and_replacing` and, on Unix, `identity_through_a_hard_link`. The save tests
   before it pass unchanged.
+- S1-06 (2026-11-05, H-07), tests written first, in core's `tests/too_complex.rs`. Failing on 8515192:
+  `a_page_drawing_forms_over_and_over_is_refused_past_its_budget` (a tree of forms three wide and four deep, its
+  steps counted from the charging rule, not by the parser: read with exactly them, refused one short or with 40),
+  `a_page_drawing_itself_is_read_at_once` (the audit's repro, a form drawing itself ten times over, in a child
+  process: "not read within 30 s"), `forms_drawing_each_other_are_read_once` (as pdf.js's `issue19800-eq.pdf`:
+  the old code read each form four times), `a_page_too_complex_to_read_isn_t_read_or_edited` and
+  `a_redaction_over_a_page_too_complex_to_read_changes_nothing` (the old code redacted it); not compiling on the
+  old code, `search_names_the_pages_it_can_t_read`. The refusals are driven by `budget_seam::with_limit`; a guard,
+  passing on the old code, `a_form_that_can_t_be_decoded_is_passed_over`. GUI: `app.rs`'s
+  `search_results_name_a_page_that_can_t_be_read` (failing on the old GUI). Opt-in, in a release build,
+  `objects.rs`'s `a_page_is_read_within_its_steps_and_refused_past_them` reads a page taking exactly
+  `objects::STEPS` and refuses one a step more (about 5 s for both, run 2026-11-05; minutes in a debug build, where lopdf isn't
+  optimised). The budget was measured over every page of the corpus with a throwaway program lifting it: the most
+  steps 588,688 (`pdfbox/5134.pdf`), see architecture.md. The save-and-reopen check, rerun on 2026-11-05 with
+  the budget: the same as before (1,082 of 1,089 the same, 1 known difference, 6 skipped). The poppler comparison
+  wasn't rerun: drawing doesn't read pages through `objects.rs`.
 - Marks made by LimarePDF were not yet opened in Acrobat or other apps, nor marks made by them applied in LimarePDF.
 
 ### Scanning and OCR
