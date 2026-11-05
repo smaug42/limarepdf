@@ -36,9 +36,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
+mod destinations;
 mod recover;
 mod save;
 
+use destinations::{Destinations, Owner};
 use save::{AfterSave, Write};
 
 pub const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
@@ -196,9 +198,10 @@ enum Loaded {
     /// Search number `.0` for printer `.1`'s paper sizes finished: the sizes, or why they
     /// couldn't be found.
     Papers(u64, String, Result<print::PaperList, String>),
-    /// A background job on a copy of tab `tab` at `revision` finished. On success: the
-    /// changed document, whether anything changed, and a summary for the user.
+    /// Background job number `job`, on a copy of tab `tab` at `revision`, finished. On
+    /// success: the changed document, whether anything changed, and a summary for the user.
     Job {
+        job: u64,
         tab: u64,
         revision: u64,
         title: &'static str,
@@ -921,6 +924,10 @@ pub struct App {
     saves_made: u64,
     /// What waits for a save to end.
     after_saves: Vec<AfterSave>,
+    /// The files saves, jobs and signing are writing (S1-03).
+    destinations: Destinations,
+    /// The number of the last background job started.
+    jobs_made: u64,
     /// Tests: the next save's thread waits for this before writing.
     #[cfg(test)]
     save_gate: Option<Receiver<()>>,
@@ -1031,6 +1038,8 @@ impl App {
             saves: Vec::new(),
             saves_made: 0,
             after_saves: Vec::new(),
+            destinations: Destinations::default(),
+            jobs_made: 0,
             #[cfg(test)]
             save_gate: None,
         }
@@ -1450,10 +1459,10 @@ impl App {
 
     /// Asks for a certificate file and what to trust it as.
     fn add_certificate_file(&mut self) {
-        let Some(file) = rfd::FileDialog::new()
-            .add_filter("Certificates", &["cer", "crt", "pem", "der", "p7c", "p7b"])
-            .pick_file()
-        else {
+        let Some(file) = Self::pick_file(
+            rfd::FileDialog::new()
+                .add_filter("Certificates", &["cer", "crt", "pem", "der", "p7c", "p7b"]),
+        ) else {
             return;
         };
         let read = std::fs::read(&file)
@@ -1595,6 +1604,10 @@ impl App {
     /// the signing window, is drawn after it, so it is the one that takes input.
     fn digital_windows(&mut self, ctx: &egui::Context) {
         self.digital_sign_window(ctx);
+        // However signing ended (signed, failed or cancelled), its file is free again.
+        if !self.sign_window.as_ref().is_some_and(SignWindow::busy) {
+            self.destinations.release(Owner::Signing);
+        }
         if let Some(mut w) = self.ids_window.take() {
             let out = w.ui(ctx, &self.settings.author());
             if out.changed {
@@ -1694,15 +1707,15 @@ impl App {
         if let Some(dir) = t.path.as_ref().and_then(|p| p.parent()) {
             d = d.set_directory(dir);
         }
-        let Some(mut out) = d.save_file() else {
+        let Some(mut out) = Self::save_as(d) else {
             return;
         };
         if out.extension().is_none() {
             out.set_extension("pdf");
         }
-        // Never over another tab's file, nor over this tab's own when something else
-        // changed it since (BUG-06).
-        if let Some(why) = self.in_other_tab(&out, Some(w.tab)) {
+        // Never over another tab's file or one being written (S1-03), nor over this tab's
+        // own when something else changed it since (BUG-06).
+        if let Some((_, why)) = self.conflict(&out, w.tab, true) {
             w.error = Some(why);
             return;
         }
@@ -1715,6 +1728,7 @@ impl App {
             );
             return;
         }
+        let claim = [out.clone()];
         w.start(
             ctx,
             digital::Input {
@@ -1724,6 +1738,10 @@ impl App {
                 out,
             },
         );
+        // Released once the window is no longer signing ([`Self::digital_windows`]).
+        if w.busy() {
+            self.destinations.claim(&claim, Owner::Signing);
+        }
     }
 
     /// A document was signed and written: it opens in place of the tab it was signed
@@ -2003,6 +2021,7 @@ impl App {
                     }
                 }
                 Loaded::Job {
+                    job,
                     tab,
                     revision,
                     title,
@@ -2010,6 +2029,7 @@ impl App {
                 } => {
                     self.busy = false;
                     self.status.clear();
+                    self.destinations.release(Owner::Job { id: job });
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
@@ -2291,24 +2311,36 @@ impl App {
 
     /// Run `work` on a copy of the active document on a background thread, what is being
     /// typed on its pages kept first. The result is applied (undoably) when it arrives, if
-    /// the document has not changed meanwhile.
+    /// the document has not changed meanwhile. The files it `writes` are claimed until then
+    /// (S1-03); if one is open in a tab or being written, nothing starts and a message says
+    /// why.
     fn spawn_job(
         &mut self,
         ctx: &egui::Context,
         title: &'static str,
+        writes: Vec<PathBuf>,
         work: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<(bool, String)> + Send + 'static,
     ) {
         if !self.tabs[self.active].keep_page_typing(ctx) {
             return;
         }
+        let tab = self.tabs[self.active].id;
+        if let Some((why_title, why)) = self.conflicts(&writes, tab, false) {
+            self.dialog = Dialog::Message(why_title.into(), why);
+            return;
+        }
         let t = &self.tabs[self.active];
-        let (tab, revision, mut pdf) = (t.id, t.revision, t.pdf.clone());
+        let (revision, mut pdf) = (t.revision, t.pdf.clone());
+        self.jobs_made += 1;
+        let job = self.jobs_made;
+        self.destinations.claim(&writes, Owner::Job { id: job });
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
             let result = crate::guard(|| work(&mut pdf))
                 .map(|(changed, text)| (pdf, changed, text))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Loaded::Job {
+                job,
                 tab,
                 revision,
                 title,
@@ -2378,16 +2410,25 @@ impl App {
     /// Send `pages` (zero-based) of the active tab to the printer on a background thread.
     fn start_print(&mut self, ctx: &egui::Context, pages: Vec<usize>, opts: print::PrintOptions) {
         let printer = opts.printer.clone().unwrap_or_default();
-        self.spawn_job(ctx, "Print", move |p| {
+        self.spawn_job(ctx, "Print", Vec::new(), move |p| {
             let reply = p.print(&pages, &opts)?;
             let n = pages.len();
             Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
         });
     }
 
+    /// The files exporting pages as images writes.
+    fn image_files(e: &ImageExport) -> Vec<PathBuf> {
+        image_names(&e.pages, &e.stem, e.format)
+            .iter()
+            .map(|n| e.dir.join(n))
+            .collect()
+    }
+
     /// Write page images on a background thread; the document is not changed.
     fn start_export(&mut self, ctx: &egui::Context, e: ImageExport) {
-        self.spawn_job(ctx, "Export pages as images", move |p| {
+        let files = Self::image_files(&e);
+        self.spawn_job(ctx, "Export pages as images", files, move |p| {
             match p.export_images(&e.pages, e.dpi, e.format, &e.dir, &e.stem) {
                 Ok(files) => {
                     let n = files.len();
@@ -2447,7 +2488,7 @@ impl App {
             named.push(format!(".{ext}"));
             path = named.into();
         }
-        self.spawn_job(ctx, "Save image as", move |p| {
+        self.spawn_job(ctx, "Save image as", vec![path.clone()], move |p| {
             let (_, bytes) = p.picture_file(page, id)?;
             match limarepdf_core::write_file(&path, &bytes) {
                 Ok(()) => Ok((false, format!("Saved the picture as {}.", path.display()))),
@@ -2485,6 +2526,11 @@ impl App {
         };
         let to = PicturesTo { dir, stem };
         let files: Vec<PathBuf> = names.iter().map(|n| to.dir.join(n)).collect();
+        // Before asking to replace files, which can't be written anyway.
+        if let Some((title, why)) = self.conflicts(&files, asked.tab, false) {
+            self.dialog = Dialog::Message(title.into(), why);
+            return;
+        }
         match limarepdf_core::existing(&files).len() {
             0 => self.start_save_pictures(ctx, to),
             n => self.dialog = Dialog::ConfirmReplace(asked, Replacing::Pictures(to), n),
@@ -2493,7 +2539,9 @@ impl App {
 
     /// Write every picture of the document to `to` on a background thread.
     fn start_save_pictures(&mut self, ctx: &egui::Context, to: PicturesTo) {
-        self.spawn_job(ctx, "Save all images", move |p| {
+        let names = self.tabs[self.active].pdf.picture_names(&to.stem);
+        let files = names.iter().map(|n| to.dir.join(n)).collect();
+        self.spawn_job(ctx, "Save all images", files, move |p| {
             match p.save_all_pictures(&to.dir, &to.stem) {
                 Ok(done) => {
                     let n = done.written.len();
@@ -2538,18 +2586,18 @@ impl App {
             );
             return;
         }
-        let Some(mut path) = rfd::FileDialog::new()
-            .add_filter("Text", &["txt"])
-            .set_file_name(format!("{}.txt", t.stem("document")))
-            .save_file()
-        else {
+        let Some(mut path) = Self::save_as(
+            rfd::FileDialog::new()
+                .add_filter("Text", &["txt"])
+                .set_file_name(format!("{}.txt", t.stem("document"))),
+        ) else {
             return;
         };
         if path.extension().is_none() {
             path.set_extension("txt");
         }
-        if let Some(why) = self.in_other_tab(&path, None) {
-            self.dialog = Dialog::Message("Open in a tab".into(), why);
+        if let Some((title, why)) = self.conflict(&path, self.tabs[self.active].id, false) {
+            self.dialog = Dialog::Message(title.into(), why);
             return;
         }
         match limarepdf_core::write_file(&path, text.as_bytes()) {
@@ -2574,18 +2622,18 @@ impl App {
             dlg::Layout::TextFile => ("Text", "txt"),
             _ => ("PDF", "pdf"),
         };
-        let Some(mut path) = rfd::FileDialog::new()
-            .add_filter(filter, &[ext])
-            .set_file_name(format!("{} (selection).{ext}", t.stem("document")))
-            .save_file()
-        else {
+        let Some(mut path) = Self::save_as(
+            rfd::FileDialog::new()
+                .add_filter(filter, &[ext])
+                .set_file_name(format!("{} (selection).{ext}", t.stem("document"))),
+        ) else {
             return;
         };
         if path.extension().is_none() {
             path.set_extension(ext);
         }
-        if let Some(why) = self.in_other_tab(&path, None) {
-            self.dialog = Dialog::Message("Open in a tab".into(), why);
+        if let Some((title, why)) = self.conflict(&path, self.tabs[self.active].id, false) {
+            self.dialog = Dialog::Message(title.into(), why);
             return;
         }
         let t = &self.tabs[self.active];
@@ -2760,25 +2808,37 @@ impl App {
 
     /// The file the user picks in the save chooser `d`, if any.
     #[cfg(not(test))]
-    fn save_as(d: rfd::FileDialog) -> Option<PathBuf> {
+    pub(crate) fn save_as(d: rfd::FileDialog) -> Option<PathBuf> {
         d.save_file()
     }
 
     /// Tests never open the chooser, which would show on the desktop: they get the file
     /// [`tests::SAVE_AS`] holds, or nothing, as when the chooser is cancelled.
     #[cfg(test)]
-    fn save_as(_: rfd::FileDialog) -> Option<PathBuf> {
+    pub(crate) fn save_as(_: rfd::FileDialog) -> Option<PathBuf> {
         tests::SAVE_AS.with(std::cell::Cell::take)
     }
 
+    /// The file the user picks to open in the chooser `d`, if any.
+    #[cfg(not(test))]
+    fn pick_file(d: rfd::FileDialog) -> Option<PathBuf> {
+        d.pick_file()
+    }
+
+    /// Tests get the file [`tests::PICK_FILE`] holds, or nothing (see [`Self::save_as`]).
+    #[cfg(test)]
+    fn pick_file(_: rfd::FileDialog) -> Option<PathBuf> {
+        tests::PICK_FILE.with(std::cell::Cell::take)
+    }
+
     /// Where to save the active tab (see [`Self::save_path`]); `None`, saying why, for a
-    /// file open in another tab, or one another app or tab changed since this tab last
-    /// read or saved it, until the user says to replace it (BUG-06).
+    /// file open in another tab or being written (S1-03), or one another app or tab changed
+    /// since this tab last read or saved it, until the user says to replace it (BUG-06).
     fn save_target(&mut self, as_new: bool) -> Option<PathBuf> {
         let t = self.tabs.get(self.active)?;
         let path = Self::save_path(t, as_new, self.settings.folder.as_deref())?;
-        if let Some(why) = self.in_other_tab(&path, Some(t.id)) {
-            self.dialog = Dialog::Message("Open in another tab".into(), why);
+        if let Some((title, why)) = self.conflict(&path, t.id, true) {
+            self.dialog = Dialog::Message(title.into(), why);
             return None;
         }
         if self.asked_stale(Some(&path)) {
@@ -2790,8 +2850,12 @@ impl App {
     /// Why nothing is written to `path` when it is the file of a tab other than `except`:
     /// that tab would be left with an older copy, to save back over it.
     fn in_other_tab(&self, path: &Path, except: Option<u64>) -> Option<String> {
+        let want = disk::identity(path);
         let t = self.tabs.iter().find(|t| {
-            Some(t.id) != except && t.path.as_deref().is_some_and(|p| disk::same_file(p, path))
+            Some(t.id) != except
+                && t.path
+                    .as_deref()
+                    .is_some_and(|p| disk::identity(p).matches(&want))
         })?;
         let which = if except.is_some() {
             "another tab"
@@ -3673,7 +3737,7 @@ impl App {
                     self.notify(ctx, self.active, format!("Deleted {what}"), true);
                 }
             }
-            Act::RemoveBlank => self.spawn_job(ctx, "Remove blank pages", |p| {
+            Act::RemoveBlank => self.spawn_job(ctx, "Remove blank pages", Vec::new(), |p| {
                 let gone = p.remove_blank_pages(limarepdf_core::BLANK_TOLERANCE)?;
                 let text = match gone.len() {
                     0 => "No blank pages were found.".to_string(),
@@ -4622,7 +4686,7 @@ impl App {
                 self.tabs[active].stamp_from_form(ctx, kind, update);
             }
             Apply::Ocr => match parse_page_range(&self.tabs[active].forms.ocr, n) {
-                Ok(idx) => self.spawn_job(ctx, OCR_JOB, move |p| {
+                Ok(idx) => self.spawn_job(ctx, OCR_JOB, Vec::new(), move |p| {
                     let ocr = limarepdf_core::Ocr::bundled()?;
                     Ok(ocr_summary(&p.ocr_pages(&idx, &ocr)?))
                 }),
@@ -4632,9 +4696,11 @@ impl App {
                 let f = &self.tabs[active].forms;
                 let opts = f.scan;
                 match parse_page_range(&f.scan_pages, n) {
-                    Ok(idx) => self.spawn_job(ctx, "Optimise scanned pages", move |p| {
-                        Ok(scan_summary(&p.optimize_scans(&idx, &opts)?))
-                    }),
+                    Ok(idx) => {
+                        self.spawn_job(ctx, "Optimise scanned pages", Vec::new(), move |p| {
+                            Ok(scan_summary(&p.optimize_scans(&idx, &opts)?))
+                        })
+                    }
                     Err(e) => self.tabs[active].error = Some(e.to_string()),
                 }
             }
@@ -4650,10 +4716,7 @@ impl App {
                     }
                 };
                 let stem = t.stem("page");
-                let Some(dir) = rfd::FileDialog::new()
-                    .set_title("Choose a folder for the images")
-                    .pick_folder()
-                else {
+                let Some(dir) = Self::pick_folder("Choose a folder for the images", None) else {
                     return;
                 };
                 let e = ImageExport {
@@ -4663,10 +4726,13 @@ impl App {
                     pages,
                     dir,
                 };
-                let files: Vec<PathBuf> = image_names(&e.pages, &e.stem, e.format)
-                    .iter()
-                    .map(|n| e.dir.join(n))
-                    .collect();
+                let files = Self::image_files(&e);
+                // Before asking to replace files, which can't be written anyway.
+                let tab = self.tabs[active].id;
+                if let Some((title, why)) = self.conflicts(&files, tab, false) {
+                    self.dialog = Dialog::Message(title.into(), why);
+                    return;
+                }
                 match limarepdf_core::existing(&files).len() {
                     0 => self.start_export(ctx, e),
                     n => {
@@ -4682,10 +4748,7 @@ impl App {
                 } else {
                     SplitBy::Every(f.split.max(1))
                 };
-                let Some(dir) = rfd::FileDialog::new()
-                    .set_title("Choose output folder")
-                    .pick_folder()
-                else {
+                let Some(dir) = Self::pick_folder("Choose output folder", None) else {
                     return;
                 };
                 let stem = self.tabs[active].stem("part");
@@ -4695,26 +4758,38 @@ impl App {
     }
 
     /// Split the document in front into files, asking first when any of them would replace
-    /// a file, so that nothing is replaced unasked and nothing is written on Cancel.
+    /// a file, so that nothing is replaced unasked and nothing is written on Cancel. None
+    /// may be a file open in a tab or being written (PB-86).
     fn split_into(&mut self, ctx: &egui::Context, s: SplitFiles) {
-        let t = &self.tabs[self.active];
-        let name = |n, title: Option<&str>| s.dir.join(part_file_name(&s.stem, n, title));
-        let files = match t.pdf.split_files(s.by, name) {
+        let files = match self.split_names(&s) {
             Ok(files) => files,
             Err(e) => {
                 self.dialog = Dialog::Message(SPLIT_JOB.into(), format!("{e:#}"));
                 return;
             }
         };
+        let t = &self.tabs[self.active];
+        if let Some((title, why)) = self.conflicts(&files, t.id, false) {
+            self.dialog = Dialog::Message(title.into(), why);
+            return;
+        }
         match limarepdf_core::existing(&files).len() {
             0 => self.start_split(ctx, s),
             n => self.dialog = Dialog::ConfirmReplace(Asked::of(t), Replacing::Split(s), n),
         }
     }
 
+    /// The files splitting the document in front as `s` says writes.
+    fn split_names(&self, s: &SplitFiles) -> limarepdf_core::Result<Vec<PathBuf>> {
+        let name = |n, title: Option<&str>| s.dir.join(part_file_name(&s.stem, n, title));
+        self.tabs[self.active].pdf.split_files(s.by, name)
+    }
+
     /// Write the split's files on a background thread; the document is not changed.
     fn start_split(&mut self, ctx: &egui::Context, s: SplitFiles) {
-        self.spawn_job(ctx, SPLIT_JOB, move |p| {
+        // Named as when asked; a failure here is the job's to say.
+        let files = self.split_names(&s).unwrap_or_default();
+        self.spawn_job(ctx, SPLIT_JOB, files, move |p| {
             let name = |n, title: Option<&str>| s.dir.join(part_file_name(&s.stem, n, title));
             match p.split(s.by, name) {
                 Ok(n) => Ok((false, format!("Wrote {n} files to {}.", s.dir.display()))),
@@ -5236,7 +5311,7 @@ impl App {
                             quality: s.quality,
                             jpeg_quality: None,
                         };
-                        self.spawn_job(ctx, REDUCE_JOB, move |p| {
+                        self.spawn_job(ctx, REDUCE_JOB, Vec::new(), move |p| {
                             let r = p.reduce_pictures(&pages, &opts)?;
                             let size = p.saved_size()?;
                             let text = crate::reduce_size::reduced_text(&r, size);
@@ -5485,7 +5560,7 @@ impl App {
                     };
                     if let Some(layout) = s.selection {
                         let ex = Excerpt::new(t, layout);
-                        self.spawn_job(ctx, "Print", move |p| {
+                        self.spawn_job(ctx, "Print", Vec::new(), move |p| {
                             let mut out = ex.build(p)?;
                             let pages: Vec<usize> = (0..out.page_count()).collect();
                             let reply = out.print(&pages, &opts)?;
@@ -8410,6 +8485,7 @@ mod tests {
     mod backdrop;
     mod bookmarks;
     mod clipboard_pictures;
+    mod destinations;
     mod forms;
     mod history;
     mod input_methods;
@@ -8444,6 +8520,9 @@ mod tests {
             const { std::cell::Cell::new(None) };
         /// The folder the folder chooser gives next, once (see [`App::pick_folder`]).
         pub(super) static FOLDER: std::cell::Cell<Option<PathBuf>> =
+            const { std::cell::Cell::new(None) };
+        /// The file the open chooser gives next, once (see [`App::pick_file`]).
+        pub(super) static PICK_FILE: std::cell::Cell<Option<PathBuf>> =
             const { std::cell::Cell::new(None) };
     }
 
@@ -16661,6 +16740,7 @@ mod tests {
         let result = Ok((other, true, "Done.".to_string()));
         let title = "Remove blank pages";
         let job = Loaded::Job {
+            job: 0,
             tab,
             revision,
             title,

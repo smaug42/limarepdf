@@ -13,6 +13,23 @@
   hundreds of millions of pixels) no longer makes LimarePDF ask for gigabytes of memory when it draws the page,
   prints it as a picture or reads it with OCR. The picture is left out, and the page's notice says a picture
   can't be shown, as for any picture LimarePDF can't read; the document keeps it, and saving doesn't change it.
+- Redaction no longer leaves removed words in the saved file. Alternative text kept apart from the content it
+  describes (in a page's or a group's named properties) went on being saved after its text was redacted, and so
+  did the original of a redacted group in some files (one drawing with the page's resources, listing itself, or
+  listed by another group), with the redacted text in it, though the check afterwards found nothing left. Both
+  are gone now, as are pictures only those originals drew; content another page still draws is kept, and removed
+  text still in alternative text there is listed with the other places it was found. A group kept inside a
+  redacted one keeps the pictures, fonts and properties it uses.
+- Remove hidden information now also leaves out a hidden layer's picture listed by a group inside another group;
+  before, the picture was no longer drawn but stayed in the saved file.
+- Redaction, and Remove hidden information with hidden layers, refuse a file whose drawings lead to one another
+  in too many ways to follow, saying so and changing nothing, rather than working on it for a very long time.
+- Two tabs saved as one file at once could leave the file holding either document, with both tabs marked saved.
+  Now a file LimarePDF is still saving or writing is refused to every other Save As, saved selection, exported
+  text, signed copy, split, image export and saved picture until that ends, by any spelling of its name, in
+  capitals too; the message names the file and says to wait or choose another name.
+- Split, Export pages as images and Save all images no longer write over a file open in a tab; like Save As, they
+  say so and write nothing.
 
 ## [0.13.0] - 2026-11-03
 
