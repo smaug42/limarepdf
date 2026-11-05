@@ -713,6 +713,48 @@ fn hidden_layers_in_deeply_nested_forms_are_removed() {
     assert!(users.is_empty(), "{users:?}");
 }
 
+/// A picture in a hidden layer (its own `/OC`), drawn by a form inside a form and listed only
+/// in the inner form's resources (PB-84): it leaves the file, not only the content.
+#[test]
+fn a_hidden_layer_picture_listed_by_a_nested_form_is_removed() {
+    let mut p = make(
+        "BT /F1 12 Tf 10 20 Td (Page text) Tj ET q /Fm Do Q",
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let samples = b"HiddenPicSecret!".to_vec();
+    let pic = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => samples.len() as i64,
+            "Height" => 1, "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8, "OC" => off,
+        },
+        samples,
+    ));
+    let form = |res: Dictionary, content: &str| {
+        Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+                "Resources" => res,
+            },
+            content.as_bytes().to_vec(),
+        )
+    };
+    let inner = p.doc.add_object(form(
+        dictionary! { "XObject" => dictionary! { "Im" => pic } },
+        "q 100 0 0 10 30 150 cm /Im Do Q",
+    ));
+    let outer = p.doc.add_object(form(
+        dictionary! { "XObject" => dictionary! { "Fm" => inner } },
+        "q /Fm Do Q",
+    ));
+    page_res_set(&mut p, "XObject", dictionary! { "Fm" => outer }.into());
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["HiddenPicSecret"]);
+    saved.assert_kept(&["Page text"]);
+}
+
 #[test]
 fn hidden_layers_in_appearances_and_patterns_are_removed() {
     let mut p = make(

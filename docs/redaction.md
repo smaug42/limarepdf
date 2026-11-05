@@ -84,15 +84,26 @@ For each area:
   its value. All of a page's are checked, also on a page with more than the 10,000 the app shows, and so are all
   of its redaction marks when they are applied.
 - **Alternative text** that accessibility tools and copying use, on content that lost anything, and on every tag
-  above it, however many there are.
+  above it, however many there are. This includes alternative text kept apart from the content, in the list of
+  named properties a page or grouped content carries: a name no content left on the page uses is taken off the
+  page's copy of that list.
 - The page's **thumbnail picture** and private application data.
 
-Pictures and drawings that no page uses any more are left out of the saved file.
+Pictures and drawings that nothing draws any more are left out of the saved file: also those only grouped content
+listed, and a redacted group's original, which its redacted copy replaces on this page. Content still drawn
+elsewhere (on another page, in a comment's drawing, in a pattern) is kept. Grouped content that uses the page's
+pictures and properties rather than its own keeps what it needs.
+
+If grouped content that was kept can't be read, LimarePDF can't tell what it needs, so it leaves its page's lists
+as they were and says so after the check ("a drawing on page 3 couldn't be read, so removed content may still be
+in the file").
 
 Redaction stops with a message, and changes nothing, when it can't follow everything it would have to remove: when
 a form field touching an area belongs to a form nested more than 32 deep (fields inside fields), or when the index
 that leads from a page to its tags is nested more than 32 deep or too large to search (more than 100,000 parts
-looked at).
+looked at), or when the document's drawings lead to one another in too many ways to follow ("the document is too
+complex: checking the drawings would take more than 4194304 steps, so nothing was changed"). The largest of 1,080
+test files takes about 130,000 of those steps.
 
 ## The check afterwards
 
@@ -100,9 +111,10 @@ When it is done, LimarePDF reads the redacted pages again and checks that no tex
 each picture there to check that its pixels under the areas are blacked out. If anything is left, the app changes
 nothing and says what it found, and `limarepdf-cli redact` lists it and doesn't write the file.
 
-It then looks for the removed text elsewhere in the document: on any page, in bookmarks, comments, form fields and the
-document's title, author, subject and keywords. Anything it finds is listed as a warning, since redaction only
-changes the areas you give it.
+It then looks for the removed text, and the removed alternative text, elsewhere in the document: on any page, in
+the alternative text of what each page draws ("alternative text on page 2"), in bookmarks, comments, form fields
+and the document's title, author, subject and keywords. Anything it finds is listed as a warning, since redaction
+only changes the areas you give it.
 
 ## Removing hidden information
 
@@ -130,7 +142,8 @@ What is ticked at first:
 - **Attached files:** files attached to the document or to comments.
 - **Hidden layers and their content:** the content of layers that are switched off is deleted, wherever it is
   drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments' and fields' drawings, in patterns,
-  soft masks and Type 3 fonts. Those layers leave the layer list; layers that are shown stay. What shows doesn't
+  soft masks and Type 3 fonts. A picture only a hidden layer drew is left out of the saved file, also when it was
+  listed by a form inside a form. Those layers leave the layer list; layers that are shown stay. What shows doesn't
   change: a colour, position or clip a hidden layer sets still applies to what is drawn after it, and hidden text
   is replaced by a gap as wide, so text after it on the line stays where it was. If some drawing can't be read,
   or is nested deeper, LimarePDF can't tell whether it holds hidden content, so the command stops with a message
@@ -139,7 +152,8 @@ What is ticked at first:
   content can't be taken out of one place only; and where removing hidden content would change what shows:
   hidden text that clips what comes after it, hidden text whose width LimarePDF can't work out (its font is set
   where the drawing is used) with visible text after it on the same line, or a shape begun in a hidden layer and
-  painted outside it. Leave hidden layers out to remove the rest. Compressed data is
+  painted outside it, or when the document's drawings are too complex to follow (as for redaction). Leave hidden
+  layers out to remove the rest. Compressed data is
   checked to its end: if it is cut off or damaged part way, the command stops in the same way ("Part of this
   document is damaged..."). Data that is complete but whose checksum at the end is wrong is read in full, as other
   PDF readers read it, and the result says so.

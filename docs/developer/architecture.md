@@ -940,7 +940,31 @@ parser's objects: it rewrites each text-showing operator character by character,
 spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
 blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed again to check that nothing readable
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
-`sanitise.rs`. See [Redaction](../redaction.md). A string is redacted character by character only when
+`sanitise.rs`. See [Redaction](../redaction.md).
+
+What is still drawn after a redaction or Remove hidden information is found by `reach.rs` (S1-01: H-01, H-02,
+PB-84), one walk over every page, annotation appearance, form, pattern, soft-mask group and Type 3 glyph, each
+visited once per `(id, fingerprint of the resources it inherits)`, so drawings that draw themselves end. It gives
+the nodes and what each draws, the objects drawn (`Reach::drawn`), every dictionary listing resources
+(`Reach::holders`, streams' included) and each node's alternative text (named and inline `ActualText`, `Alt`,
+`E`). `drop_unused_xobjects` unlists from those holders what the change dropped and nothing draws, and
+`find_elsewhere` reports removed text met in alternative text by the pages reaching it
+(`Reach::pages_drawing`). Each rewritten copy (a page's resources, a form's copy) keeps only the `XObject` and
+`Properties` names its new content uses, plus those its kept inheriting streams use, followed down
+(`Redactor::needs`); the replaced form's name is re-pointed to its copy or removed. Fonts and other resource
+kinds are left alone. A kept inheriting stream that can't be read keeps every name, and `report.left` says so.
+Decoded content is cached by object (`reach::Decoded`) and shared by the walks before and after a redaction,
+which only adds objects; Remove hidden information edits streams in place, so its walk after starts afresh.
+
+The walk is charged against a `budget::Work` (`budget.rs`, `TooComplex`), one step per drawing reached, name
+looked up, page, annotation, holder and entry of inherited resources. `reach::STEPS` is 2²² (4,194,304): 32
+times the corpus maximum, 129,066 steps (`pdfjs/issue6692.pdf`, 109 pages; the 1,080 files that open, measured
+2026-11-04 with the budget lifted). The walk runs first as a check, refusing before anything changes; the walk
+after the change is allowed twice the limit plus the objects added, so it can't fail midway on a document that
+passed (argued, not proven: should it, the app undoes the step). Finding hidden information (the count run on
+a copy, not strict) leaves the pictures listed when that walk fails rather than refusing. The budget belongs in `contracts.md` once WP-10 writes it.
+
+A string is redacted character by character only when
 `FontCtx::drawn_alike` says every reader splits it the same way; else it goes whole. Besides hayro's split (the
 first mapped length) against the codespace's, it fails a code that also starts a longer one (`fonts::starts_longer`,
 PB-03): a longer code the CMap maps (poppler reads that) or a longer codespace range (pdf.js reads by those). Not

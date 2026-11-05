@@ -10,6 +10,7 @@ mod asn1;
 mod atomic;
 mod base_encodings;
 mod blank;
+mod budget;
 mod cms_check;
 mod cms_write;
 mod colour;
@@ -58,6 +59,7 @@ pub mod print;
 #[cfg(windows)]
 mod print_win;
 mod radicals;
+mod reach;
 mod reading;
 mod redact;
 mod redact_img;
@@ -93,6 +95,9 @@ pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle, MAX_ANNOTS};
 pub use atomic::sync_seam;
 pub use atomic::NotConfirmed;
 pub use blank::BLANK_TOLERANCE;
+#[cfg(any(test, feature = "test-seams"))]
+pub use budget::budget_seam;
+pub use budget::TooComplex;
 pub use cms_check::CertInfo;
 pub use decorate::{decoration_lines, DecoKind, Decorated, Decoration, FontLines, Look};
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};

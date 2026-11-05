@@ -5,6 +5,7 @@
 
 use crate::fonts::FontCtx;
 use crate::inline::Inline;
+use crate::reach;
 use crate::{Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
@@ -340,6 +341,8 @@ impl Pdf {
         if what.contains(&Hidden::HiddenLayers) {
             if let Some((_, _, hidden)) = self.hidden_layers() {
                 refuse_blocked(&self.scan_layers(&hidden))?;
+                // What is no longer drawn is found by following the drawings afterwards.
+                self.reach(&mut reach::work(), &mut reach::Decoded::new())?;
             }
         }
         if what.contains(&Hidden::FormValues) {
@@ -594,7 +597,15 @@ impl Pdf {
             })
             .map(|(id, _)| *id)
             .collect();
-        self.drop_unused_xobjects(&layered)?;
+        if !layered.is_empty() {
+            // The streams were changed in place, so they are read afresh. Finding (on a
+            // copy) leaves them listed when the drawings are too complex to follow.
+            match self.reach(&mut reach::work_after(0), &mut reach::Decoded::new()) {
+                Ok(reach) => self.drop_unused_xobjects(&layered, &reach)?,
+                Err(e) if strict => return Err(e.into()),
+                Err(_) => {}
+            }
+        }
         // Annotations in a hidden layer.
         let mut gone = HashSet::new();
         for page in self.page_ids() {

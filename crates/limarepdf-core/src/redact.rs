@@ -14,12 +14,18 @@
 //!   removed, here and in the structure tree, so copying can't bring the text back.
 //!
 //! Annotations touching a mark go, as do the page's thumbnail and private application
-//! data. Pictures and drawings the page no longer uses are dropped from shared
-//! resources, so saving (which prunes unused objects) leaves nothing of them in the file.
+//! data. A page or form that changed keeps in its `/XObject` and `/Properties` only the
+//! names its content, or a drawing kept inside it that draws with its resources, still
+//! uses. Pictures and drawings no page draws any more are dropped from shared resources, so
+//! saving (which prunes unused objects) leaves nothing of them in the file.
+//!
+//! The drawings are followed once before anything changes ([`Pdf::reach`]), so a document
+//! too complex to follow within the budget is refused unchanged.
 
 use crate::fonts::FontCtx;
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::span_boxes;
+use crate::reach::{self, Decoded, Reach, Uses};
 use crate::redact_img::{black_out, inline_stream, is_clear};
 use crate::trees::{self, Lookup};
 use crate::{Pdf, Result};
@@ -79,9 +85,8 @@ const MAX_PLACES: usize = 10;
 /// The unit square pictures are drawn in.
 const UNIT: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
-/// Forms read for the pictures and forms they draw, each with the names (`/XObject`
-/// entries) it was read with when it has no resources of its own, else with none.
-type FormsRead = HashSet<(ObjectId, Vec<(Vec<u8>, ObjectId)>)>;
+/// Names in a resource dictionary.
+type Names = HashSet<Vec<u8>>;
 
 /// A name for a new entry in a resource dictionary.
 fn fresh_name(d: &Dictionary) -> Vec<u8> {
@@ -257,11 +262,18 @@ struct Redactor<'a> {
     dropped: HashSet<ObjectId>,
     /// Marked-content ids on the page whose content lost something.
     mcids: HashSet<i64>,
+    /// The alternative text taken off marked content.
+    alts: Vec<String>,
+    /// What drawings' content uses, kept from the walk before redacting.
+    uses: Decoded,
+    /// A drawing kept inside a changed one couldn't be read, so the changed one's copy
+    /// keeps every name, the removed ones' too.
+    unread: bool,
     out: PageRedaction,
 }
 
 impl<'a> Redactor<'a> {
-    fn new(pdf: &'a Pdf, areas: Vec<[f32; 4]>) -> Self {
+    fn new(pdf: &'a Pdf, areas: Vec<[f32; 4]>, uses: Decoded) -> Self {
         Self {
             pdf,
             areas,
@@ -269,6 +281,9 @@ impl<'a> Redactor<'a> {
             added: Vec::new(),
             dropped: HashSet::new(),
             mcids: HashSet::new(),
+            alts: Vec::new(),
+            uses,
+            unread: false,
             out: PageRedaction::default(),
         }
     }
@@ -370,8 +385,9 @@ impl<'a> Redactor<'a> {
         let mut path: Vec<Operation> = Vec::new();
         let mut clip = false;
         let mut marked: Vec<Marked> = Vec::new();
-        // XObject names whose drawing was removed or replaced here.
-        let mut unnamed: HashSet<Vec<u8>> = HashSet::new();
+        // XObject names whose drawing was replaced here, with what replaced it (`None`:
+        // removed whole), for a drawing kept inside that draws them by those names.
+        let mut replaced: HashMap<Vec<u8>, Option<Object>> = HashMap::new();
         let mut xobjs_changed = false;
 
         for o in ops {
@@ -516,7 +532,7 @@ impl<'a> Redactor<'a> {
                                     let fresh = fresh_name(&xobjs);
                                     xobjs.set(fresh.clone(), Object::Reference(new));
                                     xobjs_changed = true;
-                                    unnamed.insert(nm);
+                                    replaced.insert(nm, Some(Object::Reference(new)));
                                     self.dropped.extend(id);
                                     self.out.images_cut += 1;
                                     out.push(op("Do", vec![Object::Name(fresh)]));
@@ -524,7 +540,7 @@ impl<'a> Redactor<'a> {
                                 }
                                 Err(_) => {
                                     self.out.images += 1;
-                                    unnamed.insert(nm);
+                                    replaced.insert(nm, None);
                                     self.dropped.extend(id);
                                     continue;
                                 }
@@ -553,7 +569,7 @@ impl<'a> Redactor<'a> {
                                 let Some(new) = redone.map(|f| f.map(Object::Reference)) else {
                                     // Too deep, or unreadable: the whole form goes.
                                     self.out.images += 1;
-                                    unnamed.insert(nm);
+                                    replaced.insert(nm, None);
                                     self.dropped.extend(id);
                                     changed = true;
                                     marked.iter_mut().for_each(|m| m.touched = true);
@@ -561,9 +577,9 @@ impl<'a> Redactor<'a> {
                                 };
                                 if let Some(new) = new {
                                     let fresh = fresh_name(&xobjs);
-                                    xobjs.set(fresh.clone(), new);
+                                    xobjs.set(fresh.clone(), new.clone());
                                     xobjs_changed = true;
-                                    unnamed.insert(nm);
+                                    replaced.insert(nm, Some(new));
                                     self.dropped.extend(id);
                                     changed = true;
                                     marked.iter_mut().for_each(|m| m.touched = true);
@@ -605,17 +621,42 @@ impl<'a> Redactor<'a> {
         }
         out.append(&mut path);
 
-        // Names no drawing uses any more leave the resources, so what they point at isn't
-        // kept in the file through this page.
-        let used: HashSet<&[u8]> = out
-            .iter()
-            .filter(|o| o.operator == "Do")
-            .filter_map(|o| o.operands.first()?.as_name().ok())
-            .collect();
-        for nm in &unnamed {
-            if !used.contains(nm.as_slice()) {
-                xobjs.remove(nm);
-                xobjs_changed = true;
+        // A changed drawing's copy keeps only the pictures, forms and properties its content
+        // uses, or a drawing kept inside it that draws with its resources does, so what the
+        // others point at (the originals of what was replaced, alternative text taken off)
+        // isn't kept in the file through it.
+        if changed {
+            let own = Uses::of_ops(&out);
+            match self.needs(&res, &own, &replaced) {
+                Some((xs, ps)) => {
+                    let keep = |d: &mut Dictionary, own: &[Vec<u8>], needs: &Names| {
+                        let gone: Vec<Vec<u8>> = (d.iter())
+                            .map(|(k, _)| k)
+                            .filter(|k| !own.contains(k) && !needs.contains(*k))
+                            .cloned()
+                            .collect();
+                        for k in &gone {
+                            d.remove(k);
+                        }
+                        !gone.is_empty()
+                    };
+                    xobjs_changed |= keep(&mut xobjs, &own.xobjects, &xs);
+                    // A drawing kept inside draws what was replaced by its old name: the
+                    // copy, or nothing when it was removed whole.
+                    for nm in xs.iter().filter(|nm| !own.xobjects.contains(nm)) {
+                        match replaced.get(nm) {
+                            Some(Some(new)) => xobjs.set(nm.clone(), new.clone()),
+                            Some(None) => drop(xobjs.remove(nm)),
+                            None => continue,
+                        }
+                        xobjs_changed = true;
+                    }
+                    let mut props = props.clone();
+                    if keep(&mut props, &own.properties, &ps) {
+                        res.set("Properties", props);
+                    }
+                }
+                None => self.unread = true,
             }
         }
         if xobjs_changed {
@@ -670,6 +711,83 @@ impl<'a> Redactor<'a> {
         let id = self.alloc();
         self.added.push((id, Object::Stream(stream)));
         Ok(Some(Some(id)))
+    }
+
+    /// The `/XObject` and `/Properties` names of `res` that the drawings drawn with `res`
+    /// use, at any depth, besides content `own` itself: the forms it draws without
+    /// resources of their own, and its Type 3 fonts', patterns' and soft masks' drawings
+    /// without. What `replaced` holds wasn't kept, so isn't followed. `None` when one of
+    /// those drawings can't be read.
+    fn needs(
+        &mut self,
+        res: &Dictionary,
+        own: &Uses,
+        replaced: &HashMap<Vec<u8>, Option<Object>>,
+    ) -> Option<(Names, Names)> {
+        let pdf = self.pdf;
+        let entries = |key: &[u8]| pdf.resolved_dict(res.get(key).ok());
+        let (xobjs, fonts) = (entries(b"XObject"), entries(b"Font"));
+        let (patterns, states) = (entries(b"Pattern"), entries(b"ExtGState"));
+        let stream = |o: Option<&Object>| -> Option<(ObjectId, &Stream)> {
+            let id = o?.as_reference().ok()?;
+            let s = pdf.doc.get_object(id).ok()?.as_stream().ok()?;
+            Some((id, s))
+        };
+        let inherits = |s: &Stream| !s.dict.has(b"Resources");
+        // The drawings drawn with `res` that `u` names.
+        let inheriting = |u: &Uses, top: bool| -> Vec<ObjectId> {
+            let mut ids = Vec::new();
+            for nm in &u.xobjects {
+                if !top && replaced.contains_key(nm) {
+                    continue;
+                }
+                if let Some((id, s)) = stream(xobjs.get(nm).ok()) {
+                    if inherits(s) && reach::is_form(pdf, id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            for nm in &u.patterns {
+                ids.extend(
+                    stream(patterns.get(nm).ok())
+                        .filter(|(_, s)| inherits(s))
+                        .map(|(id, _)| id),
+                );
+            }
+            for nm in &u.states {
+                let gs = pdf.resolved_dict(states.get(nm).ok());
+                let mask = pdf.resolved_dict(gs.get(b"SMask").ok());
+                ids.extend(
+                    stream(mask.get(b"G").ok())
+                        .filter(|(_, s)| inherits(s))
+                        .map(|(id, _)| id),
+                );
+            }
+            for nm in &u.fonts {
+                let font = pdf.resolved_dict(fonts.get(nm).ok());
+                if font.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Type3")
+                    || font.has(b"Resources")
+                {
+                    continue;
+                }
+                let procs = pdf.resolved_dict(font.get(b"CharProcs").ok());
+                ids.extend(procs.iter().filter_map(|(_, g)| g.as_reference().ok()));
+            }
+            ids
+        };
+        let (mut xs, mut ps) = (HashSet::new(), HashSet::new());
+        let mut seen = HashSet::new();
+        let mut todo = inheriting(own, true);
+        while let Some(id) = todo.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let u = pdf.uses_of(id, &mut self.uses)?;
+            xs.extend(u.xobjects.iter().cloned());
+            ps.extend(u.properties.iter().cloned());
+            todo.extend(inheriting(&u, false));
+        }
+        Some((xs, ps))
     }
 
     /// Redact one painted path (`path` then `paint`). Returns whether anything changed.
@@ -1011,12 +1129,13 @@ impl<'a> Redactor<'a> {
                 self.mcids.insert(id);
             }
         }
-        const ALT: [&[u8]; 3] = [b"ActualText", b"Alt", b"E"];
-        if !ALT.iter().any(|k| dict.has(k)) {
+        if !reach::ALT.iter().any(|k| dict.has(k)) {
             return false;
         }
+        self.alts
+            .extend(reach::alt_texts(Some(&self.pdf.doc), &dict));
         let mut d = dict;
-        for k in ALT {
+        for k in reach::ALT {
             d.remove(k);
         }
         b.operands[1] = Object::Dictionary(d);
@@ -1119,9 +1238,13 @@ impl Pdf {
         if widgets {
             self.value_nodes()?;
         }
+        // Drawings too complex to follow are refused now, not halfway through.
+        let mut uses = Decoded::new();
+        self.reach(&mut reach::work(), &mut uses)?;
         self.own_direct_annots()?;
         let mut report = RedactReport::default();
         let mut dropped = HashSet::new();
+        let (mut alts, mut unread, mut added_all) = (Vec::new(), Vec::new(), 0);
         for &p in by_page.keys() {
             let page = self.page_id_at(p)?;
             let areas = page_areas.remove(&p).unwrap_or_default();
@@ -1130,16 +1253,26 @@ impl Pdf {
                 .get_page_content_with_limit(page, crate::MAX_CONTENT)?;
             let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
             let text = self.text_under(p, &areas);
-            let mut rd = Redactor::new(self, areas.clone());
+            let mut rd = Redactor::new(self, areas.clone(), std::mem::take(&mut uses));
             let done = rd.content(&data, &res, mx::ID, 0)?;
             let Redactor {
                 added,
                 dropped: gone,
                 mcids,
+                alts: alt,
+                uses: kept,
+                unread: not_read,
                 mut out,
                 next_id,
                 ..
             } = rd;
+            // Redacting adds objects but changes none in place, so what was read stays.
+            uses = kept;
+            alts.extend(alt);
+            if not_read {
+                unread.push(p);
+            }
+            added_all += added.len();
 
             for (id, obj) in added {
                 self.doc.objects.insert(id, obj);
@@ -1170,9 +1303,16 @@ impl Pdf {
             dropped.extend(gone);
             report.pages.push(out);
         }
-        self.drop_unused_xobjects(&dropped)?;
+        let reach = self.reach(&mut reach::work_after(added_all), &mut uses)?;
+        self.drop_unused_xobjects(&dropped, &reach)?;
         report.left = self.check_left(&by_page);
-        report.elsewhere = self.find_elsewhere(&report);
+        report.left.extend(unread.iter().map(|p| {
+            format!(
+                "a drawing on page {} couldn't be read, so removed content may still be in the file",
+                p + 1
+            )
+        }));
+        report.elsewhere = self.find_elsewhere(&report, &alts, &reach);
         Ok(report)
     }
 
@@ -1331,107 +1471,32 @@ impl Pdf {
         }
     }
 
-    /// Of the pictures and forms `dropped`, take those no page draws any more out of the
-    /// resources of pages and page-tree nodes, so they aren't kept in the file.
-    pub(crate) fn drop_unused_xobjects(&mut self, dropped: &HashSet<ObjectId>) -> Result<()> {
-        if dropped.is_empty() {
-            return Ok(());
-        }
-        let mut used = HashSet::new();
-        let mut read = HashSet::new();
-        let mut holders = Vec::new();
-        let mut held = HashSet::new();
-        for page in self.page_ids() {
-            let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-            let data = self
-                .doc
-                .get_page_content_with_limit(page, crate::MAX_CONTENT)
-                .ok();
-            self.xobjects_drawn(data, res, &mut used, &mut read);
-            let mut cur = Some(page);
-            while let Some(id) = cur.filter(|&id| held.insert(id)) {
-                holders.push(id);
-                cur = self
-                    .doc
-                    .get_dictionary(id)
-                    .ok()
-                    .and_then(|d| d.get(b"Parent").ok())
-                    .and_then(|o| o.as_reference().ok());
-            }
-        }
-        let unused: HashSet<ObjectId> = dropped.difference(&used).copied().collect();
+    /// Of the pictures and forms `dropped`, take those nothing draws any more (as `reach`,
+    /// a walk after the change, found) out of the resources of everything reached that
+    /// has resources (pages, page-tree nodes, forms, patterns, Type 3 fonts), so they
+    /// aren't kept in the file.
+    pub(crate) fn drop_unused_xobjects(
+        &mut self,
+        dropped: &HashSet<ObjectId>,
+        reach: &Reach,
+    ) -> Result<()> {
+        let unused: HashSet<ObjectId> = dropped.difference(&reach.drawn).copied().collect();
         if unused.is_empty() {
             return Ok(());
         }
-        for h in holders {
+        for &h in &reach.holders {
             self.unlist_xobjects(h, &unused)?;
         }
         Ok(())
     }
 
-    /// Collect the pictures and forms content `data` (drawn with resources `res`) draws, forms'
-    /// insides included, each form read once however deeply it is nested: one left out would
-    /// count as unused and be taken out of resources it is still drawn from. A form without
-    /// resources of its own draws with the names of where it is drawn, so it is read again
-    /// for other names; `read` holds the forms read, with those names. Content that can't be
-    /// read (`None`) may draw anything its resources list, so all of that counts.
-    fn xobjects_drawn(
-        &self,
-        data: Option<Vec<u8>>,
-        res: Dictionary,
-        used: &mut HashSet<ObjectId>,
-        read: &mut FormsRead,
-    ) {
-        let mut todo = vec![(data, res)];
-        while let Some((data, res)) = todo.pop() {
-            let xobjs = self.resolved_dict(res.get(b"XObject").ok());
-            let names = || -> Vec<(Vec<u8>, ObjectId)> {
-                xobjs
-                    .iter()
-                    .filter_map(|(n, o)| Some((n.clone(), o.as_reference().ok()?)))
-                    .collect()
-            };
-            let content = data
-                .and_then(|d| crate::inline::extract(&d).ok())
-                .and_then(|(d, _)| Content::decode(&d).ok());
-            let Some(content) = content else {
-                used.extend(xobjs.iter().filter_map(|(_, o)| o.as_reference().ok()));
-                continue;
-            };
-            for o in content.operations.iter().filter(|o| o.operator == "Do") {
-                let Some(id) = o
-                    .operands
-                    .first()
-                    .and_then(|n| n.as_name().ok())
-                    .and_then(|n| xobjs.get(n).ok())
-                    .and_then(|e| e.as_reference().ok())
-                else {
-                    continue;
-                };
-                used.insert(id);
-                if let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) {
-                    if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Form") {
-                        let own = s
-                            .dict
-                            .get(b"Resources")
-                            .ok()
-                            .map(|o| self.resolved_dict(Some(o)));
-                        let with = if own.is_some() { Vec::new() } else { names() };
-                        if !read.insert((id, with)) {
-                            continue;
-                        }
-                        let c = s.get_plain_content_with_limit(crate::MAX_CONTENT).ok();
-                        todo.push((c, own.unwrap_or_else(|| res.clone())));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Remove the `/XObject` entries pointing at `gone` from `holder`'s own resources.
+    /// Remove the `/XObject` entries pointing at `gone` from `holder`'s own resources;
+    /// `holder` a dictionary or a stream's.
     fn unlist_xobjects(&mut self, holder: ObjectId, gone: &HashSet<ObjectId>) -> Result<()> {
-        let Ok(hd) = self.doc.get_dictionary(holder) else {
-            return Ok(());
+        let hd = match self.doc.get_object(holder) {
+            Ok(Object::Dictionary(d)) => d,
+            Ok(Object::Stream(s)) => &s.dict,
+            _ => return Ok(()),
         };
         let (res_id, mut res) = match hd.get(b"Resources") {
             Ok(Object::Reference(id)) => match self.doc.get_dictionary(*id) {
@@ -1466,7 +1531,10 @@ impl Pdf {
                 res.set("XObject", xo);
                 match res_id {
                     Some(id) => *self.doc.get_dictionary_mut(id)? = res,
-                    None => self.doc.get_dictionary_mut(holder)?.set("Resources", res),
+                    None => match self.doc.get_object_mut(holder)? {
+                        Object::Stream(s) => s.dict.set("Resources", res),
+                        o => o.as_dict_mut()?.set("Resources", res),
+                    },
                 }
             }
         }
@@ -1551,16 +1619,22 @@ impl Pdf {
         left
     }
 
-    /// Look for the removed text elsewhere: on any page, in bookmarks, comments, form
-    /// fields and the document information.
-    fn find_elsewhere(&self, report: &RedactReport) -> Vec<(String, Vec<String>)> {
+    /// Look for the removed text, and the alternative text `alts` taken off, elsewhere: on
+    /// any page, in the alternative text of what the pages draw (`reach`, a walk after the
+    /// change), in bookmarks, comments, form fields and the document information.
+    fn find_elsewhere(
+        &self,
+        report: &RedactReport,
+        alts: &[String],
+        reach: &Reach,
+    ) -> Vec<(String, Vec<String>)> {
         let mut queries: Vec<String> = Vec::new();
         let mut add = |q: String| {
             if q.chars().filter(|c| !c.is_whitespace()).count() >= 2 && !queries.contains(&q) {
                 queries.push(q);
             }
         };
-        for t in report.pages.iter().flat_map(|p| &p.text) {
+        for t in report.pages.iter().flat_map(|p| &p.text).chain(alts) {
             let q = fold(t);
             let words: Vec<&str> = q.split(' ').collect();
             if (2..=3).contains(&words.len()) {
@@ -1575,9 +1649,13 @@ impl Pdf {
         if queries.is_empty() {
             return Vec::new();
         }
-        let pages: Vec<String> = (0..self.page_count())
+        let n = self.page_count();
+        let pages: Vec<String> = (0..n)
             .into_par_iter()
             .map(|p| fold(&self.page_text(p)))
+            .collect();
+        let alt: Vec<Vec<String>> = (reach.nodes.iter())
+            .map(|node| node.alt.iter().map(|a| fold(a)).collect())
             .collect();
         let mut other: Vec<(String, String)> = Vec::new();
         for b in self.outline() {
@@ -1614,6 +1692,10 @@ impl Pdf {
                 .filter(|(_, t)| t.contains(&q))
                 .map(|(i, _)| format!("page {}", i + 1))
                 .collect();
+            let hit = |i: usize| alt[i].iter().any(|t| t.contains(&q));
+            for p in reach.pages_drawing(n, hit) {
+                places.push(format!("alternative text on page {}", p + 1));
+            }
             for (what, t) in &other {
                 if t.contains(&q) && !places.contains(what) {
                     places.push(what.clone());

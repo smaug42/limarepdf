@@ -1,5 +1,6 @@
 mod common;
 
+use common::compare::{differences, Image};
 use common::saved::{tools, Saved};
 use limarepdf_core::{render, ObjectKind, Pdf};
 use lopdf::content::Content;
@@ -850,6 +851,522 @@ fn redacts_inside_a_shared_form_only_on_the_marked_page() {
     );
 }
 
+// What the redacted content's resources still hold (H-01, H-02): alternative text in a named
+// property, and forms whose copies draw with resources that list the original.
+
+/// Adds `extra`'s entries to page `page`'s resources; a dictionary of names (`/XObject`,
+/// `/Font`, …) is added to the one there.
+fn add_res(p: &mut Pdf, page: usize, extra: Dictionary) {
+    let id = p.page_ids()[page];
+    let d = p.doc.get_dictionary_mut(id).unwrap();
+    let mut res = d.get(b"Resources").unwrap().as_dict().unwrap().clone();
+    for (k, v) in extra.iter() {
+        match (res.get_mut(k), v) {
+            (Ok(Object::Dictionary(have)), Object::Dictionary(more)) => {
+                for (n, x) in more.iter() {
+                    have.set(n.clone(), x.clone());
+                }
+            }
+            _ => res.set(k.clone(), v.clone()),
+        }
+    }
+    d.set("Resources", res);
+}
+
+/// A form over the whole page drawing `content`: with resources of its own when `res` is
+/// given, else with those of where it is drawn.
+fn form_with(p: &mut Pdf, content: &str, res: Option<Dictionary>) -> ObjectId {
+    let bbox: Vec<Object> = [0, 0, 300, 200].into_iter().map(Object::Integer).collect();
+    let mut d = dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox };
+    if let Some(res) = res {
+        d.set("Resources", res);
+    }
+    p.doc
+        .add_object(Stream::new(d, content.as_bytes().to_vec()))
+}
+
+/// A grey picture one row high whose samples are `samples`' bytes, so the saved-output check
+/// finds it by them.
+fn marked_picture(p: &mut Pdf, samples: &str) -> ObjectId {
+    p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => samples.len() as i64,
+            "Height" => 1, "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+        samples.as_bytes().to_vec(),
+    ))
+}
+
+/// Page 1's `/F1`.
+fn helvetica_of(p: &Pdf) -> Object {
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    let res = page.get(b"Resources").unwrap().as_dict().unwrap();
+    let fonts = res.get(b"Font").unwrap().as_dict().unwrap();
+    fonts.get(b"F1").unwrap().clone()
+}
+
+/// The dictionary `o` is or refers to; empty when there is none.
+fn dict_at(p: &Pdf, o: Option<&Object>) -> Dictionary {
+    match o.map(|o| p.doc.dereference(o)) {
+        Some(Ok((_, Object::Dictionary(d)))) => d.clone(),
+        Some(Ok((_, Object::Stream(s)))) => s.dict.clone(),
+        _ => Dictionary::new(),
+    }
+}
+
+/// Marks over `query` on page `page` only.
+fn marks_on(p: &Pdf, page: usize, query: &str) -> Vec<(usize, [f32; 4])> {
+    let marks: Vec<_> = (p.find_redaction_marks(query).unwrap().into_iter())
+        .filter(|m| m.0 == page)
+        .collect();
+    assert!(!marks.is_empty(), "{query} is on page {}", page + 1);
+    marks
+}
+
+/// Page `page` as LimarePDF draws it, at 72 dpi.
+fn drawn(p: &mut Pdf, page: usize) -> Image {
+    let doc = render::load(p.snapshot().unwrap(), None).unwrap();
+    Image::from_bitmap(&render::Renderer::new(&doc).render(page, 1.0).unwrap())
+}
+
+/// How many pixels of two drawings of a page at 72 dpi differ (beyond anti-aliasing) outside
+/// `marks` (displayed-page points, y down) and two pixels around them.
+fn changed_outside(a: &Image, b: &Image, marks: &[(usize, [f32; 4])]) -> usize {
+    let (mask, w, _) = differences(a, b, 8);
+    let near_mark = |x: f32, y: f32| {
+        marks
+            .iter()
+            .any(|(_, r)| x >= r[0] - 2.0 && x <= r[2] + 2.0 && y >= r[1] - 2.0 && y <= r[3] + 2.0)
+    };
+    (mask.iter().enumerate())
+        .filter(|&(i, &m)| m && !near_mark((i % w) as f32, (i / w) as f32))
+        .count()
+}
+
+/// Pixels in `area` (x0, y0, x1, y1 at 72 dpi, y down) darker than light grey.
+fn ink(img: &Image, area: [usize; 4]) -> usize {
+    (area[1]..area[3])
+        .flat_map(|y| (area[0]..area[2]).map(move |x| (x, y)))
+        .filter(|&(x, y)| img.px(x, y).iter().any(|&c| c < 200))
+        .count()
+}
+
+/// Redacting a marked span whose alternative text is in a named property (`/Span /P1 BDC`),
+/// the property dictionary and the page's list of properties each direct or a reference:
+/// the alternative text leaves the file, not only the content's own copy of the property.
+#[test]
+fn alternative_text_in_a_named_property_goes() {
+    for key in ["ActualText", "Alt", "E"] {
+        for listed_by_reference in [false, true] {
+            let mut p = make(&["/Span /P1 BDC BT /F1 20 Tf 30 100 Td (Zebra) Tj ET EMC \
+                 BT /F1 20 Tf 30 40 Td (Kept) Tj ET"]);
+            let mut alt = Dictionary::new();
+            alt.set(key, Object::string_literal("ZebraSecretAlt"));
+            let prop = p.doc.add_object(alt);
+            let list: Object = match listed_by_reference {
+                false => dictionary! { "P1" => prop }.into(),
+                true => p.doc.add_object(dictionary! { "P1" => prop }).into(),
+            };
+            add_res(&mut p, 0, dictionary! { "Properties" => list });
+            let marks = marks_on(&p, 0, "zebra");
+            let rep = p.redact(&marks).unwrap();
+            assert!(rep.left.is_empty(), "{key}: {:?}", rep.left);
+            let saved = Saved::of(&mut p);
+            saved.assert_gone(&["ZebraSecretAlt"]);
+            saved.assert_kept(&["Kept"]);
+        }
+    }
+}
+
+/// As above, with the property in the resources of the form that draws the span, and of a
+/// form inside another form.
+#[test]
+fn alternative_text_in_a_form_s_named_property_goes() {
+    for nested in [false, true] {
+        let mut p = make(&["q /Fm1 Do Q"]);
+        let font = helvetica_of(&p);
+        let prop = (p.doc)
+            .add_object(dictionary! { "ActualText" => Object::string_literal("ZebraSecretAlt") });
+        let res = dictionary! {
+            "Font" => dictionary! { "F1" => font },
+            "Properties" => dictionary! { "P1" => prop },
+        };
+        let span = "/Span /P1 BDC BT /F1 20 Tf 30 100 Td (Zebra) Tj ET EMC \
+                    BT /F1 20 Tf 30 40 Td (Kept) Tj ET";
+        let mut top = form_with(&mut p, span, Some(res));
+        if nested {
+            let xobjects = dictionary! { "XObject" => dictionary! { "Fm2" => top } };
+            top = form_with(&mut p, "q /Fm2 Do Q", Some(xobjects));
+        }
+        add_res(
+            &mut p,
+            0,
+            dictionary! { "XObject" => dictionary! { "Fm1" => top } },
+        );
+        let marks = marks_on(&p, 0, "zebra");
+        let rep = p.redact(&marks).unwrap();
+        assert!(rep.left.is_empty(), "nested {nested}: {:?}", rep.left);
+        let saved = Saved::of(&mut p);
+        saved.assert_gone(&["ZebraSecretAlt"]);
+        saved.assert_kept(&["Kept"]);
+    }
+}
+
+/// The same named property also marks text on a page that is left alone: it stays there,
+/// the redacted page no longer lists it, and the report says where the removed alternative
+/// text still is (it differs from the text shown, so only the alternative text finds it).
+#[test]
+fn alternative_text_still_used_elsewhere_is_kept_and_reported() {
+    let mut p = make(&[
+        "/Span /P1 BDC BT /F1 20 Tf 30 100 Td (Kudu) Tj ET EMC",
+        "/Span /P1 BDC BT /F1 20 Tf 30 100 Td (Other) Tj ET EMC",
+    ]);
+    let prop = (p.doc)
+        .add_object(dictionary! { "ActualText" => Object::string_literal("ZebraSecretAlt") });
+    for page in 0..2 {
+        add_res(
+            &mut p,
+            page,
+            dictionary! { "Properties" => dictionary! { "P1" => prop } },
+        );
+    }
+    let marks = marks_on(&p, 0, "kudu");
+    let rep = p.redact(&marks).unwrap();
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["Kudu"]);
+    saved.assert_kept(&["ZebraSecretAlt", "Other"]);
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    let res = dict_at(&p, page.get(b"Resources").ok());
+    let props = dict_at(&p, res.get(b"Properties").ok());
+    assert!(!props.has(b"P1"), "page 1 still lists the property");
+    assert!(
+        rep.elsewhere.iter().any(|(q, places)| q == "zebrasecretalt"
+            && places.iter().any(|w| w == "alternative text on page 2")),
+        "{:?}",
+        rep.elsewhere
+    );
+}
+
+/// Text under a mark and text kept, drawn by a form.
+const FORM_SECRET: &str = "BT /F1 20 Tf 30 100 Td (FormSecretZebra) Tj ET \
+                           BT /F1 20 Tf 30 40 Td (Kept) Tj ET";
+
+/// Redacts "FormSecretZebra" on page 1, then checks it's gone from the saved file and what
+/// was kept is still there.
+fn redact_form_secret(p: &mut Pdf) {
+    let marks = marks_on(p, 0, "formsecretzebra");
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    let saved = Saved::of(p);
+    saved.assert_gone(&["FormSecretZebra"]);
+    saved.assert_kept(&["Kept"]);
+}
+
+/// A form without resources of its own draws with the page's, which list the form itself.
+/// Its redacted copy is given those resources: the original form must not stay in the file
+/// through them (the audit's probe).
+#[test]
+fn a_redacted_form_drawing_with_the_page_s_resources_leaves_no_original() {
+    let mut p = make(&["q /Fm1 Do Q"]);
+    let fm = form_with(&mut p, FORM_SECRET, None);
+    add_res(
+        &mut p,
+        0,
+        dictionary! { "XObject" => dictionary! { "Fm1" => fm } },
+    );
+    redact_form_secret(&mut p);
+}
+
+/// A form whose own resources list the form itself (it doesn't draw it).
+#[test]
+fn a_redacted_form_listing_itself_leaves_no_original() {
+    let mut p = make(&["q /Fm1 Do Q"]);
+    let font = helvetica_of(&p);
+    let fm = form_with(&mut p, FORM_SECRET, None);
+    let res = dictionary! {
+        "Font" => dictionary! { "F1" => font }, "XObject" => dictionary! { "Me" => fm },
+    };
+    let s = p.doc.get_object_mut(fm).unwrap().as_stream_mut().unwrap();
+    s.dict.set("Resources", res);
+    add_res(
+        &mut p,
+        0,
+        dictionary! { "XObject" => dictionary! { "Fm1" => fm } },
+    );
+    redact_form_secret(&mut p);
+}
+
+/// Two forms, each listing the other in its resources (neither draws the other); the page
+/// draws both, and only the first has text under the mark. The second is kept as it is, but
+/// must not keep the first's original in the file.
+#[test]
+fn a_redacted_form_listed_by_a_kept_form_leaves_no_original() {
+    let mut p = make(&["q /Fm1 Do Q q /Fm2 Do Q"]);
+    let font = helvetica_of(&p);
+    let first = form_with(&mut p, FORM_SECRET, None);
+    let second = form_with(&mut p, "BT /F1 20 Tf 30 160 Td (Second form) Tj ET", None);
+    for (me, other) in [(first, second), (second, first)] {
+        let res = dictionary! {
+            "Font" => dictionary! { "F1" => font.clone() },
+            "XObject" => dictionary! { "Other" => other },
+        };
+        let s = p.doc.get_object_mut(me).unwrap().as_stream_mut().unwrap();
+        s.dict.set("Resources", res);
+    }
+    add_res(
+        &mut p,
+        0,
+        dictionary! { "XObject" => dictionary! { "Fm1" => first, "Fm2" => second } },
+    );
+    redact_form_secret(&mut p);
+    Saved::of(&mut p).assert_kept(&["Second form"]);
+}
+
+/// Three forms, each drawing the next, none with resources of its own; the last has the
+/// text under the mark.
+#[test]
+fn redacted_forms_nested_three_deep_leave_no_originals() {
+    let mut p = make(&["q /Fm1 Do Q"]);
+    let third = form_with(&mut p, FORM_SECRET, None);
+    let second = form_with(&mut p, "q /Fm3 Do Q", None);
+    let first = form_with(&mut p, "q /Fm2 Do Q", None);
+    add_res(
+        &mut p,
+        0,
+        dictionary! { "XObject" => dictionary! { "Fm1" => first, "Fm2" => second, "Fm3" => third } },
+    );
+    redact_form_secret(&mut p);
+}
+
+/// A picture drawn only inside a form nested in a form without resources of its own, wholly
+/// under a mark: neither the picture nor the forms it was drawn from stay in the file.
+#[test]
+fn a_picture_drawn_only_inside_a_redacted_form_leaves_no_original() {
+    let mut p = make(&["q /Fm1 Do Q"]);
+    let font = helvetica_of(&p);
+    let pic = marked_picture(&mut p, "ImgSecretZebra");
+    let inner = form_with(
+        &mut p,
+        "q 140 0 0 10 30 95 cm /Im1 Do Q BT /F1 20 Tf 30 40 Td (Kept) Tj ET",
+        Some(dictionary! {
+            "Font" => dictionary! { "F1" => font }, "XObject" => dictionary! { "Im1" => pic },
+        }),
+    );
+    let outer = form_with(&mut p, "q /Fm2 Do Q", None);
+    add_res(
+        &mut p,
+        0,
+        dictionary! { "XObject" => dictionary! { "Fm1" => outer, "Fm2" => inner } },
+    );
+    let rep = p.redact(&[(0, [25.0, 90.0, 175.0, 110.0])]).unwrap();
+    assert_eq!(rep.pages[0].images_cut, 1, "{:?}", rep.pages[0]);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["ImgSecretZebra"]);
+    saved.assert_kept(&["Kept"]);
+}
+
+/// The control: the same form without resources, drawn on a page left alone too, stays for
+/// that page as it was, and the report says where its text still is.
+#[test]
+fn a_redacted_form_another_page_draws_is_kept_for_it() {
+    let mut p = make(&["q /Fm1 Do Q", "q /Fm1 Do Q"]);
+    let fm = form_with(&mut p, FORM_SECRET, None);
+    for page in 0..2 {
+        add_res(
+            &mut p,
+            page,
+            dictionary! { "XObject" => dictionary! { "Fm1" => fm } },
+        );
+    }
+    let before = drawn(&mut p, 1);
+    let marks = marks_on(&p, 0, "formsecretzebra");
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!rep.elsewhere.is_empty());
+    let saved = Saved::of(&mut p);
+    saved.assert_kept(&["FormSecretZebra", "Kept"]);
+    let mut back = Pdf::from_bytes(&saved.bytes, None).unwrap();
+    assert!(!back.page_text(0).contains("FormSecretZebra"));
+    assert_eq!(changed_outside(&before, &drawn(&mut back, 1), &[]), 0);
+}
+
+/// Redacted form A draws form B, kept as it is. B has no resources of its own, so it draws
+/// with A's: a picture, a font and a marked-content property that A's own content never
+/// names. `chain`: B only draws C (no resources either), which needs them. `shared`: page 2
+/// draws B too.
+fn needs_through_a_redacted_form(chain: bool, shared: bool) -> Pdf {
+    let pages: Vec<&str> = match shared {
+        false => vec!["q /A Do Q"],
+        true => vec!["q /A Do Q", "q /B Do Q"],
+    };
+    let mut p = make(&pages);
+    let times = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Times-Roman", "Encoding" => "WinAnsiEncoding",
+    });
+    let prop = (p.doc)
+        .add_object(dictionary! { "ActualText" => Object::string_literal("RetainedAltText") });
+    let pic = marked_picture(&mut p, "RetainedPicture");
+    let needs = "/Span /PB BDC BT /FB 14 Tf 30 40 Td (Retained text) Tj ET EMC \
+                 q 20 0 0 20 230 30 cm /ImB Do Q";
+    let mut xobjects = dictionary! { "ImB" => pic };
+    let b = match chain {
+        false => form_with(&mut p, needs, None),
+        true => {
+            xobjects.set("C", form_with(&mut p, needs, None));
+            form_with(&mut p, "q /C Do Q", None)
+        }
+    };
+    let a = form_with(
+        &mut p,
+        "BT /F1 20 Tf 30 100 Td (FormSecretZebra) Tj ET q /B Do Q",
+        None,
+    );
+    xobjects.set("A", a);
+    xobjects.set("B", b);
+    for page in 0..pages.len() {
+        let extra = dictionary! {
+            "XObject" => xobjects.clone(),
+            "Font" => dictionary! { "FB" => times },
+            "Properties" => dictionary! { "PB" => prop },
+        };
+        add_res(&mut p, page, extra);
+    }
+    p
+}
+
+/// After A is redacted, B (and C) still find in A's copy the picture, font and property
+/// they draw with, and the pages look the same outside the mark.
+#[test]
+fn a_redacted_form_s_copy_keeps_what_a_kept_form_inside_it_needs() {
+    for (chain, shared) in [(false, false), (true, false), (false, true), (true, true)] {
+        let case = format!("chain {chain}, shared {shared}");
+        let mut p = needs_through_a_redacted_form(chain, shared);
+        let before: Vec<Image> = (0..p.page_count()).map(|i| drawn(&mut p, i)).collect();
+        assert!(
+            ink(&before[0], [230, 150, 250, 170]) > 100,
+            "{case}: B's picture is drawn"
+        );
+        let marks = marks_on(&p, 0, "formsecretzebra");
+        let rep = p.redact(&marks).unwrap();
+        assert!(rep.left.is_empty(), "{case}: {:?}", rep.left);
+        let saved = Saved::of(&mut p);
+        saved.assert_gone(&["FormSecretZebra"]);
+        saved.assert_kept(&["RetainedAltText", "Retained text", "RetainedPicture"]);
+
+        let mut back = Pdf::from_bytes(&saved.bytes, None).unwrap();
+        for (i, was) in before.iter().enumerate() {
+            let text = back.page_text(i);
+            assert!(
+                text.contains("Retained text"),
+                "{case}, page {}: {text}",
+                i + 1
+            );
+            let on: Vec<_> = marks.iter().filter(|m| m.0 == i).copied().collect();
+            let changed = changed_outside(was, &drawn(&mut back, i), &on);
+            assert_eq!(changed, 0, "{case}, page {}", i + 1);
+        }
+        // Every form drawing B draws it with resources of its own that hold all B needs.
+        let mut drawing_b = 0;
+        for (id, o) in &back.doc.objects {
+            let Ok(s) = o.as_stream() else { continue };
+            if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Form") {
+                continue;
+            }
+            let data = s
+                .decompressed_content()
+                .unwrap_or_else(|_| s.content.clone());
+            if !data.windows(5).any(|w| w == b"/B Do") {
+                continue;
+            }
+            drawing_b += 1;
+            let res = dict_at(&back, s.dict.get(b"Resources").ok());
+            let mut needed = vec![(&b"XObject"[..], &b"B"[..]), (b"XObject", b"ImB")];
+            needed.extend([(&b"Font"[..], &b"FB"[..]), (b"Properties", b"PB")]);
+            if chain {
+                needed.push((b"XObject", b"C"));
+            }
+            for (kind, name) in needed {
+                let names = dict_at(&back, res.get(kind).ok());
+                let found = (names.get(name).ok())
+                    .is_some_and(|o| back.doc.dereference(o).is_ok_and(|(i, _)| i.is_some()));
+                assert!(
+                    found,
+                    "{case}: object {id:?} draws B without /{} /{}",
+                    String::from_utf8_lossy(kind),
+                    String::from_utf8_lossy(name)
+                );
+            }
+        }
+        assert_eq!(drawing_b, 1, "{case}: only A's copy draws B");
+    }
+}
+
+/// A page with "Zebra" to redact, drawing a tree of forms `depth` deep, each with resources
+/// of its own and drawing `width` others.
+fn forms_tree(depth: usize, width: usize) -> Pdf {
+    let mut p = make(&["BT /F1 20 Tf 30 100 Td (Zebra) Tj ET BT /F1 20 Tf 30 40 Td (Kept) Tj ET"]);
+    fn tree(p: &mut Pdf, depth: usize, width: usize) -> ObjectId {
+        let mut xobjects = Dictionary::new();
+        let mut content = String::new();
+        if depth > 0 {
+            for i in 0..width {
+                xobjects.set(format!("F{i}"), tree(p, depth - 1, width));
+                content.push_str(&format!("q 0.5 0 0 0.5 0 0 cm /F{i} Do Q "));
+            }
+        }
+        let res = dictionary! { "XObject" => xobjects };
+        form_with(p, &content, Some(res))
+    }
+    let top = tree(&mut p, depth, width);
+    let id = p.page_ids()[0];
+    let content = p.doc.get_page_content(id);
+    let more = [content.as_slice(), b" q /Top Do Q"].concat();
+    let s = p.doc.add_object(Stream::new(Dictionary::new(), more));
+    p.doc.get_dictionary_mut(id).unwrap().set("Contents", s);
+    add_res(
+        &mut p,
+        0,
+        dictionary! { "XObject" => dictionary! { "Top" => top } },
+    );
+    p
+}
+
+/// Following the drawings has a budget: a document needing one step more than it allows
+/// is refused with nothing changed, and one needing exactly as many is redacted.
+#[test]
+fn drawings_too_complex_to_follow_are_refused_with_nothing_changed() {
+    use limarepdf_core::{budget_seam, TooComplex};
+    let marks = marks_on(&forms_tree(4, 3), 0, "zebra");
+    // The steps the check before redacting takes: its budget is the first one made.
+    let (done, taken) =
+        budget_seam::with_limit(u64::MAX / 4, || forms_tree(4, 3).redact(&marks).map(|_| ()));
+    done.unwrap();
+    let needed = taken[0];
+    assert!(
+        needed > 121,
+        "each of the 121 forms is a step at least: {taken:?}"
+    );
+
+    let mut p = forms_tree(4, 3);
+    let (done, _) = budget_seam::with_limit(needed, || p.redact(&marks));
+    done.unwrap();
+    Saved::of(&mut p).assert_gone(&["Zebra"]);
+
+    let mut p = forms_tree(4, 3);
+    let before = p.state_before();
+    let (done, taken) = budget_seam::with_limit(needed - 1, || p.redact(&marks));
+    let e = done.unwrap_err();
+    let too = e.downcast_ref::<TooComplex>().expect("too complex");
+    assert_eq!(too.limit, needed - 1, "{e:#}");
+    assert_eq!(
+        taken.len(),
+        1,
+        "only the check before redacting ran: {taken:?}"
+    );
+    assert!(taken[0] < needed, "{taken:?}");
+    assert_eq!(p.state_since(&before), []);
+}
+
 #[test]
 fn removes_annotations_touching_a_mark() {
     let mut p = make(&["BT /F1 20 Tf 30 100 Td (Zebra) Tj ET"]);
@@ -1414,6 +1931,44 @@ fn cross_check_redacted_output_with_poppler_and_ghostscript() {
         [("C".into(), 10.0, 30.0), ("D".into(), 60.0, 80.0)],
         "poppler after"
     );
+}
+
+/// Poppler reading a redacted form's copy that a kept form inside draws with: the kept
+/// form's text is still read on every page (as its alternative text, which poppler reads in
+/// its place, so the property is still found too), and the first page looks the same
+/// outside the mark: `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_a_redacted_form_s_copy_with_poppler() {
+    for (chain, shared) in [(false, false), (true, false), (false, true), (true, true)] {
+        let case = format!("chain {chain}, shared {shared}");
+        let mut p = needs_through_a_redacted_form(chain, shared);
+        let before = p.to_bytes().unwrap();
+        assert!(
+            tools::pdftotext(&before).contains("FormSecretZebra"),
+            "{case}"
+        );
+        let marks = marks_on(&p, 0, "formsecretzebra");
+        assert!(p.redact(&marks).unwrap().left.is_empty(), "{case}");
+        let after = p.to_bytes().unwrap();
+        let text = tools::pdftotext(&after);
+        // pdftotext ends each page with a form feed.
+        let pages: Vec<&str> = text.split('\x0c').filter(|t| !t.is_empty()).collect();
+        assert_eq!(pages.len(), p.page_count(), "{case}: {text}");
+        for (i, t) in pages.iter().enumerate() {
+            assert!(
+                !t.contains("FormSecretZebra"),
+                "{case}, page {}: {t}",
+                i + 1
+            );
+            assert!(t.contains("RetainedAltText"), "{case}, page {}: {t}", i + 1);
+        }
+        let changed = changed_outside(&tools::pdftoppm(&before), &tools::pdftoppm(&after), &marks);
+        assert_eq!(
+            changed, 0,
+            "{case}: poppler draws page 1 differently outside the mark"
+        );
+    }
 }
 
 /// A real public PDF: the Magick++ tutorial ImageMagick installs. Its page 14 has text, a
