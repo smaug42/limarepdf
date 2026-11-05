@@ -24,6 +24,12 @@
   before, the picture was no longer drawn but stayed in the saved file.
 - Redaction, and Remove hidden information with hidden layers, refuse a file whose drawings lead to one another
   in too many ways to follow, saying so and changing nothing, rather than working on it for a very long time.
+- Two tabs saved as one file at once could leave the file holding either document, with both tabs marked saved.
+  Now a file LimarePDF is still saving or writing is refused to every other Save As, saved selection, exported
+  text, signed copy, split, image export and saved picture until that ends, by any spelling of its name, in
+  capitals too; the message names the file and says to wait or choose another name.
+- Split, Export pages as images and Save all images no longer write over a file open in a tab; like Save As, they
+  say so and write nothing.
 
 ## [0.13.0] - 2026-11-03
 

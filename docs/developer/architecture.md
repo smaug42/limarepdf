@@ -1301,8 +1301,10 @@ before its other questions, and `App::save_target` again just before writing (Sa
 save, Save as onto the tab's own file by any path); a changed file asks `Dialog::ConfirmStale` (Save as… or Replace;
 Replace stores that version in `App::replace_ok`, so the save then goes ahead unless the file changes again), and
 shows the `ChangedOnDisk` notice, whose Reload the question has no room for (three answers and Cancel don't fit a
-400-point window). Save as, saving selected text, exporting text and signing refuse a file another tab has open
-(`App::in_other_tab`). When the window gets the keyboard back (`egui`'s `focused`) and when an open file is opened
+400-point window). Save as, saving selected text, exporting text, signing, splitting, exporting pages as images
+and saving pictures refuse a file another tab has open (`App::in_other_tab`, through `App::conflict`; the last
+three since S1-03's PB-86, a split part named like an open file having been written over it), and a file being
+written (below). When the window gets the keyboard back (`egui`'s `focused`) and when an open file is opened
 again, `App::check_disk` compares the files on a thread, and a tab whose file changed shows the notice, once per
 new version (`Tab::changed_on_disk`). Reload (`Act::Reload`, asking with unsaved changes) reads the file through the
 same path as Open, with the tab's id and revision, and swaps the new tab into the old one's place unless the
@@ -1729,6 +1731,28 @@ with a message (a banner's Reload, placing a signature box); `Loaded::Disk` resu
 out, as its own save is replacing the file. `on_exit` joins the save threads (`finish_saves`), so a system
 shutting the app down doesn't cut a write short. Tests hold the next save's write until they say go
 (`App::save_gate`) and wait for it with `saves_done`.
+
+The files being written are reserved until their writers end (S1-03, H-05: two tabs' saves to one file could
+both be admitted, the file ending as either tab's, both tabs marked saved). `App::destinations`
+(`app/destinations.rs`) holds each claimed file's `disk::Identity` with its `Owner`: a save (`Owner::Save`, its tab
+and number), a background job (`Owner::Job`, numbered by `App::jobs_made` and carried in `Loaded::Job`) or the
+signing window (`Owner::Signing`). `disk::identity` takes the path canonicalised (for a file not there yet, its
+folder canonicalised with the name), on Unix the device and inode, and the path in lower case; `matches` is the
+same path or the same inode, so a file named before it exists, and one a save renames a new file over, are still
+the same. `App::conflict` checks a path against the open tabs exactly (`in_other_tab`) and against the claims
+ignoring case (`matches_ignoring_case`), on every system: Windows, macOS, FAT, exFAT and shared folders ignore
+case, and a name not there yet can't tell which. A refusal names the file and its writer ("is being saved from
+another tab", "is being written"), and nothing is written. The writer is admitted and claims on the window's
+thread in the same frame, so nothing comes between: `save_target` checks and `start_save` claims, released in
+`saved` however the save ended (written, not confirmed, failed, or its tab gone); `spawn_job` takes the files a
+job writes (every part of a split from `split_names`, every image from `image_files`, every picture from
+`picture_names`, the one picture saved), checks and claims them, released when its `Loaded::Job` arrives; signing
+claims its file once `SignWindow::start` is signing, released by `digital_windows` on the first frame the window
+isn't (signed, failed or cancelled). The split, image export and save-all-pictures check before asking to replace
+files too. Exporting text and saving the selection write on the window's thread, so they only check. Debug builds
+assert at exit, after `finish_saves`, that no save's claim is left. Not covered (for WP-01): exporting a digital
+ID or certificate, the recovery store's private folder, other apps; `disk::same_file` still serves opening and the
+CLI.
 
 Listing annotations (`Pdf::annotations`, and `every_annotation` for the redaction marks counted after every change
 and before every save) passes each page's id to `annotations_in`; looked up by number (`page_id_at`, which builds

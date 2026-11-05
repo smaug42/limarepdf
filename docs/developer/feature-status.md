@@ -335,7 +335,11 @@ available.
   (since batch 37, ENH-35): the document can be changed meanwhile, and the tab then stays unsaved; saving it again,
   closing it and quitting wait for the save, and Reload and signing are off until it ends. While it writes, the
   app holds a second copy of the document in memory. The save's questions and checks still come first, on the
-  window's thread (on 300 pages about 20 ms, a signed document's added changes about 30 ms).
+  window's thread (on 300 pages about 20 ms, a signed document's added changes about 30 ms). Since S1-03, the
+  file a save, a background job or signing writes is refused to every other writer in the app until it ends
+  (compared ignoring case on every system, so `Result.pdf` is refused while `result.pdf` is written, also on
+  Linux, where they are two files). Not yet covered (WP-01): exporting a digital ID or certificate, the recovery
+  store, and other apps writing the file.
 - Undo keeps up to 100 steps within 1 GB per document, each the size of what its change changed, so a few steps
   are larger than a copy of the document would be: the first page change on a long document (moving, deleting,
   turning or adding pages) changes every page's entry and keeps 28 MB on 10,000 pages, and a watermark on 10,000

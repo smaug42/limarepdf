@@ -975,10 +975,11 @@ impl IdsWindow {
 
 /// Asks where to save an exported file, suggesting `stem.ext`.
 fn save_path(stem: &str, ext: &str, kind: &str) -> Option<PathBuf> {
-    let mut path = rfd::FileDialog::new()
-        .add_filter(kind, &[ext])
-        .set_file_name(format!("{stem}.{ext}"))
-        .save_file()?;
+    let mut path = crate::app::App::save_as(
+        rfd::FileDialog::new()
+            .add_filter(kind, &[ext])
+            .set_file_name(format!("{stem}.{ext}")),
+    )?;
     if path.extension().is_none() {
         path.set_extension(ext);
     }

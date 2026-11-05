@@ -83,6 +83,92 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     false
 }
 
+/// A file about to be written, as an app tells whether two of its writers name one file
+/// ([`identity`]). Taken before the file is written, it stays valid after: a file not there
+/// yet is known by its folder's path, and a file replaced by a rename by its path.
+#[derive(Clone, Debug)]
+pub struct Identity {
+    /// The path made absolute, with links and `..` followed: the file's own, or for a file
+    /// not there yet, its folder's with its name.
+    path: PathBuf,
+    /// The device and inode of a file that is there, as a hard link to it shares.
+    #[cfg(unix)]
+    node: Option<(u64, u64)>,
+    /// The path in lower case, as a disk that ignores case compares names.
+    folded: String,
+}
+
+impl Identity {
+    /// The path the file was known by.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether the two name one file: the same path, or on Unix the same device and inode.
+    pub fn matches(&self, other: &Identity) -> bool {
+        if self.path == other.path {
+            return true;
+        }
+        #[cfg(unix)]
+        if let (Some(a), Some(b)) = (self.node, other.node) {
+            return a == b;
+        }
+        false
+    }
+
+    /// Whether the two may name one file: as [`Self::matches`] says, or by paths that differ
+    /// only in case. Windows and macOS ignore case by default, and so do FAT, exFAT and
+    /// shared folders wherever they are mounted: a name not there yet can't tell which.
+    pub fn matches_ignoring_case(&self, other: &Identity) -> bool {
+        self.matches(other) || self.folded == other.folded
+    }
+}
+
+/// The [`Identity`] of the file `path` names, there or not.
+pub fn identity(path: &Path) -> Identity {
+    let path = path.canonicalize().unwrap_or_else(|_| {
+        let folder = match path.parent() {
+            Some(p) if p.as_os_str().is_empty() => Path::new("."),
+            Some(p) => p,
+            None => return lexical(path),
+        };
+        match (folder.canonicalize(), path.file_name()) {
+            (Ok(folder), Some(name)) => folder.join(name),
+            _ => lexical(path),
+        }
+    });
+    #[cfg(unix)]
+    let node = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino()))
+    };
+    let folded = path.to_string_lossy().to_lowercase();
+    Identity {
+        path,
+        #[cfg(unix)]
+        node,
+        folded,
+    }
+}
+
+/// `path` made absolute with `.` and `..` taken out by their names alone, for a path whose
+/// folder isn't there to follow.
+fn lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// How much older than its reading a file's time must be to be trusted: a change made in
 /// the same tick of the file's clock keeps the time, and FAT keeps times to 2 seconds.
 const SETTLED: Duration = Duration::from_secs(2);
@@ -221,6 +307,59 @@ mod tests {
             std::fs::hard_link(&a, dir.join("hard.pdf")).unwrap();
             assert!(same_file(&dir.join("hard.pdf"), &a));
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Two spellings of a file not there yet are one; a different name, or only a different
+    /// case, isn't, though it may be on a disk that ignores case.
+    #[test]
+    fn identity_of_a_file_not_there_yet() {
+        let dir = test_dir("identity-absent");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let x = identity(&dir.join("x.pdf"));
+        assert!(x.matches(&identity(&dir.join("sub/../x.pdf"))));
+        assert!(x.matches(&identity(&dir.join("./x.pdf"))));
+        assert!(!x.matches(&identity(&dir.join("y.pdf"))));
+        let upper = identity(&dir.join("X.pdf"));
+        assert!(!x.matches(&upper));
+        assert!(x.matches_ignoring_case(&upper));
+        assert!(!x.matches_ignoring_case(&identity(&dir.join("y.pdf"))));
+        // Nor is its folder there: known by its names alone.
+        let gone = identity(&dir.join("none/../none/z.pdf"));
+        assert_eq!(gone.path(), dir.canonicalize().unwrap().join("none/z.pdf"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A file named while not there is the same file once it is written, and once a save
+    /// renames a new file over it.
+    #[test]
+    fn identity_lasts_through_writing_and_replacing() {
+        let dir = test_dir("identity-written");
+        let p = dir.join("x.pdf");
+        let before = identity(&p);
+        std::fs::write(&p, "first").unwrap();
+        let written = identity(&p);
+        assert!(before.matches(&written));
+        let tmp = dir.join("tmp.pdf");
+        std::fs::write(&tmp, "second").unwrap();
+        std::fs::rename(&tmp, &p).unwrap();
+        let replaced = identity(&p);
+        assert!(written.matches(&replaced), "a new inode at the same path");
+        assert!(before.matches(&replaced));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A hard link is another path to the same file.
+    #[cfg(unix)]
+    #[test]
+    fn identity_through_a_hard_link() {
+        let dir = test_dir("identity-hard");
+        let (a, hard) = (dir.join("a.pdf"), dir.join("hard.pdf"));
+        std::fs::write(&a, "a").unwrap();
+        std::fs::hard_link(&a, &hard).unwrap();
+        assert!(identity(&a).matches(&identity(&hard)));
+        std::fs::write(dir.join("b.pdf"), "a").unwrap();
+        assert!(!identity(&a).matches(&identity(&dir.join("b.pdf"))));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

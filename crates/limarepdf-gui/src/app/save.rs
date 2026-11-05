@@ -4,9 +4,10 @@
 //! file and reads it back. The window keeps drawing meanwhile, with a busy sign in the
 //! status bar, and the document can still be changed: the file gets it as it was when
 //! saved, and a tab changed since stays unsaved. Saving the tab again, closing it and
-//! quitting wait for the save to end; Reload and signing are off until then.
+//! quitting wait for the save to end; Reload and signing are off until then. Its file is
+//! claimed until then too, so nothing else in the app writes it meanwhile (S1-03).
 
-use super::{not_confirmed, App, Dialog, Loaded, NOT_CONFIRMED};
+use super::{not_confirmed, App, Dialog, Loaded, Owner, NOT_CONFIRMED};
 use crate::banners::Kind as BannerKind;
 use crate::signatures::Check;
 use crate::tab::State;
@@ -80,6 +81,9 @@ impl App {
         let t = &self.tabs[self.active];
         self.saves_made += 1;
         let (tab, n) = (t.id, self.saves_made);
+        // Admitted by [`App::save_target`] in this frame: nothing else claimed it since.
+        let owner = Owner::Save { tab, n };
+        self.destinations.claim(std::slice::from_ref(&path), owner);
         let appended = matches!(write, Write::Appended(_));
         let (tx, repaint) = (self.tx.clone(), ctx.clone());
         #[cfg(test)]
@@ -158,6 +162,9 @@ impl App {
         if let Some(thread) = run.thread.take() {
             let _ = thread.join();
         }
+        // However it ended, nothing more is written: another tab may save there now.
+        let owner = Owner::Save { tab: s.tab, n: s.n };
+        self.destinations.release(owner);
         let confirmed = match s.written {
             Ok(()) => true,
             Err(e) if not_confirmed(&e) => false,
@@ -280,6 +287,12 @@ impl App {
             if let Some(thread) = r.thread.take() {
                 let _ = thread.join();
             }
+            let owner = Owner::Save { tab: r.tab, n: r.n };
+            self.destinations.release(owner);
         }
+        debug_assert!(
+            !self.destinations.saving(),
+            "a file is still claimed by a save that isn't running"
+        );
     }
 }
