@@ -964,6 +964,22 @@ after the change is allowed twice the limit plus the objects added, so it can't 
 passed (argued, not proven: should it, the app undoes the step). Finding hidden information (the count run on
 a copy, not strict) leaves the pictures listed when that walk fails rather than refusing. The budget belongs in `contracts.md` once WP-10 writes it.
 
+Reading a page (`objects.rs`, `parse_as_page`; S1-06, H-07) has a budget of its own: a step per operator and per
+form opened, plus one per KiB of the form's content, charged across every form the page draws, however often (a
+form is read again each time it is drawn). `objects::STEPS` is 2²³ (8,388,608): 14 times the corpus maximum,
+588,688 steps (`pdfbox/5134.pdf`, page 1; every page of the 1,080 files that open, measured 2026-11-05 with the
+budget lifted). A step takes about 0.47 µs in an optimised build, whatever the forms' depth or width, so a page
+is refused after about 4 s of reading; the heaviest corpus page reads in 0.36 s. The margin is below S1-01's 32
+times by the user's choice (2026-11-05): 32 times would be about 16 s, and the editor reads a page more than
+once. An edit reads its own new content back before writing it (`parse_as_page`) within the same limit, so no
+edit makes a page that can't then be read. A form drawn again inside itself is passed over where it repeats
+(each form read once on the way down, as pdf.js does; its `issue19800-eq.pdf`), and the nesting limit, 8, stays.
+A form whose content can't be decoded is passed over too; only a `TooComplex` refusal goes up to the page. Then
+editing refuses (`page_objects` fails), redaction reads the text under every mark before changing any page and
+refuses, search names each page it can't read, with why (`Matches::unread`, shown under Search results), and
+`page_text` and `document_words` give nothing for the page. A test's limit (`budget_seam`) reaches the search
+index's worker threads through `budget::Carry`.
+
 A string is redacted character by character only when
 `FontCtx::drawn_alike` says every reader splits it the same way; else it goes whole. Besides hayro's split (the
 first mapped length) against the codespace's, it fails a code that also starts a longer one (`fonts::starts_longer`,

@@ -1223,9 +1223,10 @@ impl Pdf {
             by_page.entry(p).or_default().push(b);
         }
         // Looked up before anything changes, as a structure tree or a form that can't be
-        // followed is refused.
+        // followed is refused, and so is a page too complex to read.
         let mut struct_parents = HashMap::new();
         let mut page_areas = HashMap::new();
+        let mut texts = HashMap::new();
         let mut widgets = false;
         for (&p, rects) in &by_page {
             let page = self.page_id_at(p)?;
@@ -1233,6 +1234,7 @@ impl Pdf {
             let areas: Vec<[f32; 4]> = rects.iter().map(|&b| mx::transform_rect(vd, b)).collect();
             widgets |= self.widget_touched(page, &areas);
             struct_parents.insert(p, self.struct_parents(page)?);
+            texts.insert(p, self.text_under(p, &areas)?);
             page_areas.insert(p, areas);
         }
         if widgets {
@@ -1252,7 +1254,7 @@ impl Pdf {
                 .doc
                 .get_page_content_with_limit(page, crate::MAX_CONTENT)?;
             let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-            let text = self.text_under(p, &areas);
+            let text = texts.remove(&p).unwrap_or_default();
             let mut rd = Redactor::new(self, areas.clone(), std::mem::take(&mut uses));
             let done = rd.content(&data, &res, mx::ID, 0)?;
             let Redactor {
@@ -1317,10 +1319,13 @@ impl Pdf {
     }
 
     /// The text of page `p` under `areas` (page user space), as the page is read (so with
-    /// the spaces search sees): one entry per run of characters on a line.
-    fn text_under(&self, p: usize, areas: &[[f32; 4]]) -> Vec<String> {
-        let Ok(parsed) = self.parse_page(p) else {
-            return Vec::new();
+    /// the spaces search sees): one entry per run of characters on a line. None for a page
+    /// that can't be read; refused for one too complex to read.
+    fn text_under(&self, p: usize, areas: &[[f32; 4]]) -> Result<Vec<String>> {
+        let parsed = match self.parse_page(p) {
+            Ok(parsed) => parsed,
+            Err(e) if crate::objects::refused(&e) => return Err(e),
+            Err(_) => return Ok(Vec::new()),
         };
         let mut out = Vec::new();
         for line in parsed.text_lines() {
@@ -1346,7 +1351,7 @@ impl Pdf {
                 out.push(run.trim().to_string());
             }
         }
-        out
+        Ok(out)
     }
 
     /// Remove the annotations on `page` touching any of `areas` (page user space).

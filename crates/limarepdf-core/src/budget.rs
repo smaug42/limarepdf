@@ -18,6 +18,32 @@ pub(crate) fn limit(normal: u64) -> u64 {
     normal
 }
 
+/// A test's limit ([`budget_seam`]) on the thread that hands work to others, carried to
+/// them ([`Carry::run`]); outside tests, nothing.
+#[derive(Clone, Copy)]
+pub(crate) struct Carry {
+    #[cfg(any(test, feature = "test-seams"))]
+    limit: Option<u64>,
+}
+
+impl Carry {
+    /// This thread's limit.
+    pub(crate) fn here() -> Carry {
+        Carry {
+            #[cfg(any(test, feature = "test-seams"))]
+            limit: budget_seam::limit(),
+        }
+    }
+
+    /// Run `f` with the limit carried.
+    pub(crate) fn run<T>(self, f: impl FnOnce() -> T) -> T {
+        #[cfg(any(test, feature = "test-seams"))]
+        return budget_seam::carried(self.limit, f);
+        #[cfg(not(any(test, feature = "test-seams")))]
+        f()
+    }
+}
+
 impl Work {
     /// A budget of `limit` steps for `what` (as the refusal names it: "checking the
     /// drawings").
@@ -103,6 +129,15 @@ pub mod budget_seam {
 
     pub(super) fn limit() -> Option<u64> {
         LIMIT.get()
+    }
+
+    /// Runs `f` with the operations on this thread meanwhile limited to `limit`, another
+    /// thread's ([`super::Carry`]).
+    pub(super) fn carried<T>(limit: Option<u64>, f: impl FnOnce() -> T) -> T {
+        let was = LIMIT.replace(limit);
+        let out = f();
+        LIMIT.set(was);
+        out
     }
 
     pub(super) fn record(taken: u64) {

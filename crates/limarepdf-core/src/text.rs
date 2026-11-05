@@ -267,6 +267,8 @@ pub struct PageText {
     objects: Vec<usize>,
     /// From page user space to displayed-page points.
     to_vis: M,
+    /// Why the page couldn't be read, for one that couldn't (it has no text then).
+    unread: Option<String>,
 }
 
 impl PageText {
@@ -297,6 +299,18 @@ impl PageText {
         Ok(t)
     }
 
+    /// The text of the page with object `page`, or none, with why, for a page that can't be
+    /// read.
+    fn read_or_why(pdf: &Pdf, page: ObjectId) -> Self {
+        PageText::read(pdf, page).unwrap_or_else(|e| PageText {
+            unread: Some(match e.downcast_ref::<crate::TooComplex>() {
+                Some(_) => "it is too complex to read".to_string(),
+                None => format!("{e:#}"),
+            }),
+            ..Default::default()
+        })
+    }
+
     /// About how much memory it holds, in bytes.
     fn bytes(&self) -> usize {
         use std::mem::size_of;
@@ -311,6 +325,7 @@ impl PageText {
             + (self.breaks.len() + self.objects.len()) * size_of::<usize>()
             + self.lines.len() * size_of::<Vec<Piece>>()
             + pieces
+            + self.unread.as_ref().map_or(0, String::len)
     }
 }
 
@@ -458,6 +473,9 @@ pub struct Matches {
     /// How many characters of the next page's text the last page's last match takes: where
     /// looking goes on, on the next page.
     pub spill: usize,
+    /// The pages looked in that couldn't be read (0-based), with why, in order: their text
+    /// isn't searched.
+    pub unread: Vec<(usize, String)>,
 }
 
 impl TextIndex {
@@ -498,7 +516,7 @@ impl TextIndex {
 
     /// Read the pages in `pages` (0-based) that aren't read yet, in parallel, from `pdf`, the
     /// document the index is of. A page that can't be read counts as having no text, as for
-    /// [`Pdf::page_text`]. `stop` is asked before each page; once it says to stop, the pages
+    /// [`Pdf::page_text`], and [`TextIndex::find`] names it. `stop` is asked before each page; once it says to stop, the pages
     /// left aren't read (those read by then are kept) and false is returned.
     pub fn read(
         &mut self,
@@ -509,9 +527,10 @@ impl TextIndex {
         let end = pages.end.min(self.pages.len());
         let start = pages.start.min(end);
         let (ids, slots) = (&self.ids, &mut self.pages[start..end]);
+        let carry = crate::budget::Carry::here();
         slots.par_iter_mut().enumerate().for_each(|(k, slot)| {
             if slot.is_none() && !stop() {
-                *slot = Some(PageText::read(pdf, ids[start + k]).unwrap_or_default());
+                *slot = Some(carry.run(|| PageText::read_or_why(pdf, ids[start + k])));
             }
         });
         self.pages[start..end].iter().all(Option::is_some)
@@ -565,7 +584,14 @@ impl TextIndex {
             spill = found[k].last().map_or(0, |f| f.spill);
             hits.extend(std::mem::take(&mut found[k]).into_iter().map(|f| f.hit));
         }
-        Matches { hits, spill }
+        let unread = (start..end)
+            .filter_map(|p| Some((p, text(p)?.unread.clone()?)))
+            .collect();
+        Matches {
+            hits,
+            spill,
+            unread,
+        }
     }
 }
 

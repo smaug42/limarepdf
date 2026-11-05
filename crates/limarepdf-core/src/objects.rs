@@ -1,6 +1,7 @@
 //! A page-content object model: text lines, images, form XObjects and vector paths,
 //! recovered from the page's content stream so they can be selected and edited.
 
+use crate::budget::{self, TooComplex, Work};
 use crate::colour::{Paint, Space};
 use crate::decorate::{self, Decoration, InkAt, Painted, Seg};
 use crate::fonts::{Family, FontChoice, FontCtx};
@@ -268,6 +269,22 @@ impl Parsed {
 /// Deepest nesting of form XObjects whose text is read.
 const MAX_FORM_NESTING: usize = 8;
 
+/// What reading a page is called when its budget refuses it.
+const WHAT: &str = "reading the page";
+
+/// The steps reading one page may take ([`Work`]): an operator is a step, and so is each form
+/// opened, with one more for each KiB of its content. Every form is read again each time it
+/// is drawn, so the steps count everything a page draws, however often. 2²³: 14 times the
+/// most a page of the render corpus takes (588,688, `pdfbox/5134.pdf`), about 4 s of reading
+/// (architecture.md, after `reach::STEPS`).
+pub(crate) const STEPS: u64 = 1 << 23;
+
+/// Whether reading a page was refused ([`TooComplex`]), rather than a form in it couldn't
+/// be read: a refusal goes up to the page, a form that can't be read is passed over.
+pub(crate) fn refused(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<TooComplex>().is_some()
+}
+
 #[derive(Clone)]
 struct Gs {
     ctm: M,
@@ -406,25 +423,29 @@ impl Pdf {
         let data = self
             .doc
             .get_page_content_with_limit(page, crate::MAX_CONTENT)?;
-        let res = self.inherited(page, b"Resources");
-        self.parse_content(&data, res.as_ref(), mx::ID, 0)
+        self.parse_as_page(page, &data)
     }
 
     /// Content `data` read as the page with object `page` would read it: with its
-    /// resources as they are now.
+    /// resources as they are now. Within the budget of [`STEPS`]: an edit's content read
+    /// back before it is written is refused as the page would be, so no edit makes a page
+    /// that can't be read.
     pub(crate) fn parse_as_page(&self, page: ObjectId, data: &[u8]) -> Result<Parsed> {
         let res = self.inherited(page, b"Resources");
-        self.parse_content(data, res.as_ref(), mx::ID, 0)
+        let mut work = Work::new(WHAT, budget::limit(STEPS));
+        self.parse_content(data, res.as_ref(), mx::ID, &mut work, &mut Vec::new())
     }
 
-    /// Parse a content stream drawn with `resources`, starting from the transform `ctm`.
-    /// `nesting` counts the form XObjects it is inside of.
+    /// Parse a content stream drawn with `resources`, starting from the transform `ctm`,
+    /// charging `work`. `forms` are the form XObjects it is inside of, outermost first (`None`
+    /// for one held in place rather than by reference).
     fn parse_content(
         &self,
         data: &[u8],
         resources: Option<&Object>,
         ctm: M,
-        nesting: usize,
+        work: &mut Work,
+        forms: &mut Vec<Option<ObjectId>>,
     ) -> Result<Parsed> {
         let (data, inline) = crate::inline::extract(data)
             .map_err(|e| anyhow!("cannot parse the page content: {e}"))?;
@@ -465,6 +486,7 @@ impl Pdf {
         let mut clip_pending = false;
 
         for (i, op) in ops.iter().enumerate() {
+            work.take(1)?;
             let v = nums(op);
             match op.operator.as_str() {
                 "q" => {
@@ -771,7 +793,7 @@ impl Pdf {
                         bb = [bb[0] - sw, bb[1] - sw, bb[2] + sw, bb[3] + sw];
                         let _ = clip_pending;
                         // A band is kept apart, with its ink, for the page's decorations.
-                        let band = match nesting {
+                        let band = match forms.len() {
                             0 => decorate::straight(
                                 &path_segs, gs.ctm, fill, stroke, gs.lw, gs.dashed,
                             ),
@@ -815,8 +837,8 @@ impl Pdf {
                             .get(nm)
                             .ok()
                             .and_then(|o| self.doc.dereference(o).ok())
-                            .and_then(|(_, o)| o.as_stream().ok());
-                        if let Some(s) = xo {
+                            .and_then(|(id, o)| Some((id, o.as_stream().ok()?)));
+                        if let Some((id, s)) = xo {
                             let sub = s
                                 .dict
                                 .get(b"Subtype")
@@ -839,19 +861,32 @@ impl Pdf {
                                         .and_then(|o| self.matrix_of(o))
                                         .unwrap_or(mx::ID);
                                     // Its text, for reading and searching. A form without
-                                    // resources of its own uses the page's.
-                                    if nesting < MAX_FORM_NESTING {
+                                    // resources of its own uses the page's. One that can't
+                                    // be read is passed over, and so is one drawn again
+                                    // inside itself (read once, on the way down); one too
+                                    // much to read refuses the page.
+                                    let again = id.is_some() && forms.contains(&id);
+                                    if !again && forms.len() < MAX_FORM_NESTING {
+                                        work.take(1)?;
                                         let own = s.dict.get(b"Resources").ok();
                                         let c = s.get_plain_content_with_limit(crate::MAX_CONTENT);
-                                        let inner = c.ok().and_then(|c| {
+                                        if let Ok(c) = c {
+                                            work.take(c.len() as u64 / 1024)?;
                                             let ctm = mul(fm, gs.ctm);
                                             let r = own.or(resources);
-                                            self.parse_content(&c, r, ctm, nesting + 1).ok()
-                                        });
-                                        if let Some(p) = inner {
-                                            form_text
-                                                .extend(p.objs.into_iter().filter_map(|o| o.text));
-                                            form_text.extend(p.form_text);
+                                            forms.push(id);
+                                            let inner = self.parse_content(&c, r, ctm, work, forms);
+                                            forms.pop();
+                                            match inner {
+                                                Ok(p) => {
+                                                    form_text.extend(
+                                                        p.objs.into_iter().filter_map(|o| o.text),
+                                                    );
+                                                    form_text.extend(p.form_text);
+                                                }
+                                                Err(e) if refused(&e) => return Err(e),
+                                                Err(_) => {}
+                                            }
                                         }
                                     }
                                     (ObjectKind::Form, mx::transform_rect(fm, bbox))
@@ -886,7 +921,7 @@ impl Pdf {
         }
         objs.sort_by_key(|o| o.first);
         objs.retain(|o| o.bbox.iter().all(|x| x.is_finite()));
-        let decorations = match nesting {
+        let decorations = match forms.len() {
             0 => decorate::read(&objs, &painted, &ops, &form_text),
             _ => Vec::new(),
         };
@@ -1459,4 +1494,64 @@ pub(crate) fn family_of(base: &str) -> FontChoice {
 #[allow(dead_code)]
 fn _unused(_: &Dictionary) -> Result<()> {
     bail!("unused")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::{dictionary, Stream};
+
+    /// A page whose reading takes exactly `steps` steps: forms seven deep, each drawing the
+    /// one below sixteen times, drawn from the page as often as fits, deepest first, and
+    /// the steps left over made up with operators.
+    fn page_taking(steps: u64) -> Pdf {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 612.0, 792.0).unwrap();
+        let form = |res: Dictionary, content: Vec<u8>| {
+            let d = dictionary! { "Type" => "XObject", "Subtype" => "Form", "Resources" => res };
+            Stream::new(d, content)
+        };
+        // Each form, and the steps drawing it takes: the Do, opening it (its content is
+        // under a KiB), and its content.
+        let leaf = p.doc.add_object(form(Dictionary::new(), b"n".to_vec()));
+        let mut levels = vec![(leaf, 3)];
+        for _ in 1..7 {
+            let (below, cost) = levels[levels.len() - 1];
+            let res = dictionary! { "XObject" => dictionary! { "D" => below } };
+            let f = p.doc.add_object(form(res, b"/D Do ".repeat(16)));
+            levels.push((f, 2 + 16 * cost));
+        }
+        let (mut xobjects, mut content, mut left) = (Dictionary::new(), String::new(), steps);
+        for (k, &(f, cost)) in levels.iter().enumerate().rev() {
+            xobjects.set(format!("L{k}"), f);
+            content.push_str(&format!("/L{k} Do ").repeat((left / cost) as usize));
+            left %= cost;
+        }
+        content.push_str(&"n ".repeat(left as usize));
+        let content = Stream::new(Dictionary::new(), content.into_bytes());
+        let content = p.doc.add_object(content);
+        let page = p.page_ids()[0];
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", content);
+        d.set("Resources", dictionary! { "XObject" => xobjects });
+        p
+    }
+
+    /// A page is read within [`STEPS`], and refused one step past them. Both take about 5 s
+    /// in a release build (its forms are lighter than most, 2026-11-05), minutes in a debug one, so
+    /// it is opt-in: `cargo test --release -p limarepdf-core --lib -- --ignored
+    /// read_within_its_steps`.
+    #[test]
+    #[ignore]
+    fn a_page_is_read_within_its_steps_and_refused_past_them() {
+        let p = page_taking(STEPS);
+        let read = || p.parse_page(0).map(|_| ());
+        let (read, taken) = crate::budget::budget_seam::with_limit(u64::MAX, read);
+        read.unwrap();
+        assert_eq!(taken, [STEPS]);
+        let p = page_taking(STEPS + 1);
+        let e = p.parse_page(0).map(|_| ()).unwrap_err();
+        let too = e.downcast_ref::<TooComplex>().expect("too complex");
+        assert_eq!((too.what, too.limit), (WHAT, STEPS));
+    }
 }

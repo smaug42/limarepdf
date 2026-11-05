@@ -18429,6 +18429,56 @@ mod tests {
         assert_eq!(t.hits[t.hit_idx].page, 2);
     }
 
+    /// S1-06: a page search can't read (here, its content can't be read) is named under the
+    /// matches, with why; a new search that reads every page names none.
+    #[test]
+    fn search_results_name_a_page_that_can_t_be_read() {
+        use lopdf::{dictionary, Stream};
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "walrus", "walrus"]);
+        let t = &mut app.tabs[0];
+        let unreadable = |p: &mut Pdf| {
+            let page = p.page_ids()[1];
+            let content = Stream::new(dictionary! {}, b"BI /W 1 ID xyz".to_vec());
+            let content = p.doc.add_object(content);
+            p.doc.get_dictionary_mut(page)?.set("Contents", content);
+            Ok(())
+        };
+        assert!(t.edit(&ctx, unreadable));
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        let pages: Vec<usize> = app.tabs[0].hits.iter().map(|h| h.page).collect();
+        assert_eq!(pages, [0, 2]);
+        let tree = ty.pause(&mut app);
+        let said = "Page 2 isn't searched: cannot parse the page content";
+        assert!(shows(&tree, said));
+        // The page fixed, a new search reads it and names nothing.
+        let t = &mut app.tabs[0];
+        let font = FontChoice::default();
+        let fix = |p: &mut Pdf| {
+            let page = p.page_ids()[1];
+            let content = p.doc.add_object(Stream::new(dictionary! {}, Vec::new()));
+            p.doc.get_dictionary_mut(page)?.set("Contents", content);
+            p.add_text(1, (72.0, 100.0), "walrus", font, 20.0, [0.0; 3])
+        };
+        assert!(t.edit(&ctx, fix));
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        assert_eq!(app.tabs[0].hits.len(), 3);
+        let tree = ty.pause(&mut app);
+        assert!(!shows(&tree, "Page 2 isn't searched"));
+    }
+
     /// Mark all for redaction marks every match, also while the search is still running.
     #[test]
     fn mark_all_for_redaction_marks_every_match_even_before_the_search_ends() {
