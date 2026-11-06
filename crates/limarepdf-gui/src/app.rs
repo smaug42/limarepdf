@@ -2176,10 +2176,14 @@ impl App {
     }
 
     /// Adds the dictionaries in `files` to the dictionaries folder: each extension's, and
-    /// each `.dic` with its `.aff` (picked with it, or beside it). Says what was added, and
-    /// what couldn't be and why.
+    /// each `.dic` with its `.aff` (picked with it, or beside it), all read within one
+    /// [`DictionaryBudget`](limarepdf_core::spelling::DictionaryBudget). Says what was added,
+    /// and what couldn't be and why.
     fn add_dictionaries(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
-        use limarepdf_core::spelling::{in_extension, Dictionary, Unpacked};
+        use limarepdf_core::spelling::{
+            in_extension_within, read_extension, read_within, Dictionary, DictionaryBudget,
+            Unpacked,
+        };
         let Some(folder) = self.settings.dictionaries_folder() else {
             let text = "LimarePDF has no settings folder to keep dictionaries in.".to_string();
             self.show(Dialog::Message("Dictionary not added".into(), text));
@@ -2192,13 +2196,13 @@ impl App {
         };
         let mut found: Vec<Unpacked> = Vec::new();
         let mut problems: Vec<String> = Vec::new();
+        let mut budget = DictionaryBudget::default();
         for f in files.iter().filter(|f| ext(f, "oxt")) {
-            match std::fs::read(f)
-                .map_err(|e| e.to_string())
-                .and_then(|data| in_extension(&data, &name(f)).map_err(|e| e.to_string()))
+            match read_extension(f)
+                .and_then(|data| in_extension_within(&data, &name(f), &mut budget))
             {
                 Ok(list) => found.extend(list),
-                Err(e) => problems.push(e),
+                Err(e) => problems.push(e.to_string()),
             }
         }
         for dic in files.iter().filter(|f| ext(f, "dic")) {
@@ -2206,9 +2210,20 @@ impl App {
                 .find(|a| ext(a, "aff") && a.file_stem() == dic.file_stem())
                 .cloned()
                 .unwrap_or_else(|| dic.with_extension("aff"));
-            let read = std::fs::read(dic).and_then(|d| Ok((std::fs::read(&aff)?, d)));
+            if !aff.is_file() {
+                problems.push(format!(
+                    "{} needs its .aff file beside it, of the same name",
+                    name(dic)
+                ));
+                continue;
+            }
+            // Both or neither taken from the budget.
+            let mut left = budget;
+            let read =
+                read_within(dic, &mut left).and_then(|d| Ok((read_within(&aff, &mut left)?, d)));
             match read {
                 Ok((aff, dic_data)) => {
+                    budget = left;
                     let stem = dic
                         .file_stem()
                         .map_or(String::new(), |s| s.to_string_lossy().into());
@@ -2218,10 +2233,7 @@ impl App {
                         dic: dic_data,
                     });
                 }
-                Err(_) => problems.push(format!(
-                    "{} needs its .aff file beside it, of the same name",
-                    name(dic)
-                )),
+                Err(e) => problems.push(e.to_string()),
             }
         }
         if found.is_empty() && problems.is_empty() {

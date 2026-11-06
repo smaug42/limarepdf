@@ -212,6 +212,61 @@ fn a_document_claiming_pdfa1_keeps_the_layout_of_pdf_1_4() {
     assert!(String::from_utf8_lossy(&p.to_bytes().unwrap()).contains("/ObjStm"));
 }
 
+/// XMP metadata `len` bytes long saying the document is PDF/A part `part`, the part named
+/// at the end, after spaces.
+fn xmp_of(len: usize, part: u32) -> Vec<u8> {
+    let head = br#"<?xpacket begin=""?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/""#;
+    let tail = format!(
+        r#" pdfaid:part="{part}" pdfaid:conformance="B"/></rdf:RDF></x:xmpmeta><?xpacket end="w"?>"#
+    );
+    let mut x = head.to_vec();
+    x.resize(len - tail.len(), b' ');
+    x.extend(tail.as_bytes());
+    assert_eq!(x.len(), len);
+    x
+}
+
+/// A one-page document whose metadata is `xmp`, Flate-compressed.
+fn with_metadata(xmp: Vec<u8>) -> Pdf {
+    let mut p = document(1);
+    let mut s = Stream::new(dictionary! {"Type" => "Metadata", "Subtype" => "XML"}, xmp);
+    s.compress().unwrap();
+    assert!(s.dict.has(b"Filter"));
+    let meta = p.doc.add_object(s);
+    p.doc.catalog_mut().unwrap().set("Metadata", meta);
+    p
+}
+
+/// Whether `bytes` have the layout of PDF 1.4: no object streams, a cross-reference table.
+fn is_classic(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    text.contains("\nxref") && !text.contains("/ObjStm") && !text.contains("/XRef")
+}
+
+/// Metadata is expanded up to [`MAX_XMP`] bytes to learn whether the document is PDF/A-1
+/// (M-05): every save expanded it whole, however far that went. (A save compresses every
+/// stream first, so this is all metadata.) Past the limit the document is taken to be
+/// PDF/A-1, whose layout is valid for any, so the save still succeeds, the same each time;
+/// up to it, the part is read as before.
+#[test]
+fn metadata_is_read_only_so_far() {
+    use limarepdf_core::MAX_XMP;
+    // Part 2 named past the limit isn't seen.
+    let mut p = with_metadata(xmp_of(MAX_XMP + 1, 2));
+    let once = p.to_bytes().unwrap();
+    assert!(is_classic(&once));
+    assert_eq!(p.to_bytes().unwrap(), once);
+    assert_eq!(Pdf::from_bytes(&once, None).unwrap().page_count(), 1);
+    // Nor part 1.
+    let mut p = with_metadata(xmp_of(MAX_XMP + 1, 1));
+    assert!(is_classic(&p.to_bytes().unwrap()));
+    // Up to the limit, the part is read.
+    let mut p = with_metadata(xmp_of(MAX_XMP, 2));
+    assert!(!is_classic(&p.to_bytes().unwrap()));
+    let mut p = with_metadata(xmp_of(MAX_XMP, 1));
+    assert!(is_classic(&p.to_bytes().unwrap()));
+}
+
 #[test]
 fn a_small_document_is_written_the_smaller_way() {
     let mut p = Pdf::new();

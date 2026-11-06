@@ -702,3 +702,59 @@ fn a_bad_file_changes_nothing() {
     assert_eq!(p.page_count(), 1);
     assert_eq!(p.doc.objects.len(), objects);
 }
+
+/// A TIFF of `n` 8 × 8 RGB pages: 192 bytes each, decoded.
+fn rgb_tiff(n: usize) -> Vec<u8> {
+    use tiff::encoder::{colortype::RGB8, TiffEncoder};
+    let mut buf = Cursor::new(Vec::new());
+    let mut enc = TiffEncoder::new(&mut buf).unwrap();
+    for _ in 0..n {
+        enc.write_image::<RGB8>(8, 8, &[200; 8 * 8 * 3]).unwrap();
+    }
+    buf.into_inner()
+}
+
+/// The pictures one import adds may take so many bytes decoded, all its files together
+/// (M-06): a TIFF's pages, a PNG's pixels, a JPEG (kept as it is) its file. Over that, the
+/// import is refused before what would cross it is decoded, and nothing is added; up to it,
+/// every picture is added.
+#[test]
+fn pictures_too_large_together_are_refused_with_nothing_added() {
+    use limarepdf_core::{budget_seam, PicturesTooLarge};
+    let png = encode_png(&DynamicImage::ImageRgb8(RgbImage::new(8, 8)));
+    let jpeg = encode_jpeg(&DynamicImage::ImageRgb8(RgbImage::new(8, 8)), None);
+    let files = [rgb_tiff(3), png, jpeg.clone()];
+    let total = 4 * 192 + jpeg.len() as u64;
+    let one = || {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 100.0, 100.0).unwrap();
+        p
+    };
+
+    let mut p = one();
+    let (added, taken) = budget_seam::with_limit(total, || {
+        p.insert_image_pages(1, &files, &Default::default())
+    });
+    assert_eq!(added.unwrap(), 5);
+    assert_eq!(taken, [total]);
+
+    let mut p = one();
+    let before = p.state_before();
+    let (e, _) = budget_seam::with_limit(total - 1, || {
+        p.insert_image_pages(1, &files, &Default::default())
+    });
+    let e = e.unwrap_err();
+    let too = e.downcast_ref::<PicturesTooLarge>().expect("too large");
+    assert_eq!(too.limit, total - 1, "{e:#}");
+    assert_eq!(p.state_since(&before), []);
+    assert_eq!(p.page_count(), 1);
+
+    // A new document the same.
+    let (e, _) = budget_seam::with_limit(3 * 192 - 1, || {
+        Pdf::from_images(&files[..1], &Default::default())
+    });
+    let Err(e) = e else {
+        panic!("a new document of pictures too large");
+    };
+    assert!(e.downcast_ref::<PicturesTooLarge>().is_some(), "{e:#}");
+}

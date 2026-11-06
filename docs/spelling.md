@@ -70,6 +70,10 @@ in the menu; choose it there. On Linux, the dictionaries installed for the whole
 `/usr/share/hunspell`, for example by a `hunspell-de` package) are listed too, without adding
 them. A dictionary LimarePDF can't read is not added, and it says why.
 
+The files added together may hold up to 256 dictionary files and 128 MB in all, and each
+dictionary file up to 64 MB, far more than real dictionaries need. An extension past that adds
+nothing; add fewer at a time.
+
 ---
 
 [← Editing text and pictures](content-editing.md) · [User guide](README.md) · [Filling in forms →](forms.md)

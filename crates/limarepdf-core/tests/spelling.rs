@@ -2,8 +2,9 @@
 //! suggestions, words added and ignored, and dictionaries found in folders and extensions.
 
 use limarepdf_core::spelling::{
-    best_match, find, in_extension, language_name, read_word_list, word_list, words, BuiltIn,
-    Dictionary, Exceptions, Speller, SpellingError, BUILT_IN, SUGGESTIONS,
+    best_match, find, in_extension, in_extension_within, language_name, read_within,
+    read_word_list, word_list, words, BuiltIn, Dictionary, DictionaryBudget, Exceptions, Speller,
+    SpellingError, BUILT_IN, SUGGESTIONS,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -273,4 +274,156 @@ fn an_extension_gives_its_dictionaries() {
         in_extension(b"not a zip", "x.oxt"),
         Err(SpellingError::Parse(..))
     ));
+}
+
+/// `oxt` with each file's unpacked size stated as `size`, whatever it is.
+fn stating(mut oxt: Vec<u8>, size: u32) -> Vec<u8> {
+    for i in 0..oxt.len() - 4 {
+        let at = match &oxt[i..i + 4] {
+            b"PK\x03\x04" => i + 22,
+            b"PK\x01\x02" => i + 24,
+            _ => continue,
+        };
+        oxt[at..at + 4].copy_from_slice(&size.to_le_bytes());
+    }
+    oxt
+}
+
+fn small() -> DictionaryBudget {
+    DictionaryBudget::new(4, 64 << 10)
+}
+
+/// The files and bytes `b` has left.
+fn left(b: &DictionaryBudget) -> (usize, u64) {
+    (b.files_left(), b.bytes_left())
+}
+
+/// An extension's `.aff` and `.dic` files are counted and measured as they are unpacked, those
+/// with no partner and those of the same name too, against what one choice of dictionaries may
+/// unpack; past it the extension gives nothing and the budget is as it was.
+#[test]
+fn an_extension_unpacks_no_more_than_its_budget() {
+    let kib = vec![b'x'; 1 << 10];
+    let k = kib.as_slice();
+    let five = extension(&[
+        ("a.aff", k),
+        ("a.dic", k),
+        ("b.aff", k),
+        ("b.dic", k),
+        ("c.dic", k),
+    ]);
+    let mut b = small();
+    let e = in_extension_within(&five, "five.oxt", &mut b).unwrap_err();
+    assert!(matches!(e, SpellingError::TooMany(..)), "{e:?}");
+    assert_eq!(
+        e.to_string(),
+        "five.oxt has too many dictionary files: LimarePDF adds at most 4 at once"
+    );
+    assert_eq!(b, small(), "a refusal took from the budget");
+    let twice = extension(&[
+        ("a.aff", k),
+        ("old/a.aff", k),
+        ("a.dic", k),
+        ("hyph_a.dic", k),
+        ("b.dic", k),
+    ]);
+    let e = in_extension_within(&twice, "twice.oxt", &mut small()).unwrap_err();
+    assert!(matches!(e, SpellingError::TooMany(..)), "{e:?}");
+    let four = extension(&[
+        ("a.aff", k),
+        ("a.dic", k),
+        ("b.aff", k),
+        ("b.dic", k),
+        ("README.txt", k),
+        ("th_a.dat", k),
+    ]);
+    let mut b = small();
+    let got = in_extension_within(&four, "four.oxt", &mut b).unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(left(&b), (0, 60 << 10));
+
+    let (big, less) = (vec![b'x'; 32 << 10], vec![b'x'; 31 << 10]);
+    let over = extension(&[("a.aff", &big), ("a.dic", &big), ("b.dic", k)]);
+    let mut b = small();
+    let e = in_extension_within(&over, "over.oxt", &mut b).unwrap_err();
+    assert!(matches!(e, SpellingError::TooMuch(..)), "{e:?}");
+    assert_eq!(
+        e.to_string(),
+        "over.oxt has too much in it: LimarePDF adds at most 64 KiB of dictionaries at once"
+    );
+    assert_eq!(b, small());
+    let full = extension(&[("a.aff", &big), ("a.dic", &less), ("b.dic", k)]);
+    let mut b = small();
+    let got = in_extension_within(&full, "full.oxt", &mut b).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(left(&b), (1, 0));
+
+    // One budget for several extensions chosen together.
+    let pair = extension(&[("a.aff", k), ("a.dic", k)]);
+    let three = extension(&[("a.aff", k), ("a.dic", k), ("b.dic", k)]);
+    let mut b = small();
+    in_extension_within(&pair, "1.oxt", &mut b).unwrap();
+    let e = in_extension_within(&three, "2.oxt", &mut b).unwrap_err();
+    assert!(matches!(e, SpellingError::TooMany(..)), "{e:?}");
+    in_extension_within(&pair, "3.oxt", &mut b).unwrap();
+    assert_eq!(left(&b), (0, 60 << 10));
+}
+
+/// An extension of 256 dictionary files is unpacked, of 257 refused.
+#[test]
+fn an_extension_unpacks_at_most_256_files() {
+    let names: Vec<String> = (0..257)
+        .map(|i| format!("d{}.{}", i / 2, ["aff", "dic"][i % 2]))
+        .collect();
+    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"x"[..])).collect();
+    let got = in_extension(&extension(&files[..256]), "256.oxt").unwrap();
+    assert_eq!(got.len(), 128);
+    let e = in_extension(&extension(&files), "257.oxt").unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "257.oxt has too many dictionary files: LimarePDF adds at most 256 at once"
+    );
+}
+
+/// The sizes an extension states are checked before anything is unpacked, and what is
+/// unpacked is still measured, so a file that says it is smaller than it is isn't believed.
+#[test]
+fn an_extensions_stated_sizes_are_checked_and_not_trusted() {
+    let pair = extension(&[
+        ("a.aff", b"SET UTF-8\n"),
+        ("a.dic", b"1\nx\n"),
+        ("b.dic", b"1\ny\n"),
+    ]);
+    let e = in_extension(&stating(pair.clone(), 50 << 20), "huge.oxt").unwrap_err();
+    assert!(matches!(e, SpellingError::TooMuch(..)), "{e:?}");
+    let e = in_extension(&stating(pair, 100 << 20), "huge.oxt").unwrap_err();
+    assert!(matches!(e, SpellingError::TooLarge(..)), "{e:?}");
+    let some = vec![b'x'; 40 << 10];
+    let pair = extension(&[("a.aff", &some), ("a.dic", &some)]);
+    // The zip reader stops at the stated size too, and says so.
+    let mut b = small();
+    let e = in_extension_within(&stating(pair, 1), "small.oxt", &mut b).unwrap_err();
+    assert!(
+        matches!(e, SpellingError::TooMuch(..) | SpellingError::Read(..)),
+        "{e:?}"
+    );
+    assert_eq!(b, small());
+}
+
+/// A `.dic` or `.aff` file chosen on its own counts against the same budget as an extension's.
+#[test]
+fn a_chosen_file_is_read_within_the_budget() {
+    let dir = scratch("budget");
+    let file = dir.join("a.dic");
+    std::fs::write(&file, vec![b'x'; 40 << 10]).unwrap();
+    let mut b = small();
+    assert_eq!(read_within(&file, &mut b).unwrap().len(), 40 << 10);
+    assert_eq!(left(&b), (3, 24 << 10));
+    let e = read_within(&file, &mut b).unwrap_err();
+    assert!(matches!(e, SpellingError::TooMuch(..)), "{e:?}");
+    assert_eq!(left(&b), (3, 24 << 10));
+    let e = read_within(&file, &mut DictionaryBudget::new(0, 64 << 10)).unwrap_err();
+    assert!(matches!(e, SpellingError::TooMany(..)), "{e:?}");
+    let e = read_within(&dir.join("gone.dic"), &mut small()).unwrap_err();
+    assert!(matches!(e, SpellingError::Read(..)), "{e:?}");
 }

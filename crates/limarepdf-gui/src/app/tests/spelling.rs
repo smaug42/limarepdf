@@ -349,3 +349,40 @@ fn dictionaries_are_added_and_those_that_cant_be_are_said() {
     assert!(text.contains("lone.dic needs its .aff file"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A chosen `.dic` or extension too large to be a dictionary is refused as too large, without
+/// being read whole, and nothing of it is kept.
+#[test]
+fn dictionaries_too_large_are_refused_and_nothing_kept() {
+    let dir = std::env::temp_dir().join(format!("limarepdf-big-dicts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let picked = dir.join("picked");
+    std::fs::create_dir_all(&picked).unwrap();
+    // Sparse: a file's length costs nothing until it is read.
+    let sized = |name: &str, len: u64| {
+        std::fs::File::create(picked.join(name))
+            .unwrap()
+            .set_len(len)
+            .unwrap();
+        picked.join(name)
+    };
+    std::fs::write(picked.join("big.aff"), b"SET UTF-8\n").unwrap();
+    let big_dic = sized("big.dic", (64 << 20) + 1);
+    let big_oxt = sized("big.oxt", (128 << 20) + 1);
+    let ctx = test_ctx();
+    let mut app = canadian_app(Some(dir.join("settings").join("settings.txt")));
+    app.spelling_frame(&ctx);
+    app.add_dictionaries(&ctx, &[big_oxt, big_dic]);
+    let folder = dir.join("settings").join("dictionaries");
+    let kept = std::fs::read_dir(&folder).map_or(0, |d| d.count());
+    assert_eq!(kept, 0, "something was kept");
+    let Dialog::Message(title, text) = &app.dialog else {
+        panic!("nothing said");
+    };
+    assert_eq!(title, "Dictionary not added");
+    for name in ["big.dic", "big.oxt"] {
+        let said = format!("{name} is too large to be a dictionary");
+        assert!(text.contains(&said), "{text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

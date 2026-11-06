@@ -400,6 +400,101 @@ fn kinds_that_cant_be_redone_are_left_and_counted() {
     assert!(p.doc.objects == before);
 }
 
+/// A page drawing a photo whose colour space is `/A`, a name its page's `/ColorSpace`
+/// resources give as `aliases` (each name with what it stands for).
+fn aliased(aliases: &[(&str, &str)]) -> (Pdf, ObjectId) {
+    let mut p = pages(1);
+    let mut im = photo(1200, 800);
+    im.dict.set("ColorSpace", Object::Name(b"A".to_vec()));
+    let im = p.doc.add_object(im);
+    at_300(&mut p, 0, im);
+    let mut spaces = Dictionary::new();
+    for (name, means) in aliases {
+        spaces.set(*name, Object::Name(means.as_bytes().to_vec()));
+    }
+    let id = p.page_ids()[0];
+    let page = p.doc.get_dictionary_mut(id).unwrap();
+    let res = page.get_mut(b"Resources").unwrap().as_dict_mut().unwrap();
+    res.set("ColorSpace", spaces);
+    (p, im)
+}
+
+/// The child process of the next test: reduces pictures whose colour space names itself,
+/// directly and through another name, and previews the first, each on a line.
+#[test]
+#[ignore = "started by colour_spaces_naming_themselves_are_left"]
+fn colour_spaces_naming_themselves_child() {
+    if std::env::var("ALIAS_CHILD").is_err() {
+        return;
+    }
+    let cycles: [&[(&str, &str)]; 2] = [&[("A", "A")], &[("A", "B"), ("B", "A")]];
+    for (case, aliases) in ["itself", "each other"].into_iter().zip(cycles) {
+        let (mut p, im) = aliased(aliases);
+        let was = stream(&p, im).content.clone();
+        let r = reduce(&mut p, &[0], PictureQuality::Email);
+        let kind = r.kept.get(&KeptWhy::Kind).copied().unwrap_or(0);
+        let same = stream(&p, im).content == was;
+        println!("alias|{case}|{}|{kind}|{same}", r.pictures);
+    }
+    let (p, _) = aliased(&[("A", "A")]);
+    let opts = ReduceOptions {
+        quality: PictureQuality::Email,
+        jpeg_quality: None,
+    };
+    let r = p.reduce_preview(&[0], &opts).unwrap().report;
+    let kind = r.kept.get(&KeptWhy::Kind).copied().unwrap_or(0);
+    println!("alias|preview|{}|{kind}", r.pictures);
+}
+
+/// A picture whose colour space is a name standing for itself, or for a name standing for
+/// it (M-01), is left as a kind that can't be redone, at once: it was followed for ever,
+/// until the stack ran out and the app stopped.
+#[test]
+fn colour_spaces_naming_themselves_are_left() {
+    use common::apart::{self, Ran};
+    let env = [("ALIAS_CHILD", "1".to_string())];
+    let limit = std::time::Duration::from_secs(30);
+    let ran = apart::run("colour_spaces_naming_themselves_child", &env, limit);
+    let Ran::Ended(text, status) = ran else {
+        panic!("not done within 30 s");
+    };
+    let said = apart::reports(&text, "alias|");
+    assert_eq!(
+        said,
+        ["itself|0|1|true", "each other|0|1|true", "preview|0|1"],
+        "{}",
+        apart::why_stopped(status)
+    );
+}
+
+/// A chain of six names ending in RGB is followed: the picture is still redone.
+#[test]
+fn a_chain_of_colour_space_names_is_followed() {
+    // A to DeviceRGB through `n` names: A, C1, C2, … (not letters alone: G stands for
+    // DeviceGray).
+    let chain = |n: usize| -> Vec<(String, String)> {
+        let name = |i: usize| match i {
+            0 => "A".to_string(),
+            i if i == n => "DeviceRGB".to_string(),
+            i => format!("C{i}"),
+        };
+        (0..n).map(|i| (name(i), name(i + 1))).collect()
+    };
+    fn pairs(c: &[(String, String)]) -> Vec<(&str, &str)> {
+        c.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect()
+    }
+    let (mut p, im) = aliased(&pairs(&chain(8)));
+    let r = reduce(&mut p, &[0], PictureQuality::Email);
+    assert_eq!(r.pictures, 1, "{r:?}");
+    assert_eq!(size_of(&p, im), (384, 256));
+    // One name more than followed: kept as it is.
+    let (mut p, im) = aliased(&pairs(&chain(9)));
+    let r = reduce(&mut p, &[0], PictureQuality::Email);
+    assert_eq!(r.pictures, 0, "{r:?}");
+    assert_eq!(r.kept.get(&KeptWhy::Kind), Some(&1), "{r:?}");
+    assert_eq!(size_of(&p, im), (1200, 800));
+}
+
 #[test]
 fn undo_puts_every_picture_back() {
     let mut p = pages(2);

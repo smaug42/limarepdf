@@ -99,6 +99,8 @@ pub use blank::BLANK_TOLERANCE;
 pub use budget::budget_seam;
 pub use budget::TooComplex;
 pub use cms_check::CertInfo;
+#[cfg(any(test, feature = "test-seams"))]
+pub use compact::MAX_XMP;
 pub use decorate::{decoration_lines, DecoKind, Decorated, Decoration, FontLines, Look};
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};
 pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
@@ -114,7 +116,7 @@ pub use ids::{
     password_problem, DigitalId, IdList, IdStore, NewId, Stored, UnlockedId, WrongPassword,
     MIN_PASSWORD,
 };
-pub use imgs::{image_dimensions, picture_preview, ImageImport};
+pub use imgs::{image_dimensions, picture_preview, ImageImport, PicturesTooLarge};
 pub use labels::{LabelRange, LabelStyle};
 pub use layout::{fallback_faces, fallbacks, set_in, warm_fallbacks};
 pub use links::{email_link, web_link, Link, LinkId, LinkTarget, Unfollowed};

@@ -1,5 +1,6 @@
 //! Building image XObjects and pages from PNG, JPEG and TIFF files.
 
+use crate::budget::Work;
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use image::metadata::Orientation;
@@ -26,6 +27,36 @@ impl Default for ImageImport {
         }
     }
 }
+
+/// The most bytes the pictures one import adds may take once decoded ([`PicturesTooLarge`]):
+/// they are kept decoded in memory until the document is saved. About 80 colour A4 pages
+/// scanned at 300 dpi; a test can set another through [`crate::budget_seam`].
+const MOST_DECODED: u64 = 2 << 30;
+
+/// Pictures were refused because together they take more memory once decoded than one
+/// import may add; nothing was changed. Found through the error's chain (`downcast_ref`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PicturesTooLarge {
+    /// The bytes allowed.
+    pub limit: u64,
+}
+
+impl std::fmt::Display for PicturesTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let limit = if self.limit >= 1 << 30 {
+            format!("{} GiB", self.limit >> 30)
+        } else {
+            format!("{} MiB", self.limit.div_ceil(1 << 20))
+        };
+        write!(
+            f,
+            "the pictures are too large to add at once: opened, they take more than {limit} \
+             of memory. Nothing was added; add fewer at a time"
+        )
+    }
+}
+
+impl std::error::Error for PicturesTooLarge {}
 
 /// Image samples ready for an image XObject.
 pub(crate) enum Pixels {
@@ -67,7 +98,7 @@ pub fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
 /// height and RGBA pixels, upright as it is meant to be seen and at most `max` pixels on
 /// its longer side.
 pub fn picture_preview(bytes: &[u8], max: u32) -> Result<(u32, u32, Vec<u8>)> {
-    let r = first(decode(bytes)?)?;
+    let r = decode_first(bytes)?;
     let (w, h) = (r.w, r.h);
     let rgba = match r.pixels {
         Pixels::Jpeg { data, .. } => {
@@ -190,19 +221,51 @@ pub(crate) fn first(rasters: Vec<Raster>) -> Result<Raster> {
         .ok_or_else(|| anyhow!("the file contains no image"))
 }
 
-/// Decode a PNG, JPEG or TIFF file into one raster per page.
-pub(crate) fn decode(bytes: &[u8]) -> Result<Vec<Raster>> {
+/// Decode a PNG, JPEG or TIFF file into one raster per page, each charged to `work` by the
+/// bytes it takes decoded before it is decoded ([`PicturesTooLarge`] when they run out).
+pub(crate) fn decode(bytes: &[u8], work: &mut Work) -> Result<Vec<Raster>> {
+    decode_pages(bytes, Some(work))
+}
+
+/// Decode a PNG, JPEG or TIFF file's picture: a TIFF's first page alone.
+pub(crate) fn decode_first(bytes: &[u8]) -> Result<Raster> {
+    first(decode_pages(bytes, None)?)
+}
+
+/// A file's pictures: every page of a TIFF, each charged to `work`, or the first alone
+/// without a `work`.
+fn decode_pages(bytes: &[u8], work: Option<&mut Work>) -> Result<Vec<Raster>> {
     let fmt = image::guess_format(bytes)
         .map_err(|_| anyhow!("unrecognised image format (PNG, JPEG and TIFF are supported)"))?;
     let out = match fmt {
-        image::ImageFormat::Jpeg => vec![decode_jpeg(bytes)?],
-        image::ImageFormat::Tiff => decode_tiff(bytes)?,
-        _ => vec![decode_other(bytes, fmt)?],
+        image::ImageFormat::Jpeg => {
+            // Kept as it is: its file is what it takes.
+            if let Some(work) = work {
+                charge(work, bytes.len() as u64)?;
+            }
+            vec![decode_jpeg(bytes)?]
+        }
+        image::ImageFormat::Tiff => decode_tiff(bytes, work)?,
+        _ => {
+            if let Some(work) = work {
+                let decoder = image::ImageReader::with_format(Cursor::new(bytes), fmt)
+                    .into_decoder()
+                    .map_err(|e| anyhow!("cannot decode the image: {e}"))?;
+                charge(work, image::ImageDecoder::total_bytes(&decoder))?;
+            }
+            vec![decode_other(bytes, fmt)?]
+        }
     };
     if out.iter().any(|r| r.w == 0 || r.h == 0) {
         bail!("empty image");
     }
     Ok(out)
+}
+
+/// Take `n` bytes from what the pictures being added may take decoded.
+fn charge(work: &mut Work, n: u64) -> Result<()> {
+    work.take(n)
+        .map_err(|too| PicturesTooLarge { limit: too.limit }.into())
 }
 
 /// A JPEG file's header, refused unless LimarePDF can embed the file.
@@ -469,13 +532,21 @@ fn png_meta(b: &[u8]) -> (Option<(f32, f32)>, Orientation) {
     (dpi, orientation)
 }
 
-fn decode_tiff(bytes: &[u8]) -> Result<Vec<Raster>> {
+/// A TIFF's pages: every one, each charged to `work` by its decoded size before it is
+/// decoded, or the first alone without a `work`.
+fn decode_tiff(bytes: &[u8], mut work: Option<&mut Work>) -> Result<Vec<Raster>> {
     let err = |e: tiff::TiffError| anyhow!("cannot decode the TIFF: {e}");
     let mut d = Decoder::new(Cursor::new(bytes)).map_err(err)?;
     let mut out = Vec::new();
     loop {
-        out.push(tiff_page(&mut d).map_err(|e| anyhow!("TIFF page {}: {e}", out.len() + 1))?);
-        if !d.more_images() {
+        let n = out.len() + 1;
+        let page = |e: anyhow::Error| anyhow!("TIFF page {n}: {e}");
+        let size = tiff_size(&mut d).map_err(page)?;
+        if let Some(work) = work.as_deref_mut() {
+            charge(work, size)?;
+        }
+        out.push(tiff_page(&mut d).map_err(page)?);
+        if work.is_none() || !d.more_images() {
             break;
         }
         d.next_image().map_err(err)?;
@@ -483,7 +554,24 @@ fn decode_tiff(bytes: &[u8]) -> Result<Vec<Raster>> {
     Ok(out)
 }
 
+/// The bytes the TIFF page `d` is at takes decoded, read from its header; refused for a
+/// colour type [`tiff_page`] can't take, before it is decoded.
+fn tiff_size(d: &mut Decoder<Cursor<&[u8]>>) -> Result<u64> {
+    let (w, h) = d.dimensions()?;
+    let bits = match d.colortype()? {
+        ColorType::Gray(b @ (1 | 8 | 16)) => b,
+        ColorType::GrayA(8) => 16,
+        ColorType::RGB(b @ (8 | 16)) => 3 * b,
+        ColorType::RGBA(b @ (8 | 16)) => 4 * b,
+        ColorType::CMYK(8) => 32,
+        ct => bail!("colour type {ct:?} is not supported"),
+    };
+    Ok((u64::from(w) * u64::from(bits)).div_ceil(8) * u64::from(h))
+}
+
 fn tiff_page(d: &mut Decoder<Cursor<&[u8]>>) -> Result<Raster> {
+    #[cfg(test)]
+    tests::PAGES.set(tests::PAGES.get() + 1);
     let (w, h) = d.dimensions()?;
     let ct = d.colortype()?;
     let num = |v: Option<Value>| match v? {
@@ -612,7 +700,7 @@ impl Pdf {
         &mut self,
         bytes: &[u8],
     ) -> Result<(ObjectId, f32, f32, Orientation)> {
-        let r = first(decode(bytes)?)?;
+        let r = decode_first(bytes)?;
         let o = r.orientation;
         let (w, h) = (r.w as f32, r.h as f32);
         let (w, h) = if swaps_axes(o) { (h, w) } else { (w, h) };
@@ -684,9 +772,16 @@ impl Pdf {
         if at > self.page_count() {
             bail!("position {at} is beyond the end of the document");
         }
+        let mut work = Work::new("adding the pictures", crate::budget::limit(MOST_DECODED));
         let mut rasters = Vec::new();
         for (i, f) in files.iter().enumerate() {
-            rasters.extend(decode(f).map_err(|e| anyhow!("image {}: {e}", i + 1))?);
+            rasters.extend(decode(f, &mut work).map_err(|e| {
+                if e.is::<PicturesTooLarge>() {
+                    e
+                } else {
+                    anyhow!("image {}: {e}", i + 1)
+                }
+            })?);
         }
         let n = rasters.len();
         for (k, r) in rasters.into_iter().enumerate() {
@@ -725,5 +820,60 @@ impl Pdf {
         let mut p = Pdf::new();
         p.insert_image_pages(0, files, opts)?;
         Ok(p)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// TIFF pages decoded on this thread.
+        pub(crate) static PAGES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// The TIFF pages `f` decodes.
+    fn pages_decoded(f: impl FnOnce()) -> usize {
+        PAGES.set(0);
+        f();
+        PAGES.get()
+    }
+
+    /// A TIFF of `n` 8 × 8 RGB pages.
+    fn tiff_of(n: usize) -> Vec<u8> {
+        use tiff::encoder::{colortype::RGB8, TiffEncoder};
+        let mut buf = Cursor::new(Vec::new());
+        let mut enc = TiffEncoder::new(&mut buf).unwrap();
+        for _ in 0..n {
+            enc.write_image::<RGB8>(8, 8, &[200; 8 * 8 * 3]).unwrap();
+        }
+        buf.into_inner()
+    }
+
+    /// What shows or places one picture from a TIFF decodes its first page alone (M-06):
+    /// each decoded every page, and kept them all until done.
+    #[test]
+    fn one_picture_from_a_tiff_decodes_one_page() {
+        let tiff = tiff_of(50);
+        let n = pages_decoded(|| {
+            picture_preview(&tiff, 100).unwrap();
+        });
+        assert_eq!(n, 1, "the preview");
+        let n = pages_decoded(|| {
+            crate::sign::picture_view(&tiff, 100).unwrap();
+        });
+        assert_eq!(n, 1, "the signature picture");
+        let mut p = Pdf::new();
+        let n = pages_decoded(|| {
+            p.add_upright_image(&tiff).unwrap();
+        });
+        assert_eq!(n, 1, "placing it");
+        // Importing makes a page of each.
+        let n = pages_decoded(|| {
+            let doc = Pdf::from_images(&[tiff], &ImageImport::default()).unwrap();
+            assert_eq!(doc.page_count(), 50);
+        });
+        assert_eq!(n, 50, "importing");
     }
 }

@@ -1225,7 +1225,13 @@ with a capital first also its small-letter form's capitalised: spellbook alone g
 `find` lists the `.dic` files with an `.aff` of the same name in folders (Linux's `system_folders`; none on
 Windows and macOS), naming them from their file names (`tag_of`, `language_name`); `in_extension` takes the pairs
 from a LibreOffice `.oxt` (a zip, read through [`zip`](https://crates.io/crates/zip) 9.3 with only the zlib-rs
-deflate; each file at most 64 MB); `best_match` matches a `/Lang` or locale to a dictionary by region, then
+deflate; each file at most 64 MB). What one choice of dictionaries unpacks is a `DictionaryBudget` (S1-08, M-07:
+256 `.aff` and `.dic` files and 128 MiB by default; tests make small ones): `in_extension_within` counts every
+`.aff` and `.dic` entry, those without a partner and those of the same name too, and adds their stated sizes from
+the zip's list first, refusing (`TooMany`, `TooMuch`, `TooLarge`) before anything is unpacked, then takes each
+from the budget as it is read (zip 9 also stops an entry at its stated size); a refusal gives no dictionaries and
+leaves the budget as it was. The app's Add a dictionary… reads an extension's own file through `read_extension`
+(128 MiB) and a chosen `.dic` and `.aff` through `read_within`, all on one budget. `best_match` matches a `/Lang` or locale to a dictionary by region, then
 language.
 
 In the app, `spell.rs` holds the state in the context's data (as `typing_fonts` holds its loads, so each test's
@@ -1611,7 +1617,8 @@ CLI's later steps, the tab's own document when a copy wasn't handed over) find t
 like with like. Left as before: an encrypted document is written one object at a time (lopdf encrypts objects
 before its writer would pack them, so an object stream it made would go out in the clear; the merging runs on the
 copy encryption makes), a document whose XMP says `pdfaid:part` 1 with a table (`claims_pdfa1`; PDF/A-1 is PDF
-1.4), and one of under 32 objects lopdf could pack (`few_to_pack`) is written both ways in memory and the smaller
+1.4; the XMP decoded up to `MAX_XMP`, 4 MiB, and taken to say so when it is larger: S1-08, M-05, the user's choice;
+a save has compressed every stream by then, so this is the case that matters), and one of under 32 objects lopdf could pack (`few_to_pack`) is written both ways in memory and the smaller
 kept (three corpus files of 4 to 6 objects grew by 9 to 31 bytes otherwise). `snapshot`, `pruned_snapshot` and the
 render copies don't go through it. The saved-output checker (`tests/common/saved.rs`) checks each object packed in
 an object stream by the stream's header, and searches object streams decoded as every Flate segment.
@@ -1633,7 +1640,8 @@ as JPEG at the choice's (HD and High fidelity 90, Print 85, Web 80, Email 75). A
 the picture's new size when it had the picture's, as `/Matte` needs) into a new object, Flate. The new picture
 replaces the old in place (`objects.insert`, so Undo's comparison keeps the old), only when it and its mask are
 smaller than before. Left and counted by `KeptWhy`: other spaces than grey and RGB (`plain_components`: Device,
-Cal, ICCBased of 1 or 3; never Indexed, Separation, DeviceN, Lab), not 8 bits, `/Decode`, `/Mask`, `/ImageMask`,
+Cal, ICCBased of 1 or 3; never Indexed, Separation, DeviceN, Lab; a name followed through the page's colour spaces
+at most 8 times and never back to one already met, S1-08, M-01), not 8 bits, `/Decode`, `/Mask`, `/ImageMask`,
 filters other than DCT, Flate, LZW, run length and the ASCII ones, a JPEG whose components don't match its space,
 a mask that isn't 8-bit grey, inline pictures. `Reduced::most` names the picture that lost the most bytes, for the
 app's preview.
@@ -2754,7 +2762,10 @@ form XObject, and per inline image.
   they are) and turned upright for the EXIF or TIFF orientation by a `cm` from `imgs::orient_matrix` inside their
   box, as image pages, image watermarks and picture stamps are (`add_upright_image`). A replacement is fitted into
   the old box by its upright size. `image_dimensions` gives the upright size too, from the file's header; the app's
-  Image tool (`Tab::arm_image`) takes a click's box shape from it.
+  Image tool (`Tab::arm_image`) takes a click's box shape from it. A TIFF placed, previewed or made a signature
+  picture is read to its first page only (`imgs::decode_first`); image pages (`insert_image_pages`) read every page
+  on one `Work` of 2 GiB (`MOST_DECODED`; S1-08, M-06), each PNG or TIFF page charged its decoded size from its
+  header before it is decoded and each JPEG its file's size, past which `PicturesTooLarge` refuses the lot.
 - **Installed fonts** (the inspector's font list after the three standard ones) are the families whose fonts
   allow embedding (`OS/2 fsType`: not restricted, subsetting allowed, not bitmaps only), have outlines and the
   Latin letters; up to four faces each (regular, bold, italic, bold italic), a variable font set at weight 400 or
