@@ -749,14 +749,20 @@ mod tests {
         }
     }
 
+    /// The deadline for [`escaping`]'s script: time for its process to leave the group on a
+    /// busy machine (stopped with the group before it does, it never writes its id), and far
+    /// short of the 30 seconds it holds the pipes.
+    #[cfg(unix)]
+    const ESCAPE: Duration = Duration::from_secs(2);
+
     /// A script that starts a process outside its group (in a session of its own, as a
-    /// daemon would), holding its pipes open for 3 seconds, writes that process's id to
+    /// daemon would), holding its pipes open for 30 seconds, writes that process's id to
     /// `file`, and exits at once.
     #[cfg(unix)]
     fn escaping(file: &std::path::Path) -> String {
         format!(
             "perl -MPOSIX -e 'POSIX::setsid(); open(my $f, \">\", $ARGV[0]) or die; \
-             print $f $$; close $f; exec \"sleep\", \"3\"' '{}' & exit 0",
+             print $f $$; close $f; exec \"sleep\", \"30\"' '{}' & exit 0",
             file.display()
         )
     }
@@ -770,7 +776,10 @@ mod tests {
             if let Some(pid) = read.and_then(|s| s.trim().parse().ok()) {
                 break pid;
             }
-            assert!(start.elapsed() < Duration::from_secs(5), "it didn't start");
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "it didn't start, or was stopped before it left its group"
+            );
             std::thread::sleep(Duration::from_millis(10));
         };
         if let Some(pid) = rustix::process::Pid::from_raw(pid) {
@@ -788,10 +797,10 @@ mod tests {
         let file = std::env::temp_dir().join(format!("limarepdf-escaped-{}", std::process::id()));
         let args = ["-c".to_string(), escaping(&file)];
         let start = Instant::now();
-        let sent = watched(move || send_within("sh", &args, b"%PDF-", Duration::from_millis(300)));
+        let sent = watched(move || send_within("sh", &args, b"%PDF-", ESCAPE));
         let took = start.elapsed();
         stop_escaped(&file);
-        assert!(took < Duration::from_secs(2), "{took:?}");
+        assert!(took < ESCAPE + Duration::from_secs(3), "{took:?}");
         let e = format!("{:#}", sent.unwrap_err());
         assert!(e.contains("may have been sent"), "{e}");
     }

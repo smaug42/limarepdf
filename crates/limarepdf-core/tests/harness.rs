@@ -71,14 +71,20 @@ fn watched<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     }
 }
 
+/// The deadline for [`escaping`]'s script: time for its process to leave the group on a busy
+/// machine (stopped with the group before it does, it never writes its id), and far short of
+/// the 30 seconds it holds the pipes.
+#[cfg(unix)]
+const ESCAPE: Duration = Duration::from_secs(2);
+
 /// A script that starts a process outside its group (in a session of its own, as a daemon
-/// would), holding its pipes open for 3 seconds, writes that process's id to `file`, and
+/// would), holding its pipes open for 30 seconds, writes that process's id to `file`, and
 /// exits at once.
 #[cfg(unix)]
 fn escaping(file: &std::path::Path) -> String {
     format!(
         "perl -MPOSIX -e 'POSIX::setsid(); open(my $f, \">\", $ARGV[0]) or die; \
-         print $f $$; close $f; exec \"sleep\", \"3\"' '{}' & exit 0",
+         print $f $$; close $f; exec \"sleep\", \"30\"' '{}' & exit 0",
         file.display()
     )
 }
@@ -92,7 +98,10 @@ fn stop_escaped(file: &std::path::Path) {
         if let Some(pid) = read.and_then(|s| s.trim().parse().ok()) {
             break pid;
         }
-        assert!(start.elapsed() < Duration::from_secs(5), "it didn't start");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "it didn't start, or was stopped before it left its group"
+        );
         std::thread::sleep(Duration::from_millis(10));
     };
     if let Some(pid) = rustix::process::Pid::from_raw(pid) {
@@ -112,17 +121,14 @@ fn a_program_leaving_a_process_running_fails_at_the_deadline() {
     let start = Instant::now();
     let failed = watched(move || {
         catch_unwind(AssertUnwindSafe(|| {
-            tool::output_within(
-                Command::new("sh").args(["-c", &script]),
-                Duration::from_millis(300),
-            )
+            tool::output_within(Command::new("sh").args(["-c", &script]), ESCAPE)
         }))
         .is_err()
     });
     let took = start.elapsed();
     stop_escaped(&file);
     assert!(failed, "the call should fail");
-    assert!(took < Duration::from_secs(2), "{took:?}");
+    assert!(took < ESCAPE + Duration::from_secs(3), "{took:?}");
 }
 
 /// Programs that run out of time leave no open file or thread behind, however many: counted
