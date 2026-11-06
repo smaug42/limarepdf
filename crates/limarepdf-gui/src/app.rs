@@ -16809,12 +16809,13 @@ mod tests {
         let dir = test_dir("timing");
         let log = dir.join("timing.tsv");
         pages_file(&dir.join("doc.pdf"), 300.0, 2, None);
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "app::tests::timed_with_the_log_on"])
-            .args(["--ignored", "--test-threads=1", "--nocapture"])
-            .env(timing::VAR, &log)
-            .output()
-            .unwrap();
+        let out = limarepdf_core::child_seam::output(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "app::tests::timed_with_the_log_on"])
+                .args(["--ignored", "--test-threads=1", "--nocapture"])
+                .env(timing::VAR, &log),
+        )
+        .unwrap();
         let said = String::from_utf8_lossy(&out.stdout).to_string()
             + &String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && said.contains("1 passed"), "{said}");
@@ -16885,14 +16886,15 @@ mod tests {
     #[cfg(not(windows))]
     fn rerun_with_cups(dir: &Path, test: &str) {
         let path = std::env::var("PATH").unwrap_or_default();
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", test])
-            .args(["--ignored", "--test-threads=1", "--nocapture"])
-            .env("PATH", format!("{}:{path}", dir.display()))
-            .env("CUPS_SERVER", dir.join("nothing.sock"))
-            .env(STAND_IN_CUPS, dir)
-            .output()
-            .unwrap();
+        let out = limarepdf_core::child_seam::output(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test])
+                .args(["--ignored", "--test-threads=1", "--nocapture"])
+                .env("PATH", format!("{}:{path}", dir.display()))
+                .env("CUPS_SERVER", dir.join("nothing.sock"))
+                .env(STAND_IN_CUPS, dir),
+        )
+        .unwrap();
         let said = String::from_utf8_lossy(&out.stdout).to_string()
             + &String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && said.contains("1 passed"), "{said}");

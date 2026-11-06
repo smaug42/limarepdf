@@ -7,9 +7,12 @@
 #[path = "common/tool.rs"]
 mod tool;
 
+// Linux and macOS only: Windows prints through the print spooler.
+#[cfg(not(windows))]
+use limarepdf_core::print::send;
 use limarepdf_core::print::{
-    lp_args, send, sheets as plan, Binding, Booklet, BookletSides, Orientation, PageOrder,
-    PageSetup, Paper, PerSheet, PrintOptions, Scale, Sides,
+    lp_args, sheets as plan, Binding, Booklet, BookletSides, Orientation, PageOrder, PageSetup,
+    Paper, PerSheet, PrintOptions, Scale, Sides,
 };
 use limarepdf_core::{render, Cipher, Encryption, FieldValue, ObjectKind, Pdf, Restrictions};
 use lopdf::{dictionary, Dictionary, Object, Stream};
@@ -819,6 +822,7 @@ fn sends_the_document_to_lp() {
     assert!(e.to_string().contains("does not exist"), "{e}");
 }
 
+#[cfg(not(windows))]
 #[test]
 fn missing_lp_is_explained() {
     let e = send("limarepdf-no-such-lp", &[], b"%PDF").unwrap_err();

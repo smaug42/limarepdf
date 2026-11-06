@@ -2906,9 +2906,12 @@ mod tests {
             let (bytes, _) = written(f);
             let path = dir.join("line.pdf");
             std::fs::write(&path, bytes).unwrap();
-            let out = std::process::Command::new("pdftotext")
-                .args(["-bbox".as_ref(), path.as_os_str(), "-".as_ref()])
-                .output()
+            let out =
+                limarepdf_core::child_seam::output(std::process::Command::new("pdftotext").args([
+                    "-bbox".as_ref(),
+                    path.as_os_str(),
+                    "-".as_ref(),
+                ]))
                 .expect("pdftotext (Poppler) installed");
             let html = String::from_utf8_lossy(&out.stdout);
             let mins: Vec<f32> = (html.split("<word xMin=\"").skip(1))

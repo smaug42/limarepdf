@@ -32,9 +32,7 @@ fn three_pages(dir: &Path) -> PathBuf {
 }
 
 fn cli(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .args(args)
-        .output()
+    limarepdf_core::child_seam::output(Command::new(env!("CARGO_BIN_EXE_limarepdf-cli")).args(args))
         .unwrap()
 }
 

@@ -31,11 +31,12 @@ fn make_pdf(dir: &Path, name: &str, after: &str) -> PathBuf {
 }
 
 fn info_stderr(file: &Path) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .arg("info")
-        .arg(file)
-        .output()
-        .unwrap();
+    let out = limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("info")
+            .arg(file),
+    )
+    .unwrap();
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(out.status.success(), "{err}");
     err

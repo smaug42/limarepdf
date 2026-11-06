@@ -37,7 +37,7 @@ fn run(dir: &Path, failing: Option<&Path>, args: &[&str]) -> Output {
     if let Some(f) = failing {
         cmd.env(sync_seam::VAR, f);
     }
-    cmd.output().unwrap()
+    limarepdf_core::child_seam::output(&mut cmd).unwrap()
 }
 
 fn pages(path: &Path) -> usize {

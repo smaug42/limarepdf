@@ -6,6 +6,11 @@ codegen unit), at commit 6b67145, with `limarepdf-cli` and the measuring script 
 memory is the most the program held in memory at once (its resident set) in any of the three runs; readings shown as
 "≤ 20 MB" are at the lowest the script can measure.
 
+To measure again, run `python3 crates/limarepdf-core/tools/measure.py` from the repository (Linux or macOS): it
+builds the release CLI, makes the files and prints this table for the machine and commit. `--runs`, `--only` and
+`--timeout` are in [Testing](testing.md#automated-tests); each run writes into an empty folder of its own, so
+repeated runs of render and split measure the same work.
+
 The files: a generated 1,000-page text file (1.5 MB; a heading, 48 lines of text and a rule on each page), a generated
 200-page colour scan (139 MB; a 300 dpi Letter page of 694 KB JPEG, 200 times), and four public test files from the
 [comparison with poppler](testing.md#compared-with-poppler).

@@ -11,6 +11,8 @@ mod atomic;
 mod base_encodings;
 mod blank;
 mod budget;
+#[cfg(any(unix, test, feature = "test-seams"))]
+mod child;
 mod cms_check;
 mod cms_write;
 mod colour;
@@ -98,6 +100,8 @@ pub use blank::BLANK_TOLERANCE;
 #[cfg(any(test, feature = "test-seams"))]
 pub use budget::budget_seam;
 pub use budget::TooComplex;
+#[cfg(any(test, feature = "test-seams"))]
+pub use child::child_seam;
 pub use cms_check::CertInfo;
 #[cfg(any(test, feature = "test-seams"))]
 pub use compact::MAX_XMP;

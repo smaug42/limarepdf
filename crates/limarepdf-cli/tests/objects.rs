@@ -55,11 +55,12 @@ fn make_pdf(dir: &Path) -> PathBuf {
 fn a_line_in_more_than_one_style_is_marked_mixed() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("objects");
     let pdf = make_pdf(&dir);
-    let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .arg("objects")
-        .arg(&pdf)
-        .output()
-        .unwrap();
+    let out = limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("objects")
+            .arg(&pdf),
+    )
+    .unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = text.lines().filter(|l| l.contains("Text")).collect();

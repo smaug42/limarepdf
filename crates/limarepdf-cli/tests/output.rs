@@ -58,12 +58,13 @@ fn folder(name: &str) -> PathBuf {
 }
 
 fn run(args: &[&str], dir: &Path, stdout: Stdio) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .current_dir(dir)
-        .args(args)
-        .stdout(stdout)
-        .output()
-        .unwrap()
+    limarepdf_core::child_seam::output_to(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .current_dir(dir)
+            .args(args),
+        stdout,
+    )
+    .unwrap()
 }
 
 /// Output to a pipe whose reader has already gone, so every write fails as `… | head` would.

@@ -51,12 +51,13 @@ fn make_pdf(dir: &Path) -> PathBuf {
 }
 
 fn search(file: &Path, args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .arg("search")
-        .arg(file)
-        .args(args)
-        .output()
-        .unwrap();
+    let out = limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("search")
+            .arg(file)
+            .args(args),
+    )
+    .unwrap();
     assert!(
         out.status.success(),
         "{}",

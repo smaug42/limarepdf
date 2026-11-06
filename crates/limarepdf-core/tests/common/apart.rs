@@ -3,9 +3,9 @@
 //! others, and nothing of it is left running. The child prints its outcome in lines
 //! starting with a marker the parent picks out of its output.
 
-use std::io::Read as _;
-use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use limarepdf_core::child_seam;
+use std::process::{Command, ExitStatus};
+use std::time::Duration;
 
 /// How a child process ended.
 pub enum Ran {
@@ -23,47 +23,25 @@ pub fn run(test: &str, env: &[(&str, String)], limit: Duration) -> Ran {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args(["--exact", test, "--ignored"])
         .args(["--nocapture", "--test-threads", "1"])
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    // A group of its own, so that whatever it starts is stopped with it.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
+        .envs(env.iter().map(|(k, v)| (k, v)));
+    // Stopped at `limit` with whatever it started, its output read as it comes (core's
+    // `child_seam`).
+    let ran = match child_seam::run(&mut cmd, None, limit) {
+        Ok(ran) => ran,
         Err(e) => return Ran::NotStarted(e.to_string()),
     };
-    // Read as it comes, so a full pipe can't stop the child.
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        text
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() > limit => {
-                #[cfg(unix)]
-                let _ = rustix::process::kill_process_group(
-                    rustix::process::Pid::from_child(&child),
-                    rustix::process::Signal::KILL,
-                );
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = reader.join();
-                return Ran::TimedOut;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ran::NotStarted(e.to_string());
-            }
-        }
-    };
-    Ran::Ended(reader.join().unwrap_or_default(), status)
+    if ran.timed_out {
+        return Ran::TimedOut;
+    }
+    assert!(
+        !ran.truncated,
+        "{test} wrote more output than the {} MiB kept",
+        child_seam::CAP >> 20
+    );
+    Ran::Ended(
+        String::from_utf8_lossy(&ran.stdout).into_owned(),
+        ran.status,
+    )
 }
 
 /// The lines after `marker` in a child's output (the first may follow the test harness's

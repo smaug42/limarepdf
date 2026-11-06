@@ -106,7 +106,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_Xps",
 ] }
 
-# A disk's free space and this user's id, for crash recovery copies (disk.rs). Already in the
-# Linux build through the windowing crates; new to the macOS build.
+# A disk's free space and this user's id, for crash recovery copies (disk.rs); waiting on an
+# outside program's pipes with poll(2) and stopping its process group (child.rs). Already in
+# the Linux build through the windowing crates; new to the macOS build.
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["fs", "process", "std"] }
+rustix = { version = "1", features = ["event", "fs", "process", "std"] }

@@ -3,7 +3,7 @@
 use super::model::{Faulty, Kind, Model};
 use super::*;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{RwLock, RwLockReadGuard};
+use std::sync::{RwLock, RwLockReadGuard, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -807,7 +807,17 @@ fn kill(child: &mut std::process::Child, why: &str) -> ! {
 fn a_running_session_is_not_offered() {
     use std::io::{BufRead, Write};
     let base = folder("child");
-    let spawning = SPAWN.write().unwrap_or_else(|e| e.into_inner());
+    // The tests on the real disk let go of it as they end; one that doesn't fails this one in
+    // time instead of holding it up.
+    let mut spawning = None;
+    wait_until("the tests on the real disk to let go of it", || {
+        spawning = match SPAWN.try_write() {
+            Ok(g) => Some(g),
+            Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        spawning.is_some()
+    });
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "recovery::tests::child_session",

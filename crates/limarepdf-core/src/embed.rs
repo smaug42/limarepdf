@@ -2106,9 +2106,7 @@ mod tests {
             .iter()
             .map(|a| a.replace("{}", path.to_str().unwrap()))
             .collect();
-        let out = std::process::Command::new(name)
-            .args(&args)
-            .output()
+        let out = crate::child_seam::output(std::process::Command::new(name).args(&args))
             .unwrap_or_else(|e| panic!("{name} installed: {e}"));
         std::fs::remove_file(&path).unwrap();
         assert!(out.status.success(), "{name} failed");

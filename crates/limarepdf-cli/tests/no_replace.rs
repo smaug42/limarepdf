@@ -67,13 +67,14 @@ fn folder(name: &str) -> PathBuf {
 }
 
 fn run(dir: &Path, args: &[&str]) -> Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .current_dir(dir)
-        .env("HOME", dir)
-        .env("XDG_CONFIG_HOME", dir.join("config"))
-        .args(args)
-        .output()
-        .unwrap()
+    limarepdf_core::child_seam::output(
+        std::process::Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .current_dir(dir)
+            .env("HOME", dir)
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .args(args),
+    )
+    .unwrap()
 }
 
 /// Runs the command, which must succeed.

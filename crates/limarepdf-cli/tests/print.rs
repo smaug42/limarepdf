@@ -139,12 +139,13 @@ fn printers_list_their_paper_sizes() {
     );
     let socket = dir.join("ipp.sock");
     let run = |socket: &Path| {
-        let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-            .args(["printers", "--paper"])
-            .env("PATH", &path)
-            .env("CUPS_SERVER", socket)
-            .output()
-            .unwrap();
+        let out = limarepdf_core::child_seam::output(
+            Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+                .args(["printers", "--paper"])
+                .env("PATH", &path)
+                .env("CUPS_SERVER", socket),
+        )
+        .unwrap();
         let said = String::from_utf8_lossy(&out.stdout).to_string();
         assert!(
             out.status.success(),
@@ -215,14 +216,15 @@ fn print_lays_the_pages_out_on_the_paper() {
     let file = two_pages(&dir);
     let run = |args: &[&str]| {
         let _ = std::fs::remove_file(dir.join("job.pdf"));
-        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-            .arg("print")
-            .args(args)
-            .arg(&file)
-            .env("PATH", &path)
-            .env("CUPS_SERVER", &socket)
-            .output()
-            .unwrap()
+        limarepdf_core::child_seam::output(
+            Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+                .arg("print")
+                .args(args)
+                .arg(&file)
+                .env("PATH", &path)
+                .env("CUPS_SERVER", &socket),
+        )
+        .unwrap()
     };
     let sheets = || {
         let job = limarepdf_core::Pdf::open(dir.join("job.pdf"), None).unwrap();
@@ -288,14 +290,15 @@ fn print_puts_several_pages_on_a_sheet() {
     let file = two_pages(&dir);
     let run = |args: &[&str]| {
         let _ = std::fs::remove_file(dir.join("job.pdf"));
-        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-            .arg("print")
-            .args(args)
-            .arg(&file)
-            .env("PATH", &path)
-            .env("CUPS_SERVER", &socket)
-            .output()
-            .unwrap()
+        limarepdf_core::child_seam::output(
+            Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+                .arg("print")
+                .args(args)
+                .arg(&file)
+                .env("PATH", &path)
+                .env("CUPS_SERVER", &socket),
+        )
+        .unwrap()
     };
     let err = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).to_string();
     let sheets = || {
@@ -348,14 +351,15 @@ fn print_makes_a_booklet() {
     let file = two_pages(&dir);
     let run = |args: &[&str]| {
         let _ = std::fs::remove_file(dir.join("job.pdf"));
-        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-            .arg("print")
-            .args(args)
-            .arg(&file)
-            .env("PATH", &path)
-            .env("CUPS_SERVER", &socket)
-            .output()
-            .unwrap()
+        limarepdf_core::child_seam::output(
+            Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+                .arg("print")
+                .args(args)
+                .arg(&file)
+                .env("PATH", &path)
+                .env("CUPS_SERVER", &socket),
+        )
+        .unwrap()
     };
     let err = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).to_string();
     let sheets = || {
@@ -422,12 +426,13 @@ fn fields_that_would_print_empty_stop_printing() {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .args(["print", "--printer", "limarepdf-test"])
-        .arg(&file)
-        .env("PATH", path)
-        .output()
-        .unwrap();
+    let out = limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .args(["print", "--printer", "limarepdf-test"])
+            .arg(&file)
+            .env("PATH", path),
+    )
+    .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "printed: {err}");
     assert!(
