@@ -9,6 +9,23 @@
 
 ### Fixed
 
+- Exporting pages as images no longer writes a page cut short, or fails with an internal error, on a very long or
+  very wide page at a high resolution (a 10 × 10,000 point strip at 576 dpi came out with its bottom missing, and
+  turned on its side it failed). A page image has at most 65,280 pixels a side, as well as 268 million in all; an export
+  with a page past either is refused before any image is written, with an error naming the page, as on the
+  command line.
+- The message at the end of an export, and `limarepdf-cli render` on a `warning:` line, now say what the images
+  lack, in the words of the page's notice: a picture LimarePDF can't read, a font that isn't installed. Before,
+  the command line said nothing of them.
+- `limarepdf-cli render` refuses a file LimarePDF can't open, as the app does. Before, it drew the file as it was,
+  without leaving out the pictures that would make it ask for gigabytes of memory.
+- Some damaged or made-up files no longer fail with an internal error while LimarePDF reads or draws them: a Lab
+  colour space with its ranges out of order or not numbers (now drawn with the usual ranges), and an inline
+  picture stating a size too large to count.
+- A fax picture stating more than 131,072 pixels across, and more than 16 million in all, is now left out of the
+  page as it is shown, printed as a picture or read with OCR, with the page's notice, rather than making
+  LimarePDF ask for memory for every pixel; a blank fax row takes a bit however wide it is, so its data can't
+  tell. The document keeps it.
 - A picture in a damaged or made-up file that says it is far larger than the data it holds (a few bytes claiming
   hundreds of millions of pixels) no longer makes LimarePDF ask for gigabytes of memory when it draws the page,
   prints it as a picture or reads it with OCR. The picture is left out, and the page's notice says a picture

@@ -102,7 +102,7 @@ pub use cms_check::CertInfo;
 #[cfg(any(test, feature = "test-seams"))]
 pub use compact::MAX_XMP;
 pub use decorate::{decoration_lines, DecoKind, Decorated, Decoration, FontLines, Look};
-pub use display::{display_line, display_text, local_date, local_time, quoted_list};
+pub use display::{display_line, display_text, local_date, local_time, quoted_list, short_list};
 pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{KeptPiece, PartFont, PathStyle, Shape, TextEdit, TextPart};
 pub use embed::{

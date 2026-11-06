@@ -4,7 +4,8 @@
 use crate::actions::Act;
 use crate::icon;
 use crate::theme::Tone;
-use limarepdf_core::render::Missing;
+use limarepdf_core::render::{self, Missing};
+use limarepdf_core::short_list as list;
 use limarepdf_core::{FieldKind, ObjectKind, Pdf};
 use std::collections::BTreeSet;
 
@@ -215,121 +216,14 @@ pub fn signatures(tone: Tone, text: String) -> Banner {
 }
 
 /// The banners for what the renderer couldn't draw as the file asks, found as pages are
-/// drawn: one about fonts that aren't installed, saying what to install, and one about
-/// other parts that couldn't be drawn.
+/// drawn: one about other parts that couldn't be drawn, and one about fonts that aren't
+/// installed, saying what to install ([`render::notices`], shared with the CLI).
 pub fn missing(what: &BTreeSet<Missing>) -> Vec<Banner> {
-    let mut stand_ins = BTreeSet::new();
-    let mut unnamed_stand_ins = false;
-    let mut languages = BTreeSet::new();
-    let mut unusable = BTreeSet::new();
-    let mut parts = Vec::new();
-    for m in what {
-        match m {
-            Missing::StandIn(Some(f), _) => {
-                stand_ins.insert(f.as_str());
-            }
-            Missing::StandIn(None, _) => unnamed_stand_ins = true,
-            Missing::Language(l, _) => {
-                languages.insert(*l);
-            }
-            Missing::Font(Some(f)) => {
-                unusable.insert(f.as_str());
-            }
-            Missing::Font(None) | Missing::Picture => parts.push(m.describe()),
-        }
-    }
-
-    let mut fonts = Vec::new();
-    if !languages.is_empty() {
-        let names: Vec<&str> = languages.iter().map(|l| l.name()).collect();
-        let suggest: Vec<&str> = languages.iter().map(|l| l.suggestion()).collect();
-        fonts.push(if languages.len() == 1 {
-            format!(
-                "This document has {0} text, but no {0} font is installed, so that text can't \
-                 be shown. Install a {0} font, such as {1}, to read it.",
-                names[0], suggest[0]
-            )
-        } else {
-            format!(
-                "This document has {} text, but no font for them is installed, so that text \
-                 can't be shown. Install fonts for them, such as {}, to read it.",
-                list(&names),
-                list(&suggest)
-            )
-        });
-    }
-    if !unusable.is_empty() {
-        let names: Vec<&str> = unusable.into_iter().collect();
-        fonts.push(format!(
-            "{} {} installed and no font could stand in, so {} text may show wrong \
-             characters. Install {} to read it.",
-            fonts_named(&names),
-            if names.len() == 1 { "isn't" } else { "aren't" },
-            if names.len() == 1 { "its" } else { "their" },
-            if names.len() == 1 { "it" } else { "them" },
-        ));
-    }
-    if !stand_ins.is_empty() {
-        let names: Vec<&str> = stand_ins.into_iter().collect();
-        fonts.push(if names.len() == 1 {
-            format!(
-                "The font {0} isn't installed, so a similar font is shown in its place and \
-                 some text may not look right. Install {0} to see the document as it was made.",
-                names[0]
-            )
-        } else {
-            format!(
-                "{} aren't installed, so similar fonts are shown in their place and some text \
-                 may not look right. Install them to see the document as it was made.",
-                fonts_named(&names)
-            )
-        });
-    } else if unnamed_stand_ins {
-        fonts.push(
-            "Some fonts this document uses aren't installed, so similar fonts are shown in \
-             their place and some text may not look right."
-                .into(),
-        );
-    }
-
+    let n = render::notices(what);
     let mut v = Vec::new();
-    if !parts.is_empty() {
-        v.push(Banner::plain(
-            Kind::Missing,
-            format!(
-                "Parts of this document couldn't be drawn ({}), so some pages may look \
-                 incomplete.",
-                parts.join(", ")
-            ),
-        ));
-    }
-    if !fonts.is_empty() {
-        v.push(Banner::plain(Kind::Fonts, fonts.join(" ")));
-    }
+    v.extend(n.parts.map(|t| Banner::plain(Kind::Missing, t)));
+    v.extend(n.fonts.map(|t| Banner::plain(Kind::Fonts, t)));
     v
-}
-
-/// "The font A" or "The fonts A, B and C".
-fn fonts_named(names: &[&str]) -> String {
-    if names.len() == 1 {
-        format!("The font {}", names[0])
-    } else {
-        format!("The fonts {}", list(names))
-    }
-}
-
-/// "A", "A and B", "A, B and C"; after four, "A, B, C, D and 3 more".
-fn list(items: &[&str]) -> String {
-    const SHOWN: usize = 4;
-    match items {
-        [] => String::new(),
-        [one] => one.to_string(),
-        _ if items.len() > SHOWN => {
-            let more = items.len() - SHOWN;
-            format!("{} and {more} more", items[..SHOWN].join(", "))
-        }
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
 }
 
 /// The banners for a document just opened, most important first. `bytes` is the file's

@@ -224,15 +224,20 @@ Pages are saved one file per page, named after the document and the page number 
 1152 dpi. Exporting runs in the background and asks before replacing files. The resolution is stored in each file,
 so the images import back at the page's size. LimarePDF draws the pages with its own renderer.
 
-A page image can have at most 268 million pixels (A3 at 1152 dpi; a 4 × 3 foot poster at about 390 dpi); a larger
-one is an error that names the page, and a lower resolution works. Large page images are drawn in bands, which
-bounds the memory a complex page takes but makes some pages slower to export
-([details](rendering.md#large-drawings)).
+A page image can have at most 268 million pixels (A3 at 1152 dpi; a 4 × 3 foot poster at about 390 dpi), and at
+most 65,280 pixels a side (a page 2.3 m long at 720 dpi; one 10,000 points long at about 470 dpi). A page past
+either limit stops the export before any image is written, with an error that names the page, and a lower
+resolution works. Large page images are drawn in bands, which bounds the memory a complex page takes but makes
+some pages slower to export ([details](rendering.md#large-drawings)).
+
+When the images lack something, the message at the end of the export says what, as the page's notice does: a
+picture LimarePDF can't read, say, or a font that isn't installed, drawn with a similar one.
 
 On the command line: `limarepdf-cli render --format png|jpeg`. Like the app, it draws a filled form field that has
 no drawing of its own (some apps leave drawing it to the reader). A field whose text LimarePDF can't draw
 (Hebrew or Arabic, say, or characters no installed font has) comes out empty: the images are still written, with a warning naming
-those fields.
+those fields. What else the images lack is said on one more `warning:` line, in the words of the app's notice;
+the images are written all the same. A file LimarePDF can't open is refused, as the app refuses it.
 
 ## Pictures
 

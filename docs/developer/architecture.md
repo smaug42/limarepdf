@@ -127,7 +127,8 @@ on the sheets' copy) and `page_without` (the page under text being edited). A pi
 more than 16 million pixels (`LARGE`) and its data, decoded through lopdf with the output capped at an eighth of what
 the stated size needs, comes to less than that eighth (`PART`); unsure counts (bits, colours) take the smallest, so
 the check errs towards drawing. A fax (CCITT) picture's rows are bounded by its data, at least a bit each, against
-`/Rows` or its height, whichever is more, as hayro allocates; its width isn't (a blank row is one bit however wide).
+`/Rows` or its height, whichever is more, as hayro allocates; its width isn't (a blank row is one bit however wide),
+so one over 2^17 columns (`MOST_FAX_COLUMNS`, by `/Width` or `/Columns`) is left out whatever its data (PB-11).
 Data in JPEG, JPEG 2000 or JBIG2, or that lopdf can't decode, is left to hayro. Picture objects are any stream with
 `/Subtype /Image`; inline images are looked for in page contents, form XObjects, tiling patterns and Type 3 glyphs,
 cut out with `inline::extract` and put back with `Inline::restore`, the content written decoded in the copy. In

@@ -62,8 +62,9 @@ enum Drawn {
 fn ours(path: &Path, s: &Sample, scale: f32) -> Result<Vec<(usize, Drawn)>, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let pw = s.password.as_deref();
-    // As `limarepdf-cli render` does: the app's view of the file, or the file as it is when
-    // the document reader can't open it.
+    // The app's view of the file, or, so the renderer is still compared on it, the file as
+    // it is when the document reader can't open it (the app and `limarepdf-cli render`
+    // refuse such a file).
     let loaded = match Pdf::from_bytes(&bytes, pw).and_then(|mut p| p.render_snapshot()) {
         Ok(b) => render::load(b, None),
         Err(_) => render::load(bytes, pw),

@@ -22,6 +22,9 @@ const LARGE: u64 = 16 << 20;
 /// A large picture whose data fills less than one part in this many of its stated size is
 /// left out.
 const PART: u64 = 8;
+/// The widest a large fax picture is drawn (PB-11): hayro sizes each row from the width
+/// alone, and a fax row of any width can take a few bits.
+const MOST_FAX_COLUMNS: u64 = 1 << 17;
 /// The most a content stream is decoded to, to look for inline images in it.
 const MAX_CONTENT: usize = 1 << 30;
 
@@ -234,8 +237,9 @@ fn large(doc: &Document, d: &Dictionary) -> bool {
 
 /// Whether picture `s` states more than [`LARGE`] pixels and its data fills less than one
 /// [`PART`] of them. Data in filters that keep no count of what they hold (JPEG, JPEG 2000,
-/// JBIG2), or that LimarePDF can't decode, is left to hayro, as is a fax picture's width:
-/// only its rows are bounded by its data (each takes at least a bit).
+/// JBIG2), or that LimarePDF can't decode, is left to hayro. A fax picture's rows are bounded
+/// by its data (each takes at least a bit) but its width isn't, so a large one wider than
+/// [`MOST_FAX_COLUMNS`] is left out whatever its data.
 pub(crate) fn unfillable(doc: &Document, s: &Stream) -> bool {
     let d = &s.dict;
     let Some((w, h)) = stated(doc, d) else {
@@ -288,6 +292,10 @@ pub(crate) fn unfillable(doc: &Document, s: &Stream) -> bool {
             Ok(Object::Dictionary(p)) => Some(p),
             _ => None,
         };
+        let columns = parms.and_then(|p| int(doc, p, b"Columns")).unwrap_or(0);
+        if w.max(u64::try_from(columns).unwrap_or(0)) > MOST_FAX_COLUMNS {
+            return true;
+        }
         let rows = parms.and_then(|p| int(doc, p, b"Rows")).unwrap_or(0);
         let rows = u64::try_from(rows).unwrap_or(0).max(h);
         let cap = rows.div_ceil(8 * PART);

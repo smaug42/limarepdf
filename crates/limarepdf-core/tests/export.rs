@@ -29,10 +29,12 @@ fn two_pages() -> Pdf {
 fn round_trip(format: ImageFormat) {
     let mut p = two_pages();
     let dir = out_dir(format.extension());
-    let files = p.export_images(&[0, 1], 100.0, format, &dir, "doc");
+    let mut missing = Default::default();
+    let files = p.export_images(&[0, 1], 100.0, format, &dir, "doc", &mut missing);
     let ext = format.extension();
     let want = ["doc-001", "doc-002"].map(|n| dir.join(format!("{n}.{ext}")));
     assert_eq!(files.unwrap(), want);
+    assert!(missing.is_empty(), "{missing:?}");
 
     let img = image::open(&want[0]).unwrap().to_rgb8();
     // 612 x 792 pt at 100 dpi.
@@ -75,7 +77,14 @@ fn rejects_pages_that_do_not_exist() {
     let mut p = two_pages();
     let dir = out_dir("missing");
     assert!(p
-        .export_images(&[0, 5], 72.0, ImageFormat::Png, &dir, "x")
+        .export_images(
+            &[0, 5],
+            72.0,
+            ImageFormat::Png,
+            &dir,
+            "x",
+            &mut Default::default()
+        )
         .is_err());
 }
 

@@ -2441,16 +2441,29 @@ impl App {
     fn start_export(&mut self, ctx: &egui::Context, e: ImageExport) {
         let files = Self::image_files(&e);
         self.spawn_job(ctx, "Export pages as images", files, move |p| {
-            match p.export_images(&e.pages, e.dpi, e.format, &e.dir, &e.stem) {
+            let mut missing = std::collections::BTreeSet::new();
+            let written = p.export_images(&e.pages, e.dpi, e.format, &e.dir, &e.stem, &mut missing);
+            // What the images lack, as the page's notices say it (PB-82).
+            let n = limarepdf_core::render::notices(&missing);
+            let lacking: String = [n.parts, n.fonts]
+                .into_iter()
+                .flatten()
+                .map(|t| format!(" {t}"))
+                .collect();
+            match written {
                 Ok(files) => {
                     let n = files.len();
-                    Ok((false, format!("Wrote {n} image(s) to {}.", e.dir.display())))
+                    Ok((
+                        false,
+                        format!("Wrote {n} image(s) to {}.{lacking}", e.dir.display()),
+                    ))
                 }
                 Err(err) if not_confirmed(&err) => Ok((
                     false,
                     format!(
                         "Wrote the images to {}, but your system couldn't confirm they are \
-                         safely on disk. If the computer lost power just now, export them again.",
+                         safely on disk. If the computer lost power just now, export them again.\
+                         {lacking}",
                         e.dir.display()
                     ),
                 )),

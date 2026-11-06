@@ -169,7 +169,13 @@ impl Space {
             b"Lab" => {
                 let range = (at(1).and_then(|d| d.as_dict().ok()))
                     .and_then(|d| numbers(doc, d.get(b"Range").ok()?))
-                    .filter(|r| r.len() == 4);
+                    // Two spans, each finite and in order, or the default (M-19).
+                    .filter(|r| {
+                        r.len() == 4
+                            && r.iter().all(|x| x.is_finite())
+                            && r[0] <= r[1]
+                            && r[2] <= r[3]
+                    });
                 Space::Lab {
                     range: range
                         .map_or([-100.0, 100.0, -100.0, 100.0], |r| [r[0], r[1], r[2], r[3]]),
@@ -993,6 +999,47 @@ mod tests {
             &[0.0; 3]
         ));
         assert!(matches!(space("Missing"), Space::Other));
+    }
+
+    #[test]
+    fn a_lab_range_out_of_order_or_not_a_number_is_the_default() {
+        // Before, clamping to a range whose ends were the wrong way round, or not numbers,
+        // panicked.
+        let doc = Document::with_version("1.7");
+        let lab_object = |range: &[f32]| {
+            Object::Array(vec![
+                "Lab".into(),
+                dictionary! {
+                    "WhitePoint" => vec![0.9505.into(), 1.into(), 1.089.into()],
+                    "Range" => range.iter().map(|&x| Object::Real(x)).collect::<Vec<_>>(),
+                }
+                .into(),
+            ])
+        };
+        let lab = |range: &[f32]| Space::of(&doc, &lab_object(range), 0);
+        let plain = lab(&[-100.0, 100.0, -100.0, 100.0]);
+        let want = plain.rgb(&[50.0, 60.0, -60.0]).unwrap();
+        for range in [
+            [1.0, -1.0, 1.0, -1.0],
+            [0.0, f32::NAN, -100.0, 100.0],
+            [-100.0, 100.0, f32::INFINITY, 100.0],
+        ] {
+            let space = lab(&range);
+            assert!(
+                near(&space.rgb(&[50.0, 60.0, -60.0]).unwrap(), &want),
+                "{range:?}"
+            );
+            // As the base of an indexed space, its bytes span the default range.
+            let table = Object::string_literal(vec![128, 255, 0]);
+            let o = Object::Array(vec!["Indexed".into(), lab_object(&range), 0.into(), table]);
+            let indexed = Space::of(&doc, &o, 0);
+            let base = plain.rgb(&[128.0 / 255.0 * 100.0, 100.0, -100.0]).unwrap();
+            assert!(near(&indexed.rgb(&[0.0]).unwrap(), &base), "{range:?}");
+        }
+        // A range in order is kept: a narrow one clamps.
+        let narrow = lab(&[-10.0, 10.0, -10.0, 10.0]);
+        let clamped = plain.rgb(&[50.0, 10.0, -10.0]).unwrap();
+        assert!(near(&narrow.rgb(&[50.0, 60.0, -60.0]).unwrap(), &clamped));
     }
 
     #[test]

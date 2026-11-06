@@ -37,7 +37,7 @@ pub const MAX_REGION_SCALE: f32 = 256.0;
 
 /// Most pixels a page's bitmap may have: 1 GiB of RGBA, enough for A3 at [`MAX_DPI`].
 /// The file sets the page size, and the rasteriser allocates the whole bitmap at once
-/// (up to 65,535 pixels a side, 17 GB), so a failed allocation would close the app.
+/// (up to [`MAX_SIDE`] pixels a side, 17 GB), so a failed allocation would close the app.
 pub const MAX_PIXELS: u64 = 1 << 28;
 
 /// Most pixels drawn in one pass of the rasteriser; a bigger bitmap is drawn in bands of
@@ -46,15 +46,34 @@ pub const MAX_PIXELS: u64 = 1 << 28;
 /// for its 8 million pixels at 72 dpi), so this bounds the memory of one drawing.
 pub const BAND_PIXELS: u32 = 1 << 22;
 
-/// An error when a bitmap `width` × `height` of page `index` would pass [`MAX_PIXELS`].
-fn check_pixels(index: usize, width: u32, height: u32) -> Result<()> {
-    if width as u64 * height as u64 > MAX_PIXELS {
+/// Most pixels a side of a page's bitmap may have (M-18): 255 of the rasteriser's 256-pixel
+/// strips. Past 65,408 pixels wide its coverage counts overflow and it panics; a taller
+/// page is drawn in bands, but is held to the same side, so that what a page can be
+/// exported at doesn't hang on which way it is turned.
+pub const MAX_SIDE: u32 = 255 * 256;
+
+/// An error when a bitmap `width` × `height` of page `index` would pass [`MAX_SIDE`] or
+/// [`MAX_PIXELS`].
+fn check_pixels(index: usize, width: u64, height: u64) -> Result<()> {
+    let side = MAX_SIDE as u64;
+    if width > side || height > side || width.saturating_mul(height) > MAX_PIXELS {
         anyhow::bail!(
             "page {} is too large to draw at this size ({width} × {height} pixels)",
             index + 1
         );
     }
     Ok(())
+}
+
+/// The size of `page`'s whole bitmap at `scale` (as [`Renderer::render`] clamps it), as
+/// `hayro::render` works it out, or an error past [`check_pixels`]'s limits.
+fn bitmap_size(page: &Page, index: usize, scale: f32) -> Result<(u32, u32)> {
+    let scale = scale.clamp(0.05, 16.0);
+    let (w, h) = page.render_dimensions();
+    // Saturating, and 0 for a size that isn't a number.
+    let (width, height) = ((w * scale) as u64, (h * scale) as u64);
+    check_pixels(index, width, height)?;
+    Ok((width as u32, height as u32))
 }
 
 /// A rectangle of the bitmap a whole page would be at some scale: left, top, width and
@@ -69,16 +88,10 @@ pub struct Region {
 
 impl Region {
     /// The part of the region inside a page bitmap `width` × `height`, at most
-    /// `u16::MAX` a side (the rasteriser's limit); `None` when nothing is left.
+    /// [`MAX_SIDE`] a side; `None` when nothing is left.
     fn within(self, width: u32, height: u32) -> Option<Region> {
-        let w = self
-            .width
-            .min(width.saturating_sub(self.x))
-            .min(u16::MAX as u32);
-        let h = self
-            .height
-            .min(height.saturating_sub(self.y))
-            .min(u16::MAX as u32);
+        let w = self.width.min(width.saturating_sub(self.x)).min(MAX_SIDE);
+        let h = self.height.min(height.saturating_sub(self.y)).min(MAX_SIDE);
         (w > 0 && h > 0).then_some(Region {
             width: w,
             height: h,
@@ -124,6 +137,114 @@ impl Missing {
             ),
             Missing::Picture => "a picture".into(),
         }
+    }
+}
+
+/// What couldn't be drawn as the file asks, in words: the app's notices and the CLI's
+/// warning (PB-82).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Notices {
+    /// Parts left out or drawn wrongly, other than fonts.
+    pub parts: Option<String>,
+    /// Fonts that aren't installed, saying what to install.
+    pub fonts: Option<String>,
+}
+
+/// The [`Notices`] for `what`. Font names, which come from the file, are shown as
+/// [`crate::display_line`] shows them.
+pub fn notices(what: &BTreeSet<Missing>) -> Notices {
+    let shown = |f: &str| crate::display_line(f, 60);
+    let mut stand_ins = BTreeSet::new();
+    let mut unnamed_stand_ins = false;
+    let mut languages = BTreeSet::new();
+    let mut unusable = BTreeSet::new();
+    let mut parts = Vec::new();
+    for m in what {
+        match m {
+            Missing::StandIn(Some(f), _) => {
+                stand_ins.insert(shown(f));
+            }
+            Missing::StandIn(None, _) => unnamed_stand_ins = true,
+            Missing::Language(l, _) => {
+                languages.insert(*l);
+            }
+            Missing::Font(Some(f)) => {
+                unusable.insert(shown(f));
+            }
+            Missing::Font(None) | Missing::Picture => parts.push(m.describe()),
+        }
+    }
+    let list = crate::short_list;
+    let fonts_named = |names: &[&str]| {
+        if names.len() == 1 {
+            format!("The font {}", names[0])
+        } else {
+            format!("The fonts {}", list(names))
+        }
+    };
+
+    let mut fonts = Vec::new();
+    if !languages.is_empty() {
+        let names: Vec<&str> = languages.iter().map(|l| l.name()).collect();
+        let suggest: Vec<&str> = languages.iter().map(|l| l.suggestion()).collect();
+        fonts.push(if languages.len() == 1 {
+            format!(
+                "This document has {0} text, but no {0} font is installed, so that text can't \
+                 be shown. Install a {0} font, such as {1}, to read it.",
+                names[0], suggest[0]
+            )
+        } else {
+            format!(
+                "This document has {} text, but no font for them is installed, so that text \
+                 can't be shown. Install fonts for them, such as {}, to read it.",
+                list(&names),
+                list(&suggest)
+            )
+        });
+    }
+    if !unusable.is_empty() {
+        let names: Vec<&str> = unusable.iter().map(String::as_str).collect();
+        fonts.push(format!(
+            "{} {} installed and no font could stand in, so {} text may show wrong \
+             characters. Install {} to read it.",
+            fonts_named(&names),
+            if names.len() == 1 { "isn't" } else { "aren't" },
+            if names.len() == 1 { "its" } else { "their" },
+            if names.len() == 1 { "it" } else { "them" },
+        ));
+    }
+    if !stand_ins.is_empty() {
+        let names: Vec<&str> = stand_ins.iter().map(String::as_str).collect();
+        fonts.push(if names.len() == 1 {
+            format!(
+                "The font {0} isn't installed, so a similar font is shown in its place and \
+                 some text may not look right. Install {0} to see the document as it was made.",
+                names[0]
+            )
+        } else {
+            format!(
+                "{} aren't installed, so similar fonts are shown in their place and some text \
+                 may not look right. Install them to see the document as it was made.",
+                fonts_named(&names)
+            )
+        });
+    } else if unnamed_stand_ins {
+        fonts.push(
+            "Some fonts this document uses aren't installed, so similar fonts are shown in \
+             their place and some text may not look right."
+                .into(),
+        );
+    }
+
+    Notices {
+        parts: (!parts.is_empty()).then(|| {
+            format!(
+                "Parts of this document couldn't be drawn ({}), so some pages may look \
+                 incomplete.",
+                parts.join(", ")
+            )
+        }),
+        fonts: (!fonts.is_empty()).then(|| fonts.join(" ")),
     }
 }
 
@@ -271,11 +392,8 @@ impl<'a> Renderer<'a> {
         stop: &dyn Fn() -> bool,
     ) -> Result<Option<Bitmap>> {
         let page = self.page(index)?;
+        let (width, height) = bitmap_size(page, index, scale)?;
         let scale = scale.clamp(0.05, 16.0);
-        // The bitmap's size as `hayro::render` works it out.
-        let (w, h) = page.render_dimensions();
-        let (width, height) = ((w * scale) as u16 as u32, (h * scale) as u16 as u32);
-        check_pixels(index, width, height)?;
         // Whole strips of 4 rows, the rasteriser's tile height, so the bands' tiles line
         // up with those of one pass and the bitmap comes out the same.
         let rows = (BAND_PIXELS / width.max(1)).max(4) / 4 * 4;
@@ -331,7 +449,7 @@ impl<'a> Renderer<'a> {
         let r = region
             .within((w * scale) as u32, (h * scale) as u32)
             .ok_or_else(|| anyhow!("the region is outside page {}", index + 1))?;
-        check_pixels(index, r.width, r.height)?;
+        check_pixels(index, r.width as u64, r.height as u64)?;
         let pm = self.draw(page, scale, r, false);
         Ok(Bitmap {
             width: pm.width() as usize,
@@ -340,10 +458,11 @@ impl<'a> Renderer<'a> {
         })
     }
 
-    /// Draw the part `r` (within the bitmap, at most `u16::MAX` a side) of `page` drawn at
+    /// Draw the part `r` (within the bitmap, at most [`MAX_SIDE`] a side) of `page` drawn at
     /// `scale`, on white, as `hayro::render` draws a whole page, or, `clear`, on a clear
     /// backdrop (the pixels' colours multiplied by their alpha).
     fn draw(&self, page: &'a Page<'a>, scale: f32, r: Region, clear: bool) -> Pixmap {
+        debug_assert!(r.width <= MAX_SIDE && r.height <= MAX_SIDE, "{r:?}");
         let mut ctx = RenderContext::new(r.width as u16, r.height as u16);
         render_into(
             page,
@@ -513,9 +632,12 @@ pub fn image_names(pages: &[usize], stem: &str, format: ImageFormat) -> Vec<Stri
 
 /// Render `pages` at `dpi` (at most [`MAX_DPI`]) and write them to `dir` with the names
 /// from [`image_names`], each whole or not at all, replacing files of the same name. Pages
-/// are rendered in parallel, in batches that keep the bitmaps in memory to about 1 GB.
-/// Returns the files written. When every file was written but one wasn't confirmed on
-/// disk, the error is that file's [`crate::NotConfirmed`].
+/// are rendered in parallel, in batches that keep the bitmaps in memory to about 1 GB. A
+/// page too large to draw whole at `dpi` refuses the export before any file is written.
+/// Returns the files written, and adds to `missing` what couldn't be drawn as the file asks
+/// (as [`Renderer::take_missing`]). When every file was written but one wasn't confirmed
+/// on disk, the error is that file's [`crate::NotConfirmed`], and `missing` is filled all
+/// the same.
 pub fn write_images(
     pdf: &HPdf,
     pages: &[usize],
@@ -523,6 +645,7 @@ pub fn write_images(
     format: ImageFormat,
     dir: &Path,
     stem: &str,
+    missing: &mut BTreeSet<Missing>,
 ) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let paths: Vec<PathBuf> = image_names(pages, stem, format)
@@ -530,7 +653,7 @@ pub fn write_images(
         .map(|n| dir.join(n))
         .collect();
     let unconfirmed = std::sync::Mutex::new(None);
-    encode_batched(pdf, pages, dpi, format, |k, bytes| {
+    encode_batched(pdf, pages, dpi, format, missing, |k, bytes| {
         let path = &paths[k];
         match crate::write_file(path, &bytes) {
             // Written: the other pages go on.
@@ -554,17 +677,21 @@ pub fn encode_pages(
     dpi: f32,
     format: ImageFormat,
 ) -> Result<Vec<Vec<u8>>> {
-    encode_batched(pdf, pages, dpi, format, |_, bytes| Ok(bytes))
+    encode_batched(pdf, pages, dpi, format, &mut BTreeSet::new(), |_, bytes| {
+        Ok(bytes)
+    })
 }
 
 /// Render and encode `pages` in parallel, on as many threads as keep the bitmaps in memory
-/// to about 1 GB, passing each file and its position in `pages` to `f`. Returns the
-/// results of `f` in order.
+/// to about 1 GB, passing each file and its position in `pages` to `f`. Every page's size
+/// is checked before any is drawn. Returns the results of `f` in order, and adds what
+/// couldn't be drawn as the file asks to `missing`, from the pages drawn.
 fn encode_batched<T: Send>(
     pdf: &HPdf,
     pages: &[usize],
     dpi: f32,
     format: ImageFormat,
+    missing: &mut BTreeSet<Missing>,
     f: impl Fn(usize, Vec<u8>) -> Result<T> + Sync,
 ) -> Result<Vec<T>> {
     let dpi = dpi.clamp(0.05 * 72.0, MAX_DPI);
@@ -575,6 +702,7 @@ fn encode_batched<T: Send>(
     let mut biggest = 0.0f32;
     for &i in pages {
         let p = all.get(i).ok_or_else(|| anyhow!("no page {}", i + 1))?;
+        bitmap_size(p, i, scale)?;
         let (w, h) = p.render_dimensions();
         biggest = biggest.max(w * h);
     }
@@ -585,22 +713,28 @@ fn encode_batched<T: Send>(
     let jobs: Vec<(usize, usize)> = pages.iter().copied().enumerate().collect();
     // Each thread keeps its renderer, and so the fonts it has read, from page to page.
     let pool = rayon::ThreadPoolBuilder::new().num_threads(batch).build()?;
-    pool.install(|| {
+    let found = Mutex::new(BTreeSet::new());
+    let done = pool.install(|| {
         jobs.par_iter()
             .map_init(
                 || Renderer::new(pdf),
                 |r, &(k, i)| {
-                    let b = r.render(i, scale)?;
-                    f(k, encode(&b, format, dpi)?)
+                    let b = r.render(i, scale);
+                    let lost = r.take_missing();
+                    found.lock().unwrap_or_else(|e| e.into_inner()).extend(lost);
+                    f(k, encode(&b?, format, dpi)?)
                 },
             )
             .collect()
-    })
+    });
+    missing.extend(found.into_inner().unwrap_or_else(|e| e.into_inner()));
+    done
 }
 
 impl Pdf {
-    /// Export `pages` (0-based) as image files, as [`write_images`] does. Pages look as
-    /// they do on screen: annotations flagged NoView are left out.
+    /// Export `pages` (0-based) as image files, as [`write_images`] does, adding to
+    /// `missing` what couldn't be drawn. Pages look as they do on screen: annotations
+    /// flagged NoView are left out.
     pub fn export_images(
         &mut self,
         pages: &[usize],
@@ -608,8 +742,9 @@ impl Pdf {
         format: ImageFormat,
         dir: &Path,
         stem: &str,
+        missing: &mut BTreeSet<Missing>,
     ) -> Result<Vec<PathBuf>> {
         let hp = load(self.render_snapshot()?, None)?;
-        write_images(&hp, pages, dpi, format, dir, stem)
+        write_images(&hp, pages, dpi, format, dir, stem, missing)
     }
 }
