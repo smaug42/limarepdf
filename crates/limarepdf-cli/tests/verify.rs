@@ -22,14 +22,15 @@ fn setup(name: &str) -> (PathBuf, PathBuf) {
 
 /// `verify input.pdf --signed-version 1 -o output`, run in `dir`.
 fn signed_version(dir: &Path, input: &Path, output: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .current_dir(dir)
-        .arg("verify")
-        .arg(input)
-        .args(["--trust-file", "trust.txt", "--signed-version", "1", "-o"])
-        .arg(output)
-        .output()
-        .unwrap()
+    limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .current_dir(dir)
+            .arg("verify")
+            .arg(input)
+            .args(["--trust-file", "trust.txt", "--signed-version", "1", "-o"])
+            .arg(output),
+    )
+    .unwrap()
 }
 
 /// Fails, without printing whole files, unless `path` holds exactly `before`.

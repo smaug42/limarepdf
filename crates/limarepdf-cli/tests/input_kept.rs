@@ -40,11 +40,12 @@ fn folder(name: &str) -> PathBuf {
 }
 
 fn run(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap()
+    limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .current_dir(dir)
+            .args(args),
+    )
+    .unwrap()
 }
 
 /// Each command, with `OUT` where its output goes; `in.pdf` and `b.pdf` are its inputs.

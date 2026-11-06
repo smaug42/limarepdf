@@ -29,12 +29,12 @@ use common::apart;
 use common::compare::{differences, side_by_side, Image};
 use common::corpus::{samples, Sample};
 use limarepdf_core::render::{self, Missing, Renderer};
-use limarepdf_core::Pdf;
+use limarepdf_core::{child_seam, Pdf};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// How far, in any channel, a pixel may be outside the colours around it in the other image.
@@ -92,28 +92,12 @@ fn poppler(path: &Path, s: &Sample, n: usize, dpi: u32, tmp: &Path) -> Drawn {
     if let Some(pw) = &s.password {
         cmd.args(["-upw", pw]);
     }
-    let mut child = match cmd
-        .arg(path)
-        .arg(&stem)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
+    // Stopped at the deadline with whatever it started, its output read as it comes (core's
+    // `child_seam`).
+    let status = match child_seam::run(cmd.arg(path).arg(&stem), None, TIMEOUT) {
+        Ok(ran) if ran.timed_out => return Drawn::Failed("timed out".into()),
+        Ok(ran) => ran.status,
         Err(e) => return Drawn::Failed(e.to_string()),
-    };
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() > TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Drawn::Failed("timed out".into());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(e) => return Drawn::Failed(e.to_string()),
-        }
     };
     let png = stem.with_extension("png");
     let img = image::open(&png);
@@ -347,7 +331,7 @@ fn report(rows: &[Row], dpi: u32, missing: usize) -> String {
 #[ignore = "needs pdftoppm and the fetched samples: sh tools/render-compare.sh"]
 fn render_compare() {
     assert!(
-        Command::new("pdftoppm").arg("-v").output().is_ok(),
+        child_seam::output(Command::new("pdftoppm").arg("-v")).is_ok(),
         "needs pdftoppm (poppler-utils)"
     );
     let dpi: u32 = std::env::var("RENDER_COMPARE_DPI")

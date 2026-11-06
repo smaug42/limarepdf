@@ -15,10 +15,11 @@
 use crate::render::{self, ImageFormat};
 use crate::{ImageImport, Pdf, Result};
 use anyhow::{anyhow, bail, Context};
+#[cfg(not(windows))]
 use std::ffi::OsStr;
-use std::io::{Read, Write};
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+#[cfg(not(windows))]
+use std::process::Command;
+use std::time::Duration;
 
 pub use crate::paper::{new_document_size, Paper, PaperList};
 pub use crate::sheets::{
@@ -110,92 +111,7 @@ pub const ASK_WITHIN: Duration = Duration::from_secs(10);
 /// How long `lp` may take to take the document, and then to confirm the job.
 pub const SEND_WITHIN: Duration = Duration::from_secs(120);
 
-/// A command run by [`run_within`] that finished in time.
-struct Ran {
-    out: Output,
-    /// Whether it took all of its input.
-    written: std::io::Result<()>,
-}
-
-/// Run `cmd`, writing `input` to its standard input, and wait for it, as long as `limit`
-/// from its start and again from its taking all of the input. One that takes longer is
-/// stopped, with any commands it started itself, and gives `None`.
-fn run_within(cmd: &mut Command, input: &[u8], limit: Duration) -> std::io::Result<Option<Ran>> {
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(cmd, 0);
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let (mut stdin, stdout, stderr) =
-        (child.stdin.take(), child.stdout.take(), child.stderr.take());
-    std::thread::scope(|s| {
-        // Written and read from threads of their own, so that a full pipe can't block.
-        let writer = s.spawn(move || match &mut stdin {
-            Some(w) => w.write_all(input),
-            None => Err(std::io::Error::other("no stdin")),
-        });
-        let (stdout, stderr) = (read_all(s, stdout), read_all(s, stderr));
-        let mut deadline = Instant::now() + limit;
-        let mut writing = true;
-        let status = loop {
-            if writing && writer.is_finished() {
-                writing = false;
-                deadline = Instant::now() + limit;
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() < deadline => {}
-                Ok(None) => {
-                    stop(&mut child);
-                    return Ok(None);
-                }
-                Err(e) => {
-                    stop(&mut child);
-                    return Err(e);
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        let written = writer
-            .join()
-            .unwrap_or_else(|_| Err(std::io::Error::other("panicked")));
-        let out = Output {
-            status,
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
-        };
-        Ok(Some(Ran { out, written }))
-    })
-}
-
-/// Read all of `pipe` on a thread of scope `s`.
-fn read_all<'scope>(
-    s: &'scope std::thread::Scope<'scope, '_>,
-    pipe: Option<impl Read + Send + 'scope>,
-) -> std::thread::ScopedJoinHandle<'scope, Vec<u8>> {
-    s.spawn(move || {
-        let mut v = Vec::new();
-        if let Some(mut p) = pipe {
-            let _ = p.read_to_end(&mut v);
-        }
-        v
-    })
-}
-
-/// Stop `child` and every command it started in its process group, and wait for it.
-fn stop(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    let _ = rustix::process::kill_process_group(
-        rustix::process::Pid::from_child(child),
-        rustix::process::Signal::KILL,
-    );
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Why a command was stopped by [`run_within`] after `limit`.
+/// Why a command was stopped by [`child::run`](crate::child::run) after `limit`.
 #[cfg(not(windows))]
 fn too_slow(program: &str, limit: Duration) -> anyhow::Error {
     anyhow!(
@@ -230,25 +146,28 @@ pub(crate) fn within<T: Send + 'static>(
 /// after [`ASK_WITHIN`].
 #[cfg(not(windows))]
 pub(crate) fn cups(program: &str, args: &[&str]) -> Result<String> {
-    let ran = run_within(
-        Command::new(program).args(args).env("LC_ALL", "C"),
-        &[],
-        ASK_WITHIN,
-    )
-    .map_err(|e| not_found(program, e))?;
-    let out = ran.ok_or_else(|| too_slow(program, ASK_WITHIN))?.out;
-    if !out.status.success() {
-        return Err(failed(program, &out));
+    let mut cmd = Command::new(program);
+    cmd.args(args).env("LC_ALL", "C");
+    let ran = crate::child::run(&mut cmd, None, ASK_WITHIN).map_err(|e| not_found(program, e))?;
+    if ran.timed_out {
+        return Err(too_slow(program, ASK_WITHIN));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    if !ran.status.success() {
+        return Err(failed(program, &ran));
+    }
+    if ran.truncated {
+        bail!("the printing service's answer was too long to read ({program})");
+    }
+    Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
 /// The error a CUPS command reported. Its messages start with its own name.
-fn failed(program: &str, out: &std::process::Output) -> anyhow::Error {
-    let err = String::from_utf8_lossy(&out.stderr);
+#[cfg(not(windows))]
+fn failed(program: &str, ran: &crate::child::Ran) -> anyhow::Error {
+    let err = String::from_utf8_lossy(&ran.stderr);
     let err = err.trim();
     if err.is_empty() {
-        anyhow!("{program} failed ({})", out.status)
+        anyhow!("{program} failed ({})", ran.status)
     } else if err.starts_with(program) {
         anyhow!("{err}")
     } else {
@@ -256,6 +175,7 @@ fn failed(program: &str, out: &std::process::Output) -> anyhow::Error {
     }
 }
 
+#[cfg(not(windows))]
 fn not_found(program: &str, e: std::io::Error) -> anyhow::Error {
     if e.kind() == std::io::ErrorKind::NotFound {
         anyhow!("printing needs CUPS, and its `{program}` command was not found")
@@ -449,11 +369,15 @@ pub(crate) fn while_beating<T: Send + 'static>(
 
 /// Run `program` (normally `lp`) with `args`, writing `data` to its standard input.
 /// Returns what it printed, such as "request id is Office-42 (1 file(s))". It is stopped
-/// if it takes longer than [`SEND_WITHIN`] to take the document, or then to answer.
+/// if it takes longer than [`SEND_WITHIN`] to take the document, or then to answer, or
+/// leaves something running with its output open that long. Linux and macOS only: Windows
+/// prints through the print spooler.
+#[cfg(not(windows))]
 pub fn send(program: impl AsRef<OsStr>, args: &[String], data: &[u8]) -> Result<String> {
     send_within(program, args, data, SEND_WITHIN)
 }
 
+#[cfg(not(windows))]
 fn send_within(
     program: impl AsRef<OsStr>,
     args: &[String],
@@ -462,24 +386,24 @@ fn send_within(
 ) -> Result<String> {
     let program = program.as_ref();
     let name = program.to_string_lossy().into_owned();
-    let ran = run_within(Command::new(program).args(args), data, limit)
+    let ran = crate::child::run(Command::new(program).args(args), Some(data), limit)
         .map_err(|e| not_found(&name, e))?;
-    let Some(Ran { out, written }) = ran else {
+    if ran.timed_out {
         bail!(
             "the printing service didn't confirm the job within {} seconds, so LimarePDF \
              stopped waiting. Check the printer's queue before printing again: the job may \
              have been sent",
             limit.as_secs()
         );
-    };
-    if !out.status.success() {
-        let base = std::path::Path::new(program).file_name().unwrap_or(program);
-        return Err(failed(&base.to_string_lossy(), &out));
     }
-    if let Err(e) = written {
+    if !ran.status.success() {
+        let base = std::path::Path::new(program).file_name().unwrap_or(program);
+        return Err(failed(&base.to_string_lossy(), &ran));
+    }
+    if let Err(e) = ran.written {
         bail!("{name} did not take the whole document: {e}");
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&ran.stdout).trim().to_string())
 }
 
 impl Pdf {
@@ -630,6 +554,9 @@ pub(crate) fn to_bgra(rgba: &[u8], w: usize, from: [usize; 4]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::child::run;
+    use std::time::Instant;
 
     /// US Letter at 600 dpi with quarter-inch margins.
     const LETTER: Sheet = Sheet {
@@ -768,8 +695,8 @@ mod tests {
     fn a_command_that_never_answers_is_stopped() {
         let start = Instant::now();
         // `; true` keeps the shell from becoming `sleep`: sleep is its own command.
-        let ran = run_within(&mut sh("sleep 30; true"), &[], Duration::from_millis(300)).unwrap();
-        assert!(ran.is_none());
+        let ran = run(&mut sh("sleep 30; true"), None, Duration::from_millis(300)).unwrap();
+        assert!(ran.timed_out);
         let took = start.elapsed();
         assert!(took < Duration::from_secs(5), "{took:?}");
     }
@@ -798,9 +725,170 @@ mod tests {
     fn the_limit_starts_again_once_the_document_is_taken() {
         let data = vec![b'x'; 1 << 20];
         let script = "sleep 0.6; cat > /dev/null; sleep 0.6; echo queued";
-        let ran = run_within(&mut sh(script), &data, Duration::from_secs(1)).unwrap();
-        let ran = ran.expect("stopped while within the limits");
-        assert!(ran.written.is_ok() && ran.out.status.success());
-        assert_eq!(String::from_utf8_lossy(&ran.out.stdout), "queued\n");
+        let ran = run(&mut sh(script), Some(&data), Duration::from_secs(1)).unwrap();
+        assert!(!ran.timed_out, "stopped while within the limits");
+        assert!(ran.written.is_ok() && ran.status.success());
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "queued\n");
+    }
+
+    /// `f` on a thread of its own, the test failed if it hasn't returned within 10 seconds:
+    /// a call that hangs fails its test instead of stopping the run.
+    #[cfg(unix)]
+    fn watched<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+        let (tx, rx) = channel();
+        let job = std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(v) => v,
+            Err(RecvTimeoutError::Timeout) => panic!("the call didn't return within 10 seconds"),
+            Err(RecvTimeoutError::Disconnected) => {
+                std::panic::resume_unwind(job.join().unwrap_err())
+            }
+        }
+    }
+
+    /// A script that starts a process outside its group (in a session of its own, as a
+    /// daemon would), holding its pipes open for 3 seconds, writes that process's id to
+    /// `file`, and exits at once.
+    #[cfg(unix)]
+    fn escaping(file: &std::path::Path) -> String {
+        format!(
+            "perl -MPOSIX -e 'POSIX::setsid(); open(my $f, \">\", $ARGV[0]) or die; \
+             print $f $$; close $f; exec \"sleep\", \"3\"' '{}' & exit 0",
+            file.display()
+        )
+    }
+
+    /// Stops the process whose id `file` holds, once it's written there.
+    #[cfg(unix)]
+    fn stop_escaped(file: &std::path::Path) {
+        let start = Instant::now();
+        let pid = loop {
+            let read = std::fs::read_to_string(file).ok();
+            if let Some(pid) = read.and_then(|s| s.trim().parse().ok()) {
+                break pid;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "it didn't start");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        if let Some(pid) = rustix::process::Pid::from_raw(pid) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        }
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// `lp` that exits leaving a process of its own running, outside its group, with its
+    /// pipes open, is let go at the limit: the user is told the job may have been sent, and
+    /// the call doesn't wait for that process.
+    #[cfg(unix)]
+    #[test]
+    fn lp_leaving_a_process_running_is_let_go() {
+        let file = std::env::temp_dir().join(format!("limarepdf-escaped-{}", std::process::id()));
+        let args = ["-c".to_string(), escaping(&file)];
+        let start = Instant::now();
+        let sent = watched(move || send_within("sh", &args, b"%PDF-", Duration::from_millis(300)));
+        let took = start.elapsed();
+        stop_escaped(&file);
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        let e = format!("{:#}", sent.unwrap_err());
+        assert!(e.contains("may have been sent"), "{e}");
+    }
+
+    /// Run alone by [`repeated_timeouts_leave_nothing_open`], in a process of its own: 20
+    /// commands that each run out of time, and the open files (and on Linux the threads)
+    /// counted before and after.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "run alone by repeated_timeouts_leave_nothing_open"]
+    fn twenty_timeouts() {
+        let count = |dir: &str| std::fs::read_dir(dir).map_or(0, |d| d.count());
+        let fds = if cfg!(target_os = "linux") {
+            "/proc/self/fd"
+        } else {
+            "/dev/fd"
+        };
+        let before = (count(fds), count("/proc/self/task"));
+        for _ in 0..20 {
+            let ran = run(
+                &mut sh("sleep 30 & sleep 30"),
+                None,
+                Duration::from_millis(50),
+            );
+            assert!(ran.unwrap().timed_out);
+        }
+        let after = (count(fds), count("/proc/self/task"));
+        assert_eq!(before, after, "open files and threads");
+    }
+
+    /// Commands that run out of time leave no open file or thread behind, however many.
+    #[cfg(unix)]
+    #[test]
+    fn repeated_timeouts_leave_nothing_open() {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "print::tests::twenty_timeouts", "--ignored"])
+            .args(["--test-threads", "1", "--nocapture"]);
+        let ran = watched(move || run(&mut cmd, None, Duration::from_secs(8)).unwrap());
+        assert!(!ran.timed_out, "finished in time");
+        let said = String::from_utf8_lossy(&ran.stdout).into_owned()
+            + &String::from_utf8_lossy(&ran.stderr);
+        assert!(ran.status.success() && said.contains("1 passed"), "{said}");
+    }
+
+    /// A command writing far more than is kept is read to its end, at most 16 MiB of it kept,
+    /// and the cut said.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_writing_too_much_is_kept_to_the_cap() {
+        let ran = watched(|| {
+            run(
+                &mut sh("head -c 67108864 /dev/zero"),
+                None,
+                Duration::from_secs(8),
+            )
+            .unwrap()
+        });
+        assert!(!ran.timed_out, "finished in time");
+        assert!(ran.status.success());
+        assert!(ran.stdout.len() <= 16 << 20, "{}", ran.stdout.len());
+        assert_eq!(ran.stdout.len(), crate::child::CAP);
+        assert!(ran.truncated);
+        // Within the cap, nothing is cut.
+        let ran = watched(|| {
+            run(
+                &mut sh("head -c 1000 /dev/zero"),
+                None,
+                Duration::from_secs(8),
+            )
+        });
+        let ran = ran.unwrap();
+        assert!(ran.stdout.len() == 1000 && !ran.truncated);
+    }
+
+    /// A command that takes part of a large input and then stops taking it is stopped at the
+    /// limit, saying how much it took.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_taking_part_of_the_input_says_how_much() {
+        let data = vec![b'x'; 4 << 20];
+        let script = "head -c 1000 > /dev/null; sleep 30; true";
+        let ran = watched(move || run(&mut sh(script), Some(&data), Duration::from_millis(300)));
+        let ran = ran.unwrap();
+        assert!(ran.timed_out);
+        assert!(ran.sent >= 1000 && ran.sent < 4 << 20, "{}", ran.sent);
+        let e = ran.written.unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(e.to_string().contains(&format!("{} of", ran.sent)), "{e}");
+    }
+
+    /// `lp` is given all of a large document, however much more than a pipe holds.
+    #[cfg(unix)]
+    #[test]
+    fn lp_takes_a_large_document_whole() {
+        let data = vec![b'x'; 64 << 20];
+        let args = ["-c".to_string(), "wc -c".to_string()];
+        let said = watched(move || send_within("sh", &args, &data, Duration::from_secs(8)));
+        assert_eq!(said.unwrap(), (64 << 20).to_string());
     }
 }

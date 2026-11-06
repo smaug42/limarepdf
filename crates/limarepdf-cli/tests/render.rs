@@ -84,13 +84,14 @@ fn folder(name: &str) -> PathBuf {
 
 /// Renders `file` into its folder.
 fn render(file: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .arg("render")
-        .arg(file)
-        .arg("--out-dir")
-        .arg(file.parent().unwrap())
-        .output()
-        .unwrap()
+    limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("render")
+            .arg(file)
+            .arg("--out-dir")
+            .arg(file.parent().unwrap()),
+    )
+    .unwrap()
 }
 
 #[test]

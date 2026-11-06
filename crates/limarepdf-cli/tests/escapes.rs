@@ -76,11 +76,12 @@ fn make_pdf(dir: &Path) -> PathBuf {
 }
 
 fn run(args: &[&str], file: &Path) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .args(args)
-        .arg(file)
-        .output()
-        .unwrap();
+    let out = limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .args(args)
+            .arg(file),
+    )
+    .unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         out.status.success(),
@@ -110,12 +111,13 @@ fn listings_show_file_text_without_control_characters() {
         }
     }
     // The page text, found by search.
-    let out = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .arg("search")
-        .arg(&file)
-        .arg("Findme")
-        .output()
-        .unwrap();
+    let out = limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("search")
+            .arg(&file)
+            .arg("Findme"),
+    )
+    .unwrap();
     let out = String::from_utf8_lossy(&out.stdout);
     assert!(out.contains("Findme"), "search: {out:?}");
     assert!(!out.contains('\u{1b}'), "search printed ESC: {out:?}");

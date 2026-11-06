@@ -58,14 +58,15 @@ fn form_pdf(dir: &Path, name: &str, answer: &str) -> PathBuf {
 }
 
 fn merge(dir: &Path, inputs: &[&Path], extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .arg("merge")
-        .args(inputs)
-        .arg("-o")
-        .arg(dir.join("out.pdf"))
-        .args(extra)
-        .output()
-        .unwrap()
+    limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .arg("merge")
+            .args(inputs)
+            .arg("-o")
+            .arg(dir.join("out.pdf"))
+            .args(extra),
+    )
+    .unwrap()
 }
 
 #[test]

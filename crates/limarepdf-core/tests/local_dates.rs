@@ -6,8 +6,8 @@
 #![cfg(unix)]
 
 use limarepdf_core::{
-    today_iso, DateStyle, HeaderFooter, InkColor, Pdf, SignArt, SignRole, SignStyle, Stamp,
-    StampKind, StampPlace,
+    child_seam, today_iso, DateStyle, HeaderFooter, InkColor, Pdf, SignArt, SignRole, SignStyle,
+    Stamp, StampKind, StampPlace,
 };
 use std::process::Command;
 
@@ -117,13 +117,14 @@ fn visible_dates_are_local() {
                 .to_string()
         };
         let before = day();
-        let out = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "print_dates_made_now", "--ignored"])
-            .args(["--nocapture", "--test-threads", "1"])
-            .env("TZ", tz)
-            .env(CHILD, "1")
-            .output()
-            .unwrap();
+        let out = child_seam::output(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "print_dates_made_now", "--ignored"])
+                .args(["--nocapture", "--test-threads", "1"])
+                .env("TZ", tz)
+                .env(CHILD, "1"),
+        )
+        .unwrap();
         let after = day();
         let text = String::from_utf8_lossy(&out.stdout);
         let errors = String::from_utf8_lossy(&out.stderr);
@@ -198,13 +199,14 @@ fn comment_dates_are_shown_in_local_time() {
             ],
         ),
     ] {
-        let out = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "print_comment_dates", "--ignored"])
-            .args(["--nocapture", "--test-threads", "1"])
-            .env("TZ", tz)
-            .env(CHILD, "1")
-            .output()
-            .unwrap();
+        let out = child_seam::output(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "print_comment_dates", "--ignored"])
+                .args(["--nocapture", "--test-threads", "1"])
+                .env("TZ", tz)
+                .env(CHILD, "1"),
+        )
+        .unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         let errors = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{text}{errors}");

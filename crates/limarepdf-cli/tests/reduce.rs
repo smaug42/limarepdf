@@ -16,13 +16,14 @@ fn folder(name: &str) -> PathBuf {
 }
 
 fn run(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-        .current_dir(dir)
-        .env("HOME", dir)
-        .env("XDG_CONFIG_HOME", dir.join("config"))
-        .args(args)
-        .output()
-        .unwrap()
+    limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .current_dir(dir)
+            .env("HOME", dir)
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .args(args),
+    )
+    .unwrap()
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {

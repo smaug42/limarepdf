@@ -65,6 +65,10 @@
 - Add a dictionary refuses an extension, or a choice of files, holding more than 256 dictionary files or 128 MB,
   saying so and adding nothing of it, rather than unpacking it all. A dictionary file over 64 MB is refused before
   it is read whole; before, a large file picked was read in full and then refused as unreadable.
+- Printing on Linux and macOS no longer waits past its limits when a printing program ends but leaves something it
+  started running with its output open: at the limit (10 seconds for a question to CUPS, 2 minutes for a job) that
+  is stopped with everything else the program started, and a job is reported as it was before, as possibly sent.
+  An answer from CUPS longer than 16 MB is refused as too long rather than read whole.
 
 ## [0.13.0] - 2026-11-03
 

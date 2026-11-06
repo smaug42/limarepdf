@@ -54,7 +54,7 @@ stronger check, used only where a fixture's bytes are shown to be the same each 
 | `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); a page list holding a page itself (also with the content's offset wrong), and a page whose number a second object takes (as two public test files do), mended and saved clean; intact files aren't repaired; files with no pages to find (an empty page list, one naming a missing page, a document made with none) are refused, not opened empty; a repaired document saves as a clean file. Crafted files: `endstream` in a content stream's comment followed by a fake page, an uncompressed attached PDF reusing the outer file's object numbers (its length given directly, or in an object before or after it, or before it with a spoofed copy of that object inside the attachment), `stream` and a line break inside a string, a stream cut off by the end of the file, a `/Length` too short, an object freed by a later revision (not on the page, not saved), and a number reused at a higher generation. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped by `/Length`, direct or in an object of its own (not a copy inside the data), or to `endstream`, trailers inside stream data ignored, trailer values written back) |
 | `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](#rendering) below |
 | `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
-| `crates/limarepdf-core/tests/harness.rs` | The test helpers themselves (REL-09), on small made-up cases: `common/tool.rs` running an outside program that writes more than a pipe holds to both outputs and reads a megabyte of input, one that hangs failing its test at the deadline with what it started stopped too (a background `sleep` holding the pipes), one not installed an error, and scratch folders separate and removed; `common/apart.rs` running a corpus check's child process that reports, one that hangs stopped at its time, and one that ends without reporting saying how |
+| `crates/limarepdf-core/tests/harness.rs` | The test helpers themselves (REL-09), on small made-up cases: `common/tool.rs` running an outside program that writes more than a pipe holds to both outputs and reads a megabyte of input, one that hangs failing its test at the deadline with what it started stopped too (a background `sleep` holding the pipes), one not installed an error, one that ends leaving something running with the pipes open failing at the deadline, 20 deadlines in a row leaving no file or thread open behind them, one writing 64 MiB failing for writing more than the 16 MiB kept, and scratch folders separate and removed; `common/apart.rs` running a corpus check's child process that reports, one that hangs stopped at its time, and one that ends without reporting saying how |
 | `crates/limarepdf-core/tests/save_reopen.rs` | Opt-in: the same public test PDFs saved unchanged, and with page 1 turned and a comment added, then opened again: pages, page sizes and labels, annotations, form fields and values, bookmarks, page text and drawn pages compared with the document before saving; see below |
 | `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages; a page drawn in bands matches one drawn at once, and a drawing stops between bands when asked |
 | `crates/limarepdf-core/tests/import.rs` | Importing images as pages; picture sizes read from the file's header, with each format's orientation; added and replaced pictures upright in all eight EXIF orientations (opt-in Poppler cross-check) |
@@ -151,9 +151,19 @@ The cross-checks (`-- --ignored cross_check`) run outside programs (poppler's to
 through `tests/common/tool.rs`: each has two minutes (`LIMAREPDF_TOOL_TIMEOUT`, in seconds) before it is stopped,
 with anything it started, and its test fails saying so; its output is read as it comes, and its files go in a folder
 of the call's own under `target/tmp/tools`, removed afterwards unless the test failed. Test files that need only this
-take it with `#[path = "common/tool.rs"] mod tool;`. The app crate's one cross-check
-(`cross_check_word_starts_with_pdftotext`) runs `pdftotext` itself, without a deadline, since the helper relies on
-Cargo's folder for integration tests.
+take it with `#[path = "common/tool.rs"] mod tool;`.
+
+Every program and child process a test starts runs this way (RC-12, S1-10): the cross-checks, the corpus checks'
+child processes (`common/apart.rs`), the tests that run the test program again (the time zone tests, the app's
+timing log and CUPS tests), the app's `pdftotext` cross-check and every CLI test that runs `limarepdf-cli`. They all
+go through core's `child_seam` (`src/child.rs`, built for tests through the `test-seams` feature), the same code
+printing uses to run CUPS's commands. On Linux and macOS it starts the program in a process group of its own and
+tends it from the calling thread, with no thread of its own: it writes the input as the program takes it, keeps at
+most 16 MiB of each output and fails the test if there was more, and stops at the deadline the whole group, even
+when the program itself has already ended and something it started still holds the pipes open. A process that left
+the group (`setsid`) keeps running but holds nothing of the test's. On Windows the tests' version uses threads and
+stops only the program itself. The one child process that talks with its test as it runs (the crash recovery test
+of a session another process holds) keeps its own deadlines.
 
 The comparison with poppler needs `pdftoppm` (poppler-utils) and curl. From `crates/limarepdf-core`, run
 `sh tools/render-compare.sh`. It downloads the files listed in `tools/render-samples.txt` (the pdf.js and PDFBox test
@@ -201,8 +211,12 @@ only). It builds the release CLI, makes a 1,000-page text file and a 200-page co
 commit. Peak memory is the program's largest resident set, as `/usr/bin/time -v` reports it. The four rows for public
 test files need the files from `tools/render-compare.sh` (or `tools/fetch-render-samples.sh`) and are skipped without
 them. `--runs 1` makes a quicker run, and `--only scan` runs only the tasks whose names contain `scan` (and makes only
-the scan). A run taking longer than `--timeout` seconds (600) is stopped; a task that fails or runs out of time shows
-so in the table, the others still run, and the script then exits with an error naming them. A full run takes about five minutes, and one
+the scan). Each run writes into an output folder of its own, empty when it starts and removed after, so the runs of
+a task that writes files (render, split) don't meet each other's. A run taking longer than `--timeout` seconds (600)
+is stopped, and so is making the test files, with everything that started; a task that fails or runs out of time
+shows so in the table, the others still run, and the script then exits with an error naming them. To check the
+script itself quickly, `--text-pages 10 --only "text pages" --runs 2` makes and measures a 10-page text file instead
+(the numbers then don't compare with the table's). A full run takes about five minutes, and one
 of the test files needed about 10 GB of memory before pages were drawn in bands (about 1.5 GB since).
 
 Fuzzing (REL-12): `fuzz/` holds cargo-fuzz targets for the readers, in a workspace of its own that nothing else

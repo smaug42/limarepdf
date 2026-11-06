@@ -1,17 +1,20 @@
 """Time limarepdf-cli and record its peak memory on large generated files and named corpus files.
 
 Usage, from the repository: python3 crates/limarepdf-core/tools/measure.py [--runs N] [--only TEXT]
-[--timeout SECONDS]
+[--timeout SECONDS] [--text-pages N]
 
 Builds the release CLI, makes the test files the chosen tasks need in target/tmp/measure (a 1,000-page
 text file and a 200-page colour scan at 300 dpi, each made once and kept), runs each task N times (3 by
 default) and prints a Markdown table for docs/developer/performance.md: the median time and the largest
 peak memory (resident set size) of the runs, with the machine and commit. --only runs the tasks whose
-name contains TEXT, and makes only the files those tasks use.
+name contains TEXT, and makes only the files those tasks use. --text-pages makes a text file of N pages
+instead, for checking the script itself quickly (the table's numbers are then not comparable). Each run
+writes into an output folder of its own, empty when it starts and removed after, so a run never meets
+the files the one before wrote.
 
-A run that takes longer than SECONDS (600 by default) is stopped. A task that fails or runs out of
-time shows as such in the table, the other tasks still run, and the script then exits with an error
-naming them. A run's error output goes to a temporary file, so a program that writes a lot of it
+A run that takes longer than SECONDS (600 by default) is stopped, and so is making the test files,
+with every program it started. A task that fails or runs out of time shows as such in the table, the
+other tasks still run, and the script then exits with an error naming them. A run's error output goes to a temporary file, so a program that writes a lot of it
 can't stall.
 
 The corpus rows use files from tools/fetch-render-samples.sh and are skipped if those aren't
@@ -25,6 +28,7 @@ import argparse
 import os
 import platform
 import random
+import shutil
 import signal
 import statistics
 import struct
@@ -39,6 +43,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 CLI = ROOT / "target" / "release" / "limarepdf-cli"
 WORK = ROOT / "target" / "tmp" / "measure"
+# Each run's output folder, made empty before the run and removed after it.
+OUT = WORK / "out"
 CORPUS = ROOT / "crates" / "limarepdf-core" / "tests" / "data" / "render"
 
 TEXT_PAGES = 1000
@@ -90,11 +96,11 @@ def pdf_file(path, contents):
     path.write_bytes(out)
 
 
-def text_file(path):
-    """A report-like text file: a heading, 48 lines of words and a rule per page."""
+def text_file(path, pages):
+    """A report-like text file of `pages` pages: a heading, 48 lines of words and a rule per page."""
     rng = random.Random(1)
     contents = []
-    for page in range(1, TEXT_PAGES + 1):
+    for page in range(1, pages + 1):
         lines = [b"BT /F1 16 Tf 72 720 Td (Section %d: measured results) Tj ET" % page]
         lines.append(b"0.5 w 72 708 m 540 708 l S")
         for line in range(48):
@@ -220,18 +226,23 @@ def measure(args, program=CLI, timeout=TIMEOUT):
     return seconds, peak
 
 
-def tasks(text, scan):
-    out = WORK / "out"
+def tasks(text, pages, scan):
+    out = OUT
+    t = f"{pages:,} text pages"
+    parts = -(-pages // 50)
     rows = [
-        ("1,000 text pages: info", ["info", text]),
-        ("1,000 text pages: extract all text", ["text", text]),
-        ("1,000 text pages: search", ["search", text, "annual review"]),
-        ("1,000 text pages: render at 100 dpi", ["render", "--dpi", "100", "--out-dir", out, text]),
-        ("1,000 text pages: watermark", ["watermark", "--text", "DRAFT", "--output", out / "w.pdf", text]),
-        ("1,000 text pages: merge 3 copies", ["merge", "--output", out / "m.pdf", text, text, text]),
-        ("1,000 text pages: split into 20 files", ["split", "--every", "50", "--out-dir", out, text]),
+        (f"{t}: info", ["info", text]),
+        (f"{t}: extract all text", ["text", text]),
+        (f"{t}: search", ["search", text, "annual review"]),
+        (f"{t}: render at 100 dpi", ["render", "--dpi", "100", "--out-dir", out, text]),
+        (f"{t}: watermark", ["watermark", "--text", "DRAFT", "--output", out / "w.pdf", text]),
+        (f"{t}: merge 3 copies", ["merge", "--output", out / "m.pdf", text, text, text]),
         (
-            "1,000 text pages: AES-256 encrypt",
+            f"{t}: split into {parts} file{'s' if parts > 1 else ''}",
+            ["split", "--every", "50", "--out-dir", out, text],
+        ),
+        (
+            f"{t}: AES-256 encrypt",
             ["encrypt", "--owner-password", "o", "--output", out / "e.pdf", text],
         ),
         ("200-page scan: info", ["info", scan]),
@@ -255,6 +266,33 @@ def tasks(text, scan):
         else:
             print(f"skipped {name}: run tools/fetch-render-samples.sh first", file=sys.stderr)
     return rows
+
+
+def run_once(args, timeout):
+    """One run of a task, writing into OUT, which is empty when it starts and removed after: the
+    CLI won't replace files, so a run must not meet the ones the run before wrote."""
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    try:
+        return measure(args, timeout=timeout)
+    finally:
+        shutil.rmtree(OUT, ignore_errors=True)
+
+
+def make_files(needed, pages, timeout):
+    """Make the generated files in a process of its own, in a session of its own, so that one
+    that takes longer than timeout seconds is stopped with every program it started."""
+    command = [sys.executable, __file__, "--text-pages", str(pages), "--make", *needed]
+    process = subprocess.Popen(command, start_new_session=True)
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Not reaped yet, so its process group's ID can't have been reused.
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        raise SystemExit(f"making the test files took longer than {timeout:g} s; stopped")
+    if process.returncode != 0:
+        raise SystemExit(f"making the test files failed (exit status {process.returncode})")
 
 
 def inputs(rows, text, scan):
@@ -304,14 +342,18 @@ def main():
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--only", default="")
     parser.add_argument("--timeout", type=float, default=TIMEOUT)
+    parser.add_argument("--text-pages", type=int, default=TEXT_PAGES, help=argparse.SUPPRESS)
     parser.add_argument("--make", nargs="+", choices=("text", "scan"), help=argparse.SUPPRESS)
     options = parser.parse_args()
-    text = WORK / f"text-{TEXT_PAGES}.pdf"
+    pages = options.text_pages
+    if pages < 1:
+        parser.error("--text-pages needs at least 1")
+    text = WORK / f"text-{pages}.pdf"
     scan = WORK / f"scan-{SCAN_PAGES}.pdf"
     if options.make:
         if "text" in options.make and not text.exists():
             print("making the text file", file=sys.stderr)
-            text_file(text)
+            text_file(text, pages)
         if "scan" in options.make and not scan.exists():
             print("making the scan", file=sys.stderr)
             scan_file(scan)
@@ -322,12 +364,15 @@ def main():
     subprocess.run(
         ["cargo", "build", "--release", "-p", "limarepdf-cli"], cwd=ROOT, check=True
     )
-    (WORK / "out").mkdir(parents=True, exist_ok=True)
-    chosen = [(name, args) for name, args in tasks(text, scan) if options.only in name]
+    WORK.mkdir(parents=True, exist_ok=True)
+    chosen = [(name, args) for name, args in tasks(text, pages, scan) if options.only in name]
     needed = inputs(chosen, text, scan)
     if needed:
-        subprocess.run([sys.executable, __file__, "--make", *needed], check=True)
-    floor = max(measure([], "true")[1] for _ in range(3))
+        make_files(needed, pages, options.timeout)
+    try:
+        floor = max(measure([], "true")[1] for _ in range(3))
+    except (Failed, OSError) as error:
+        raise SystemExit(f"couldn't measure the memory floor with `true`: {error}")
 
     print(f"Machine: {machine()}. Release build; median of {options.runs} runs.\n")
     files = [path for kind, path in (("text", text), ("scan", scan)) if kind in needed]
@@ -343,7 +388,7 @@ def main():
     for name, args in chosen:
         # A task's remaining runs are skipped once one fails or runs out of time.
         try:
-            results = [measure(args, timeout=options.timeout) for _ in range(options.runs)]
+            results = [run_once(args, options.timeout) for _ in range(options.runs)]
         except Failed as error:
             print(error, file=sys.stderr, flush=True)
             if error.timed_out:
