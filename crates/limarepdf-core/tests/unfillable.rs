@@ -134,6 +134,53 @@ fn snapshot_leaves_out_a_fax_picture_stating_more_rows_than_its_data_holds() {
     assert!(width_of_im1(&p.render_snapshot().unwrap()) <= 1);
 }
 
+/// A fax picture `columns` wide and `rows` tall, with data enough for its rows (each takes
+/// at least a bit): hayro sizes a row from its width alone.
+fn wide_fax(columns: i64, rows: i64) -> Pdf {
+    let s = Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => columns,
+            "Height" => rows,
+            "ImageMask" => true,
+            "Filter" => "CCITTFaxDecode",
+            "DecodeParms" => dictionary! { "K" => -1, "Columns" => columns, "Rows" => rows },
+        },
+        vec![0; 200],
+    );
+    page(DRAW, Some(s))
+}
+
+#[test]
+fn snapshot_leaves_out_a_fax_picture_too_wide_to_draw() {
+    let mut p = wide_fax(1 << 30, 16);
+    assert!(width_of_im1(&p.render_snapshot().unwrap()) <= 1);
+    assert_eq!(width_of_im1(&p.snapshot().unwrap()), 1 << 30);
+    // 2^17 columns is as wide as a fax picture is drawn, at 200 rows past the size
+    // pictures are checked from.
+    let mut p = wide_fax(1 << 17, 200);
+    assert_eq!(width_of_im1(&p.render_snapshot().unwrap()), 1 << 17);
+    let mut p = wide_fax((1 << 17) + 1, 200);
+    assert!(width_of_im1(&p.render_snapshot().unwrap()) <= 1);
+}
+
+#[test]
+fn an_inline_image_stating_a_size_past_counting_is_read_by_its_end() {
+    // Its length, height × width × components, overflows: before, a panic.
+    for content in [
+        &b"q BI /W 18446744073709551615 /H 2 /BPC 8 /CS /RGB ID xyz EI Q"[..],
+        b"q BI /W 8 /H 18446744073709551615 /BPC 1 /CS /G ID xyz EI Q",
+    ] {
+        let mut p = page(content, None);
+        let objects = p.page_objects(0).unwrap();
+        assert_eq!(objects.len(), 1, "{}", String::from_utf8_lossy(content));
+        let drawn = p.drawing_snapshot().unwrap();
+        assert!(contains(&content_of(&p.snapshot().unwrap()), b"ID xyz EI"));
+        render::load(drawn, None).unwrap();
+    }
+}
+
 #[test]
 fn snapshot_keeps_a_large_picture_whose_data_is_there() {
     // 20 million grey pixels, all there (compressed to a few kilobytes).

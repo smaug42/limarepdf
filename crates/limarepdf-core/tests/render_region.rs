@@ -233,8 +233,159 @@ fn a_huge_page_is_an_error_not_a_huge_bitmap() {
     // Exporting it fails cleanly too.
     let dir = std::env::temp_dir().join(format!("limarepdf-huge-{}", std::process::id()));
     let e = p
-        .export_images(&[0], 72.0, render::ImageFormat::Png, &dir, "page")
+        .export_images(
+            &[0],
+            72.0,
+            render::ImageFormat::Png,
+            &dir,
+            "page",
+            &mut Default::default(),
+        )
         .expect_err("too large");
     assert!(e.to_string().contains("too large"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A document of pages `sizes` (points), each with a red box 10 pt square in its far
+/// corner: top right, `rotate` degrees turned.
+fn red_far_off(sizes: &[(f32, f32)], rotate: i64) -> Pdf {
+    let mut p = Pdf::new();
+    for (k, &(w, h)) in sizes.iter().enumerate() {
+        p.insert_blank(k, 300.0, 200.0).unwrap();
+        let content = format!("1 0 0 rg {} {} 10 10 re f", w - 10.0, h - 10.0);
+        let s = p
+            .doc
+            .add_object(Stream::new(dictionary! {}, content.into_bytes()));
+        let page = p.page_ids()[k];
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("MediaBox", vec![0.into(), 0.into(), w.into(), h.into()]);
+        d.set("Contents", Object::Reference(s));
+        d.set("Rotate", rotate);
+    }
+    p
+}
+
+/// A folder of its own for one test's export.
+fn export_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("limarepdf-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// The files in `dir`, none when it isn't there.
+fn files_in(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |d| d.count())
+}
+
+#[test]
+fn a_page_too_tall_or_wide_for_its_bitmap_is_refused_whole() {
+    // At 576 dpi, 10 × 10,000 pt is 80 × 80,000 pixels and 10,000 × 10 pt the other way:
+    // few pixels, but one side past what the rasteriser draws. Before, the tall page came out
+    // 65,535 pixels tall without its bottom, and the wide one panicked.
+    for (size, rotate) in [
+        ((10.0, 10_000.0), 0),
+        ((10_000.0, 10.0), 0),
+        ((10_000.0, 10.0), 90),
+        ((10.0, 10_000.0), 90),
+    ] {
+        let mut p = red_far_off(&[size], rotate);
+        let hp = render::load(p.snapshot().unwrap(), None).unwrap();
+        let e = render::encode_pages(&hp, &[0], 576.0, render::ImageFormat::Png)
+            .expect_err("too large");
+        assert!(
+            e.to_string().contains("too large"),
+            "{size:?} {rotate}: {e}"
+        );
+        let r = render::Renderer::new(&hp);
+        assert!(r.render(0, 8.0).is_err(), "{size:?} {rotate}");
+        let dir = export_dir("too-long");
+        let e = p
+            .export_images(
+                &[0],
+                576.0,
+                render::ImageFormat::Png,
+                &dir,
+                "page",
+                &mut Default::default(),
+            )
+            .expect_err("too large");
+        assert!(
+            e.to_string().contains("too large"),
+            "{size:?} {rotate}: {e}"
+        );
+        assert_eq!(files_in(&dir), 0, "{size:?} {rotate}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn a_bitmap_side_of_65280_pixels_is_drawn_whole_and_65281_refused() {
+    // The rasteriser's sides are 16-bit, and vello_cpu 0.3 panics on a bitmap more than
+    // 65,408 pixels wide (its strips run past the edge): 65,280 is 255 of its 256-pixel
+    // wide tiles. A green band runs far past the page's ends, a blue one is clipped short.
+    let hp = |w: f32| {
+        let mut p = red_far_off(&[(w, 10.0), (10.0, w)], 0);
+        let past = format!(
+            "q 0 1 0 RG 4 w -500 2 m 1000000 2 l S Q \
+             q 5 0 {} 10 re W n 0 0 1 rg 0 0 {w} 10 re f Q 1 0 0 rg {} 0 10 10 re f",
+            w - 20.0,
+            w - 10.0
+        );
+        let s = (p.doc).add_object(Stream::new(dictionary! {}, past.into_bytes()));
+        let page = p.page_ids()[0];
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", Object::Reference(s));
+        render::load(p.snapshot().unwrap(), None).unwrap()
+    };
+    let most = hp(65_280.0);
+    let r = render::Renderer::new(&most);
+    let wide = r.render(0, 1.0).unwrap();
+    assert_eq!((wide.width, wide.height), (65_280, 10));
+    assert_eq!(px(&wide, 65_275, 4), [255, 0, 0], "the far end is drawn");
+    assert_eq!(px(&wide, 65_000, 4), [0, 0, 255]);
+    // The green band shows where the blue doesn't cover it.
+    assert_eq!(px(&wide, 2, 8), [0, 255, 0]);
+    assert_eq!(px(&wide, 65_265, 8), [0, 255, 0]);
+    let tall = r.render(1, 1.0).unwrap();
+    assert_eq!((tall.width, tall.height), (10, 65_280));
+    assert_eq!(px(&tall, 5, 4), [255, 0, 0], "the top is drawn");
+    assert_eq!(px(&tall, 5, 65_275), [255, 255, 255]);
+    let files = render::encode_pages(&most, &[0, 1], 72.0, render::ImageFormat::Png).unwrap();
+    for (f, size) in files.iter().zip([(65_280, 10), (10, 65_280)]) {
+        let i = image::load_from_memory(f).unwrap();
+        assert_eq!((i.width(), i.height()), size);
+    }
+    // A region wider than that is cut to it, as at the page's edge, not a panic.
+    let far = hp(70_000.0);
+    let r = render::Renderer::new(&far);
+    let wider = r.render_region(0, 1.0, region(0, 0, 70_000, 10)).unwrap();
+    assert_eq!((wider.width, wider.height), (65_280, 10));
+    let over = hp(65_281.0);
+    let r = render::Renderer::new(&over);
+    for page in [0, 1] {
+        let e = r.render(page, 1.0).err().expect("too large");
+        assert!(e.to_string().contains("too large"), "{e}");
+        let e = render::encode_pages(&over, &[page], 72.0, render::ImageFormat::Png)
+            .expect_err("too large");
+        assert!(e.to_string().contains("too large"), "{e}");
+    }
+}
+
+#[test]
+fn an_export_with_one_page_too_large_writes_no_pages() {
+    let mut p = red_far_off(&[(300.0, 200.0), (300.0, 200.0), (10.0, 10_000.0)], 0);
+    let dir = export_dir("one-too-long");
+    let e = p
+        .export_images(
+            &[0, 1, 2],
+            576.0,
+            render::ImageFormat::Png,
+            &dir,
+            "page",
+            &mut Default::default(),
+        )
+        .expect_err("too large");
+    assert!(e.to_string().contains("page 3"), "{e}");
+    assert_eq!(files_in(&dir), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

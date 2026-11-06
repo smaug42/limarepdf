@@ -68,6 +68,20 @@ pub fn quoted_list(names: &[String]) -> String {
     }
 }
 
+/// "A", "A and B", "A, B and C"; after four, "A, B, C, D and 3 more".
+pub fn short_list(items: &[&str]) -> String {
+    const SHOWN: usize = 4;
+    match items {
+        [] => String::new(),
+        [one] => one.to_string(),
+        _ if items.len() > SHOWN => {
+            let more = items.len() - SHOWN;
+            format!("{} and {more} more", items[..SHOWN].join(", "))
+        }
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 fn shorten(s: String, max: usize) -> String {
     match s.char_indices().nth(max.saturating_sub(1)) {
         Some((i, _)) if s[i..].chars().nth(1).is_some() => format!("{}…", s[..i].trim_end()),

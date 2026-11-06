@@ -310,9 +310,12 @@ pub(crate) fn extract(d: &[u8]) -> Result<(Vec<u8>, Inline), String> {
                     _ => None,
                 }
             };
-            if let (Some(w), Some(h), Some(b), Some(c)) = (w, h, bpc, comps) {
-                let len = h * (w * c * b).div_ceil(8);
-                let mut k = d0 + len;
+            // A stated size past counting (M-19) leaves the end to the scan.
+            let end_by_size = || {
+                let row = w?.checked_mul(comps?)?.checked_mul(bpc?)?.div_ceil(8);
+                d0.checked_add(h?.checked_mul(row)?)
+            };
+            if let Some(mut k) = end_by_size() {
                 if k <= n {
                     while k < n && ws(d[k]) {
                         k += 1;
@@ -371,4 +374,28 @@ pub(crate) fn split(raw: &[u8]) -> Option<(&[u8], &[u8])> {
         end -= 1;
     }
     Some((&raw[2..id_at], &raw[d0.min(end)..end]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_size_past_counting_is_read_up_to_its_ei() {
+        // The length, height × width × components, or where it ends, overflows: before, a
+        // panic. The `EI` is found by scanning instead.
+        for content in [
+            &b"q BI /W 18446744073709551615 /H 2 /BPC 8 /CS /RGB ID xyz EI Q"[..],
+            b"q BI /W 8 /H 18446744073709551615 /BPC 1 /CS /G ID xyz EI Q",
+            b"q BI /W 1 /H 1 /BPC 8 /CS /G ID xyz EI Q",
+        ] {
+            let (out, inline) = extract(content).unwrap();
+            assert_eq!(inline.raws.len(), 1);
+            assert!(inline.raws[0].ends_with(b"ID xyz EI"));
+            assert!(out.ends_with(b" Q"));
+        }
+        // A length that fits still decides where the data ends, `EI` in it or not.
+        let (_, inline) = extract(b"BI /W 4 /H 1 /BPC 8 /CS /G ID EI x EI").unwrap();
+        assert_eq!(inline.raws[0], b"BI /W 4 /H 1 /BPC 8 /CS /G ID EI x EI");
+    }
 }
