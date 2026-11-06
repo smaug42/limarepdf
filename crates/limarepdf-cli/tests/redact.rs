@@ -18,12 +18,25 @@ fn make_pdf(dir: &Path) -> PathBuf {
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R \
          /Resources << /Font << /F1 5 0 R >> >> >>"
             .into(),
-        format!(
-            "<< /Length {} >>\nstream\n{content}\nendstream",
-            content.len()
-        ),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".into(),
+        stream("", content),
+        HELVETICA.into(),
     ];
+    write_pdf(dir, &objects)
+}
+
+const HELVETICA: &str =
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+
+/// A stream object of `dict`'s entries holding `data`, not compressed.
+fn stream(dict: &str, data: &str) -> String {
+    format!(
+        "<< {dict} /Length {} >>\nstream\n{data}\nendstream",
+        data.len()
+    )
+}
+
+/// A PDF at `dir/in.pdf` of `objects`, numbered from 1, the first its catalog.
+fn write_pdf(dir: &Path, objects: &[String]) -> PathBuf {
     let mut pdf = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     for (i, o) in objects.iter().enumerate() {
@@ -172,4 +185,98 @@ fn marks_made_with_mark_only_are_applied_later() {
         assert!(text.contains(kept), "{kept} went: {text:?}");
     }
     assert!(!holds(&out, "Zebra"), "Zebra is still in the file");
+}
+
+/// A form's secret redacted while the tag tree still points at the original form, which
+/// would keep it in the file: the command says why and writes nothing.
+#[test]
+fn redact_refuses_what_the_tag_tree_would_keep_and_writes_nothing() {
+    let dir = folder("tag-tree");
+    let secret = "BT /F1 20 Tf 30 100 Td (FormSecretZebra) Tj ET \
+                  BT /F1 20 Tf 30 40 Td (Kept) Tj ET";
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 7 0 R /MarkInfo << /Marked true >> >>"
+            .to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R \
+         /Resources << /XObject << /Fm1 6 0 R >> >> >>"
+            .into(),
+        stream("", "q /Fm1 Do Q"),
+        HELVETICA.into(),
+        stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 300 200] \
+             /Resources << /Font << /F1 5 0 R >> >>",
+            secret,
+        ),
+        "<< /Type /StructTreeRoot /K 8 0 R >>".into(),
+        "<< /Type /StructElem /S /P /P 7 0 R /Pg 3 0 R \
+         /K [<< /Type /MCR /Pg 3 0 R /Stm 6 0 R /MCID 0 >>] >>"
+            .into(),
+    ];
+    write_pdf(&dir, &objects);
+    let args = [
+        "redact",
+        "in.pdf",
+        "-o",
+        "out.pdf",
+        "--text",
+        "formsecretzebra",
+    ];
+    let err = refused(&dir, &args);
+    let why = "removed content may still be in the file, through the tag tree";
+    assert!(err.contains(why), "{err}");
+    assert!(err.contains("the file was not written"), "{err}");
+    assert!(!dir.join("out.pdf").exists(), "written anyway");
+}
+
+/// A picture under the area that a form kept outside it also draws stays for the form:
+/// the command warns once that it is still drawn on page 1, and `--json` lists the page.
+#[test]
+fn redact_warns_where_an_original_picture_is_still_drawn() {
+    let dir = folder("picture-elsewhere");
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R \
+         /Resources << /XObject << /Im1 5 0 R /B 6 0 R >> >> >>"
+            .into(),
+        stream(
+            "",
+            "q 50 0 0 50 10 100 cm /Im1 Do Q q 1 0 0 1 110 100 cm /B Do Q",
+        ),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray \
+             /BitsPerComponent 8",
+            "~",
+        ),
+        stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 50 50]",
+            "q 50 0 0 50 0 0 cm /Im1 Do Q",
+        ),
+    ];
+    write_pdf(&dir, &objects);
+    let area = [
+        "redact",
+        "in.pdf",
+        "-o",
+        "out.pdf",
+        "--area",
+        "1:10,50,50,50",
+    ];
+    let res = run(&dir, &area);
+    let out = String::from_utf8_lossy(&res.stdout);
+    let err = String::from_utf8_lossy(&res.stderr);
+    assert!(res.status.success(), "{err}");
+    let warning = "warning: An original picture affected by redaction is still drawn \
+                   elsewhere on page 1 and may retain the removed content.";
+    assert_eq!(out.matches(warning).count(), 1, "{out}");
+
+    let res = run(
+        &dir,
+        &[&area[..3], &["json.pdf", "--json"], &area[4..]].concat(),
+    );
+    let err = String::from_utf8_lossy(&res.stderr);
+    assert!(res.status.success(), "{err}");
+    let json: serde_json::Value = serde_json::from_slice(&res.stdout).unwrap();
+    assert_eq!(json["pictures_elsewhere"], serde_json::json!([1]), "{json}");
 }

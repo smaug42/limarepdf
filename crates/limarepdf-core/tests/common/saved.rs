@@ -920,7 +920,24 @@ pub mod tools {
 
     /// The first page as poppler draws it, at 72 dpi.
     pub fn pdftoppm(bytes: &[u8]) -> super::super::compare::Image {
-        let args = ["-r", "72", "-singlefile", "-png", "{}", "{dir}/page"];
+        pdftoppm_page(bytes, 1)
+    }
+
+    /// Page `page` (1-based) as poppler draws it, at 72 dpi.
+    pub fn pdftoppm_page(bytes: &[u8], page: usize) -> super::super::compare::Image {
+        let page = page.to_string();
+        let args = [
+            "-r",
+            "72",
+            "-f",
+            &page,
+            "-l",
+            &page,
+            "-singlefile",
+            "-png",
+            "{}",
+            "{dir}/page",
+        ];
         let (_, files) = run_with_files("pdftoppm", &args, bytes);
         let png = image::load_from_memory(&files[0].1).unwrap().to_rgb8();
         super::super::compare::Image {

@@ -148,6 +148,8 @@ pub(crate) struct Reach {
     /// The pictures and forms drawn (`Do`) somewhere; content that can't be read counts as
     /// drawing all its resources list.
     pub drawn: HashSet<ObjectId>,
+    /// The annotations' appearances: (the page's node, the appearance's node).
+    pub appearances: Vec<(usize, usize)>,
 }
 
 /// A drawing [`Pdf::reach`] reached.
@@ -157,17 +159,72 @@ pub(crate) struct Node {
     pub draws: Vec<usize>,
     /// The alternative text of its marked content.
     pub alt: Vec<String>,
+    /// The pictures and forms it draws (`Do`).
+    pub xobjects: Vec<ObjectId>,
+    /// The `/Properties` entries its marked content uses, as its resources list them.
+    pub properties: Vec<Object>,
+    /// Its content can't be read, so it counts as drawing, and using, all its resources
+    /// list.
+    pub unread: bool,
 }
 
 impl Reach {
     /// The pages (zero-based) of `pages` drawing, at any depth, a node `hit` is true of
     /// (by its index).
     pub(crate) fn pages_drawing(&self, pages: usize, hit: impl Fn(usize) -> bool) -> Vec<usize> {
+        self.climb(pages, hit, false)
+    }
+
+    /// The pages of `pages` certainly drawing a node `hit` is true of: through drawings that
+    /// can be read, or as an annotation's appearance.
+    pub(crate) fn pages_certainly_drawing(
+        &self,
+        pages: usize,
+        hit: impl Fn(usize) -> bool,
+    ) -> Vec<usize> {
+        self.climb(pages, hit, true)
+    }
+
+    /// Which nodes are certainly drawn: the pages' content, their annotations' appearances,
+    /// and what a drawing certainly drawn that can be read draws.
+    pub(crate) fn certain(&self, pages: usize) -> Vec<bool> {
+        let mut seen = vec![false; self.nodes.len()];
+        let roots = (0..pages.min(seen.len())).chain(self.appearances.iter().map(|a| a.1));
+        let mut todo = Vec::new();
+        for i in roots {
+            if !seen[i] {
+                seen[i] = true;
+                todo.push(i);
+            }
+        }
+        while let Some(i) = todo.pop() {
+            if self.nodes[i].unread {
+                continue;
+            }
+            for &d in &self.nodes[i].draws {
+                if !seen[d] {
+                    seen[d] = true;
+                    todo.push(d);
+                }
+            }
+        }
+        seen
+    }
+
+    /// The pages drawing a node `hit` is true of, through any drawing or, `certain`, only
+    /// through those that can be read.
+    fn climb(&self, pages: usize, hit: impl Fn(usize) -> bool, certain: bool) -> Vec<usize> {
         let mut up = vec![Vec::new(); self.nodes.len()];
         for (i, n) in self.nodes.iter().enumerate() {
+            if certain && n.unread {
+                continue;
+            }
             for &d in &n.draws {
                 up[d].push(i);
             }
+        }
+        for &(page, look) in &self.appearances {
+            up[look].push(page);
         }
         let mut seen: Vec<bool> = (0..self.nodes.len()).map(hit).collect();
         let mut todo: Vec<usize> = (0..seen.len()).filter(|&i| seen[i]).collect();
@@ -265,6 +322,7 @@ impl Pdf {
                     for id in ids {
                         if let Some(n) = w.drawing(id, &no_resources)? {
                             w.reach.nodes[i].draws.push(n);
+                            w.reach.appearances.push((i, n));
                         }
                     }
                 }
@@ -335,14 +393,17 @@ impl Walk<'_> {
                     &listed
                 }
             };
-            self.reach.nodes[n].alt.extend(u.alt.iter().cloned());
+            let node = &mut self.reach.nodes[n];
+            node.unread = uses.is_none();
+            node.alt.extend(u.alt.iter().cloned());
             let properties = entries(b"Properties");
             for nm in &u.properties {
                 self.work.take(1)?;
-                let d = pdf.resolved_dict(properties.get(nm).ok());
-                self.reach.nodes[n]
-                    .alt
-                    .extend(alt_texts(Some(&pdf.doc), &d));
+                let entry = properties.get(nm).ok();
+                let d = pdf.resolved_dict(entry);
+                let node = &mut self.reach.nodes[n];
+                node.alt.extend(alt_texts(Some(&pdf.doc), &d));
+                node.properties.extend(entry.cloned());
             }
             let mut draws = Vec::new();
             let xobjects = entries(b"XObject");
@@ -352,6 +413,7 @@ impl Walk<'_> {
                     continue;
                 };
                 self.reach.drawn.insert(id);
+                self.reach.nodes[n].xobjects.push(id);
                 if is_form(pdf, id) {
                     draws.extend(self.drawing(id, &res)?);
                 }

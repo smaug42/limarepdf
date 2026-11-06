@@ -49,9 +49,11 @@ redactions… is greyed and says why. Saving a document that still has marks ask
 has been removed.
 
 **Applying** asks first, then removes everything under the marks, paints the areas black and removes the marks. It
-then checks that nothing readable is left under them; if anything is, nothing is changed and an error says what was
-found. A report lists what was removed from each page, and where the removed text can still be found elsewhere in
-the document (other pages, bookmarks, comments, form fields, document properties). Undo brings it all back until
+then checks that nothing readable is left under them, nor kept another way in the file; if anything is, nothing is
+changed and an error says what was found ([the check afterwards](#the-check-afterwards)). A report lists what was
+removed from each page, where the removed text can still be found elsewhere in the document (other pages,
+bookmarks, comments, form fields, document properties), and the pages where a picture redaction changed is still
+drawn as it was outside the marks. Undo brings it all back until
 the document is closed, also after saving; the file you saved doesn't hold the removed content, unless you save
 again after the Undo.
 
@@ -84,19 +86,28 @@ For each area:
   its value. All of a page's are checked, also on a page with more than the 10,000 the app shows, and so are all
   of its redaction marks when they are applied.
 - **Alternative text** that accessibility tools and copying use, on content that lost anything, and on every tag
-  above it, however many there are. This includes alternative text kept apart from the content, in the list of
-  named properties a page or grouped content carries: a name no content left on the page uses is taken off the
-  page's copy of that list.
+  above it, however many there are. This includes alternative text kept apart from the content, in the lists of
+  named properties that pages, the pages above them (which pass theirs down) and grouped content carry: a name
+  holding removed alternative text that nothing left in the document uses is taken off every list it is in, also
+  a list other pages share.
 - The page's **thumbnail picture** and private application data.
 
-Pictures and drawings that nothing draws any more are left out of the saved file: also those only grouped content
-listed, and a redacted group's original, which its redacted copy replaces on this page. Content still drawn
-elsewhere (on another page, in a comment's drawing, in a pattern) is kept. Grouped content that uses the page's
-pictures and properties rather than its own keeps what it needs.
+Pictures and grouped content that nothing draws any more are left out of the saved file: also those only other
+grouped content, a pattern, a soft mask or a Type 3 font listed, and a redacted group's original, which its
+redacted copy replaces where the mark was. Every list of resources in the document stops listing them, also a
+list other pages share and one nothing draws with; the rest of each list stays as it was.
 
-If grouped content that was kept can't be read, LimarePDF can't tell what it needs, so it leaves its page's lists
-as they were and says so after the check ("a drawing on page 3 couldn't be read, so removed content may still be
-in the file").
+The marks change only what they cover. Content outside them that still draws an original picture or group that
+redaction changed (on another page, in a comment's drawing in any of its states, in a pattern, or in grouped
+content drawn with the page's pictures) keeps drawing the original, unchanged, and the report says so for each
+such page, once: "An original picture affected by redaction is still drawn elsewhere on page 2 and may retain
+the removed content." The original keeps what the marks covered, since it wasn't marked; redact it there too if
+that matters. Grouped content that uses the page's pictures and properties rather than its own keeps what it
+needs.
+
+If a drawing that may use something removed can't be read, LimarePDF can't tell whether it does, so it removes
+nothing for it and the check afterwards fails, changing nothing ("a drawing on page 3 couldn't be read, so
+removed content may still be in the file").
 
 Redaction stops with a message, and changes nothing, when it can't follow everything it would have to remove: when
 a form field touching an area belongs to a form nested more than 32 deep (fields inside fields), or when the index
@@ -110,6 +121,14 @@ test files takes about 130,000 of those steps.
 When it is done, LimarePDF reads the redacted pages again and checks that no text is left under the areas, and decodes
 each picture there to check that its pixels under the areas are blacked out. If anything is left, the app changes
 nothing and says what it found, and `limarepdf-cli redact` lists it and doesn't write the file.
+
+It then follows everything the saved file would keep, from its start, and checks that nothing redaction removed
+(the pages' old content, a redacted picture's or group's original, alternative text taken off, removed comments,
+links and fields, the pages' thumbnails and private data) is still kept another way: through the tag tree,
+through private application data, or through any other part of the file. LimarePDF doesn't cut those ways, so
+when one is found the app changes nothing and says which ("removed content may still be in the file, through
+the tag tree"), and `limarepdf-cli redact` doesn't write the file. In a tagged document the tags point at links
+and comments too, so removing one they point at refuses this way.
 
 It then looks for the removed text, and the removed alternative text, elsewhere in the document: on any page, in
 the alternative text of what each page draws ("alternative text on page 2"), in bookmarks, comments, form fields

@@ -68,6 +68,7 @@ mod redact_img;
 mod reduce;
 pub mod render;
 mod repair;
+mod retained;
 mod rewrap;
 mod sanitise;
 mod scan;

@@ -8457,7 +8457,8 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// What applying redactions removed, page by page, and where the removed text still is.
+/// What applying redactions removed, page by page, where the removed text still is, and the
+/// pages still drawing an original picture redaction affected.
 fn report_text(r: &limarepdf_core::RedactReport) -> String {
     let mut out = String::new();
     for p in &r.pages {
@@ -8491,6 +8492,9 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
                 places.join(", ")
             ));
         }
+    }
+    for notice in r.picture_notices() {
+        out.push_str(&format!("\n\n{notice}"));
     }
     out.push_str(&format!(
         "\n\nTo also remove metadata, attachments and other hidden information, choose \

@@ -202,8 +202,10 @@ are refused, with nothing written.
 | `limarepdf-cli redact marked.pdf -o out.pdf --apply` | Apply the redaction marks in the file (from LimarePDF or another app), and any `--text` or `--area` given too |
 
 The command prints what it removed from each page, then the result of its check: it writes the file only when
-nothing readable is left under the areas. It warns when removed text is still found elsewhere in the document. See
-[Redaction](redaction.md) for exactly what is removed.
+nothing readable is left under the areas and nothing removed is still kept another way in the file (the tag tree,
+private application data, any other part of it). It warns when removed text is still found elsewhere in the
+document, and on each page where a picture redaction changed is still drawn as it was outside the areas (with
+`--json`, those pages are `pictures_elsewhere`). See [Redaction](redaction.md) for exactly what is removed.
 
 ### Removing hidden information
 
