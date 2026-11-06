@@ -606,22 +606,34 @@ struct Redone {
 }
 
 /// How many colour components `cs` has when it is grey or RGB (in any of their forms), or
-/// `None` for any other colour space.
+/// `None` for any other colour space. A name is followed through `spaces` at most 8 times
+/// (as [`redact_img::components`] does) and never back to a name already met, so names
+/// standing for each other give `None`.
 fn plain_components(doc: &Document, cs: &Object, spaces: &Dictionary) -> Option<usize> {
-    let resolved = doc.dereference(cs).ok()?.1;
-    let plain = match resolved {
-        Object::Name(n) => match n.as_slice() {
-            b"DeviceGray" | b"CalGray" | b"G" | b"DeviceRGB" | b"CalRGB" | b"RGB" => true,
-            other => return plain_components(doc, spaces.get(other).ok()?, spaces),
-        },
-        Object::Array(a) => matches!(
-            a.first().and_then(|o| o.as_name().ok()),
-            Some(b"ICCBased" | b"CalGray" | b"CalRGB")
-        ),
-        _ => false,
-    };
-    let n = redact_img::components(doc, cs, spaces, 0)?;
-    (plain && matches!(n, 1 | 3)).then_some(n)
+    let mut cs = cs;
+    let mut seen: Vec<&[u8]> = Vec::new();
+    loop {
+        let plain = match doc.dereference(cs).ok()?.1 {
+            Object::Name(n) => match n.as_slice() {
+                b"DeviceGray" | b"CalGray" | b"G" | b"DeviceRGB" | b"CalRGB" | b"RGB" => true,
+                other => {
+                    if seen.len() == 8 || seen.contains(&other) {
+                        return None;
+                    }
+                    seen.push(other);
+                    cs = spaces.get(other).ok()?;
+                    continue;
+                }
+            },
+            Object::Array(a) => matches!(
+                a.first().and_then(|o| o.as_name().ok()),
+                Some(b"ICCBased" | b"CalGray" | b"CalRGB")
+            ),
+            _ => false,
+        };
+        let n = redact_img::components(doc, cs, spaces, 0)?;
+        return (plain && matches!(n, 1 | 3)).then_some(n);
+    }
 }
 
 /// Picture `s` (with `/ColorSpace` resources `spaces`), shown at `ppi`, saved again at

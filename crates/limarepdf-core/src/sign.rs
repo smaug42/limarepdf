@@ -7,7 +7,7 @@
 use crate::annot_write::simplify;
 use crate::form_ap::nums;
 use crate::form_flatten::Flat;
-use crate::imgs::{decode, first, orient_matrix, stored_point, swaps_axes, Pixels, Raster};
+use crate::imgs::{decode_first, orient_matrix, stored_point, swaps_axes, Pixels, Raster};
 use crate::overlay::{local_today, text_width};
 use crate::stamps::KAPPA;
 use crate::{FontChoice, Pdf, Result, TextStyle};
@@ -517,7 +517,7 @@ fn crop_picture(r: Raster, crop: [f32; 4]) -> Result<Raster> {
 /// most `max` pixels across and down: its width, height and samples. For choosing the part
 /// of a picture that holds a signature ([`SignArt::Picture`]'s `crop`).
 pub fn picture_view(bytes: &[u8], max: u32) -> Result<(u32, u32, Vec<u8>)> {
-    let r = first(decode(bytes)?)?;
+    let r = decode_first(bytes)?;
     let (rgb, alpha) = rgb_alpha(&r)?;
     let rgba: Vec<u8> = rgb
         .as_chunks::<3>()
@@ -823,7 +823,7 @@ pub(crate) fn signature_art(
             clear_paper: clear,
             crop,
         } => {
-            let r = first(decode(bytes)?)?;
+            let r = decode_first(bytes)?;
             let r = match crop {
                 Some(c) => crop_picture(r, c)?,
                 None => r,
@@ -1381,7 +1381,7 @@ mod tests {
     #[test]
     fn cmyk_jpegs_are_read() {
         let jpg = include_bytes!("../tests/data/images/cmyk-cyan-red.jpg");
-        let r = crate::imgs::decode(jpg).unwrap().remove(0);
+        let r = crate::imgs::decode_first(jpg).unwrap();
         let (rgb, alpha) = rgb_alpha(&r).unwrap();
         assert!(alpha.is_none());
         let px = |x: usize, y: usize| {

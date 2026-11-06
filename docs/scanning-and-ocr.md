@@ -28,6 +28,9 @@ Optimise before recognising text: pages with text over them, such as recognised 
 - **Page size:** from the image's resolution, or 150 dpi when the file has none.
 - **Orientation:** pages are turned upright from the EXIF or TIFF orientation.
 - **Quality:** JPEGs are embedded as they are, without recompression.
+- **How many at once:** the pictures added together may take up to 2 GB once opened (a 300 dpi
+  colour letter page takes about 25 MB; a JPEG counts as its file's size). Past that, nothing is
+  added, and the message says so; add fewer at a time.
 
 Where: **Insert > From images** or ☰ > Make a PDF from images… (also on the start screen); Insert images in
 **Pages > Insert pages**, the inspector, the right-click menu or ☰ > Pages; or drop images on the window. On the

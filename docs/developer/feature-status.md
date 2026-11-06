@@ -348,6 +348,18 @@ available.
   (no message). A drawing drawn again inside itself is read once where it repeats, as pdf.js reads it. Text or a
   drawing whose width and height come to more than about 370 m together (S1-07) is passed over when looking for underlines: none under it or
   touching it is read.
+- Limits on what is unpacked (S1-08):
+  - Pictures added together (Insert images…, a PDF made from pictures) may take at most 2 GiB opened: a PNG or
+    TIFF page counts its decoded size, a JPEG its file's size, as it is kept compressed. Past that, nothing is
+    added and the message says to add fewer at a time. A TIFF's preview, signature picture or placed picture
+    reads its first page only.
+  - A document's metadata (XMP) is read up to 4 MiB to see whether it claims PDF/A-1. Larger, the document is
+    taken to claim it, and saved in the classic layout, readable by everything.
+  - One choice of dictionaries (Add a dictionary…, several extensions and files together) unpacks at most 256
+    `.aff` and `.dic` files and 128 MiB, an extension's own file 128 MiB, and each dictionary file 64 MiB. An
+    extension past that adds nothing, its sizes checked against the zip's list before anything is unpacked.
+  - A colour space named through a page's names more than 8 times, or naming itself, is left as it is when
+    reducing a file's size (picture kept).
 - Undo keeps up to 100 steps within 1 GB per document, each the size of what its change changed, so a few steps
   are larger than a copy of the document would be: the first page change on a long document (moving, deleting,
   turning or adding pages) changes every page's entry and keeps 28 MB on 10,000 pages, and a watermark on 10,000

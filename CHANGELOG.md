@@ -37,6 +37,17 @@
 - A page with text or a drawing scaled to an enormous size beside a line no longer keeps LimarePDF reading it for
   hours when it is edited, searched or redacted, while looking for underlines and strike-throughs. A page where
   that looking would take more than a few seconds is refused like any other page too complex to read.
+- Reduce file size no longer crashes LimarePDF on a file whose picture names its colours through a name that
+  names itself, or two names that name each other. Such a picture is kept as it is.
+- A TIFF with many pages no longer has every page read to show its first: the preview, a signature picture and a
+  placed picture read the first page alone. Pictures added together (Insert images…, a PDF from images) are
+  refused, with nothing added, when they would take more than 2 GB once opened, rather than using up memory; a
+  TIFF page of a kind LimarePDF can't read is refused before it is read.
+- A document whose metadata is very large (more than 4 MB unpacked) is no longer unpacked whole when saving, to
+  see whether it claims PDF/A-1; it is saved in the classic layout instead, readable by everything.
+- Add a dictionary refuses an extension, or a choice of files, holding more than 256 dictionary files or 128 MB,
+  saying so and adding nothing of it, rather than unpacking it all. A dictionary file over 64 MB is refused before
+  it is read whole; before, a large file picked was read in full and then refused as unreadable.
 
 ## [0.13.0] - 2026-11-03
 

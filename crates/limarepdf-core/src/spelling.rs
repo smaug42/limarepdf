@@ -109,6 +109,96 @@ pub enum SpellingError {
     NoDictionary(String),
     #[error("{0} is too large to be a dictionary")]
     TooLarge(String),
+    #[error("{0} has too many dictionary files: LimarePDF adds at most {1} at once")]
+    TooMany(String, usize),
+    #[error(
+        "{0} has too much in it: LimarePDF adds at most {most} of dictionaries at once",
+        most = size_text(*.1)
+    )]
+    TooMuch(String, u64),
+}
+
+/// `n` bytes in KiB, MiB or GiB, whichever is the largest whole one.
+fn size_text(n: u64) -> String {
+    match n {
+        n if n >= 1 << 30 && n % (1 << 30) == 0 => format!("{} GiB", n >> 30),
+        n if n >= 1 << 20 && n % (1 << 20) == 0 => format!("{} MiB", n >> 20),
+        n if n >= 1 << 10 && n % (1 << 10) == 0 => format!("{} KiB", n >> 10),
+        n => format!("{n} bytes"),
+    }
+}
+
+/// The largest dictionary extension read, and the most one choice of dictionaries may unpack.
+const MAX_EXTENSION: u64 = 128 << 20;
+
+/// What one choice of dictionaries may unpack, its extensions and files together: so many
+/// `.aff` and `.dic` files, so many bytes. Each file read takes from it, so a crafted
+/// extension can't use up memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DictionaryBudget {
+    /// Files and bytes at the start, which a refusal names.
+    most: (usize, u64),
+    left: (usize, u64),
+}
+
+impl Default for DictionaryBudget {
+    /// 256 files and 128 MiB: the largest real extensions hold a few dictionaries of a few
+    /// tens of MB.
+    fn default() -> DictionaryBudget {
+        DictionaryBudget::new(256, MAX_EXTENSION)
+    }
+}
+
+impl DictionaryBudget {
+    pub fn new(files: usize, bytes: u64) -> DictionaryBudget {
+        DictionaryBudget {
+            most: (files, bytes),
+            left: (files, bytes),
+        }
+    }
+
+    pub fn files_left(&self) -> usize {
+        self.left.0
+    }
+
+    pub fn bytes_left(&self) -> u64 {
+        self.left.1
+    }
+
+    /// One dictionary file from `from`, which says it is `stated` bytes long, taken from the
+    /// budget; the budget as it was when it is refused. Its size is checked before it is
+    /// read and as it is read, as the stated size may be false. `name` names it in errors.
+    fn take(
+        &mut self,
+        name: &str,
+        from: impl Read,
+        stated: Option<u64>,
+    ) -> Result<Vec<u8>, SpellingError> {
+        if self.left.0 == 0 {
+            return Err(SpellingError::TooMany(name.into(), self.most.0));
+        }
+        let most = MAX_FILE.min(self.left.1);
+        let refusal = |size: u64| {
+            if size > MAX_FILE {
+                SpellingError::TooLarge(name.into())
+            } else {
+                SpellingError::TooMuch(name.into(), self.most.1)
+            }
+        };
+        if let Some(size) = stated.filter(|&s| s > most) {
+            return Err(refusal(size));
+        }
+        let mut bytes = Vec::new();
+        from.take(most + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| SpellingError::Read(name.into(), e))?;
+        let size = bytes.len() as u64;
+        if size > most {
+            return Err(refusal(size));
+        }
+        self.left = (self.left.0 - 1, self.left.1 - size);
+        Ok(bytes)
+    }
 }
 
 /// A spelling dictionary, ready to check words.
@@ -137,7 +227,7 @@ impl Dictionary {
     /// A dictionary from its two files on disk.
     pub fn from_files(aff: &Path, dic: &Path) -> Result<Dictionary, SpellingError> {
         let name = file_name(dic);
-        let (aff, dic) = (read_limited(aff)?, read_limited(dic)?);
+        let (aff, dic) = (read_limited(aff, MAX_FILE)?, read_limited(dic, MAX_FILE)?);
         Dictionary::from_bytes(&name, &aff, &dic)
     }
 
@@ -189,14 +279,28 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn read_limited(path: &Path) -> Result<Vec<u8>, SpellingError> {
+/// A chosen `.aff` or `.dic` file, taken from `budget`: the budget as it was when it can't be
+/// read or is refused.
+pub fn read_within(path: &Path, budget: &mut DictionaryBudget) -> Result<Vec<u8>, SpellingError> {
+    let name = file_name(path);
+    let file = std::fs::File::open(path).map_err(|e| SpellingError::Read(name.clone(), e))?;
+    let stated = file.metadata().ok().map(|m| m.len());
+    budget.take(&name, file, stated)
+}
+
+/// A dictionary extension's file, at most 128 MiB, for [`in_extension_within`].
+pub fn read_extension(path: &Path) -> Result<Vec<u8>, SpellingError> {
+    read_limited(path, MAX_EXTENSION)
+}
+
+fn read_limited(path: &Path, most: u64) -> Result<Vec<u8>, SpellingError> {
     let name = file_name(path);
     let file = std::fs::File::open(path).map_err(|e| SpellingError::Read(name.clone(), e))?;
     let mut data = Vec::new();
-    file.take(MAX_FILE + 1)
+    file.take(most + 1)
         .read_to_end(&mut data)
         .map_err(|e| SpellingError::Read(name.clone(), e))?;
-    if data.len() as u64 > MAX_FILE {
+    if data.len() as u64 > most {
         return Err(SpellingError::TooLarge(name));
     }
     Ok(data)
@@ -568,17 +672,31 @@ pub struct Unpacked {
 
 /// The spelling dictionaries in a LibreOffice or OpenOffice dictionary extension (`.oxt`, a
 /// zip file): each `.dic` with an `.aff` of the same name. `name` names the file in errors.
+/// It may unpack what [`DictionaryBudget::default`] allows.
 pub fn in_extension(data: &[u8], name: &str) -> Result<Vec<Unpacked>, SpellingError> {
+    in_extension_within(data, name, &mut DictionaryBudget::default())
+}
+
+/// [`in_extension`], each `.aff` and `.dic` file in it taken from `budget`, those that have
+/// no partner too; none of its dictionaries, and the budget as it was, when it is refused.
+pub fn in_extension_within(
+    data: &[u8],
+    name: &str,
+    budget: &mut DictionaryBudget,
+) -> Result<Vec<Unpacked>, SpellingError> {
+    let mut left = *budget;
     let unreadable = |e: zip::result::ZipError| SpellingError::Parse(name.into(), e.to_string());
     let mut zip = zip::ZipArchive::new(Cursor::new(data)).map_err(unreadable)?;
-    let mut affs: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut dics: Vec<(String, Vec<u8>)> = Vec::new();
+    // Which files are dictionaries' and how large they say they are, from the zip's list
+    // alone: too many or too large, and nothing is unpacked.
+    let mut wanted: Vec<(usize, String, bool)> = Vec::new();
+    let mut stated = 0u64;
     for i in 0..zip.len() {
-        let mut file = zip.by_index(i).map_err(unreadable)?;
+        let file = zip.by_index_raw(i).map_err(unreadable)?;
         if !file.is_file() {
             continue;
         }
-        let path = file.name().map_err(unreadable)?.into_owned();
+        let path = file.name().map_err(unreadable)?;
         let leaf = path.rsplit('/').next().unwrap_or(&path);
         let Some((stem, ext)) = leaf.rsplit_once('.') else {
             continue;
@@ -587,21 +705,26 @@ pub fn in_extension(data: &[u8], name: &str) -> Result<Vec<Unpacked>, SpellingEr
             ext.eq_ignore_ascii_case("aff"),
             ext.eq_ignore_ascii_case("dic"),
         );
-        if !aff && !dic {
-            continue;
+        if aff || dic {
+            wanted.push((i, safe_stem(stem), aff));
+            stated = stated.saturating_add(file.size());
+            if wanted.len() > left.left.0 {
+                return Err(SpellingError::TooMany(name.into(), left.most.0));
+            }
+            if file.size() > MAX_FILE {
+                return Err(SpellingError::TooLarge(name.into()));
+            }
+            if stated > left.left.1 {
+                return Err(SpellingError::TooMuch(name.into(), left.most.1));
+            }
         }
-        if file.size() > MAX_FILE {
-            return Err(SpellingError::TooLarge(name.into()));
-        }
-        let mut bytes = Vec::new();
-        (&mut file)
-            .take(MAX_FILE + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| SpellingError::Read(name.into(), e))?;
-        if bytes.len() as u64 > MAX_FILE {
-            return Err(SpellingError::TooLarge(name.into()));
-        }
-        let stem = safe_stem(stem);
+    }
+    let mut affs: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut dics: Vec<(String, Vec<u8>)> = Vec::new();
+    for (i, stem, aff) in wanted {
+        let mut file = zip.by_index(i).map_err(unreadable)?;
+        let size = file.size();
+        let bytes = left.take(name, &mut file, Some(size))?;
         if aff {
             affs.insert(stem, bytes);
         } else {
@@ -619,6 +742,7 @@ pub fn in_extension(data: &[u8], name: &str) -> Result<Vec<Unpacked>, SpellingEr
     if out.is_empty() {
         return Err(SpellingError::NoDictionary(name.into()));
     }
+    *budget = left;
     Ok(out)
 }
 

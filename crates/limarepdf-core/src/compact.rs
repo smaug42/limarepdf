@@ -14,6 +14,11 @@ use std::hash::{Hash, Hasher};
 /// whose masks were merged), so merging goes on until a round finds nothing.
 const MAX_ROUNDS: usize = 8;
 
+/// The most bytes compressed XMP metadata is expanded to when a save looks for the PDF/A
+/// part in it ([`claims_pdfa1`]): metadata is a few kilobytes; a file's could expand to
+/// gigabytes on every save.
+pub const MAX_XMP: usize = 4 << 20;
+
 /// What [`merge_identical`] changed, to put back.
 #[derive(Default)]
 pub(crate) struct Merged {
@@ -178,19 +183,28 @@ pub(crate) fn few_to_pack(doc: &Document) -> bool {
 
 /// Whether the document says it is PDF/A-1 (its XMP metadata's `pdfaid:part` is 1). PDF/A-1
 /// is built on PDF 1.4, which has neither object streams nor cross-reference streams.
+/// Compressed metadata (all of it, on a save, which compresses streams first) is expanded
+/// to at most [`MAX_XMP`] bytes; past that the document is taken to be PDF/A-1, as its
+/// layout is valid for any document. Metadata that can't be expanded is looked at as it is
+/// stored.
 pub(crate) fn claims_pdfa1(doc: &Document) -> bool {
-    let xmp = doc
+    let Some(s) = doc
         .catalog()
         .ok()
         .and_then(|c| c.get(b"Metadata").ok())
         .and_then(|o| doc.dereference(o).ok())
         .and_then(|(_, o)| o.as_stream().ok())
-        .and_then(|s| {
-            s.decompressed_content()
-                .ok()
-                .or_else(|| Some(s.content.clone()))
-        });
-    xmp.is_some_and(|x| pdfa_part(&x) == Some(1))
+    else {
+        return false;
+    };
+    if !s.dict.has(b"Filter") {
+        return pdfa_part(&s.content) == Some(1);
+    }
+    match s.decompressed_content_with_limit(MAX_XMP) {
+        Ok(xmp) => pdfa_part(&xmp) == Some(1),
+        Err(lopdf::Error::Decompress(lopdf::DecompressError::MemoryLimitExceeded { .. })) => true,
+        Err(_) => pdfa_part(&s.content) == Some(1),
+    }
 }
 
 /// The PDF/A part named in XMP metadata: as an attribute (`pdfaid:part="1"`) or an element
