@@ -53,7 +53,10 @@
   read and say why, and redacting over such a page refuses with nothing changed.
 - A page with text or a drawing scaled to an enormous size beside a line no longer keeps LimarePDF reading it for
   hours when it is edited, searched or redacted, while looking for underlines and strike-throughs. A page where
-  that looking would take more than a few seconds is refused like any other page too complex to read.
+  that looking would take more than a few seconds is refused like any other page too complex to read. This now
+  counts all of that looking, so a page with many thousands of lines drawn over one another, of underlines, or of
+  ways its text runs is refused too, rather than read however long that takes; the underlines found on other
+  pages are the same.
 - Reduce file size no longer crashes LimarePDF on a file whose picture names its colours through a name that
   names itself, or two names that name each other. Such a picture is kept as it is.
 - A TIFF with many pages no longer has every page read to show its first: the preview, a signature picture and a

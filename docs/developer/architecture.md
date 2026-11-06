@@ -967,14 +967,18 @@ a copy, not strict) leaves the pictures listed when that walk fails rather than 
 
 Reading a page (`objects.rs`, `parse_as_page`; S1-06, H-07) has a budget of its own: a step per operator and per
 form opened, plus one per KiB of the form's content, charged across every form the page draws, however often (a
-form is read again each time it is drawn), and one per cell the underline grids go through (S1-07, under
-"Underlines and strike-throughs"). `objects::STEPS` is 2²³ (8,388,608): 12.9 times the corpus maximum, 649,731
-steps (`pdfbox/5134.pdf`, page 1; every page of the 1,084 files that open, measured 2026-11-05 with the budget
-lifted; 588,688 before the grids' cells were counted, 14 times). A step takes about 0.47 µs in an optimised
-build, whatever the forms' depth or width, so a page is refused after about 4 s of reading; the heaviest corpus
-page reads in 0.43 s. The margin is below S1-01's 32
-times by the user's choice (2026-11-05): 32 times would be about 16 s, and the editor reads a page more than
-once. An edit reads its own new content back before writing it (`parse_as_page`) within the same limit, so no
+form is read again each time it is drawn), one per cell the underline grids go through (S1-07), and one for
+each part of the rest of looking for underlines that can grow faster than the page (CP-05; both under
+"Underlines and strike-throughs"). `objects::STEPS` is 2²³ (8,388,608): 7.5 times the corpus maximum,
+1,124,715 steps (`pdfbox/5134.pdf`, page 1, 474,984 of them looking for underlines; every page of the 1,080
+files that open, measured 2026-11-06 with the budget lifted; 649,731 before CP-05, 12.9 times, and 588,688
+before the grids' cells were counted, 14 times). A step takes about 0.47 µs in an optimised build, whatever the
+forms' depth or width, so a page is refused after about 4 s of reading; the heaviest corpus page reads in
+0.43 s. A step looking for underlines takes far less, about 10 ns: made-up pages that run past the limit there
+are refused in 29 to 106 ms (performance.md's "Reading underlines and strike-throughs"). The margin is below
+S1-01's 32 times by the user's choice (2026-11-05, at 12.9 times; CP-05 brought it to 7.5 times by counting
+more of the same reading, the limit unchanged): 32 times would be about 16 s, and the editor reads a page more
+than once. An edit reads its own new content back before writing it (`parse_as_page`) within the same limit, so no
 edit makes a page that can't then be read. A form drawn again inside itself is passed over where it repeats
 (each form read once on the way down, as pdf.js does; its `issue19800-eq.pdf`), and the nesting limit, 8, stays.
 A form whose content can't be decoded is passed over too; only a `TooComplex` refusal goes up to the page. Then
@@ -2646,7 +2650,16 @@ form XObject, and per inline image.
   H-08: the whole area was gone through, so a line drawn hundreds of metres across took billions of steps); one
   with more than `MOST_CELLS`, 2¹⁵ (32,768), even so is kept in none and finds nothing, so a box at most 8,193
   cells, about 185 metres, square still meets bands. Each cell a box is kept in or looks in is a step of the page's
-  reading budget (`objects::STEPS`, "Reading a page" above), taken before any is touched. A band running no way the page's lines
+  reading budget (`objects::STEPS`, "Reading a page" above), taken before any is touched, and so is each part of
+  the rest that can grow faster than the page (CP-05), taken before it is done: each box the grids give for a
+  band, as often as it is in the cells looked in (a lookup gives each box once by marking it, `Grid::seen`, not
+  by sorting what it found); each line's way set against the ways before it, and each thin band's against the
+  ways, up to the first that is the same (`any_of`); each character of a line a band is tried against; each line
+  of a form's text looked at for a band; each decoration found before set against a band's; and each band already
+  in the decoration a band joins (put in its place by halving). What isn't counted (a band's object found by
+  halving, each line laid out once, the decorations put in order) grows no faster than n log n of the page's
+  lines and bands. Of two lines a band fits as closely, the first on the page takes it, whatever order the grid
+  gives them in. A band running no way the page's lines
   run is passed over, and a line is laid out only once a band is level with it and near its baseline
   (`Lite::may_take`; performance.md's "Reading underlines and strike-throughs"). It keeps a band for the line it
   fits best (`fits`, in the line's own frame,

@@ -285,6 +285,34 @@ is passed over at once; the other drawings and the form text the guards look at 
 line; and a band's ink isn't copied while the page is read, only the operators that set it remembered
 (`InkAt`), the ink made again for a band read as a decoration.
 
+CP-05 counts the rest of this looking as steps of the page's reading budget, each part before it is done
+(architecture.md's "Underlines and strike-throughs"). Measured on 6 November 2026 on the machine above, release
+builds of the tree before (de4df52) and after, with throwaway probes (`target/cp05-measure/`): every page of the
+render corpus (1,089 files, 1,080 that open, 7,198 pages) has the same decorations (469, in 65 files) and none is
+refused; 3,854 pages take more steps, none fewer, 161 of them twice as many or more, 16.2 million steps in all
+before and 18.7 million after. The pages with the most steps read in the same time, the best of five:
+
+| Page | Steps | Before | After |
+| --- | --- | --- | --- |
+| `pdfbox/5134.pdf`, page 1 | 649,731 → 1,124,715 | 296.2 ms | 296.3 ms |
+| `pdfjs/issue12295.pdf`, page 1 | 329,051 → 423,332 | 130.1 ms | 132.8 ms |
+| `pdfbox/3813.pdf`, page 1 | 55,593 → 344,717 | 44.4 ms | 43.2 ms |
+
+Made-up pages, each running one part of the looking past the limit, the best of three. Before, each is read
+whatever it takes, the time growing with the square of what is on it; after, each is refused at the limit:
+
+| Page | The part | Before (read) | After (refused) |
+| --- | --- | --- | --- |
+| 500 lines drawn over one another, a band each | characters a band is tried against | 125 ms | 69 ms |
+| 9,000 lines in 2,800 ways | ways set against one another | 118 ms | 106 ms |
+| 1,300 lines in as many ways, 7,000 upright bands | bands set against the ways | 30 ms | 29 ms |
+| 3,000 bands under one line | boxes the grids give, bands joined | 508 ms | 34 ms |
+| 4,100 lines, each underlined | decorations found before | 74 ms | 70 ms |
+| 3,000 underlined lines, 3,000 lines of a form's text | the form's lines looked at | 89 ms | 78 ms |
+
+A step looking for underlines takes about 10 ns, far less than the 0.47 µs a page's operators take, so the 4 s
+the limit stands for is an upper bound there.
+
 ## Styling selected words
 
 Batch 24 (ENH-05) writes every changed line of a page in one parse and one commit (`Pdf::edit_texts`), each line

@@ -341,8 +341,8 @@ available.
   Linux, where they are two files). Not yet covered (WP-01): exporting a digital ID or certificate, the recovery
   store, and other apps writing the file.
 - Reading a page has a limit (S1-06): a page whose drawings draw one another over and over, or where looking for
-  underlines takes too long (S1-07), past about 4 s of reading (13 times the most any page of the test files
-  takes), isn't read. Search names it with why,
+  underlines takes too long (S1-07; all of that looking counted since CP-05), past about 4 s of reading (7.5
+  times the most any page of the test files takes), isn't read. Search names it with why,
   redaction over it refuses and changes nothing, and editing it is refused; its text counts as none for copying,
   text export and paragraph finding. The editor shows nothing on such a page to select, and doesn't yet say why
   (no message). A drawing drawn again inside itself is read once where it repeats, as pdf.js reads it. Text or a

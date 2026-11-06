@@ -435,6 +435,28 @@ fn grid_cells(b: [f32; 4]) -> u64 {
     }
 }
 
+/// The steps of its budget reading `p`'s page takes.
+fn steps(p: &Pdf) -> u64 {
+    use limarepdf_core::budget_seam;
+    let (objs, taken) = budget_seam::with_limit(u64::MAX, || p.page_objects(0).map(|_| ()));
+    objs.unwrap();
+    assert_eq!(taken.len(), 1, "one budget for the page: {taken:?}");
+    taken[0]
+}
+
+/// `p`'s page is read within `with` steps, and refused a step short, giving nothing.
+fn read_within_and_refused_short(p: &Pdf, with: u64) {
+    use limarepdf_core::{budget_seam, TooComplex};
+    let (got, taken) = budget_seam::with_limit(with, || p.page_objects(0).map(|_| ()));
+    got.unwrap();
+    assert_eq!(taken, [with]);
+    let (got, taken) = budget_seam::with_limit(with - 1, || p.page_objects(0).map(|_| ()));
+    let e = got.unwrap_err();
+    let too = e.downcast_ref::<TooComplex>().expect("too complex");
+    assert_eq!(too.limit, with - 1, "{e:#}");
+    assert!(taken.len() == 1 && taken[0] < with, "{taken:?}");
+}
+
 /// The cells the grids go through to find what is near a band are steps of the page's
 /// budget (S1-07): a line in Helvetica 2,400 with a thin band under it takes at least its
 /// box's edge cells more than with a band too thick to be an underline (no grid made; the
@@ -442,13 +464,6 @@ fn grid_cells(b: [f32; 4]) -> u64 {
 /// isn't read as an underline at this size either: that is the backlog's, not the grid's.)
 #[test]
 fn the_cells_near_a_band_are_steps_of_the_page_s_budget() {
-    use limarepdf_core::{budget_seam, TooComplex};
-    let steps = |p: &Pdf| {
-        let (objs, taken) = budget_seam::with_limit(u64::MAX, || p.page_objects(0).map(|_| ()));
-        objs.unwrap();
-        assert_eq!(taken.len(), 1, "one budget for the page: {taken:?}");
-        taken[0]
-    };
     let (thin, thick) = (big(0.7), big(3.0));
     let b = lines(&thin)[0].bbox;
     let own = grid_cells(b);
@@ -462,14 +477,35 @@ fn the_cells_near_a_band_are_steps_of_the_page_s_budget() {
         with >= without + own,
         "{with} steps with the grids, {without} without, the line's box {own} cells"
     );
-    let (got, taken) = budget_seam::with_limit(with, || thin.page_objects(0).map(|_| ()));
-    got.unwrap();
-    assert_eq!(taken, [with]);
-    let (got, taken) = budget_seam::with_limit(with - 1, || thin.page_objects(0).map(|_| ()));
-    let e = got.unwrap_err();
-    let too = e.downcast_ref::<TooComplex>().expect("too complex");
-    assert_eq!(too.limit, with - 1, "{e:#}");
-    assert!(taken.len() == 1 && taken[0] < with, "{taken:?}");
+    read_within_and_refused_short(&thin, with);
+}
+
+/// [`LINE`] drawn `d` times over at (X, Y), each with LibreOffice's band under the whole
+/// of it, `width` thick at 12.
+fn stacked(d: usize, width: f32) -> Pdf {
+    let (x0, x1) = span(LINE, LINE);
+    let band = format!(
+        "q 1 0 0 1 {x0} {Y} cm {width} w 0 0 0 RG 0 -1.4 m {} -1.4 l S Q\n",
+        x1 - x0
+    );
+    page(&(shown(LINE).repeat(d) + &band.repeat(d)))
+}
+
+/// The characters a band is tried against are steps of the page's budget (CP-05): 16
+/// lines drawn over one another, each with a thin band, take at least a step for each of
+/// each line's characters for each band more than with bands too thick to try (the same
+/// operators), and the page is refused a step short of what it takes.
+#[test]
+fn the_characters_a_band_is_tried_against_are_steps_of_the_page_s_budget() {
+    let d = 16;
+    let (thin, thick) = (stacked(d, 0.7), stacked(d, 3.0));
+    let tried = (d * d * LINE.chars().count()) as u64;
+    let (with, without) = (steps(&thin), steps(&thick));
+    assert!(
+        with >= without + tried,
+        "{with} steps with the bands tried, {without} without, {tried} characters tried"
+    );
+    read_within_and_refused_short(&thin, with);
 }
 
 /// The page's content as operators.

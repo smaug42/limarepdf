@@ -17,6 +17,52 @@ use lopdf::{Dictionary, Document, Object, ObjectId};
 use skrifa::raw::{FontRef, TableProvider};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// What [`read`] did, counted where it does it, for the tests to set against the steps it
+/// took (CP-05): line directions compared with one another, bands' directions compared with
+/// them, boxes the grids gave, characters given to [`fits`], boxes of form text looked at,
+/// decorations found compared, and bands already in a decoration another band joins.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Tally {
+    ways: u64,
+    levels: u64,
+    occupants: u64,
+    chars: u64,
+    forms: u64,
+    found: u64,
+    merged: u64,
+    /// The steps [`read`] took.
+    steps: u64,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TALLY: std::cell::Cell<Tally> = const {
+        std::cell::Cell::new(Tally {
+            ways: 0,
+            levels: 0,
+            occupants: 0,
+            chars: 0,
+            forms: 0,
+            found: 0,
+            merged: 0,
+            steps: 0,
+        })
+    };
+}
+
+/// Adds `n` to the tests' [`Tally`]'s `field`; nothing outside the tests.
+macro_rules! tally {
+    ($field:ident, $n:expr) => {
+        #[cfg(test)]
+        TALLY.with(|t| {
+            let mut v = t.get();
+            v.$field += $n as u64;
+            t.set(v);
+        });
+    };
+}
+
 /// Which line a decoration is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DecoKind {
@@ -489,6 +535,7 @@ struct Fit {
 /// word edges within 0.15 em of theirs, over two characters or more that aren't spaces with
 /// no jump between neighbours wider than 2 em, in the colour of every one of them.
 fn fits(l: &Laid, st: &Straight, colour: [f32; 3]) -> Option<Fit> {
+    tally!(chars, l.chars.len());
     let (ua, va) = l.frame.at(st.a);
     let (ub, vb) = l.frame.at(st.b);
     let (u0, u1) = (ua.min(ub), ua.max(ub));
@@ -544,6 +591,10 @@ fn fits(l: &Laid, st: &Straight, colour: [f32; 3]) -> Option<Fit> {
 struct Grid {
     cell: f32,
     cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
+    /// For each box, the last lookup that gave it: a lookup gives each box once without
+    /// sorting what it found.
+    seen: Vec<u32>,
+    lookup: u32,
 }
 
 impl Grid {
@@ -554,32 +605,51 @@ impl Grid {
         let mut g = Grid {
             cell: 64.0,
             cells: Default::default(),
+            seen: Vec::new(),
+            lookup: 0,
         };
         let cell = g.cell;
+        let mut most = 0;
         for (i, b) in boxes {
             each_cell(cell, b, work, |c| g.cells.entry(c).or_default().push(i))?;
+            most = most.max(i + 1);
         }
+        g.seen = vec![0; most];
         Ok(g)
     }
 
-    /// The indices of boxes in the cells box `b` touches, each once, in `out`.
+    /// The indices of boxes in the cells box `b` touches, each once, in `out`. Each box in
+    /// those cells, as many times as it is there, is a step of `work` with the cells, taken
+    /// before any is looked at (CP-05).
     fn near_into(
-        &self,
+        &mut self,
         b: [f32; 4],
         out: &mut Vec<usize>,
         work: &mut Work,
     ) -> Result<(), TooComplex> {
         out.clear();
+        let mut at: Vec<&[usize]> = Vec::new();
         each_cell(self.cell, b, work, |c| {
-            out.extend(self.cells.get(&c).into_iter().flatten())
+            at.extend(self.cells.get(&c).map(Vec::as_slice))
         })?;
-        out.sort_unstable();
-        out.dedup();
+        work.take(at.iter().map(|v| v.len() as u64).sum())?;
+        if self.lookup == u32::MAX {
+            self.seen.fill(0);
+            self.lookup = 0;
+        }
+        self.lookup += 1;
+        for &i in at.into_iter().flatten() {
+            tally!(occupants, 1);
+            if self.seen[i] != self.lookup {
+                self.seen[i] = self.lookup;
+                out.push(i);
+            }
+        }
         Ok(())
     }
 
     /// [`Grid::near_into`], in a list of its own.
-    fn near(&self, b: [f32; 4], work: &mut Work) -> Result<Vec<usize>, TooComplex> {
+    fn near(&mut self, b: [f32; 4], work: &mut Work) -> Result<Vec<usize>, TooComplex> {
         let mut out = Vec::new();
         self.near_into(b, &mut out, work)?;
         Ok(out)
@@ -652,6 +722,22 @@ fn meets(a: [f32; 4], b: [f32; 4]) -> bool {
     a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
 }
 
+/// Whether `p` holds for any of `items`, each looked at a step of `work`, taken before it
+/// is (CP-05): those after the first that holds aren't looked at, or taken.
+fn any_of<T>(
+    items: &[T],
+    work: &mut Work,
+    mut p: impl FnMut(&T) -> bool,
+) -> Result<bool, TooComplex> {
+    for x in items {
+        work.take(1)?;
+        if p(x) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// A text line's box in user space, from its pieces.
 fn text_box(t: &TextData) -> [f32; 4] {
     mx::aabb(t.pieces.iter().flat_map(|p| p.corners))
@@ -710,7 +796,15 @@ impl Lite {
 /// overlaps it or sits centred under it within its ends (a fraction's denominator).
 /// `form_text` is the text inside forms the page draws, which counts as other text. Two
 /// bands of one kind over the same characters are one decoration (a double underline).
-/// The cells its grids touch are steps of the page's `work` (S1-07).
+/// The cells its grids touch are steps of the page's `work` (S1-07), and so is the rest of
+/// what can grow faster than the page (CP-05), each part taken before it is done: each
+/// line's way set against the ways before it, and each thin band's against the ways, up to
+/// the first that is the same ([`any_of`]); each box the grids give for a band; each
+/// character of a line a band is tried against; each line of a form's text looked at for a
+/// band; each decoration found before set against a band's; and each band already in the
+/// decoration a band joins. What isn't (a band's object found by halving, each line laid
+/// out once, the decorations put in order) grows no faster than n log n of the page's lines
+/// and bands.
 pub(crate) fn read(
     objs: &[Obj],
     painted: &[Painted],
@@ -718,6 +812,8 @@ pub(crate) fn read(
     form_text: &[TextData],
     work: &mut Work,
 ) -> Result<Vec<(usize, Decoration)>, TooComplex> {
+    #[cfg(test)]
+    let start = work.taken();
     if painted.is_empty() {
         return Ok(Vec::new());
     }
@@ -735,26 +831,37 @@ pub(crate) fn read(
     let mut ways: Vec<(f32, f32)> = Vec::new();
     for l in &lines {
         let d = l.frame.d;
-        if !ways.iter().any(|w| (w.0 * d.1 - w.1 * d.0).abs() < 1e-3) {
+        let known = any_of(&ways, work, |w| {
+            tally!(ways, 1);
+            (w.0 * d.1 - w.1 * d.0).abs() < 1e-3
+        })?;
+        if !known {
             ways.push(d);
         }
     }
-    let may_be = |st: &Straight| {
+    let may_be = |st: &Straight, work: &mut Work| -> Result<bool, TooComplex> {
         let len = (st.b.0 - st.a.0).hypot(st.b.1 - st.a.1);
         let along = ((st.b.0 - st.a.0) / len, (st.b.1 - st.a.1) / len);
-        let level = |w: &(f32, f32)| (w.0 * along.1 - w.1 * along.0).abs() < 0.02;
-        st.width <= 0.15 * biggest && len > 0.0 && ways.iter().any(level)
+        let level = |w: &(f32, f32)| {
+            tally!(levels, 1);
+            (w.0 * along.1 - w.1 * along.0).abs() < 0.02
+        };
+        Ok(st.width <= 0.15 * biggest && len > 0.0 && any_of(&ways, work, level)?)
     };
     // Each band that may be a line's, with its object's index (the objects are in the order
     // of their first operators).
-    let bands: Vec<(usize, &Painted)> = (painted.iter())
-        .filter(|p| p.colour.is_some() && may_be(&p.band))
-        .filter_map(|p| Some((objs.binary_search_by_key(&p.first, |o| o.first).ok()?, p)))
-        .collect();
+    let mut bands: Vec<(usize, &Painted)> = Vec::new();
+    for p in painted.iter().filter(|p| p.colour.is_some()) {
+        if may_be(&p.band, work)? {
+            if let Ok(i) = objs.binary_search_by_key(&p.first, |o| o.first) {
+                bands.push((i, p));
+            }
+        }
+    }
     if bands.is_empty() {
         return Ok(Vec::new());
     }
-    let by_line = Grid::new(
+    let mut by_line = Grid::new(
         (lines.iter().enumerate()).map(|(k, l)| (k, grown(objs[l.obj].bbox, 0.5 * l.size))),
         work,
     )?;
@@ -776,8 +883,13 @@ pub(crate) fn read(
             }
             let o = &objs[lines[k].obj];
             let l = laid[k].get_or_insert_with(|| Laid::of(o.text.as_ref()?, o.ctm));
-            if let Some(f) = l.as_ref().and_then(|l| fits(l, &st, colour)) {
-                if best.as_ref().is_none_or(|(_, b)| f.off < b.off) {
+            let Some(l) = l.as_ref() else { continue };
+            work.take(l.chars.len() as u64)?;
+            if let Some(f) = fits(l, &st, colour) {
+                // The closest, or of two as close the first line: whatever order the grid
+                // gave them in.
+                let closer = |(bk, b): &(usize, Fit)| f.off.total_cmp(&b.off).then(k.cmp(bk));
+                if best.as_ref().is_none_or(|b| closer(b).is_lt()) {
                     best = Some((k, f));
                 }
             }
@@ -793,7 +905,7 @@ pub(crate) fn read(
                 work,
             )?);
         }
-        let others = others.as_ref().expect("built");
+        let others = others.as_mut().expect("built");
         let straight_of =
             straight_of.get_or_insert_with(|| bands.iter().map(|(i, p)| (*i, p.band)).collect());
         let form_boxes = form_boxes.get_or_insert_with(|| {
@@ -841,15 +953,14 @@ pub(crate) fn read(
             continue;
         }
         // Other text: its box over the band, or centred under it within its ends.
+        work.take(form_boxes.len() as u64)?;
         let other_boxes = (by_line.near(grown(bb, 0.6 * s + d), work)?.into_iter())
             .filter(|&j| j != k)
             .map(|j| objs[lines[j].obj].bbox)
-            .chain(
-                form_boxes
-                    .iter()
-                    .copied()
-                    .filter(|b| meets(*b, grown(bb, 0.6 * s + d))),
-            );
+            .chain(form_boxes.iter().copied().filter(|b| {
+                tally!(forms, 1);
+                meets(*b, grown(bb, 0.6 * s + d))
+            }));
         let mid = (f.along.0 + f.along.1) / 2.0;
         let crowded = other_boxes.into_iter().any(|b| {
             let (along, up) = l.frame.span_of(b);
@@ -874,13 +985,18 @@ pub(crate) fn read(
             ink: ink.paint(ops),
             colour,
         };
-        match found
-            .iter_mut()
-            .find(|(at, dd)| at == line && dd.kind == f.kind && dd.chars == (f.a, f.b))
-        {
+        work.take(found.len() as u64)?;
+        match found.iter_mut().find(|(at, dd)| {
+            tally!(found, 1);
+            at == line && dd.kind == f.kind && dd.chars == (f.a, f.b)
+        }) {
+            // Highest first, a band as high as one already there after it.
             Some((_, dd)) => {
-                dd.look.bands.extend(look.bands);
-                dd.look.bands.sort_by(|x, y| y.0.total_cmp(&x.0));
+                work.take(dd.look.bands.len() as u64)?;
+                tally!(merged, dd.look.bands.len());
+                let band = look.bands[0];
+                let at = (dd.look.bands).partition_point(|x| x.0.total_cmp(&band.0).is_ge());
+                dd.look.bands.insert(at, band);
                 dd.paths.push(pi);
             }
             None => found.push((
@@ -895,6 +1011,7 @@ pub(crate) fn read(
         }
     }
     found.sort_by_key(|(line, d)| (*line, d.chars.0));
+    tally!(steps, work.taken() - start);
     Ok(found)
 }
 
@@ -1472,5 +1589,203 @@ mod tests {
             each_cell(64.0, of_cells(65, 64), &mut work, |_| ()),
             Ok(edge)
         );
+    }
+
+    /// [`any_of`] takes a step before each item it looks at and none past the first that
+    /// holds; short of steps, it looks at no item it hasn't taken one for.
+    #[test]
+    fn any_of_takes_a_step_for_each_item_looked_at() {
+        let mut work = Work::new("looking", 10);
+        let mut looked = 0;
+        let got = any_of(&[1, 2, 3, 4], &mut work, |&x| {
+            looked += 1;
+            x == 2
+        });
+        assert_eq!((got, looked, work.taken()), (Ok(true), 2, 2));
+        let mut work = Work::new("looking", 2);
+        let mut looked = 0;
+        let e = any_of(&[1, 2, 3], &mut work, |_| {
+            looked += 1;
+            false
+        });
+        assert_eq!((e.unwrap_err().limit, looked, work.taken()), (2, 2, 2));
+    }
+
+    const LINE: &str = "This has an underlined phrase in it.";
+
+    /// How many of each thing [`read`] meets on the pages below: one and more, to many.
+    const DENSITIES: [usize; 4] = [1, 4, 16, 64];
+
+    /// A US Letter page drawing `content`, with Helvetica as `/F1`, and form `/X1` drawing
+    /// `form` (in the page's lower half) when there is one.
+    fn page(content: &str, form: Option<&str>) -> Pdf {
+        use lopdf::{dictionary, Stream};
+        let mut p = Pdf::new();
+        p.insert_blank(0, 612.0, 792.0).unwrap();
+        let f1 = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let mut res = dictionary! { "Font" => dictionary! { "F1" => f1 } };
+        if let Some(form) = form {
+            let x1 = p.doc.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject", "Subtype" => "Form",
+                    "BBox" => vec![0.into(), 0.into(), 612.into(), 310.into()],
+                    "Resources" => dictionary! { "Font" => dictionary! { "F1" => f1 } },
+                },
+                form.as_bytes().to_vec(),
+            ));
+            res.set("XObject", dictionary! { "X1" => x1 });
+        }
+        let s = (p.doc).add_object(Stream::new(Dictionary::new(), content.as_bytes().to_vec()));
+        let page = p.page_ids()[0];
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", s);
+        d.set("Resources", res);
+        p
+    }
+
+    /// [`LINE`] in Helvetica `size` at (72, `y`).
+    fn line(size: f32, y: f32) -> String {
+        format!("BT /F1 {size} Tf 72 {y} Td ({LINE}) Tj ET\n")
+    }
+
+    /// Where [`LINE`] in Helvetica `size` starts and ends along the page, as core reads it.
+    fn ends(size: f32) -> (f32, f32) {
+        let objs = page(&line(size, 700.0), None).page_objects(0).unwrap();
+        let l = objs.iter().find(|o| o.kind == ObjectKind::Text).unwrap();
+        let x = l.baseline.unwrap().0;
+        (x + l.stops[0], x + l.stops[LINE.chars().count()])
+    }
+
+    /// The decorations [`read`] finds on `p`'s page, and what it did finding them.
+    fn tallied(p: &Pdf) -> (Vec<(usize, Decoration)>, Tally) {
+        TALLY.with(|t| t.set(Tally::default()));
+        let parsed = p.parse_page(0).unwrap();
+        (parsed.decorations, TALLY.with(|t| t.get()))
+    }
+
+    /// The steps [`read`] took cover all it did that can grow faster than the page (CP-05).
+    fn covered(t: Tally, what: &str) {
+        let did = t.ways + t.levels + t.occupants + t.chars + t.forms + t.found + t.merged;
+        assert!(
+            t.steps >= did,
+            "{what}: {} steps for {did} done, {t:?}",
+            t.steps
+        );
+    }
+
+    /// `d` filled bands under the whole of [`LINE`] at 12 at (72, 700), from 4.6 below its
+    /// baseline to 0.4 below, drawn lowest first.
+    fn bands_under(d: usize) -> String {
+        let (x0, x1) = ends(12.0);
+        let mut c = line(12.0, 700.0) + "0 0 0 rg\n";
+        for i in 0..d {
+            let v = match d {
+                1 => -1.4,
+                _ => -4.6 + 4.2 * i as f32 / (d - 1) as f32,
+            };
+            c += &format!("{x0} {} {} 0.06 re f\n", 700.0 + v - 0.03, x1 - x0);
+        }
+        c
+    }
+
+    /// Lines drawn over one another, a band under each: every band is tried against every
+    /// line, character by character, and those characters are steps. Each line's text is
+    /// over the others' bands, so none is an underline but the one line's alone.
+    #[test]
+    fn lines_drawn_over_one_another_take_steps_for_each_character_tried() {
+        let n = LINE.chars().count() as u64;
+        let (x0, x1) = ends(12.0);
+        let band = format!(
+            "q 1 0 0 1 {x0} 700 cm 0.7 w 0 0 0 RG 0 -1.4 m {} -1.4 l S Q\n",
+            x1 - x0
+        );
+        for d in DENSITIES {
+            let p = page(&(line(12.0, 700.0).repeat(d) + &band.repeat(d)), None);
+            let (found, t) = tallied(&p);
+            assert_eq!(found.len(), usize::from(d == 1), "{d} lines");
+            let d = d as u64;
+            assert_eq!(t.chars, d * d * n, "{d} lines: {t:?}");
+            covered(t, &format!("{d} lines"));
+        }
+    }
+
+    /// Bands drawn under one line, all over the same characters: each joining the
+    /// decoration is set among those already in it, and each is looked at for meeting the
+    /// others' ends, and those are steps. They are one underline of all the bands, the
+    /// highest first.
+    #[test]
+    fn bands_under_one_line_take_steps_for_each_band_they_join() {
+        for d in DENSITIES {
+            let (found, t) = tallied(&page(&bands_under(d), None));
+            assert_eq!(found.len(), 1, "{d} bands");
+            let bands = &found[0].1.look.bands;
+            assert_eq!(bands.len(), d, "{d} bands");
+            assert!(bands.windows(2).all(|w| w[0].0 > w[1].0), "{bands:?}");
+            let d = d as u64;
+            assert_eq!(t.merged, d * (d - 1) / 2, "{d} bands: {t:?}");
+            assert!(t.occupants >= d * d, "{d} bands: {t:?}");
+            covered(t, &format!("{d} bands"));
+        }
+    }
+
+    /// Lines running each its own way, and a band no line's: each way is set against the
+    /// ways before it, and those are steps.
+    #[test]
+    fn lines_running_many_ways_take_steps_for_each_way_compared() {
+        for d in DENSITIES {
+            let mut c = String::new();
+            for i in 0..d {
+                let (s, co) = (i as f32).to_radians().sin_cos();
+                c += &format!(
+                    "BT /F1 12 Tf {co} {s} {} {co} 72 700 Tm ({LINE}) Tj ET\n",
+                    -s
+                );
+            }
+            c += "0 0 0 rg 72 100 100 0.5 re f\n";
+            let (found, t) = tallied(&page(&c, None));
+            assert!(found.is_empty(), "{d} ways");
+            let d = d as u64;
+            assert_eq!(t.ways, d * (d - 1) / 2, "{d} ways: {t:?}");
+            covered(t, &format!("{d} ways"));
+        }
+    }
+
+    /// Bands under one line, and a form's lines far from them: each form line is looked at
+    /// for each band, and those are steps. The bands are one underline, as without the form.
+    #[test]
+    fn a_form_s_lines_take_steps_for_each_band_looked_at() {
+        for d in DENSITIES {
+            let form: String = (0..d).map(|i| line(4.0, 300.0 - 4.0 * i as f32)).collect();
+            let c = bands_under(d) + "q /X1 Do Q\n";
+            let (found, t) = tallied(&page(&c, Some(&form)));
+            assert_eq!(found.len(), 1, "{d} form lines");
+            assert_eq!(found[0].1.look.bands.len(), d, "{d} form lines");
+            let d = d as u64;
+            assert_eq!(t.forms, d * d, "{d} form lines: {t:?}");
+            covered(t, &format!("{d} form lines"));
+        }
+    }
+
+    /// Lines one under another, each underlined: each underline is set against those found
+    /// before it, and those are steps. Each line has its own.
+    #[test]
+    fn underlined_lines_take_steps_for_each_underline_found_before() {
+        let (x0, x1) = ends(6.0);
+        for d in DENSITIES {
+            let mut c = String::from("0 0 0 rg\n");
+            for i in 0..d {
+                let y = 776.0 - 12.0 * i as f32;
+                c += &line(6.0, y);
+                c += &format!("{x0} {} {} 0.35 re f\n", y - 0.875, x1 - x0);
+            }
+            let (found, t) = tallied(&page(&c, None));
+            assert_eq!(found.len(), d, "{d} lines");
+            let d = d as u64;
+            assert_eq!(t.found, d * (d - 1) / 2, "{d} lines: {t:?}");
+            covered(t, &format!("{d} lines"));
+        }
     }
 }
