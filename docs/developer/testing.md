@@ -29,7 +29,8 @@ Unix-only parts have hidden Windows warnings before (core's `print.rs` helper an
 
 The `lint` job's repository checks come first, each after its own `--self-test` on the fixtures in `tools/tests/`:
 `python3 -I tools/check-scratch.py`, an accidental-capture guard (no tracked Rust file reading from a `target`
-folder through `include!`, `include_str!`, `include_bytes!` or `#[path]`, over any number of lines; no tracked
+folder through `include!`, `include_str!` or `include_bytes!`, called with `()`, `[]` or `{}`, or through
+`#[path]`, with a plain or raw string, over any number of lines; no tracked
 `audit_*` file; it catches mistakes such as d157ec3's, it is not a security boundary), and `python3 -I
 tools/check-doc-links.py`, the link check (every tracked Markdown file's relative links and images, and anchors
 into Markdown files). The latter is the only link checker the docs name.

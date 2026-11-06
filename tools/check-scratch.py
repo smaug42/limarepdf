@@ -3,10 +3,10 @@
 from a build folder, or when an audit's scratch file is tracked.
 
 Flags, in every tracked `*.rs` file (comments ignored):
-- an `include!`, `include_str!` or `include_bytes!` whose argument, over any number of lines,
-  names a `target` folder (as `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/x.rs"))`
-  did in d157ec3);
-- a `#[path = "..."]` naming a `target` folder;
+- an `include!`, `include_str!` or `include_bytes!`, called with `()`, `[]` or `{}`, whose argument,
+  over any number of lines, names a `target` folder (as
+  `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/x.rs"))` did in d157ec3);
+- a `#[path = "..."]` (or a raw string, `r"..."`, `r#"..."#`) naming a `target` folder;
 and every tracked file whose name starts with `audit_`.
 
 Includes from `env!("OUT_DIR")` don't name a `target` folder and pass. This catches mistakes,
@@ -20,8 +20,12 @@ import re
 import subprocess
 import sys
 
-INCLUDE = re.compile(r"\binclude(?:_str|_bytes)?\s*!\s*\(")
-PATH_ATTR = re.compile(r"#\s*!?\s*\[\s*path\s*=\s*\"((?:[^\"\\]|\\.)*)\"")
+INCLUDE = re.compile(r"\binclude(?:_str|_bytes)?\s*!\s*[(\[{]")
+PATH_ATTR = re.compile(
+    r"#\s*!?\s*\[\s*path\s*=\s*"
+    r"(?:\"(?P<plain>(?:[^\"\\]|\\.)*)\"|r(?P<hashes>#*)\"(?P<raw>.*?)\"(?P=hashes))",
+    re.S,
+)
 TARGET = re.compile(r"(?:^|[/\\\"])target(?:[/\\]|\"|$)")
 
 
@@ -99,10 +103,11 @@ def findings_in(name, text):
     for m in INCLUDE.finditer(bare):
         if TARGET.search(call_args(code, m.end() - 1)):
             line = code.count("\n", 0, m.start()) + 1
-            found.append(f"{name}:{line}: `{m.group(0).rstrip('(').strip()}` reads from a target folder")
+            found.append(f"{name}:{line}: `{m.group(0).rstrip('([{').strip()}` reads from a target folder")
     for m in re.finditer(r"#\s*!?\s*\[\s*path\s*=", bare):
         attr = PATH_ATTR.match(code, m.start())
-        if attr and TARGET.search(attr.group(1)):
+        path = attr and (attr.group("plain") if attr.group("plain") is not None else attr.group("raw"))
+        if path and TARGET.search(path):
             line = code.count("\n", 0, m.start()) + 1
             found.append(f"{name}:{line}: `#[path]` points into a target folder")
     return found

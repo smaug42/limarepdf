@@ -555,7 +555,8 @@ fn decode_tiff(bytes: &[u8], mut work: Option<&mut Work>) -> Result<Vec<Raster>>
 }
 
 /// The bytes the TIFF page `d` is at takes decoded, read from its header; refused for a
-/// colour type [`tiff_page`] can't take, before it is decoded.
+/// colour type [`tiff_page`] can't take, or a size past what a `u64` holds, before it is
+/// decoded.
 fn tiff_size(d: &mut Decoder<Cursor<&[u8]>>) -> Result<u64> {
     let (w, h) = d.dimensions()?;
     let bits = match d.colortype()? {
@@ -566,7 +567,11 @@ fn tiff_size(d: &mut Decoder<Cursor<&[u8]>>) -> Result<u64> {
         ColorType::CMYK(8) => 32,
         ct => bail!("colour type {ct:?} is not supported"),
     };
-    Ok((u64::from(w) * u64::from(bits)).div_ceil(8) * u64::from(h))
+    // A row's bytes fit (under 2³² × 64 bits); the rows may not.
+    (u64::from(w) * u64::from(bits))
+        .div_ceil(8)
+        .checked_mul(u64::from(h))
+        .ok_or_else(|| anyhow!("the picture is too large ({w} × {h} pixels)"))
 }
 
 fn tiff_page(d: &mut Decoder<Cursor<&[u8]>>) -> Result<Raster> {
@@ -875,5 +880,57 @@ pub(crate) mod tests {
             assert_eq!(doc.page_count(), 50);
         });
         assert_eq!(n, 50, "importing");
+    }
+
+    /// A TIFF whose header alone says it is `u32::MAX` by `u32::MAX` RGB pixels in one
+    /// strip, with one byte of data.
+    fn tiff_claiming_the_most() -> Vec<u8> {
+        let mut t = b"II*\0".to_vec();
+        t.extend(8u32.to_le_bytes());
+        // Tag, type (3 SHORT, 4 LONG), count, value or offset; in tag order.
+        let entries: [(u16, u16, u32, u32); 10] = [
+            (256, 4, 1, u32::MAX),
+            (257, 4, 1, u32::MAX),
+            (258, 3, 3, 134),
+            (259, 3, 1, 1),
+            (262, 3, 1, 2),
+            (273, 4, 1, 140),
+            (277, 3, 1, 3),
+            (278, 4, 1, u32::MAX),
+            (279, 4, 1, 1),
+            (284, 3, 1, 1),
+        ];
+        t.extend((entries.len() as u16).to_le_bytes());
+        for (tag, ty, count, value) in entries {
+            t.extend(tag.to_le_bytes());
+            t.extend(ty.to_le_bytes());
+            t.extend(count.to_le_bytes());
+            t.extend(value.to_le_bytes());
+        }
+        t.extend(0u32.to_le_bytes());
+        assert_eq!(t.len(), 134);
+        t.extend([8u16, 8, 8].iter().flat_map(|b| b.to_le_bytes()));
+        t.push(0);
+        t
+    }
+
+    /// A TIFF whose header gives a size past what a `u64` holds is refused from its header,
+    /// with nothing decoded, wherever a TIFF is read (CP-04): its size overflowed first.
+    #[test]
+    fn a_tiff_too_large_to_count_is_refused_from_its_header() {
+        let tiff = tiff_claiming_the_most();
+        let too_large = |r: Result<()>| {
+            let e = format!("{:#}", r.unwrap_err());
+            assert!(e.contains("too large"), "{e}");
+        };
+        let n = pages_decoded(|| {
+            too_large(picture_preview(&tiff, 100).map(drop));
+            too_large(crate::sign::picture_view(&tiff, 100).map(drop));
+            too_large(Pdf::new().add_upright_image(&tiff).map(drop));
+            too_large(
+                Pdf::from_images(std::slice::from_ref(&tiff), &ImageImport::default()).map(drop),
+            );
+        });
+        assert_eq!(n, 0);
     }
 }
