@@ -1,0 +1,5 @@
+// A path attribute may be a raw string, with or without hashes (CP-06).
+#[path = r"../../target/x.rs"]
+mod x;
+#[path = r#"..\..\target\y.rs"#]
+mod y;

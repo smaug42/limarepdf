@@ -59,7 +59,8 @@
 - A TIFF with many pages no longer has every page read to show its first: the preview, a signature picture and a
   placed picture read the first page alone. Pictures added together (Insert images…, a PDF from images) are
   refused, with nothing added, when they would take more than 2 GB once opened, rather than using up memory; a
-  TIFF page of a kind LimarePDF can't read is refused before it is read.
+  TIFF page of a kind LimarePDF can't read, or whose header claims a size too large to count, is refused before
+  it is read.
 - A document whose metadata is very large (more than 4 MB unpacked) is no longer unpacked whole when saving, to
   see whether it claims PDF/A-1; it is saved in the classic layout instead, readable by everything.
 - Add a dictionary refuses an extension, or a choice of files, holding more than 256 dictionary files or 128 MB,

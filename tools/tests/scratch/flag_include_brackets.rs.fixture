@@ -1,0 +1,2 @@
+// A macro may be called with brackets (CP-06).
+const DATA: &[u8] = include_bytes!["../../target/data.bin"];

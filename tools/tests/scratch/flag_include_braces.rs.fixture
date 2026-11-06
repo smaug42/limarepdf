@@ -1,0 +1,2 @@
+// A macro may be called with braces (CP-06).
+const NOTES: &str = include_str! { "../../target/notes.txt" };

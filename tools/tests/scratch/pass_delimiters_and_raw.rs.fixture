@@ -1,0 +1,7 @@
+// The same forms, naming no target folder (CP-06).
+const NOTES: &str = include_str! { "../../docs/notes.txt" };
+const DATA: &[u8] = include_bytes!["../../tests/data/blank.pdf"];
+#[path = r"../../src/x.rs"]
+mod x;
+#[path = r#"targets/y.rs"#]
+mod y;
