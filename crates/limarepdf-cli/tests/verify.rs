@@ -186,6 +186,47 @@ fn an_untrusted_timestamp_is_neither_used_nor_trusted() {
     assert!(text.contains(" (trusted)"), "{text}");
 }
 
+/// The digests each signature and its embedded timestamp rely on, in the text and the JSON
+/// (the sample uses SHA-256 throughout).
+#[test]
+fn verify_names_the_digests() {
+    let (dir, _) = setup("digests");
+    let (code, text, err) = cli(&dir, "verify input.pdf");
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        text.matches(
+            "\n   Algorithm:   RSA 4096-bit, RSA PKCS#1 v1.5, SHA-256, adbe.pkcs7.detached\n"
+        )
+        .count(),
+        2,
+        "{text}"
+    );
+    // Under each Timestamp row.
+    assert_eq!(
+        text.matches("\n                digest: SHA-256\n").count(),
+        2,
+        "{text}"
+    );
+    let (code, json, err) = cli(&dir, "verify input.pdf --json");
+    assert_eq!(code, Some(0), "{err}");
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let sigs = v["signatures"].as_array().unwrap();
+    assert_eq!(sigs.len(), 2, "{json}");
+    for s in sigs {
+        assert_eq!(
+            (&s["digest"], &s["signature_digest"]),
+            (&"SHA-256".into(), &"SHA-256".into()),
+            "{s}"
+        );
+        let ts = &s["timestamp"];
+        assert_eq!(
+            (&ts["digest"], &ts["signature_digest"]),
+            (&"SHA-256".into(), &"SHA-256".into()),
+            "{ts}"
+        );
+    }
+}
+
 /// `limarepdf-cli ARGS --trust-file trust.txt`, run in `dir` (`args` split at spaces): the
 /// exit code, what it printed and its errors.
 fn cli(dir: &Path, args: &str) -> (Option<i32>, String, String) {

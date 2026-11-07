@@ -252,6 +252,12 @@ authority you don't trust), `signer_clock` or `signature_dictionary` (the signer
 data or in the signature's `/M` entry). An embedded timestamp is under `timestamp`, with its own `trust`; its time
 is used only when its authority is trusted. See [Signing times](signatures-in-depth.md#signing-times).
 
+A signature's `digest` is the digest of the document, and `signature_digest` the one its signature value is made
+with. They differ only where the document is digested apart from the signature: `adbe.pkcs7.sha1` signatures, and
+document timestamps whose authority signed with another digest than the one it stamped. The text names both on
+the Algorithm line then (`SHA-1 for the document, SHA-256 for the signature`). An embedded timestamp has its own
+`digest` (of the signature it stamps) and `signature_digest`, shown on a `digest:` line under the Timestamp line.
+
 The trust list is `trust.txt` in LimarePDF's settings folder (`~/.config/limarepdf/` on Linux), shared with the app; every
 `limarepdf-cli trust` command takes `--trust-file FILE` to work on another one. Trust settings affect LimarePDF only. See
 [Trusting signers in depth](signatures-in-depth.md#trusting-signers-in-detail).

@@ -34,10 +34,10 @@ Signature fields nobody has signed yet are listed below the signatures; click on
 fields signing it would lock. Clicking a signed signature field on the page, with the read tool, opens its details.
 
 **Details** shows everything `limarepdf-cli verify` does (below): the result, trust, who signed and who issued their
-certificate, the signing time and where it comes from, any timestamp, the reason, location and contact the signer
-gave (marked as their own words), the algorithm, locked fields, the certificate's serial number, validity and
-SHA-256 fingerprint, how much of the file the signature covers, every change after signing, warnings, and the
-certificates the signature carries. Its buttons trust the signer or an authority (see
+certificate, the signing time and where it comes from, any timestamp and its digest, the reason, location and contact
+the signer gave (marked as their own words), the algorithm and digest, locked fields, the certificate's serial
+number, validity and SHA-256 fingerprint, how much of the file the signature covers, every change after signing,
+warnings, and the certificates the signature carries. Its buttons trust the signer or an authority (see
 [Trusting signers](signatures.md#trusting-signers)), open the signed version, and go to the field.
 
 The app checks the **file**: after you change the document, the Digital signatures view says that your unsaved changes
@@ -467,13 +467,22 @@ document as you see it may not be what was signed: look at the signed version ([
 and P-521 curves), a missing or unreadable certificate, more than one signer in one signature (the PDF rules allow
 exactly one), limits on an RSA-PSS key that it can't read (including a trailer field other than 1, the only one
 RFC 4055 defines), an RSA-PSS signature that leaves out its parameters (the standard requires them; the signature
-or one of its certificates says *leaves out its RSA-PSS parameters*), or data it can't read. Don't rely on such a signature without checking it elsewhere.
+or one of its certificates says *leaves out its RSA-PSS parameters*), a signature that *names SHA-256 for what it
+signs but is made with SHA-1* (or any other two digests), a mix the standards don't allow (RFC 5652, RFC 8933,
+RFC 5753) in a signature or a timestamp, or data it can't read. Don't rely on such a signature without checking it
+elsewhere.
 
 ### Warnings
 
 A warning doesn't make a valid signature invalid, but is worth knowing:
 
-- *uses SHA-1*: SHA-1 is no longer safe against forgery; a signature relying on it may have been forged.
+- *uses SHA-1*: SHA-1 is no longer safe against forgery; a signature relying on it may have been forged. It counts
+  wherever the signature relies on SHA-1: to digest the document, to make the signature value, or in a document
+  timestamp. When the two differ, the algorithm names both, as in *SHA-1 for the document, SHA-256 for the signature*
+  (`adbe.pkcs7.sha1` signatures digest the document with SHA-1 whatever the signer uses).
+- *the embedded timestamp uses SHA-1*: the timestamp's authority signed with SHA-1, or the timestamp digests the
+  signature it stamps with SHA-1, so its time may have been forged. The timestamp's digest is shown under it, both
+  when they differ (*SHA-256 for the signature it stamps, SHA-1 for its own signature*).
 - *uses a short RSA key*: under 2048 bits, which is no longer considered safe.
 - *the signer's certificate wasn't valid at the signing time*: expired, or not yet valid, according to the signing
   time shown.

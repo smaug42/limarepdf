@@ -151,6 +151,32 @@ impl DigitalSignature {
         }
         out
     }
+
+    /// The digests for showing: one name when the document and the signature use the same,
+    /// else both, "SHA-1 for the document, SHA-256 for the signature".
+    pub fn digest_text(&self) -> Option<String> {
+        match (self.digest, self.signature_digest) {
+            (Some(d), Some(s)) if d != s => {
+                Some(format!("{d} for the document, {s} for the signature"))
+            }
+            (d, s) => d.or(s).map(str::to_string),
+        }
+    }
+}
+
+impl Timestamp {
+    /// The digests for showing: one name when the two are the same, else both, "SHA-1 for
+    /// the signature it stamps, SHA-256 for its own signature".
+    pub fn digest_text(&self) -> String {
+        if self.digest == self.signature_digest {
+            self.digest.to_string()
+        } else {
+            format!(
+                "{} for the signature it stamps, {} for its own signature",
+                self.digest, self.signature_digest
+            )
+        }
+    }
 }
 
 /// Puts [`SigWarning::CertificateNotValidAtSigning`] in its place among `s`'s warnings when
@@ -232,8 +258,12 @@ pub struct DigitalSignature {
     pub signer_time: Option<SigningTime>,
     /// A timestamp from a timestamp authority embedded in the signature, if valid.
     pub timestamp: Option<Timestamp>,
-    /// The digest algorithm, such as "SHA-256".
+    /// The digest algorithm that digests the document, such as "SHA-256".
     pub digest: Option<&'static str>,
+    /// The digest the signature value is made with: the same as [`digest`](Self::digest),
+    /// unless the document is digested apart from the signature (`adbe.pkcs7.sha1`, or a
+    /// document timestamp's imprint).
+    pub signature_digest: Option<&'static str>,
     /// The signature algorithm, such as "RSA PKCS#1 v1.5".
     pub algorithm: Option<&'static str>,
     /// Fields this signature locked when it was signed (`FieldMDP`).
@@ -302,6 +332,10 @@ pub enum TimeSource {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Timestamp {
     pub time: DateTime<FixedOffset>,
+    /// The digest of what it stamps (its imprint's), such as "SHA-256".
+    pub digest: &'static str,
+    /// The digest the timestamp's own signature is made with.
+    pub signature_digest: &'static str,
     pub authority: CertInfo,
     /// Every certificate the timestamp carries, the authority's among them.
     pub certificates: Vec<CertInfo>,
@@ -363,6 +397,8 @@ pub struct EmptySignatureField {
 pub enum SigWarning {
     /// The signature relies on a digest that is no longer safe against forgery (SHA-1).
     WeakDigest(&'static str),
+    /// The embedded timestamp relies on a digest that is no longer safe against forgery.
+    WeakTimestampDigest(&'static str),
     /// An RSA key shorter than 2048 bits.
     ShortKey(usize),
     /// The signer's certificate had expired or wasn't valid yet at the signing time.
@@ -393,6 +429,10 @@ impl fmt::Display for SigWarning {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::WeakDigest(d) => write!(f, "uses {d}, which is no longer safe against forgery"),
+            Self::WeakTimestampDigest(d) => write!(
+                f,
+                "the embedded timestamp uses {d}, which is no longer safe against forgery"
+            ),
             Self::ShortKey(b) => write!(
                 f,
                 "uses a short {b}-bit RSA key; 2048 bits is the minimum considered safe"
@@ -645,6 +685,7 @@ fn check_one(
         signer_time: None,
         timestamp: None,
         digest: None,
+        signature_digest: None,
         algorithm: None,
         locks: None,
         warnings: Vec::new(),
@@ -833,13 +874,13 @@ fn check_into(
                 ranges.to_vec()
             };
             let signer = cms_check::check_signer(&sd, &signed_part, oid::DATA)?;
-            s.digest = Some(signer.digest.name());
+            // `adbe.pkcs7.sha1` digests the document with SHA-1, whatever the signer uses.
+            s.digest = Some(match s.sub_filter.as_str() {
+                "adbe.pkcs7.sha1" => DigestAlg::Sha1.name(),
+                _ => signer.digest.name(),
+            });
+            s.signature_digest = Some(signer.digest.name());
             s.algorithm = Some(signer.scheme);
-            if signer.digest == DigestAlg::Sha1
-                && !s.warnings.contains(&SigWarning::WeakDigest("SHA-1"))
-            {
-                s.warnings.push(SigWarning::WeakDigest("SHA-1"));
-            }
             claimed = signer.claimed_time;
             stamp_token = signer.timestamp_token.map(|t| (t, signer.value));
             (sd.certs[signer.cert].clone(), sd.certs)
@@ -859,14 +900,14 @@ fn check_into(
             };
             let digest = cms_check::check_rsa_sha1(value, &cert, &ranges)?;
             s.digest = Some(digest.name());
+            s.signature_digest = Some(digest.name());
             s.algorithm = Some("RSA PKCS#1 v1.5");
-            if digest == DigestAlg::Sha1 {
-                s.warnings.push(SigWarning::WeakDigest("SHA-1"));
-            }
             (cert, certs)
         }
         "ETSI.RFC3161" => {
             let stamp = cms_check::check_timestamp(value, &ranges)?;
+            s.digest = Some(stamp.digest.name());
+            s.signature_digest = Some(stamp.sig_digest.name());
             s.algorithm = Some("RFC 3161 timestamp");
             if let Some(why) = Purpose::Timestamping.leaf_use_problem(&stamp.authority) {
                 s.warnings.push(SigWarning::NotATimestampAuthority(why));
@@ -887,6 +928,11 @@ fn check_into(
             ))
         }
     };
+    // Once, whichever digest the signature relies on is SHA-1.
+    let weak = SigWarning::WeakDigest("SHA-1");
+    if [s.digest, s.signature_digest].contains(&Some("SHA-1")) && !s.warnings.contains(&weak) {
+        s.warnings.push(weak);
+    }
 
     // An embedded timestamp covers the signature value.
     if let Some((token, sig_value)) = stamp_token {
@@ -906,8 +952,13 @@ fn check_into(
                          the minimum considered safe"
                     )));
                 }
+                if [st.digest, st.sig_digest].contains(&DigestAlg::Sha1) {
+                    s.warnings.push(SigWarning::WeakTimestampDigest("SHA-1"));
+                }
                 s.timestamp = Some(Timestamp {
                     time: st.time,
+                    digest: st.digest.name(),
+                    signature_digest: st.sig_digest.name(),
                     authority: st.authority.info(),
                     certificates: st.certs.iter().map(Cert::info).collect(),
                     trust: None,

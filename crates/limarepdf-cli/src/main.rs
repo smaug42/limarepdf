@@ -1994,6 +1994,7 @@ fn print_verify(input: &Path, rep: &SignatureReport) -> Result<()> {
                     }
                 },
             );
+            row!("", format!("digest: {}", ts.digest_text()));
         }
         for (label, v) in [
             ("Name:", &s.name),
@@ -2010,7 +2011,7 @@ fn print_verify(input: &Path, rep: &SignatureReport) -> Result<()> {
             alg.push(c.key.clone());
         }
         alg.extend(s.algorithm.map(String::from));
-        alg.extend(s.digest.map(String::from));
+        alg.extend(s.digest_text());
         if !s.sub_filter.is_empty() {
             alg.push(clean(&s.sub_filter));
         }
@@ -2926,8 +2927,11 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
                     "time": t.time.to_rfc3339(),
                     "authority": cert(&t.authority),
                     "trust": t.trust.as_ref().map(|t| trust_json(t, &cert)),
+                    "digest": t.digest,
+                    "signature_digest": t.signature_digest,
                 })),
                 "digest": s.digest,
+                "signature_digest": s.signature_digest,
                 "algorithm": s.algorithm,
                 "locks": s.locks.as_ref().map(lock),
                 "warnings": s.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>(),

@@ -917,6 +917,8 @@ fn single<'a>(attrs: &[(Oid, Vec<Tlv<'a>>)], o: Oid, what: &str) -> Check<Option
 pub(crate) struct Signed {
     /// Index of the signer's certificate in [`SignedData::certs`].
     pub cert: usize,
+    /// The digest relied on: the signature value is made with it, and so is the digest of
+    /// the message the signed attributes hold.
     pub digest: DigestAlg,
     /// Such as "RSA PKCS#1 v1.5".
     pub scheme: &'static str,
@@ -951,6 +953,18 @@ pub(crate) fn check_signer(sd: &SignedData, message: &[&[u8]], content_type: Oid
     let key = PublicKey::from_cert(cert)?;
     let digest = DigestAlg::from_oid(si.digest.oid)?;
     let (scheme, sig_digest) = scheme(&si.sig_alg, digest)?;
+    // The signature is made over a digest made with the one named (RFC 5652 sections 5.4 and
+    // 5.5), so the one it is made with must agree: the signed attributes hold that digest
+    // (RFC 8933 section 3), and ECDSA says so outright (RFC 5753 section 2.1.1). Without
+    // attributes too, as pdfsig and OpenSSL hold (PB-117).
+    if sig_digest != digest {
+        return cant(format!(
+            "the signature names {} for what it signs but is made with {}, a mix the \
+             standards don't allow",
+            digest.name(),
+            sig_digest.name()
+        ));
+    }
     key.allows(scheme, sig_digest, "signer's", "this signature")?;
     let mut claimed_time = None;
     match &si.signed_attrs {
@@ -1068,6 +1082,10 @@ fn check_cert_ref(v: Tlv, cert: &Cert, v2: bool) -> Check<()> {
 /// A checked timestamp (RFC 3161).
 pub(crate) struct Stamp {
     pub time: DateTime<FixedOffset>,
+    /// The digest of the data stamped (the imprint's).
+    pub digest: DigestAlg,
+    /// The digest the authority's signature is made with.
+    pub sig_digest: DigestAlg,
     pub authority: Cert,
     /// Every certificate the timestamp carries, the authority's among them.
     pub certs: Vec<Cert>,
@@ -1101,11 +1119,14 @@ pub(crate) fn check_timestamp(token: &[u8], data: &[&[u8]]) -> Check<Stamp> {
         Ok((AlgId::parse(*alg)?.oid, hash.octets()?, time))
     })()
     .map_err(malformed)?;
-    if imprint != DigestAlg::from_oid(alg)?.hash(data) {
+    let digest = DigestAlg::from_oid(alg)?;
+    if imprint != digest.hash(data) {
         return broken("the timestamp is for different data");
     }
     Ok(Stamp {
         time,
+        digest,
+        sig_digest: signed.digest,
         authority: sd.certs[signed.cert].clone(),
         certs: sd.certs,
     })
