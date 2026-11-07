@@ -95,8 +95,8 @@ mod viewprefs;
 
 pub use annots::{Annot, AnnotKind, Flattened, ShapeLook, TextStyle, MAX_ANNOTS};
 #[cfg(any(test, feature = "test-seams"))]
-pub use atomic::sync_seam;
-pub use atomic::NotConfirmed;
+pub use atomic::{commit_seam, sync_seam};
+pub use atomic::{ChangedOnDisk, NotConfirmed};
 pub use blank::BLANK_TOLERANCE;
 #[cfg(any(test, feature = "test-seams"))]
 pub use budget::budget_seam;
@@ -108,7 +108,7 @@ pub use cms_check::CertInfo;
 pub use compact::MAX_XMP;
 pub use decorate::{decoration_lines, DecoKind, Decorated, Decoration, FontLines, Look};
 pub use display::{display_line, display_text, local_date, local_time, quoted_list, short_list};
-pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
+pub use doc::{existing, part_file_name, write_file, write_file_expecting, Info, Pdf, SplitBy};
 pub use edit::{KeptPiece, PartFont, PathStyle, Shape, TextEdit, TextPart};
 pub use embed::{
     bundled_face, emoji_sequence, liberation, refusal, unwritten_script, writable, LIBERATION,
@@ -210,7 +210,7 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
             .with_context(|| format!("making the folder {}", dir.display()))?;
     }
     // A context, so that a `NotConfirmed` can still be told apart.
-    atomic::replace(path, atomic::Access::Private, |w| {
+    atomic::replace(path, atomic::Access::Private, None, |w| {
         use std::io::Write;
         Ok(w.write_all(bytes)?)
     })

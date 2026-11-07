@@ -478,6 +478,25 @@ fn replace_all_says_what_it_leaves_and_why() {
     assert!(text.ends_with(why), "{text}");
 }
 
+/// PB-87: the tab closed while Replace all prepared its replacements, a message says
+/// they were discarded, naming the document.
+#[test]
+fn replace_all_for_a_closed_tab_says_it_was_discarded() {
+    let (ctx, mut app) = new_app();
+    let ty = Typist::new(&ctx);
+    replacing(&mut app, &ty, &["the walrus"], "walrus", "otter");
+    let name = app.tabs[0].name();
+    let (go, gate) = channel();
+    app.job_gate = Some(gate);
+    app.act(&ctx, Act::ReplaceAll);
+    assert!(app.busy, "not preparing");
+    app.close_tab(0);
+    go.send(()).unwrap();
+    prepared(&mut app, &ctx);
+    let said = format!("\"{name}\" was closed while this ran, so its result was discarded.");
+    assert_eq!(message(&app), ("Replace all", said.as_str()));
+}
+
 /// Alt+A with the keyboard in Search results is Replace all, as in Word's Find and Replace
 /// window; on a Mac, as there, it isn't. Replace all waits for the search to finish.
 #[test]

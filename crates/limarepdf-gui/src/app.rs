@@ -200,17 +200,21 @@ enum Loaded {
     Papers(u64, String, Result<print::PaperList, String>),
     /// Background job number `job`, on a copy of tab `tab` at `revision`, finished. On
     /// success: the changed document, whether anything changed, and a summary for the user.
+    /// `name`: the document's, for the message when its tab was closed meanwhile (PB-87).
     Job {
         job: u64,
         tab: u64,
         revision: u64,
         title: &'static str,
+        name: String,
         result: Result<(Pdf, bool, String), String>,
     },
-    /// Replace all's preparation on a copy of tab `tab` at `revision` finished: `query`'s
-    /// matches replaced with `with` (NEW-04b).
+    /// Replace all's preparation (job number `job`) on a copy of tab `tab` at `revision`
+    /// finished: `query`'s matches replaced with `with` (NEW-04b).
     ReplaceAll {
+        job: u64,
         tab: u64,
+        name: String,
         revision: u64,
         query: String,
         with: String,
@@ -531,6 +535,9 @@ enum Dialog {
     ConfirmReload(Asked),
     /// Replace every match as reviewed, or those that fit (NEW-04b)?
     ConfirmReplaceAll(Box<ReplacingAll>),
+    /// Quit, stopping the jobs that only change a document (PB-88)? The question, and
+    /// whether the unsaved documents were already asked about (then Quit now quits).
+    ConfirmStopTasks(String, bool),
 }
 
 impl Dialog {
@@ -604,9 +611,12 @@ impl Dialog {
         )
     }
 
-    /// Whether it is the question quitting asks.
+    /// Whether it is a question quitting asks.
     fn quitting(&self) -> bool {
-        matches!(self, Dialog::ConfirmQuit | Dialog::ConfirmClose(_, true))
+        matches!(
+            self,
+            Dialog::ConfirmQuit | Dialog::ConfirmClose(_, true) | Dialog::ConfirmStopTasks(..)
+        )
     }
 }
 
@@ -725,6 +735,8 @@ impl Excerpt {
 
 /// Title of the OCR background job, also used to recognise its result.
 const OCR_JOB: &str = "Recognise text";
+/// Title of the printing background job: quitting waits for it (PB-88).
+const PRINT_JOB: &str = "Print";
 /// Title of Reduce file size's background job (ENH-19).
 const REDUCE_JOB: &str = "Reduce file size";
 
@@ -733,6 +745,16 @@ const SPLIT_JOB: &str = "Split into files";
 
 /// Title of Replace all's review and messages (NEW-04b).
 const REPLACE_ALL: &str = "Replace all";
+
+/// Ends what a job wrote, printed or failed with when its tab was closed meanwhile (PB-87).
+fn closed_meanwhile(name: &str) -> String {
+    format!("(This was for \"{name}\", which was closed while it ran.)")
+}
+
+/// A job's changed document, made for a tab closed meanwhile (PB-87).
+fn discarded(name: &str) -> String {
+    format!("\"{name}\" was closed while this ran, so its result was discarded.")
+}
 
 /// Width of the inspector panel, and of its rail when collapsed (build plan 2.2's
 /// workspace: 205 points).
@@ -926,11 +948,29 @@ pub struct App {
     after_saves: Vec<AfterSave>,
     /// The files saves, jobs and signing are writing (S1-03).
     destinations: Destinations,
-    /// The number of the last background job started.
+    /// The number of the last background job started, and those running (PB-88).
     jobs_made: u64,
+    jobs: Vec<Job>,
     /// Tests: the next save's thread waits for this before writing.
     #[cfg(test)]
     save_gate: Option<Receiver<()>>,
+    /// Tests: the next background job's thread waits for this before its work.
+    #[cfg(test)]
+    job_gate: Option<Receiver<()>>,
+}
+
+/// A background job running on its thread: a [`Loaded::Job`] or Replace all's preparation.
+struct Job {
+    id: u64,
+    title: &'static str,
+    /// The document's name, for the question quitting asks while it runs.
+    name: String,
+    /// It writes files or prints: quitting waits for it to end. Any other job only changes
+    /// the document, and quitting asks before stopping it.
+    writes: bool,
+    /// Quit now was chosen while it ran: quitting, asked for again, asks again.
+    stop_ok: bool,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl App {
@@ -1040,8 +1080,11 @@ impl App {
             after_saves: Vec::new(),
             destinations: Destinations::default(),
             jobs_made: 0,
+            jobs: Vec::new(),
             #[cfg(test)]
             save_gate: None,
+            #[cfg(test)]
+            job_gate: None,
         }
     }
 
@@ -1625,8 +1668,19 @@ impl App {
         let Some(mut w) = self.sign_window.take() else {
             return;
         };
+        let signing = w.busy();
         match w.ui(ctx) {
-            SignOut::Open => self.sign_window = Some(w),
+            SignOut::Open => {
+                // Signing failed, and says why in the window: quitting, waiting for it,
+                // stops there, as after a failed save (PB-88).
+                if signing && !w.busy() {
+                    self.after_saves.retain(|a| *a != AfterSave::Quit);
+                    if matches!(self.closing, Some(Closing::Quit { .. })) {
+                        self.closing = None;
+                    }
+                }
+                self.sign_window = Some(w);
+            }
             SignOut::Cancel => {}
             SignOut::ManageIds => {
                 if self.ids_window.is_none() {
@@ -1720,14 +1774,19 @@ impl App {
             return;
         }
         let i = self.tabs.iter().position(|t| t.id == w.tab);
-        if i.and_then(|i| self.stale(i, &out)).is_some() {
-            w.error = Some(
-                "Another app or tab changed this file since LimarePDF opened or saved it. \
-                 Reload it first, or choose another name."
-                    .into(),
-            );
-            return;
-        }
+        let expect = match i.map(|i| self.stale(i, &out)) {
+            Some(Err(_)) => {
+                w.error = Some(
+                    "Another app or tab changed this file since LimarePDF opened or saved it. \
+                     Reload it first, or choose another name."
+                        .into(),
+                );
+                return;
+            }
+            // Checked again as the signed file replaces it (PB-99).
+            Some(Ok(expect)) => expect,
+            None => None,
+        };
         let claim = [out.clone()];
         w.start(
             ctx,
@@ -1736,6 +1795,7 @@ impl App {
                 edited,
                 art,
                 out,
+                expect,
             },
         );
         // Released once the window is no longer signing ([`Self::digital_windows`]).
@@ -2025,12 +2085,23 @@ impl App {
                     tab,
                     revision,
                     title,
+                    name,
                     result,
                 } => {
                     self.busy = false;
                     self.status.clear();
                     self.destinations.release(Owner::Job { id: job });
+                    self.job_ended(job);
+                    // Its tab was closed meanwhile: what it wrote or printed, or what failed,
+                    // is still said (PB-87).
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        let text = match result {
+                            Ok((_, true, _)) => discarded(&name),
+                            Ok((_, false, text)) | Err(text) => {
+                                format!("{text}\n\n{}", closed_meanwhile(&name))
+                            }
+                        };
+                        self.show(Dialog::Message(title.into(), text));
                         continue;
                     };
                     let (pdf, changed, text) = match result {
@@ -2064,7 +2135,9 @@ impl App {
                     self.show(Dialog::Message(title.into(), text));
                 }
                 Loaded::ReplaceAll {
+                    job,
                     tab,
+                    name,
                     revision,
                     query,
                     with,
@@ -2072,7 +2145,13 @@ impl App {
                 } => {
                     self.busy = false;
                     self.status.clear();
+                    self.job_ended(job);
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        let text = match result {
+                            Ok(_) => discarded(&name),
+                            Err(e) => format!("{e}\n\n{}", closed_meanwhile(&name)),
+                        };
+                        self.show(Dialog::Message(REPLACE_ALL.into(), text));
                         continue;
                     };
                     let prepared = match result {
@@ -2342,12 +2421,20 @@ impl App {
             return;
         }
         let t = &self.tabs[self.active];
-        let (revision, mut pdf) = (t.revision, t.pdf.clone());
+        let (revision, mut pdf, name) = (t.revision, t.pdf.clone(), t.name());
         self.jobs_made += 1;
         let job = self.jobs_made;
         self.destinations.claim(&writes, Owner::Job { id: job });
+        let writing = !writes.is_empty() || title == PRINT_JOB;
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
-        std::thread::spawn(move || {
+        #[cfg(test)]
+        let gate = self.job_gate.take();
+        let named = name.clone();
+        let thread = std::thread::spawn(move || {
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
             let result = crate::guard(|| work(&mut pdf))
                 .map(|(changed, text)| (pdf, changed, text))
                 .map_err(|e| format!("{e:#}"));
@@ -2356,12 +2443,41 @@ impl App {
                 tab,
                 revision,
                 title,
+                name: named,
                 result,
             });
             ctx.request_repaint();
         });
+        self.jobs.push(Job {
+            id: job,
+            title,
+            name,
+            writes: writing,
+            stop_ok: false,
+            thread: Some(thread),
+        });
         self.busy = true;
         self.status = format!("{title}…");
+    }
+
+    /// Job `id` ended: its thread is joined (it has sent its result).
+    fn job_ended(&mut self, id: u64) {
+        if let Some(k) = self.jobs.iter().position(|j| j.id == id) {
+            if let Some(thread) = self.jobs.remove(k).thread {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// At exit, the jobs still writing files or printing are finished first, as saves are
+    /// (PB-88); those that only change the document are left, their result unused.
+    fn finish_jobs(&mut self) {
+        for j in self.jobs.iter_mut().filter(|j| j.writes) {
+            if let Some(thread) = j.thread.take() {
+                let _ = thread.join();
+            }
+            self.destinations.release(Owner::Job { id: j.id });
+        }
     }
 
     /// Replace all (NEW-04b): every match of the active tab's search replaced on a copy of
@@ -2372,22 +2488,42 @@ impl App {
             return;
         }
         let t = &self.tabs[self.active];
-        let Some(job) = t.replace_all_job() else {
+        let Some(work) = t.replace_all_job() else {
             return;
         };
         let (tab, revision, query) = (t.id, t.revision, t.query.trim().to_string());
+        let name = t.name();
+        self.jobs_made += 1;
+        let job = self.jobs_made;
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let result = crate::guard(|| Ok(Box::new(editor::replace_all(&job))))
+        #[cfg(test)]
+        let gate = self.job_gate.take();
+        let named = name.clone();
+        let thread = std::thread::spawn(move || {
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
+            let result = crate::guard(|| Ok(Box::new(editor::replace_all(&work))))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Loaded::ReplaceAll {
+                job,
                 tab,
+                name: named,
                 revision,
                 query,
-                with: job.with,
+                with: work.with,
                 result,
             });
             ctx.request_repaint();
+        });
+        self.jobs.push(Job {
+            id: job,
+            title: REPLACE_ALL,
+            name,
+            writes: false,
+            stop_ok: false,
+            thread: Some(thread),
         });
         self.busy = true;
         self.status = "Preparing the replacements…".into();
@@ -2422,7 +2558,7 @@ impl App {
     /// Send `pages` (zero-based) of the active tab to the printer on a background thread.
     fn start_print(&mut self, ctx: &egui::Context, pages: Vec<usize>, opts: print::PrintOptions) {
         let printer = opts.printer.clone().unwrap_or_default();
-        self.spawn_job(ctx, "Print", Vec::new(), move |p| {
+        self.spawn_job(ctx, PRINT_JOB, Vec::new(), move |p| {
             let reply = p.print(&pages, &opts)?;
             let n = pages.len();
             Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
@@ -2724,7 +2860,7 @@ impl App {
             }
         }
         // Before the other questions, which are about what is saved: where it goes.
-        if !as_new && self.asked_stale(None) {
+        if !as_new && self.asked_stale() {
             return;
         }
         let over_repaired = self
@@ -2856,20 +2992,24 @@ impl App {
         tests::PICK_FILE.with(std::cell::Cell::take)
     }
 
-    /// Where to save the active tab (see [`Self::save_path`]); `None`, saying why, for a
-    /// file open in another tab or being written (S1-03), or one another app or tab changed
-    /// since this tab last read or saved it, until the user says to replace it (BUG-06).
-    fn save_target(&mut self, as_new: bool) -> Option<PathBuf> {
+    /// Where to save the active tab (see [`Self::save_path`]), with the version of the file
+    /// there the save may replace (see [`Self::stale`]); `None`, saying why, for a file open
+    /// in another tab or being written (S1-03), or one another app or tab changed since this
+    /// tab last read or saved it, until the user says to replace it (BUG-06).
+    fn save_target(&mut self, as_new: bool) -> Option<(PathBuf, Option<disk::Version>)> {
         let t = self.tabs.get(self.active)?;
         let path = Self::save_path(t, as_new, self.settings.folder.as_deref())?;
         if let Some((title, why)) = self.conflict(&path, t.id, true) {
             self.dialog = Dialog::Message(title.into(), why);
             return None;
         }
-        if self.asked_stale(Some(&path)) {
-            return None;
+        match self.stale(self.active, &path) {
+            Ok(expect) => Some((path, expect)),
+            Err(now) => {
+                self.dialog = self.stale_question(self.active, now);
+                None
+            }
         }
-        Some(path)
     }
 
     /// Why nothing is written to `path` when it is the file of a tab other than `except`:
@@ -2894,64 +3034,81 @@ impl App {
         ))
     }
 
-    /// The file at `path` as it now is, when it is tab `i`'s own file and another app or
-    /// tab changed it since the tab last read or saved it, unless the user said to replace
-    /// that version. A file found unchanged becomes the version known, read later: one
-    /// whose time was too close to the reading to trust (PB-28) is then read once, not at
-    /// every check.
-    fn stale(&mut self, i: usize, path: &Path) -> Option<disk::Version> {
-        let t = self.tabs.get_mut(i)?;
-        let (own, known) = (t.path.as_deref()?, t.disk.as_ref()?);
+    /// Whether tab `i` may replace the file at `path`. `Err`, with the file as it now is,
+    /// when it is the tab's own file and another app or tab changed it since the tab last
+    /// read or saved it, unless the user said to replace that version. Else `Ok`, with the
+    /// version of its own file the tab may replace: as it read or saved it, or as the user
+    /// said to replace it; `None` for another file, or one the tab doesn't know. The writing
+    /// checks that version again just before the file is replaced (PB-99). A file found
+    /// unchanged becomes the version known, read later: one whose time was too close to the
+    /// reading to trust (PB-28) is then read once, not at every check.
+    fn stale(&mut self, i: usize, path: &Path) -> Result<Option<disk::Version>, disk::Version> {
+        let Some(t) = self.tabs.get_mut(i) else {
+            return Ok(None);
+        };
+        let (Some(own), Some(known)) = (t.path.as_deref(), t.disk.as_ref()) else {
+            return Ok(None);
+        };
         if !disk::same_file(own, path) {
-            return None;
+            return Ok(None);
         }
         let now = match disk::compare(path, known) {
             Ok(OnDisk::Changed(now)) => now,
             Ok(OnDisk::Same(now)) => {
-                t.disk = Some(now);
-                return None;
+                t.disk = Some(now.clone());
+                return Ok(Some(now));
             }
-            _ => return None,
+            // Gone or unreadable, as nothing to ask about: a file put there meanwhile still
+            // isn't replaced.
+            _ => return Ok(Some(known.clone())),
         };
         let t = &self.tabs[i];
         let ok = self.replace_ok.as_ref();
-        let ok = ok.is_some_and(|(id, v)| *id == t.id && v.same_bytes(&now));
-        (!ok).then_some(now)
+        if ok.is_some_and(|(id, v)| *id == t.id && v.same_bytes(&now)) {
+            Ok(Some(now))
+        } else {
+            Err(now)
+        }
     }
 
-    /// Asks before the active tab replaces its file (or the one at `path`) when another
-    /// app or tab changed it; true when it asked.
-    fn asked_stale(&mut self, path: Option<&Path>) -> bool {
-        let Some(t) = self.tabs.get(self.active) else {
+    /// Asks before the active tab replaces its file when another app or tab changed it;
+    /// true when it asked.
+    fn asked_stale(&mut self) -> bool {
+        let Some(path) = self.tabs.get(self.active).and_then(|t| t.path.clone()) else {
             return false;
         };
-        let Some(path) = path.map(Path::to_path_buf).or_else(|| t.path.clone()) else {
-            return false;
-        };
-        let Some(now) = self.stale(self.active, &path) else {
-            return false;
-        };
-        let t = &mut self.tabs[self.active];
+        match self.stale(self.active, &path) {
+            Ok(_) => false,
+            Err(now) => {
+                self.dialog = self.stale_question(self.active, now);
+                true
+            }
+        }
+    }
+
+    /// The question asked before tab `i` replaces its file, which another app or tab
+    /// changed: now as `now`. The tab says it too.
+    fn stale_question(&mut self, i: usize, now: disk::Version) -> Dialog {
+        let t = &mut self.tabs[i];
         // With Reload, which the question has no room for.
         t.show_banner(crate::banners::changed_on_disk());
         t.changed_on_disk = Some(now.clone());
-        self.dialog = Dialog::ConfirmStale(Asked::of(t), Box::new(now));
-        true
+        Dialog::ConfirmStale(Asked::of(t), Box::new(now))
     }
 
     /// Writes a signed document whose edits were added after what was signed (`bytes`), on
     /// a thread ([`App::start_save`]). The signatures stay, and the saved file becomes what
     /// later saves add to.
     fn save_appended(&mut self, ctx: &egui::Context, as_new: bool, bytes: Vec<u8>) {
-        let Some(path) = self.save_target(as_new) else {
+        let Some((path, expect)) = self.save_target(as_new) else {
             return;
         };
-        self.start_save(ctx, path, Write::Appended(bytes), Some(None));
+        self.start_save(ctx, path, expect, Write::Appended(bytes), Some(None));
     }
 
     /// Writes the whole document, on a thread ([`App::start_save`]).
     fn save_now(&mut self, ctx: &egui::Context, as_new: bool) {
-        let Some(path) = self.save_target(as_new) else {
+        let Some((path, expect)) = self.save_target(as_new) else {
             return;
         };
         let tab = &mut self.tabs[self.active];
@@ -2962,7 +3119,8 @@ impl App {
         let recheck =
             tab.sigs.is_some() || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
         let pdf = Box::new(tab.pdf.clone());
-        self.start_save(ctx, path, Write::Whole(pdf), recheck.then_some(password));
+        let check = recheck.then_some(password);
+        self.start_save(ctx, path, expect, Write::Whole(pdf), check);
     }
 
     /// Run a command (`name` is for messages) so that a panic in it can't close the app with
@@ -4861,15 +5019,85 @@ impl App {
         false
     }
 
-    /// Quit, asking first when there is unsaved work; a save being written ends first.
+    /// Quit, asking first when there is unsaved work; saves being written, jobs writing
+    /// files or printing, and signing end first, and jobs that only change a document are
+    /// asked about (PB-88).
     fn quit(&mut self, ctx: &egui::Context) {
-        if !self.saves.is_empty() {
+        self.ask_stopping_again();
+        if self.quit_waits() {
             self.wait_for_saves(AfterSave::Quit);
-        } else if let Some(q) = self.quit_question() {
+        } else if let Some(q) = self.stop_question(false) {
+            self.dialog = q;
+        } else {
+            self.quit_asking(ctx);
+        }
+    }
+
+    /// Quitting, with nothing left to wait for or stop: asks about unsaved work, or quits.
+    fn quit_asking(&mut self, ctx: &egui::Context) {
+        if let Some(q) = self.quit_question() {
             self.dialog = q;
         } else {
             self.quit_ok = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Whether quitting waits: for a save being written, a job writing files or printing,
+    /// or signing (PB-88).
+    fn quit_waits(&self) -> bool {
+        !self.saves.is_empty()
+            || self.jobs.iter().any(|j| j.writes)
+            || self.sign_window.as_ref().is_some_and(SignWindow::busy)
+    }
+
+    /// Quitting asked for again: the jobs Quit now was chosen for are asked about again.
+    fn ask_stopping_again(&mut self) {
+        for j in &mut self.jobs {
+            j.stop_ok = false;
+        }
+    }
+
+    /// The question quitting asks while jobs that only change a document run (PB-88),
+    /// about those not yet agreed to stop; `asked`: the unsaved documents were asked about
+    /// already.
+    fn stop_question(&self, asked: bool) -> Option<Dialog> {
+        let mut running = self.jobs.iter().filter(|j| !j.writes && !j.stop_ok);
+        let first = running.next()?;
+        let text = match running.count() {
+            0 => format!(
+                "{} is still running for \"{}\". Quit now and stop it?",
+                first.title, first.name
+            ),
+            more => format!(
+                "{} tasks are still running. Quit now and stop them?",
+                more + 1
+            ),
+        };
+        Some(Dialog::ConfirmStopTasks(text, asked))
+    }
+
+    /// The status bar's text while quitting waits for jobs or signing; a save being
+    /// written says its own (PB-88).
+    fn quit_sign(&self) -> Option<String> {
+        let quitting = self.after_saves.contains(&AfterSave::Quit)
+            || matches!(self.closing, Some(Closing::Quit { .. }));
+        if !quitting || !self.saves.is_empty() {
+            return None;
+        }
+        let mut waits: Vec<&str> = self
+            .jobs
+            .iter()
+            .filter(|j| j.writes)
+            .map(|j| j.title)
+            .collect();
+        if self.sign_window.as_ref().is_some_and(SignWindow::busy) {
+            waits.push("signing");
+        }
+        match waits[..] {
+            [] => None,
+            [one] => Some(format!("Quitting when {one} finishes…")),
+            _ => Some(format!("Quitting when {} tasks finish…", waits.len())),
         }
     }
 
@@ -4938,9 +5166,15 @@ impl App {
                         return;
                     }
                 }
-                // Another tab's save is still being written.
-                if !self.saves.is_empty() {
+                // Another tab's save is still being written, or a job writing files or
+                // printing, or signing, started meanwhile (PB-88).
+                if self.quit_waits() {
                     self.closing = Some(Closing::Quit { saving: None, rest });
+                    return;
+                }
+                // A job that only changes a document, started meanwhile, is asked about.
+                if let Some(q) = self.stop_question(true) {
+                    self.dialog = q;
                     return;
                 }
                 self.quit_ok = true;
@@ -5143,6 +5377,25 @@ impl App {
                         done = true;
                     }
                     Choice::Open => {}
+                }
+            }
+            Dialog::ConfirmStopTasks(text, asked) => {
+                match dlg::confirm(ctx, Ask::new("Quit now?", text, Btn::danger("Quit now"))) {
+                    Outcome::Apply if *asked => {
+                        self.quit_ok = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        done = true;
+                    }
+                    Outcome::Apply => {
+                        // Not asked about again as quitting goes on.
+                        for j in self.jobs.iter_mut().filter(|j| !j.writes) {
+                            j.stop_ok = true;
+                        }
+                        self.quit_asking(ctx);
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
                 }
             }
             Dialog::Password(s, unlock) => {
@@ -5589,7 +5842,7 @@ impl App {
                     };
                     if let Some(layout) = s.selection {
                         let ex = Excerpt::new(t, layout);
-                        self.spawn_job(ctx, "Print", Vec::new(), move |p| {
+                        self.spawn_job(ctx, PRINT_JOB, Vec::new(), move |p| {
                             let mut out = ex.build(p)?;
                             let pages: Vec<usize> = (0..out.page_count()).collect();
                             let reply = out.print(&pages, &opts)?;
@@ -7552,11 +7805,18 @@ impl eframe::App for App {
 
         // Guard against closing the window with unsaved work.
         let quit = ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok;
-        if quit && !self.saves.is_empty() {
-            // A save being written ends first; then quitting goes on as usual.
+        if quit {
+            self.ask_stopping_again();
+        }
+        if quit && self.quit_waits() {
+            // A save being written, a job writing files or printing, or signing ends first;
+            // then quitting goes on as usual (PB-88).
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.wait_for_saves(AfterSave::Quit);
-        } else if let Some(q) = quit.then(|| self.quit_question()).flatten() {
+        } else if let Some(q) = quit
+            .then(|| self.stop_question(false).or_else(|| self.quit_question()))
+            .flatten()
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             // Asked first: a question open comes back after Cancel.
             let open = std::mem::replace(&mut self.dialog, q);
@@ -7973,6 +8233,7 @@ impl eframe::App for App {
                 regions::name(ui, Region::Status);
                 let t = self.tabs.get(self.active);
                 let busy = self.busy_sign();
+                let quitting = self.quit_sign();
                 let muted = theme::muted(ui.visuals().dark_mode);
                 let small = |text: &str| egui::RichText::new(text).size(12.0).color(muted);
                 let status = |ui: &mut egui::Ui| {
@@ -7994,7 +8255,12 @@ impl eframe::App for App {
                     if t.is_some_and(|t| t.encryption.is_some()) {
                         said.push("Will be encrypted on save".into());
                     }
-                    if !self.status.is_empty() {
+                    // While quitting waits for a job, that is what it says, in place of the
+                    // job's own "Split into files…".
+                    if let Some(text) = &quitting {
+                        ui.add(egui::Spinner::new().size(12.0));
+                        said.push(text.clone());
+                    } else if !self.status.is_empty() {
                         said.push(self.status.clone());
                     }
                     // The busy sign while a save is written.
@@ -8423,8 +8689,10 @@ impl eframe::App for App {
 
     /// A normal exit (not a crash, which never gets here): no recovery copies are left.
     fn on_exit(&mut self) {
-        // Quitting waits for saves, but the system may end the app regardless.
+        // Quitting waits for saves and for jobs writing files or printing, but the system
+        // may end the app regardless (PB-88).
         self.finish_saves();
+        self.finish_jobs();
         timing::mark("exit", String::new);
         timing::flush();
         self.end_recovery();
@@ -8572,6 +8840,7 @@ mod tests {
     mod typing_box;
     mod typing_menus;
     mod underline;
+    mod writers;
 
     /// The height of the window the tests draw: room for the commands above the pages.
     const TEST_HEIGHT: f32 = 1000.0;
@@ -16879,6 +17148,7 @@ mod tests {
             tab,
             revision,
             title,
+            name: app.tabs[0].name(),
             result,
         };
         app.tx.send(job).unwrap();
@@ -18896,10 +19166,10 @@ mod tests {
         assert!(app.in_other_tab(&alias, Some(ta)).is_none(), "its own file");
         assert!(app.in_other_tab(&dir.join("c.pdf"), Some(tb)).is_none());
         assert!(app.in_other_tab(&b, None).is_some());
-        assert!(app.stale(0, &alias).is_none());
+        assert!(app.stale(0, &alias).is_ok());
         form_file(&a, "Changed");
-        assert!(app.stale(0, &alias).is_some(), "by another path");
-        assert!(app.stale(1, &alias).is_none(), "not tab b's file");
+        assert!(app.stale(0, &alias).is_err(), "by another path");
+        assert_eq!(app.stale(1, &alias), Ok(None), "not tab b's file");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -19932,8 +20202,9 @@ mod tests {
         let f = std::fs::File::options().write(true).open(&path).unwrap();
         f.set_modified(std::time::SystemTime::now()).unwrap();
         drop(f);
-        assert!(app.stale(0, &path).is_none());
+        let known = app.stale(0, &path).expect("unchanged");
         assert_ne!(app.tabs[0].disk, before, "the file read again isn't known");
+        assert_eq!(known, app.tabs[0].disk, "and it may be replaced");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

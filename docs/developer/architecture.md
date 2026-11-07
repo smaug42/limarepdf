@@ -1363,7 +1363,17 @@ same path as Open, with the tab's id and revision, and swaps the new tab into th
 document changed meanwhile or something is being typed that isn't in it yet: on the pages (`Editor::pending`) or
 in the inspector's properties and label prefix (`Tab::typing_in_forms`; the delta audit's DA02). Typing before
 Reload was asked for is kept first (`Act::uses_document`), so the revision covers it, and agreeing to lose the
-changes made before still reloads. A change made between the check and the write is still replaced; there is no locking.
+changes made before still reloads. The save's thread checks once more at the replacement boundary (S1-04, PB-99):
+`atomic::replace` takes the version it may replace (`expect`, given by `Pdf::save_expecting` and
+`write_file_expecting`; `save_target` returns the one its stale check accepted, for the tab's own file only) and,
+with the temporary file written and synced, compares the target just before the rename. A changed target isn't
+replaced (the temporary file removed, the folder not synced): the error is a `ChangedOnDisk`, found in the chain as
+`NotConfirmed` is. `App::saved` asks `ConfirmStale` again with the version now there, through `App::show`, so a Save
+chosen meanwhile is answered by it; signing over the tab's own file says it in the signing window. Tests hold a
+replace just before that comparison with `atomic::commit_seam` (`hold`, `arrived`, `release`; built as `sync_seam`
+is, and every replace in the held folder waits, the test's own too). There is still no locking: a change landing
+between that comparison and the rename is replaced, so is one a program makes by writing the old file in place,
+and a change of the same size whose time is put back isn't seen (PB-28 (2)).
 
 Files reach the app from the command line (`read_args` in main.rs; on macOS an older system's `-psn_…` process
 number is skipped), drops on the window, and on macOS from Finder (BUG-28): Open With, a double-click and a drop on
@@ -1776,15 +1786,25 @@ dialog may be open by then): Save failed, Saved, not confirmed, the status. The 
 the result (`dirty`, `path`), so a question asked about the tab while it saved, whose `Asked` held the state before,
 is moved on to the state after (`Dialog::asked_mut`), and its answer still acts. While a tab's save is written:
 Save or Save as again is remembered (`save_again`, Save as winning) and run once it ends (`save::AfterSave::Save`,
-the tab brought to the front for its questions; dropped if the save failed, which says so); `close_asking` waits
-(`AfterSave::Close`, which then asks as usual); `App::quit` and the window's close request wait for every save
-(`AfterSave::Quit`, the close cancelled); `close_step` keeps its `Closing` while the save it waits for is written,
-and doesn't quit while any other is; `App::after_save` runs the first one ready at the end of `App::dialogs`, with
-no dialog open or waiting. Reload, Sign with digital ID and Certify are off (`Ctx::saving`) and refused in `act`
+the tab brought to the front for its questions; dropped if the save failed, whose message says so, PB-89);
+`close_asking` waits (`AfterSave::Close`, which then asks as usual); `App::quit` and the window's close request
+wait (`AfterSave::Quit`, the close cancelled) for every save, every job writing files or printing, and signing in
+progress (`App::quit_waits`, S1-04's PB-88; the status bar's `quit_sign`, "Quitting when Split into files
+finishes…", unless a save's busy sign shows); `close_step` keeps its `Closing` while the save it waits for is
+written, and doesn't quit while anything `quit_waits` counts is; `App::after_save` runs the first one ready at the
+end of `App::dialogs`, with no dialog open or waiting. `App::jobs` lists each job `spawn_job` and Replace all start
+(`Job`: number, title, document name, whether it writes files or prints, its thread), removed and joined when its
+result arrives. With nothing left to wait for, jobs that only change a document are asked about
+(`stop_question`, `Dialog::ConfirmStopTasks`: Quit now or Cancel); those Quit now was chosen for (`Job::stop_ok`)
+aren't asked about again as quitting goes on, until quitting is asked for again (`ask_stopping_again`). A job whose
+tab was closed while it ran still shows its message, ended with the document's name (`for_closed`); one that only
+changes a document, and Replace all, say its result was discarded (`discarded`; PB-87). Adding pages from files
+(`Loaded::Append`) isn't in `App::jobs`: quitting doesn't wait for it or ask. Reload, Sign with digital ID and Certify are off (`Ctx::saving`) and refused in `act`
 with a message (a banner's Reload, placing a signature box); `Loaded::Disk` results for a tab being saved are left
-out, as its own save is replacing the file. `on_exit` joins the save threads (`finish_saves`), so a system
-shutting the app down doesn't cut a write short. Tests hold the next save's write until they say go
-(`App::save_gate`) and wait for it with `saves_done`.
+out, as its own save is replacing the file. `on_exit` joins the save threads (`finish_saves`) and the writing
+jobs' (`finish_jobs`), so a system shutting the app down doesn't cut a write short. Tests hold the next save's
+write until they say go (`App::save_gate`) and wait for it with `saves_done`; `App::job_gate` holds the next job
+the same way.
 
 The files being written are reserved until their writers end (S1-03, H-05: two tabs' saves to one file could
 both be admitted, the file ending as either tab's, both tabs marked saved). `App::destinations`

@@ -58,7 +58,8 @@ pub(super) enum AfterSave {
     Save(u64, bool),
     /// Close tab `.0`, asking as usual if it is still unsaved.
     Close(u64),
-    /// Quit, asking as usual about anything still unsaved, once every save has ended.
+    /// Quit, asking as usual about anything still unsaved, once every save, every job
+    /// writing files or printing, and signing have ended (PB-88).
     Quit,
 }
 
@@ -69,12 +70,14 @@ impl App {
     }
 
     /// Writes `write` to `path` for the active tab on a thread of its own; the result
-    /// arrives as [`Loaded::Saved`]. `check`: the password to check the saved file's
+    /// arrives as [`Loaded::Saved`]. `expect`: the version of the tab's own file there that
+    /// may be replaced (see [`App::stale`]). `check`: the password to check the saved file's
     /// signatures with, when they are checked.
     pub(super) fn start_save(
         &mut self,
         ctx: &egui::Context,
         path: PathBuf,
+        expect: Option<disk::Version>,
         write: Write,
         check: Option<Option<String>>,
     ) {
@@ -95,9 +98,10 @@ impl App {
                 let _ = gate.recv();
             }
             timing::mark("save start", || to.display().to_string());
+            let expect = expect.as_ref();
             let written = crate::guard(|| match write {
-                Write::Whole(mut pdf) => pdf.save(&to),
-                Write::Appended(bytes) => limarepdf_core::write_file(&to, &bytes),
+                Write::Whole(mut pdf) => pdf.save_expecting(&to, expect),
+                Write::Appended(bytes) => limarepdf_core::write_file_expecting(&to, &bytes, expect),
             });
             timing::mark("save end", || super::saved(&written).into());
             // Not confirmed on disk is written all the same.
@@ -170,7 +174,27 @@ impl App {
             Err(e) if not_confirmed(&e) => false,
             Err(e) => {
                 self.status.clear();
-                self.show(Dialog::Message("Save failed".into(), format!("{e:#}")));
+                // Another app changed the file as it was about to be replaced (PB-99): it is
+                // asked about as before saving, and a Save chosen meanwhile is answered by
+                // that question.
+                if let Some(c) = e.downcast_ref::<limarepdf_core::ChangedOnDisk>() {
+                    if let Some(i) = self.tabs.iter().position(|t| t.id == s.tab) {
+                        let q = self.stale_question(i, c.now.clone());
+                        self.show(q);
+                        return;
+                    }
+                }
+                let mut text = format!("{e:#}");
+                // The Save chosen while it ran isn't run: it would most likely fail the same
+                // way (PB-89).
+                if let Some(as_new) = run.again {
+                    let again = if as_new { "Save as" } else { "Save" };
+                    text.push_str(&format!(
+                        "\n\nYou chose {again} again while it was saving; that wasn't done \
+                         either. Choose Save again, or Save as to save somewhere else."
+                    ));
+                }
+                self.show(Dialog::Message("Save failed".into(), text));
                 return;
             }
         };
@@ -252,7 +276,7 @@ impl App {
     pub(super) fn after_save(&mut self, ctx: &egui::Context) {
         let ready = self.after_saves.iter().position(|a| match *a {
             AfterSave::Save(tab, _) | AfterSave::Close(tab) => !self.saving(tab),
-            AfterSave::Quit => self.saves.is_empty(),
+            AfterSave::Quit => !self.quit_waits(),
         });
         let Some(k) = ready else {
             return;

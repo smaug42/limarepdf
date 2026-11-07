@@ -101,6 +101,21 @@
   Printing draws them too, and asks about them as about the others. A form whose fields are nested more than 32
   levels deep, which LimarePDF can't follow to the end, is refused with nothing changed, rather than flattened
   with the deeper fields lost.
+- Save no longer writes over a file that another app changed while it was being saved. Before the file is
+  replaced it is checked once more: if it changed, it is left as the other app saved it, the document stays
+  unsaved, and Save asks, as it does before saving, whether to save as a new file or replace the changed one.
+  Signing over the open document's file checks the same way and says so in the signing window. A change made in
+  the moment between that check and the replacement is still replaced: there is no locking.
+- Quitting now waits for splitting into files, exporting pages as images, saving pictures, printing and signing
+  to finish, with the status bar saying so ("Quitting when Split into files finishes…") and their message shown;
+  before, quitting stopped them, which could leave only some of the files written. Recognising text, optimising
+  scanned pages, removing blank pages, reducing file size and Replace all no longer stop unannounced: quitting
+  asks first, with **Quit now** and **Cancel**.
+- A task whose document was closed while it ran now still says how it ended, naming the document: what a split
+  or export wrote, or what went wrong. A task that would have changed the document says its result was
+  discarded. Before, nothing was said, errors included.
+- When a save fails while Save or Save as was chosen again meanwhile, the message now says that wasn't done
+  either. Before, the second save was dropped without a word.
 
 ## [0.13.0] - 2026-11-03
 
