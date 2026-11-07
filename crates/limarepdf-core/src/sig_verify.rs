@@ -137,6 +137,20 @@ impl DigitalSignature {
         let trusted = |t: &Option<Trust>| t.as_ref().is_some_and(Trust::is_trusted);
         trusted(&self.trust) && self.timestamp.as_ref().is_none_or(|ts| trusted(&ts.trust))
     }
+
+    /// The certificates that could be trusted as an authority from this signature: those it
+    /// carries that are certificate authorities ([`trust::is_authority`]), then those its
+    /// embedded timestamp carries, each once.
+    pub fn authorities(&self) -> Vec<CertInfo> {
+        let stamp = self.timestamp.iter().flat_map(|t| &t.certificates);
+        let mut out: Vec<CertInfo> = Vec::new();
+        for c in self.certificates.iter().chain(stamp) {
+            if !out.iter().any(|o| o.sha256 == c.sha256) && trust::is_authority(c) {
+                out.push(c.clone());
+            }
+        }
+        out
+    }
 }
 
 /// Puts [`SigWarning::CertificateNotValidAtSigning`] in its place among `s`'s warnings when

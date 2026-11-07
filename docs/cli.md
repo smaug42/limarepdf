@@ -235,7 +235,8 @@ See [Removing hidden information](redaction.md#removing-hidden-information).
 | `limarepdf-cli verify in.pdf --trust-file team.txt` | Judge trust by this trust list instead of your own |
 | `limarepdf-cli trust list` | The certificates you trust, with their fingerprints (`--json` for scripts) |
 | `limarepdf-cli trust add contract.pdf --signature 1` | Trust the signer of signature 1. Compare the SHA-256 fingerprint with them first |
-| `limarepdf-cli trust add contract.pdf --signature 1 --authority --pick 2` | Trust a certificate authority from the certificates signature 1 carries; `--pick` chooses when there are several (they are listed) |
+| `limarepdf-cli trust add contract.pdf --signature 1 --authority --pick 2` | Trust a certificate authority from the certificates signature 1 and its embedded timestamp carry; `--pick` chooses when there are several (they are listed) |
+| `limarepdf-cli trust add contract.pdf --signature 1 --timestamp` | Trust the authority that timestamped signature 1, so the timestamp's time is used (`limarepdf-cli verify` suggests it). Compare the fingerprint with the timestamp service first |
 | `limarepdf-cli trust add jane.cer` | Trust a signer from a certificate file: `.cer`, `.crt`, `.pem` (DER or PEM) or `.p7c` (as Acrobat exports); `--pick N` for a file with several |
 | `limarepdf-cli trust add company-ca.cer --authority` | Trust a certificate authority: every signer it issued a certificate to, directly or through authorities it allowed to |
 | `limarepdf-cli trust remove 2` | Stop trusting entry 2 of `limarepdf-cli trust list`, or the certificate with this SHA-256 fingerprint |
