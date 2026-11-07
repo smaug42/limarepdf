@@ -155,7 +155,8 @@ pub fn level(s: &DigitalSignature) -> Level {
         SigStatus::Valid if !s.changes_allowed() => Level::Bad,
         SigStatus::Valid => match &s.trust {
             Some(Trust::Failed(_)) => Level::Bad,
-            Some(t) if t.is_trusted() && s.warnings.is_empty() => Level::Good,
+            // A timestamp whose authority isn't trusted keeps a trusted signer from green.
+            _ if s.fully_trusted() && s.warnings.is_empty() => Level::Good,
             _ => Level::Caution,
         },
     }
@@ -220,7 +221,14 @@ pub fn summary(s: &DigitalSignature) -> String {
                         } else {
                             "Only allowed changes"
                         };
-                        format!("Signed by {who}. {since} since.")
+                        if s.fully_trusted() {
+                            format!("Signed by {who}. {since} since.")
+                        } else {
+                            format!(
+                                "Signed by {who}. {since} since. LimarePDF can't confirm the \
+                                 timestamp authority, so the signing time is the signer's own."
+                            )
+                        }
                     }
                     Some(Trust::Failed(why)) => format!(
                         "{since} since {who} signed it, but LimarePDF doesn't trust the certificate: {}.",
@@ -285,6 +293,11 @@ pub fn banner(check: &Check) -> Option<Banner> {
                             "None of the {n} signatures is broken and nothing changed that the \
                              signers didn't allow, but LimarePDF can't confirm who all the signers are."
                         )
+                    }
+                    Level::Caution if !sigs.iter().all(DigitalSignature::fully_trusted) => {
+                        "Signed, and all signatures are valid, but LimarePDF can't confirm every \
+                         timestamp authority."
+                            .to_string()
                     }
                     Level::Caution => {
                         "Signed, and all signatures are valid, with warnings.".to_string()
@@ -930,40 +943,52 @@ fn signer_cert_facts(ui: &mut Ui, cert: &CertInfo, stamp: bool) {
 
 /// When it was signed, and the timestamp that says so.
 fn time_facts(ui: &mut Ui, s: &DigitalSignature) {
-    let stamp = s.kind == SigKind::DocumentTimestamp;
-    let ts = s.timestamp.as_ref().filter(|_| !stamp);
-    if s.time.is_none() && ts.is_none() {
+    let lines = time_lines(s);
+    if lines.is_empty() {
         return;
     }
     dialogs::group(ui, "Time", |ui| {
-        if let Some(t) = &s.time {
-            let from = match t.source {
-                TimeSource::Timestamp => "from a timestamp authority",
-                TimeSource::SignerClock | TimeSource::Dictionary => "from the signer's computer",
-            };
-            fact(
-                ui,
-                if stamp { "Time" } else { "Signed at" },
-                format!("{} ({from})", t.time.format(TIME)),
-            );
-        }
-        if let Some(ts) = ts {
-            let trusted = match &ts.trust {
-                Some(t) if t.is_trusted() => " (trusted)".to_string(),
-                Some(Trust::Failed(why)) => format!(" (NOT TRUSTED: {})", clean_long(why)),
-                _ => " (LimarePDF can't confirm this authority)".to_string(),
-            };
-            fact(
-                ui,
-                "Timestamp",
-                format!(
-                    "{} by {}{trusted}",
-                    ts.time.format(TIME),
-                    clean(ts.authority.display_name())
-                ),
-            );
+        for (label, text) in lines {
+            fact(ui, label, text);
         }
     });
+}
+
+/// The Time group's lines: when it was signed, and the timestamp that says so.
+fn time_lines(s: &DigitalSignature) -> Vec<(&'static str, String)> {
+    let stamp = s.kind == SigKind::DocumentTimestamp;
+    let mut lines = Vec::new();
+    if let Some(t) = &s.time {
+        let from = match t.source {
+            TimeSource::Timestamp => "from a timestamp authority",
+            TimeSource::SignerClock | TimeSource::Dictionary => "from the signer's computer",
+            TimeSource::UnconfirmedTimestamp => {
+                "claimed by a timestamp authority that isn't trusted"
+            }
+        };
+        lines.push((
+            if stamp { "Time" } else { "Signed at" },
+            format!("{} ({from})", t.time.format(TIME)),
+        ));
+    }
+    if let Some(ts) = s.timestamp.as_ref().filter(|_| !stamp) {
+        let (when, by) = (ts.time.format(TIME), clean(ts.authority.display_name()));
+        lines.push((
+            "Timestamp",
+            match &ts.trust {
+                Some(t) if t.is_trusted() => format!("{when} by {by} (trusted)"),
+                Some(Trust::Failed(why)) => format!(
+                    "{when}, claimed by {by} (NOT TRUSTED: {}; this time isn't used)",
+                    clean_long(why)
+                ),
+                _ => format!(
+                    "{when}, claimed by {by} (LimarePDF can't confirm this authority, so this \
+                     time isn't used)"
+                ),
+            },
+        ));
+    }
+    lines
 }
 
 /// A certificate's subject, issuer, validity and fingerprint.
@@ -1336,6 +1361,87 @@ mod tests {
             .push(SigWarning::WeakDigest("SHA-1"));
         assert_eq!(level(&r.signatures[0]), Level::Caution);
         assert!(summary(&r.signatures[0]).ends_with("There is a warning."));
+    }
+
+    #[test]
+    fn an_unconfirmed_timestamp_keeps_trusted_signers_from_green() {
+        // Two signatures by one signer, each with a timestamp from an authority not trusted.
+        let mut r = report(
+            "pyhanko/minimal-two-fields-signed-twice.pdf",
+            &TrustList::default(),
+        );
+        let mut list = TrustList::default();
+        let der = r.signatures[0].signer.as_ref().unwrap().der.clone();
+        list.add(&der, TrustRole::Signer, Some("Sig")).unwrap();
+        r.apply_trust(&list);
+        for s in &r.signatures {
+            assert!(s.trust.as_ref().is_some_and(Trust::is_trusted));
+            let ts = s.timestamp.as_ref().expect("an embedded timestamp");
+            assert!(matches!(ts.trust, Some(Trust::Unknown(_))));
+            assert_eq!(level(s), Level::Caution);
+        }
+        let last = &r.signatures[1];
+        assert_eq!(
+            summary(last),
+            "Signed by Lord Testerino. No changes since. LimarePDF can't confirm the timestamp \
+             authority, so the signing time is the signer's own."
+        );
+        let lines = time_lines(last);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0].0, "Signed at");
+        assert!(
+            lines[0].1.ends_with(" (from the signer's computer)"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1].0, "Timestamp");
+        assert!(
+            lines[1].1.contains(", claimed by ")
+                && lines[1].1.ends_with(
+                    " (LimarePDF can't confirm this authority, so this time isn't used)"
+                ),
+            "{lines:?}"
+        );
+        let b = banner_of(r.clone());
+        assert_eq!(b.tone, Tone::Caution);
+        assert_eq!(
+            b.text,
+            "Signed, and all signatures are valid, but LimarePDF can't confirm every timestamp \
+             authority."
+        );
+
+        // A failed authority says why its time isn't used.
+        let mut failed = last.clone();
+        failed.timestamp.as_mut().unwrap().trust = Some(Trust::Failed("it expired".into()));
+        assert!(
+            time_lines(&failed)[1]
+                .1
+                .ends_with(" (NOT TRUSTED: it expired; this time isn't used)"),
+            "{:?}",
+            time_lines(&failed)
+        );
+
+        // With the authorities trusted too, it's green and the time is theirs.
+        for s in &r.signatures {
+            let der = &s.timestamp.as_ref().unwrap().authority.der;
+            if !list.entries.iter().any(|e| e.cert.der == *der) {
+                list.add(der, TrustRole::Signer, None).unwrap();
+            }
+        }
+        r.apply_trust(&list);
+        for s in &r.signatures {
+            assert_eq!(level(s), Level::Good, "{:?}", s.timestamp);
+        }
+        let lines = time_lines(&r.signatures[1]);
+        assert!(
+            lines[0].1.ends_with(" (from a timestamp authority)"),
+            "{lines:?}"
+        );
+        assert!(lines[1].1.ends_with(" (trusted)"), "{lines:?}");
+        let b = banner_of(r);
+        assert_eq!(
+            (b.tone, b.text.as_str()),
+            (Tone::Good, "Signed, and all signatures are valid.")
+        );
     }
 
     #[test]

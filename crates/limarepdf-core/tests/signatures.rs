@@ -510,7 +510,13 @@ fn embedded_timestamp() {
         ts.authority.common_name.as_deref(),
         Some("Test Timestamp Authority")
     );
-    assert_eq!(s.time.unwrap().source, TimeSource::Timestamp);
+    // The empty list doesn't trust the authority, so the time is the signer's own.
+    let t = s.time.unwrap();
+    assert_eq!(
+        (t.time.to_rfc3339(), t.source),
+        ("2026-06-01T12:00:00+00:00".into(), TimeSource::SignerClock)
+    );
+    assert_eq!(s.signer_time, Some(t));
 
     // A timestamp for other data doesn't make the signature invalid, but isn't used.
     let o = Cms {
@@ -545,7 +551,8 @@ fn document_timestamp() {
     let s = &r.signatures[1];
     assert_valid(s);
     assert_eq!(s.kind, SigKind::DocumentTimestamp);
-    assert_eq!(s.time.unwrap().source, TimeSource::Timestamp);
+    // The empty list doesn't trust the authority.
+    assert_eq!(s.time.unwrap().source, TimeSource::UnconfirmedTimestamp);
     assert_eq!(
         s.time.unwrap().time.to_rfc3339(),
         "2026-06-01T13:00:00+00:00"
@@ -559,9 +566,12 @@ fn document_timestamp() {
     let b = sign_with(&base_pdf(), &f, |r| {
         timestamp_token(&id("rsa2048"), r, "20260601130000Z", Hash::Sha256)
     });
-    assert!(only(&b)
-        .warnings
-        .contains(&SigWarning::NotATimestampAuthority));
+    assert_eq!(
+        only(&b).warnings,
+        [SigWarning::NotATimestampAuthority(
+            "the timestamp authority's certificate isn't meant for timestamps".into()
+        )]
+    );
     // A token for other data.
     let b = sign_with(&base_pdf(), &f, |_| {
         timestamp_token(&tsa(), &[b"other"], "20260601130000Z", Hash::Sha256)
@@ -725,6 +735,50 @@ fn warnings() {
     ));
     assert_valid(&s);
     assert_eq!(s.warnings, [SigWarning::KeyNotForSigning]);
+    // Meant for websites only: the same rule as the trust verdict's, whatever the list.
+    let s = only(&sign(
+        &base_pdf(),
+        &id_with_cert("t-leaf", "t-leaf-server"),
+        &Field::default(),
+        &Cms::default(),
+    ));
+    assert_valid(&s);
+    assert_eq!(s.warnings, [SigWarning::KeyNotForSigning]);
+    // An embedded timestamp from an authority with a short key isn't used.
+    let short = make_cert(
+        &id_with_cert("ca", "ca"),
+        &CertSpec {
+            key_of: &cert_der("rsa1024"),
+            cn: "Short Key Timestamp Authority",
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions: vec![
+                ext("2.5.29.15", true, &[0x03, 0x02, 0x07, 0x80]),
+                ext("2.5.29.37", true, &seq(&[&oid("1.3.6.1.5.5.7.3.8")])),
+            ],
+            inner_alg: None,
+        },
+    );
+    let o = Cms {
+        timestamp: Some(("20260601120500Z", false)),
+        timestamp_by: Some(Stamper {
+            key: "rsa1024",
+            cert: short,
+            carrying: Vec::new(),
+        }),
+        ..Cms::default()
+    };
+    let s = only(&sign(&base_pdf(), &id("rsa3072"), &Field::default(), &o));
+    assert_valid(&s);
+    assert_eq!(
+        s.warnings,
+        [SigWarning::TimestampProblem(
+            "the timestamp authority uses a short 1024-bit RSA key; 2048 bits is the minimum \
+             considered safe"
+                .into()
+        )]
+    );
+    assert_eq!(s.time.unwrap().source, TimeSource::SignerClock);
 }
 
 #[test]
@@ -1293,6 +1347,62 @@ fn check_sample(path: &std::path::Path, want: &[Want], why: &str) {
     }
 }
 
+/// Trusts each timestamp authority in the samples in `dirs` as itself, one at a time, and
+/// checks it passes RFC 3161's profile (embedded timestamps and document timestamps).
+/// Prints each verdict (`-- --nocapture`) and returns how many authorities there were.
+fn sample_authorities_pass(dirs: &[std::path::PathBuf]) -> usize {
+    use limarepdf_core::TrustRole;
+    let mut files: Vec<std::path::PathBuf> = dirs
+        .iter()
+        .flat_map(|d| std::fs::read_dir(d).unwrap())
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "pdf"))
+        .collect();
+    files.sort();
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    let mut refused = Vec::new();
+    for path in files {
+        let Ok(mut r) = verify(&std::fs::read(&path).unwrap()) else {
+            continue;
+        };
+        for i in 0..r.signatures.len() {
+            let s = &r.signatures[i];
+            let document = s.kind == SigKind::DocumentTimestamp;
+            let authority = if document {
+                s.signer.clone()
+            } else {
+                s.timestamp.as_ref().map(|t| t.authority.clone())
+            };
+            let Some(a) = authority.filter(|_| s.status == SigStatus::Valid) else {
+                continue;
+            };
+            if seen.contains(&a.der) {
+                continue;
+            }
+            seen.push(a.der.clone());
+            let mut list = TrustList::default();
+            list.add(&a.der, TrustRole::Signer, None).unwrap();
+            r.apply_trust(&list);
+            let s = &r.signatures[i];
+            let verdict = if document {
+                s.trust.clone()
+            } else {
+                s.timestamp.as_ref().and_then(|t| t.trust.clone())
+            };
+            let name = path.file_name().unwrap().to_string_lossy();
+            println!("{name} #{}: \"{}\": {verdict:?}", i + 1, a.display_name());
+            if !verdict
+                .as_ref()
+                .is_some_and(limarepdf_core::Trust::is_trusted)
+            {
+                refused.push(format!("{name} #{}: {verdict:?}", i + 1));
+            }
+        }
+    }
+    assert!(refused.is_empty(), "{refused:#?}");
+    seen.len()
+}
+
 /// What changed after a signature, as expected in a sample.
 #[derive(Debug)]
 enum Chg {
@@ -1428,6 +1538,8 @@ fn pyhanko_and_node_signpdf_samples() {
     let r =
         report(&std::fs::read(dir.join("pyhanko/pades-lta-dss-indirect-arrs-test.pdf")).unwrap());
     assert_eq!(r.signatures[1].kind, SigKind::DocumentTimestamp);
+    let n = sample_authorities_pass(&[dir.join("pyhanko"), dir.join("node-signpdf")]);
+    assert!(n > 0);
 }
 
 /// The EU DSS samples: `sh tools/fetch-dss-samples.sh`, then
@@ -1695,6 +1807,7 @@ fn dss_samples() {
     );
     let r = report(&std::fs::read(dir.join("fieldmdp-include.pdf")).unwrap());
     assert!(r.signatures[0].locks.is_some() || r.certification().is_some());
+    assert!(sample_authorities_pass(&[dir]) > 0);
 }
 
 // ---------------------------------------------------------------- cross-checks

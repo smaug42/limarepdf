@@ -9,8 +9,8 @@ mod sigkit;
 mod tool;
 
 use limarepdf_core::{
-    read_certificates, verify_signatures, Added, SigStatus, SignatureReport, Trust, TrustList,
-    TrustRole,
+    read_certificates, verify_signatures, Added, SigKind, SigStatus, SigWarning, SignatureReport,
+    TimeSource, Trust, TrustList, TrustRole,
 };
 use lopdf::{dictionary, Object, Stream};
 use sigkit::*;
@@ -776,6 +776,563 @@ fn many_candidate_issuers_stay_bounded() {
     assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
 }
 
+// ------------------------------------------------------------------ what a certificate is for
+
+const SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
+const EMAIL_PROTECTION: &str = "1.3.6.1.5.5.7.3.4";
+const TIME_STAMPING: &str = "1.3.6.1.5.5.7.3.8";
+const DOCUMENT_SIGNING: &str = "1.3.6.1.5.5.7.3.36";
+const ANY_EKU: &str = "2.5.29.37.0";
+
+/// Key usages (DER bit strings): digital signature; non-repudiation; key encipherment;
+/// digital signature and key encipherment.
+const KU_DS: &[u8] = &[0x03, 0x02, 0x07, 0x80];
+const KU_NR: &[u8] = &[0x03, 0x02, 0x06, 0x40];
+const KU_KE: &[u8] = &[0x03, 0x02, 0x05, 0x20];
+const KU_DS_KE: &[u8] = &[0x03, 0x02, 0x05, 0xa0];
+
+fn key_usage(bits: &[u8]) -> Vec<u8> {
+    ext("2.5.29.15", true, bits)
+}
+
+/// An extended key usage extension listing `uses`.
+fn eku(critical: bool, uses: &[&str]) -> Vec<u8> {
+    let oids: Vec<Vec<u8>> = uses.iter().map(|u| oid(u)).collect();
+    ext(
+        "2.5.29.37",
+        critical,
+        &seq(&oids.iter().map(Vec::as_slice).collect::<Vec<_>>()),
+    )
+}
+
+/// What RFC 3161 asks of a timestamp authority's certificate.
+fn tsa_profile() -> Vec<Vec<u8>> {
+    vec![key_usage(KU_DS), eku(true, &[TIME_STAMPING])]
+}
+
+/// An intermediate authority for the rsa3072 key named `cn`, issued by the test CA (`ca`),
+/// with `more` extensions besides basic constraints.
+fn intermediate(cn: &str, more: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut extensions = vec![
+        ext("2.5.29.19", true, &seq(&[&[0x01, 0x01, 0xff]])),
+        ext_authority_key_id(&cert_der("ca")),
+    ];
+    extensions.extend(more);
+    make_cert(
+        &id_with_cert("ca", "ca"),
+        &CertSpec {
+            key_of: &cert_der("rsa3072"),
+            cn,
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions,
+            inner_alg: None,
+        },
+    )
+}
+
+/// A certificate for the `key` key named `cn`, issued by `issuer` (a certificate for the
+/// rsa3072 key), with `extensions`.
+fn issued_under(issuer: &[u8], key: &str, cn: &str, extensions: Vec<Vec<u8>>) -> Vec<u8> {
+    make_cert(
+        &Id {
+            key: id("rsa3072").key,
+            cert: issuer.to_vec(),
+        },
+        &CertSpec {
+            key_of: &cert_der(key),
+            cn,
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions,
+            inner_alg: None,
+        },
+    )
+}
+
+/// A PDF signed with the p256 key and the certificate `leaf`, carrying `chain`.
+fn signed_carrying(leaf: Vec<u8>, chain: Vec<Vec<u8>>) -> Vec<u8> {
+    sign(
+        &base_pdf(),
+        &Id {
+            key: id("p256").key,
+            cert: leaf,
+        },
+        &Field::default(),
+        &Cms {
+            extra_certs: chain,
+            ..Cms::default()
+        },
+    )
+}
+
+/// A timestamp authority with the rsa2048 key and the certificate `cert`.
+fn stamper(cert: Vec<u8>, carrying: Vec<Vec<u8>>) -> Stamper {
+    Stamper {
+        key: "rsa2048",
+        cert,
+        carrying,
+    }
+}
+
+/// A timestamp authority's certificate for the rsa2048 key, issued by the test CA (`ca`),
+/// with `extensions`.
+fn tsa_cert(extensions: Vec<Vec<u8>>) -> Vec<u8> {
+    make_cert(
+        &id_with_cert("ca", "ca"),
+        &CertSpec {
+            key_of: &cert_der("rsa2048"),
+            cn: "Crafted Timestamp Authority",
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions,
+            inner_alg: None,
+        },
+    )
+}
+
+fn doc_timestamp_field() -> Field {
+    Field {
+        name: "Timestamp1",
+        sub_filter: "ETSI.RFC3161",
+        doc_timestamp: true,
+        invisible: true,
+        m: None,
+        reason: None,
+        ..Field::default()
+    }
+}
+
+/// The two ways a timestamp from `by` reaches a document: a document timestamp at 13:00,
+/// and one embedded at 12:05 in a signature by the rsa3072 self-made ID.
+fn stamped_both_ways(by: Stamper) -> [Vec<u8>; 2] {
+    let document = sign_with(&base_pdf(), &doc_timestamp_field(), |r| {
+        timestamp_token_carrying(
+            &by.id(),
+            r,
+            "20260601130000Z",
+            Hash::Sha256,
+            by.carrying.clone(),
+        )
+    });
+    let embedded = sign(
+        &base_pdf(),
+        &id("rsa3072"),
+        &Field::default(),
+        &Cms {
+            timestamp: Some(("20260601120500Z", false)),
+            timestamp_by: Some(by),
+            ..Cms::default()
+        },
+    );
+    [document, embedded]
+}
+
+/// The verdict on the timestamp authority of the one signature in `pdf` (a document
+/// timestamp, or a signature with an embedded timestamp), and the signature's warnings.
+fn stamp_verdict(pdf: &[u8], list: &TrustList) -> (Trust, Vec<SigWarning>) {
+    let r = report(pdf, list);
+    assert_eq!(r.signatures.len(), 1);
+    let s = &r.signatures[0];
+    assert_eq!(s.status, SigStatus::Valid, "{s:#?}");
+    let t = if s.kind == SigKind::DocumentTimestamp {
+        s.trust.clone()
+    } else {
+        s.timestamp
+            .as_ref()
+            .expect("an embedded timestamp")
+            .trust
+            .clone()
+    };
+    (t.expect("judged"), s.warnings.clone())
+}
+
+#[test]
+fn issuers_limit_what_they_may_issue_for() {
+    let signer = |inter: &[u8], extensions: Vec<Vec<u8>>| {
+        signed_carrying(
+            issued_under(inter, "p256", "Crafted Signer", extensions),
+            vec![inter.to_vec()],
+        )
+    };
+    let signing = || vec![ext_signing_key_usage()];
+    let under_root = "it was issued under \"Test Root CA\", which you trust, but ";
+
+    // An intermediate for websites only vouches neither for a signer nor for a timestamp
+    // authority, as a document timestamp or embedded.
+    let web = intermediate("Website Intermediate", vec![eku(false, &[SERVER_AUTH])]);
+    failed(
+        &trust(&signer(&web, signing()), &ca()),
+        &format!(
+            "{under_root}the certificate of \"Website Intermediate\" doesn't allow it to issue \
+             certificates for signing documents"
+        ),
+    );
+    let authority = issued_under(
+        &web,
+        "rsa2048",
+        "Crafted Timestamp Authority",
+        tsa_profile(),
+    );
+    for pdf in stamped_both_ways(stamper(authority, vec![web.clone()])) {
+        failed(
+            &stamp_verdict(&pdf, &ca()).0,
+            &format!(
+                "{under_root}the certificate of \"Website Intermediate\" doesn't allow it to \
+                 issue certificates for timestamps"
+            ),
+        );
+    }
+
+    // An intermediate for email protection allows signing, but each certificate keeps only
+    // the uses the one above it allows: not a signer meant for document signing alone.
+    let email = intermediate("Email Intermediate", vec![eku(false, &[EMAIL_PROTECTION])]);
+    let document_signing = || vec![ext_signing_key_usage(), eku(false, &[DOCUMENT_SIGNING])];
+    failed(
+        &trust(&signer(&email, document_signing()), &ca()),
+        &format!(
+            "{under_root}the certificate of \"Email Intermediate\" doesn't allow it to issue \
+             certificates for the uses the signer's certificate is meant for"
+        ),
+    );
+    assert!(trust(&signer(&email, signing()), &ca()).is_trusted());
+    let both = vec![
+        ext_signing_key_usage(),
+        eku(false, &[DOCUMENT_SIGNING, EMAIL_PROTECTION]),
+    ];
+    assert!(trust(&signer(&email, both), &ca()).is_trusted());
+
+    // A trusted root that is itself for websites only (the ca key, self-signed).
+    let named = make_cert(
+        &id_with_cert("ca", "ca"),
+        &CertSpec {
+            key_of: &cert_der("ca"),
+            cn: "Website Root",
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions: Vec::new(),
+            inner_alg: None,
+        },
+    );
+    let web_root = make_cert(
+        &Id {
+            key: id("ca").key,
+            cert: named,
+        },
+        &CertSpec {
+            key_of: &cert_der("ca"),
+            cn: "Website Root",
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions: vec![
+                ext("2.5.29.19", true, &seq(&[&[0x01, 0x01, 0xff]])),
+                eku(false, &[SERVER_AUTH]),
+            ],
+            inner_alg: None,
+        },
+    );
+    let leaf = make_cert(
+        &Id {
+            key: id("ca").key,
+            cert: web_root.clone(),
+        },
+        &CertSpec {
+            key_of: &cert_der("p256"),
+            cn: "Crafted Signer",
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions: signing(),
+            inner_alg: None,
+        },
+    );
+    let mut list = TrustList::default();
+    list.add(&web_root, TrustRole::Authority, None).unwrap();
+    failed(
+        &trust(&signed_carrying(leaf, Vec::new()), &list),
+        "it was issued under \"Website Root\", which you trust, but the certificate of \
+         \"Website Root\" doesn't allow it to issue certificates for signing documents",
+    );
+
+    // Two intermediates of the same name and key, the one for websites first: the signer is
+    // trusted through the other.
+    let open = intermediate("Website Intermediate", Vec::new());
+    let leaf = issued_under(&web, "p256", "Crafted Signer", signing());
+    match trust(
+        &signed_carrying(leaf, vec![web.clone(), open.clone()]),
+        &ca(),
+    ) {
+        Trust::Authority { chain, .. } => assert!(chain[1].der == open, "through the first"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn issuers_that_allow_the_use_vouch() {
+    let document_signing = || vec![ext_signing_key_usage(), eku(false, &[DOCUMENT_SIGNING])];
+    // Intermediates with no extended key usage or any use, for a signer meant for document
+    // signing alone, and one for timestamps for a timestamp authority.
+    for (cn, more) in [
+        ("Open Intermediate", Vec::new()),
+        ("Any Use Intermediate", vec![eku(false, &[ANY_EKU])]),
+    ] {
+        let inter = intermediate(cn, more);
+        let leaf = issued_under(&inter, "p256", "Crafted Signer", document_signing());
+        let t = trust(&signed_carrying(leaf, vec![inter]), &ca());
+        assert!(t.is_trusted(), "{cn}: {t:?}");
+    }
+    let stamps = intermediate(
+        "Timestamp Only Intermediate",
+        vec![eku(false, &[TIME_STAMPING])],
+    );
+    let authority = issued_under(
+        &stamps,
+        "rsa2048",
+        "Crafted Timestamp Authority",
+        tsa_profile(),
+    );
+    for pdf in stamped_both_ways(stamper(authority, vec![stamps.clone()])) {
+        let (t, warnings) = stamp_verdict(&pdf, &ca());
+        assert!(t.is_trusted(), "{t:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+    let (tsa, inter) = tsa_under_intermediate();
+    for pdf in stamped_both_ways(stamper(tsa.cert, vec![inter])) {
+        let (t, _) = stamp_verdict(&pdf, &ca());
+        assert!(t.is_trusted(), "{t:?}");
+    }
+}
+
+#[test]
+fn timestamp_authorities_need_the_rfc_3161_profile() {
+    let ts = || eku(true, &[TIME_STAMPING]);
+    let cases = [
+        (
+            "key encipherment alone",
+            vec![key_usage(KU_KE), ts()],
+            "the timestamp authority's certificate doesn't allow its key to sign",
+        ),
+        (
+            "digital signature and key encipherment",
+            vec![key_usage(KU_DS_KE), ts()],
+            "the timestamp authority's key may also be used for other things, but RFC 3161 \
+             requires a key kept for timestamps",
+        ),
+        (
+            "extended key usage not critical",
+            vec![key_usage(KU_DS), eku(false, &[TIME_STAMPING])],
+            "the timestamp authority's certificate doesn't insist on being used only for \
+             timestamps, as RFC 3161 requires",
+        ),
+        (
+            "timestamps and email",
+            vec![
+                key_usage(KU_DS),
+                eku(true, &[TIME_STAMPING, EMAIL_PROTECTION]),
+            ],
+            "the timestamp authority's certificate is also meant for other uses, but RFC 3161 \
+             requires it to be for timestamps only",
+        ),
+        (
+            "any use alone",
+            vec![key_usage(KU_DS), eku(true, &[ANY_EKU])],
+            "the timestamp authority's certificate isn't meant for timestamps",
+        ),
+        (
+            "no extended key usage",
+            vec![key_usage(KU_DS)],
+            "the timestamp authority's certificate isn't meant for timestamps",
+        ),
+    ];
+    for (what, extensions, why) in cases {
+        let cert = tsa_cert(extensions);
+        let mut itself = TrustList::default();
+        itself.add(&cert, TrustRole::Signer, None).unwrap();
+        for list in [itself, ca()] {
+            for pdf in stamped_both_ways(stamper(cert.clone(), Vec::new())) {
+                let (t, warnings) = stamp_verdict(&pdf, &list);
+                assert!(
+                    matches!(&t, Trust::Failed(w) if w.contains(why)),
+                    "{what}: {t:?}"
+                );
+                assert_eq!(
+                    warnings,
+                    [SigWarning::NotATimestampAuthority(why.into())],
+                    "{what}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn timestamp_authorities_with_the_profile_are_trusted() {
+    let ts = || eku(true, &[TIME_STAMPING]);
+    // Trusted without a warning: the test authority as itself, and the profile with
+    // non-repudiation alone or no key usage, as itself and under the test CA.
+    let mut controls = vec![(
+        "the test authority",
+        Stamper {
+            key: "rsa2048",
+            cert: cert_der("tsa"),
+            carrying: Vec::new(),
+        },
+        false,
+    )];
+    for (what, extensions) in [
+        ("non-repudiation", vec![key_usage(KU_NR), ts()]),
+        ("no key usage", vec![ts()]),
+    ] {
+        controls.push((what, stamper(tsa_cert(extensions), Vec::new()), true));
+    }
+    for (what, by, under_ca) in controls {
+        let mut itself = TrustList::default();
+        itself.add(&by.cert, TrustRole::Signer, None).unwrap();
+        let lists = if under_ca {
+            vec![itself, ca()]
+        } else {
+            vec![itself]
+        };
+        let pdfs = stamped_both_ways(by);
+        for list in &lists {
+            for pdf in &pdfs {
+                let (t, warnings) = stamp_verdict(pdf, list);
+                assert!(t.is_trusted(), "{what}: {t:?}");
+                assert!(warnings.is_empty(), "{what}: {warnings:?}");
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ which time counts
+
+/// Signed with the p256 key and a certificate from the test CA valid `from` `to`, at
+/// `signer_time` by the signer's clock (or with no time of its own), with a timestamp from
+/// the test authority (`tsa`) at 12:05.
+fn stamped_signature(signer_time: Option<&'static str>, from: &str, to: &str) -> Vec<u8> {
+    let leaf = make_cert(
+        &id_with_cert("ca", "ca"),
+        &CertSpec {
+            key_of: &cert_der("p256"),
+            cn: "Short-Lived Signer",
+            not_before: from,
+            not_after: to,
+            extensions: vec![ext_signing_key_usage()],
+            inner_alg: None,
+        },
+    );
+    sign(
+        &base_pdf(),
+        &Id {
+            key: id("p256").key,
+            cert: leaf,
+        },
+        &Field {
+            m: None,
+            ..Field::default()
+        },
+        &Cms {
+            signing_time: signer_time,
+            timestamp: Some(("20260601120500Z", false)),
+            ..Cms::default()
+        },
+    )
+}
+
+#[test]
+fn only_a_trusted_timestamp_sets_the_signing_time() {
+    // The signer's certificate ends at 12:03; the signer says 12:02, the timestamp 12:05.
+    let pdf = stamped_signature(Some("260601120200Z"), "260101000000Z", "260601120300Z");
+    let with_tsa = trusting(&[("ca", TrustRole::Authority), ("tsa", TrustRole::Signer)]);
+    let by_the_signer = |r: &SignatureReport| {
+        let s = &r.signatures[0];
+        let t = s.time.unwrap();
+        assert_eq!(
+            (t.time.to_rfc3339(), t.source),
+            ("2026-06-01T12:02:00+00:00".into(), TimeSource::SignerClock)
+        );
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        unknown(
+            s.timestamp.as_ref().unwrap().trust.as_ref().unwrap(),
+            "self-made",
+        );
+        assert!(s.trust.as_ref().unwrap().is_trusted(), "{:?}", s.trust);
+        assert!(!s.fully_trusted());
+        assert!(!r.all_trusted());
+    };
+    let by_the_timestamp = |r: &SignatureReport| {
+        let s = &r.signatures[0];
+        let t = s.time.unwrap();
+        assert_eq!(
+            (t.time.to_rfc3339(), t.source),
+            ("2026-06-01T12:05:00+00:00".into(), TimeSource::Timestamp)
+        );
+        assert_eq!(
+            s.signer_time.map(|t| t.source),
+            Some(TimeSource::SignerClock)
+        );
+        assert_eq!(s.warnings, [SigWarning::CertificateNotValidAtSigning]);
+        assert!(s
+            .timestamp
+            .as_ref()
+            .unwrap()
+            .trust
+            .as_ref()
+            .unwrap()
+            .is_trusted());
+        failed(
+            s.trust.as_ref().unwrap(),
+            "wasn't valid at the signing time",
+        );
+        assert!(!r.all_trusted());
+    };
+    let mut r = report(&pdf, &ca());
+    by_the_signer(&r);
+    r.apply_trust(&with_tsa);
+    by_the_timestamp(&r);
+    r.apply_trust(&ca());
+    by_the_signer(&r);
+    by_the_timestamp(&report(&pdf, &with_tsa));
+
+    // With no time from the signer, an untrusted timestamp leaves none, and the chain is
+    // checked today. This certificate starts at 12:06.
+    let pdf = stamped_signature(None, "260601120600Z", "360101000000Z");
+    let r = report(&pdf, &ca());
+    let s = &r.signatures[0];
+    assert_eq!(s.time, None);
+    assert!(s.trust.as_ref().unwrap().is_trusted(), "{:?}", s.trust);
+    let r = report(&pdf, &with_tsa);
+    let s = &r.signatures[0];
+    assert_eq!(s.time.unwrap().source, TimeSource::Timestamp);
+    assert_eq!(s.warnings, [SigWarning::CertificateNotValidAtSigning]);
+    failed(
+        s.trust.as_ref().unwrap(),
+        "wasn't valid at the signing time",
+    );
+
+    // The signer and the timestamp authority both trusted.
+    let pdf = stamped_signature(Some("260601120200Z"), "260101000000Z", "360101000000Z");
+    let r = report(&pdf, &with_tsa);
+    assert!(r.signatures[0].fully_trusted());
+    assert!(r.all_trusted());
+
+    // A document timestamp has no other time: from an authority not trusted, it's a claim.
+    let stamped = sign_with(&base_pdf(), &doc_timestamp_field(), |r| {
+        timestamp_token(&tsa(), r, "20260601130000Z", Hash::Sha256)
+    });
+    let mut r = report(&stamped, &TrustList::default());
+    let t = r.signatures[0].time.unwrap();
+    assert_eq!(
+        (t.time.to_rfc3339(), t.source),
+        (
+            "2026-06-01T13:00:00+00:00".into(),
+            TimeSource::UnconfirmedTimestamp
+        )
+    );
+    r.apply_trust(&trusting(&[("tsa", TrustRole::Signer)]));
+    assert_eq!(r.signatures[0].time.unwrap().source, TimeSource::Timestamp);
+    assert!(r.all_trusted());
+}
+
 // ------------------------------------------------------------------ the trust list
 
 #[test]
@@ -1055,5 +1612,80 @@ fn cross_check_with_openssl() {
             .success();
         let limarepdf = trust(&signed_by(leaf, chain), &root()).is_trusted();
         assert_eq!(limarepdf, ok, "{leaf}: LimarePDF and OpenSSL disagree");
+    }
+
+    // Hand-made certificates under the test CA, judged by `-purpose` (left out: issuers above
+    // a timestamp authority, whose uses OpenSSL doesn't check, and any-use or code-signing
+    // intermediates, which `smimesign` refuses and LimarePDF allows).
+    let write = |der: &[u8], file: &str| {
+        let p = dir.join(file);
+        let pem = der::pem::encode_string("CERTIFICATE", der::pem::LineEnding::LF, der).unwrap();
+        std::fs::write(&p, pem).unwrap();
+        p
+    };
+    let ca_pem = pem_of(&["ca"], "ca.pem");
+    let openssl_ok = |purpose: &str, leaf: &[u8], chain: &[Vec<u8>]| {
+        let mut cmd = std::process::Command::new("openssl");
+        cmd.args([
+            "verify",
+            "-attime",
+            "1780315200",
+            "-purpose",
+            purpose,
+            "-CAfile",
+        ])
+        .arg(&ca_pem);
+        for (i, c) in chain.iter().enumerate() {
+            cmd.arg("-untrusted")
+                .arg(write(c, &format!("chain{i}.pem")));
+        }
+        tool::output(cmd.arg(write(leaf, "leaf.pem")))
+            .expect("openssl installed")
+            .status
+            .success()
+    };
+    let web = intermediate("Website Intermediate", vec![eku(false, &[SERVER_AUTH])]);
+    let open = intermediate("Open Intermediate", Vec::new());
+    for inter in [web, open] {
+        let leaf = issued_under(
+            &inter,
+            "p256",
+            "Crafted Signer",
+            vec![ext_signing_key_usage()],
+        );
+        let ok = openssl_ok("smimesign", &leaf, std::slice::from_ref(&inter));
+        let limarepdf = trust(&signed_carrying(leaf, vec![inter]), &ca()).is_trusted();
+        assert_eq!(
+            limarepdf, ok,
+            "an intermediate: LimarePDF and OpenSSL disagree"
+        );
+    }
+    let ts = || eku(true, &[TIME_STAMPING]);
+    let profiles: [(&str, Vec<Vec<u8>>); 9] = [
+        ("the profile", tsa_profile()),
+        ("non-repudiation", vec![key_usage(KU_NR), ts()]),
+        ("no key usage", vec![ts()]),
+        (
+            "not critical",
+            vec![key_usage(KU_DS), eku(false, &[TIME_STAMPING])],
+        ),
+        (
+            "and email",
+            vec![
+                key_usage(KU_DS),
+                eku(true, &[TIME_STAMPING, EMAIL_PROTECTION]),
+            ],
+        ),
+        ("any use", vec![key_usage(KU_DS), eku(true, &[ANY_EKU])]),
+        ("key encipherment", vec![key_usage(KU_KE), ts()]),
+        ("and key encipherment", vec![key_usage(KU_DS_KE), ts()]),
+        ("no extended key usage", vec![key_usage(KU_DS)]),
+    ];
+    for (what, extensions) in profiles {
+        let cert = tsa_cert(extensions);
+        let ok = openssl_ok("timestampsign", &cert, &[]);
+        let [document, _] = stamped_both_ways(stamper(cert, Vec::new()));
+        let limarepdf = stamp_verdict(&document, &ca()).0.is_trusted();
+        assert_eq!(limarepdf, ok, "{what}: LimarePDF and OpenSSL disagree");
     }
 }

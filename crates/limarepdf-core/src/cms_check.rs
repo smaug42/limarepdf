@@ -51,7 +51,6 @@ pub(crate) mod oid {
     pub const P256: Oid = Oid::new_unwrap("1.2.840.10045.3.1.7");
     pub const P384: Oid = Oid::new_unwrap("1.3.132.0.34");
 
-    pub const KP_TIME_STAMPING: Oid = Oid::new_unwrap("1.3.6.1.5.5.7.3.8");
     pub const COMMON_NAME: Oid = Oid::new_unwrap("2.5.4.3");
     pub const ORGANISATION: Oid = Oid::new_unwrap("2.5.4.10");
     pub const EMAIL: Oid = Oid::new_unwrap("1.2.840.113549.1.9.1");
@@ -179,12 +178,19 @@ impl Cert {
 
     /// The extension of type `T`; `None` when absent, unreadable or repeated.
     pub(crate) fn extension<'a, T: Decode<'a> + der::oid::AssociatedOid>(&'a self) -> Option<T> {
+        self.extension_critical().map(|(_, v)| v)
+    }
+
+    /// The extension of type `T`, with whether it is marked critical; `None` when absent,
+    /// unreadable or repeated.
+    pub(crate) fn extension_critical<'a, T: Decode<'a> + der::oid::AssociatedOid>(
+        &'a self,
+    ) -> Option<(bool, T)> {
         self.cert
             .tbs_certificate()
             .get_extension::<T>()
             .ok()
             .flatten()
-            .map(|(_, v)| v)
     }
 
     /// False when the certificate limits its key to uses that don't include signing.
@@ -202,13 +208,6 @@ impl Cert {
             .algorithm
             .oid
             == oid::RSA_PSS
-    }
-
-    /// Whether the certificate is meant for a timestamp authority.
-    pub fn for_timestamping(&self) -> bool {
-        use x509_cert::ext::pkix::ExtendedKeyUsage;
-        self.extension::<ExtendedKeyUsage>()
-            .is_some_and(|e| e.0.contains(&oid::KP_TIME_STAMPING))
     }
 
     pub(crate) fn subject_key_id(&self) -> Option<Vec<u8>> {

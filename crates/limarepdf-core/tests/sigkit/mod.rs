@@ -357,6 +357,8 @@ pub struct Cms {
     /// An embedded timestamp from [`tsa`] at this GeneralizedTime; with the flag set, for
     /// other data than the signature value.
     pub timestamp: Option<(&'static str, bool)>,
+    /// The authority of that timestamp instead of [`tsa`].
+    pub timestamp_by: Option<Stamper>,
     /// Indefinite lengths on the outer structures (BER).
     pub ber: bool,
     /// Flip a bit of the signature value.
@@ -384,8 +386,27 @@ impl Default for Cms {
             digest_alg: None,
             sig_alg: None,
             timestamp: None,
+            timestamp_by: None,
             ber: false,
             corrupt: false,
+        }
+    }
+}
+
+/// A timestamp authority for [`Cms::timestamp_by`]: its key (keys/KEY.key.der), its
+/// certificate, and other certificates its token carries.
+#[derive(Clone)]
+pub struct Stamper {
+    pub key: &'static str,
+    pub cert: Vec<u8>,
+    pub carrying: Vec<Vec<u8>>,
+}
+
+impl Stamper {
+    pub fn id(&self) -> Id {
+        Id {
+            key: id(self.key).key,
+            cert: self.cert.clone(),
         }
     }
 }
@@ -470,7 +491,12 @@ fn signer_info(signer: &Id, message: &[&[u8]], o: &Cms) -> Vec<u8> {
     let mut unsigned = None;
     if let Some((time, wrong)) = o.timestamp {
         let data: &[u8] = if wrong { b"something else" } else { &value };
-        let token = timestamp_token(&tsa(), &[data], time, Hash::Sha256);
+        let token = match &o.timestamp_by {
+            Some(a) => {
+                timestamp_token_carrying(&a.id(), &[data], time, Hash::Sha256, a.carrying.clone())
+            }
+            None => timestamp_token(&tsa(), &[data], time, Hash::Sha256),
+        };
         unsigned = Some(ctx(1, &attr(TIMESTAMP_TOKEN, &token)));
     }
     let sid = if o.ski { tlv(0x80, &ski) } else { isn };

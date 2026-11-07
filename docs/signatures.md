@@ -13,8 +13,11 @@ password-protected documents (see [Limitations](#limitations)).
 ## Check a signed document
 
 1. Open it. LimarePDF checks its signatures by itself, and a banner above the pages gives the result: green
-   (valid, and you trust every signer), amber (nothing broken, but LimarePDF can't confirm who signed, or there are
-   warnings), grey (a signature can't be checked) or red (broken, or changed in ways a signer didn't allow).
+   (valid, and you trust every signer and every timestamp authority), amber (nothing broken, but LimarePDF can't
+   confirm who signed or who gave a timestamp, or there are warnings), grey (a signature can't be checked) or red
+   (broken, or changed in ways a signer didn't allow). A timestamp's time counts only once you trust its authority;
+   until then the signing time is the signer's own (see
+   [Signing times](signatures-in-depth.md#signing-times)).
 2. Press **Signatures** in the banner to see each signature, what changed after it, and **Details…**.
 3. To see a signer as trusted, check their certificate's fingerprint with them, then use **Trust this signer…** in
    Details (see [Trusting signers](#trusting-signers)).

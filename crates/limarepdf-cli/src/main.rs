@@ -414,8 +414,8 @@ enum Cmd {
         /// Use this trust list instead of LimarePDF's own (see `limarepdf-cli trust`)
         #[arg(long, value_name = "FILE")]
         trust_file: Option<PathBuf>,
-        /// Also exit with status 1 unless the file has signatures and every signer is
-        /// trusted
+        /// Also exit with status 1 unless the file has signatures and every signer, and
+        /// every timestamp authority a signature carries, is trusted
         #[arg(long)]
         require_trusted: bool,
         /// Save the version signature N (numbered as listed) signed, instead of the
@@ -1943,6 +1943,9 @@ fn print_verify(input: &Path, rep: &SignatureReport) -> Result<()> {
             let from = match t.source {
                 TimeSource::Timestamp => "from a timestamp authority",
                 TimeSource::SignerClock | TimeSource::Dictionary => "from the signer's computer",
+                TimeSource::UnconfirmedTimestamp => {
+                    "claimed by a timestamp authority that isn't trusted"
+                }
             };
             let label = if s.kind == SigKind::DocumentTimestamp {
                 "Time:"
@@ -1956,18 +1959,23 @@ fn print_verify(input: &Path, rep: &SignatureReport) -> Result<()> {
             .as_ref()
             .filter(|_| s.kind != SigKind::DocumentTimestamp)
         {
-            let trusted = match &ts.trust {
-                Some(t) if t.is_trusted() => " (trusted)".to_string(),
-                Some(Trust::Failed(why)) => format!(" (NOT TRUSTED: {})", clean(why)),
-                _ => " (LimarePDF can't confirm this authority)".to_string(),
-            };
+            let (when, by) = (
+                ts.time.format(VERIFY_TIME),
+                clean(ts.authority.display_name()),
+            );
             row!(
                 "Timestamp:",
-                format!(
-                    "{} by {}{trusted}",
-                    ts.time.format(VERIFY_TIME),
-                    clean(ts.authority.display_name())
-                ),
+                match &ts.trust {
+                    Some(t) if t.is_trusted() => format!("{when} by {by} (trusted)"),
+                    Some(Trust::Failed(why)) => format!(
+                        "{when}, claimed by {by} (NOT TRUSTED: {}; this time isn't used)",
+                        clean(why)
+                    ),
+                    _ => format!(
+                        "{when}, claimed by {by} (LimarePDF can't confirm this authority, so \
+                         this time isn't used)"
+                    ),
+                },
             );
         }
         for (label, v) in [
@@ -2874,6 +2882,7 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
                     TimeSource::Timestamp => "timestamp",
                     TimeSource::SignerClock => "signer_clock",
                     TimeSource::Dictionary => "signature_dictionary",
+                    TimeSource::UnconfirmedTimestamp => "unconfirmed_timestamp",
                 }),
                 "timestamp": s.timestamp.as_ref().map(|t| json!({
                     "time": t.time.to_rfc3339(),

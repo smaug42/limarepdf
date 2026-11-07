@@ -231,7 +231,7 @@ See [Removing hidden information](redaction.md#removing-hidden-information).
 | `limarepdf-cli verify in.pdf` | Check every digital signature: whether the signed part is unchanged, who signed by their certificate, when, and warnings; what changed after each signature and whether the signer allowed it; also lists signature fields not signed yet |
 | `limarepdf-cli verify in.pdf --json` | The same as JSON, for scripts |
 | `limarepdf-cli verify in.pdf --signed-version 1 -o signed.pdf` | Save the version signature 1 (numbered as `limarepdf-cli verify` lists them) signed: the file as it was when signed, without later changes. Refused for a broken signature |
-| `limarepdf-cli verify in.pdf --require-trusted` | Also exit with status 1 unless the file has signatures and every signer is trusted |
+| `limarepdf-cli verify in.pdf --require-trusted` | Also exit with status 1 unless the file has signatures and every signer, and every timestamp authority a signature carries, is trusted |
 | `limarepdf-cli verify in.pdf --trust-file team.txt` | Judge trust by this trust list instead of your own |
 | `limarepdf-cli trust list` | The certificates you trust, with their fingerprints (`--json` for scripts) |
 | `limarepdf-cli trust add contract.pdf --signature 1` | Trust the signer of signature 1. Compare the SHA-256 fingerprint with them first |
@@ -244,6 +244,12 @@ Exit status 0 means every signature checked as valid (or there are none) and not
 that its signer didn't allow; 1 means at least one is broken, can't be checked or has changes that aren't allowed,
 or the file can't be opened. A signer nobody vouches for doesn't change the exit status unless `--require-trusted`
 is given. See [What each result means](signatures-in-depth.md#what-each-result-means).
+
+In `--json`, a signature's `time` is the time its certificates were checked at, and `time_source` says where it
+came from: `timestamp` (a timestamp authority you trust), `unconfirmed_timestamp` (a document timestamp whose
+authority you don't trust), `signer_clock` or `signature_dictionary` (the signer's own computer, in the signed
+data or in the signature's `/M` entry). An embedded timestamp is under `timestamp`, with its own `trust`; its time
+is used only when its authority is trusted. See [Signing times](signatures-in-depth.md#signing-times).
 
 The trust list is `trust.txt` in LimarePDF's settings folder (`~/.config/limarepdf/` on Linux), shared with the app; every
 `limarepdf-cli trust` command takes `--trust-file FILE` to work on another one. Trust settings affect LimarePDF only. See
