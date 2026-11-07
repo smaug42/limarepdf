@@ -1,12 +1,13 @@
 //! Flattening a form: drawing its widgets into the pages' content as they look now, then
 //! removing the fields.
 
-use crate::forms::FieldValue;
+use crate::annots::NO_VIEW;
+use crate::forms::{FieldValue, Reach};
 use crate::matrix::{self as mx, M};
 use crate::{quoted_list, Pdf, Result};
 use anyhow::bail;
 use lopdf::{Dictionary, Object, ObjectId};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Annotation flag (`/F`) for an annotation that is not shown.
 const HIDDEN: i64 = 1 << 1;
@@ -52,9 +53,10 @@ impl Pdf {
     /// so the fields can no longer be filled in. `pages` (zero-based) limits this to some
     /// pages; a field with widgets on other pages stays fillable there. Fields left with
     /// no widgets are removed, and the form itself once none are left. Hidden widgets are
-    /// removed without being drawn. Refuses, with nothing changed, when a shown field's
-    /// value has no drawing and LimarePDF can't draw it, as it would be lost. Returns how
-    /// many widgets were drawn.
+    /// removed without being drawn. Every field is drawn, past the 10,000 LimarePDF lists
+    /// too. Refuses, with nothing changed, when a shown field's value has no drawing and
+    /// LimarePDF can't draw it, as it would be lost, and when the fields are nested more
+    /// than 32 deep, too deep to follow them all. Returns how many widgets were drawn.
     pub fn flatten_form(&mut self, pages: Option<&[usize]>) -> Result<usize> {
         self.flatten_widgets(pages, flat_widget, true)
     }
@@ -71,14 +73,14 @@ impl Pdf {
     /// widgets showing a value that has no drawing, which LimarePDF can't draw either.
     /// Changes nothing.
     pub fn unprintable_fields(&self, pages: &[usize]) -> Vec<String> {
-        self.lost_values(pages, print_widget)
+        self.lost_values(pages, print_widget, Reach::Every)
     }
 
     /// The fields on `pages` (zero-based) whose values won't show in pictures of the pages
     /// ([`Pdf::render_snapshot`]): widgets showing a value that has no drawing, which
     /// LimarePDF can't draw either. Changes nothing.
     pub fn unshown_fields(&self, pages: &[usize]) -> Vec<String> {
-        self.lost_values(pages, flat_widget)
+        self.lost_values(pages, flat_widget, Reach::Listed)
     }
 
     /// The fields whose values flattening the whole form ([`Pdf::flatten_form`]) would
@@ -86,17 +88,23 @@ impl Pdf {
     /// LimarePDF can't draw either. Changes nothing.
     pub fn undrawable_fields(&self) -> Vec<String> {
         let pages: Vec<usize> = (0..self.page_count()).collect();
-        self.unshown_fields(&pages)
+        self.lost_values(&pages, flat_widget, Reach::Every)
     }
 
-    /// The fields on `pages` whose values drawing the widgets `which` draws would lose.
-    fn lost_values(&self, pages: &[usize], which: fn(&Pdf, &Dictionary) -> Flat) -> Vec<String> {
-        if self.undrawn(pages, which).is_empty() {
+    /// The fields on `pages` that `reach` takes whose values drawing the widgets `which`
+    /// draws would lose.
+    fn lost_values(
+        &self,
+        pages: &[usize],
+        which: fn(&Pdf, &Dictionary) -> Flat,
+        reach: Reach,
+    ) -> Vec<String> {
+        if self.undrawn(pages, which, reach).is_empty() {
             return Vec::new();
         }
         let mut copy = self.clone();
-        copy.refresh_appearances();
-        copy.undrawn(pages, which)
+        copy.refresh_reaching(reach);
+        copy.undrawn(pages, which, reach)
     }
 
     /// `refuse`: when a value would be lost, refuse with nothing changed rather than
@@ -110,12 +118,21 @@ impl Pdf {
         let ids = self.page_ids();
         let whole = pages.is_none();
         let pages = self.page_list(pages)?;
+        // Every field is drawn, not only those listed: a field left out loses its value
+        // (PB-90). One nested too deep to follow could be lost the same way.
+        if refuse && self.field_nodes(Reach::Every).1 {
+            bail!(
+                "This form's fields are nested too deeply for LimarePDF to follow (more than \
+                 {MAX_DEPTH} levels), so flattening could lose some of them. Nothing was \
+                 changed."
+            );
+        }
         // A field with a value but no drawing would otherwise vanish. Drawing can't add one
         // for every value, so when one is missing it is tried on a copy first.
-        if refuse && !self.undrawn(&pages, which).is_empty() {
+        if refuse && !self.undrawn(&pages, which, Reach::Every).is_empty() {
             let mut copy = self.clone();
-            copy.refresh_appearances();
-            let lost = copy.undrawn(&pages, which);
+            copy.refresh_reaching(Reach::Every);
+            let lost = copy.undrawn(&pages, which, Reach::Every);
             if !lost.is_empty() {
                 let (what, them) = match lost.len() {
                     1 => ("the value of the field", "it"),
@@ -129,14 +146,16 @@ impl Pdf {
             }
             *self = copy;
         } else {
-            self.refresh_appearances();
+            self.refresh_reaching(Reach::Every);
         }
         // Appearances without resources of their own use the form's.
         let dr = self.acro_form().and_then(|f| f.get(b"DR").ok()).cloned();
         let mut removed = HashSet::new();
         let mut drawn = 0;
         for i in pages {
-            drawn += self.flatten_page(ids[i], which, dr.as_ref(), "LimareField", &mut removed)?;
+            let page = ids[i];
+            drawn +=
+                self.flatten_page(page, which, dr.as_ref(), "LimareField", &mut removed, None)?;
         }
         if whole {
             self.remove_form()?;
@@ -147,9 +166,14 @@ impl Pdf {
     }
 
     /// The fields with a widget on `pages` that `which` draws, that is shown and shows a
-    /// value, and that has no drawing: flattening it would lose the value. In the field
-    /// tree's order.
-    fn undrawn(&self, pages: &[usize], which: fn(&Pdf, &Dictionary) -> Flat) -> Vec<String> {
+    /// value, and that has no drawing: flattening it would lose the value. Of the fields
+    /// `reach` takes, in the field tree's order.
+    fn undrawn(
+        &self,
+        pages: &[usize],
+        which: fn(&Pdf, &Dictionary) -> Flat,
+        reach: Reach,
+    ) -> Vec<String> {
         let ids = self.page_ids();
         let mut drawn = HashSet::new();
         for page in pages.iter().filter_map(|&i| ids.get(i)) {
@@ -162,7 +186,7 @@ impl Pdf {
             }
         }
         let mut out = Vec::new();
-        for (field, node) in self.form_nodes() {
+        for (field, node) in self.field_nodes(reach).0 {
             let lost = node.widgets.iter().any(|w| {
                 drawn.contains(w)
                     && self.doc.get_dictionary(*w).is_ok_and(|d| {
@@ -215,7 +239,9 @@ impl Pdf {
 
     /// Draw and remove one page's annotations as `which` says, adding the removed ones to
     /// `removed`. Appearances without resources get `dr`; the drawings are named from
-    /// `prefix` in the page's resources.
+    /// `prefix` in the page's resources. With `unplaced`, a shown annotation to draw that
+    /// can't be placed on the page (no `/Rect`, or no drawing with a box) stays as it was,
+    /// with its popup and replies, rather than go undrawn, and is added to `unplaced`.
     pub(crate) fn flatten_page(
         &mut self,
         page: ObjectId,
@@ -223,6 +249,7 @@ impl Pdf {
         dr: Option<&Object>,
         prefix: &str,
         removed: &mut HashSet<ObjectId>,
+        mut unplaced: Option<&mut Vec<ObjectId>>,
     ) -> Result<usize> {
         let Some(annots) = self
             .doc
@@ -235,26 +262,66 @@ impl Pdf {
         else {
             return Ok(0);
         };
-        let mut kept = Vec::new();
+        let mut keep = vec![false; annots.len()];
         let mut shown = Vec::new();
-        for a in &annots {
+        // The unplaced annotations kept, and what each dropped one goes with (a popup's
+        // annotation, the one a reply answers), to keep those that go with a kept one.
+        let mut held = Vec::new();
+        let mut goes_with: HashMap<ObjectId, Vec<usize>> = HashMap::new();
+        for (i, a) in annots.iter().enumerate() {
             let found = a
                 .as_reference()
                 .ok()
                 .and_then(|id| Some((id, self.doc.get_dictionary(id).ok()?)));
             let Some((id, d)) = found else {
-                kept.push(a.clone());
+                keep[i] = true;
                 continue;
             };
             match which(self, d) {
-                Flat::Keep => {
-                    kept.push(a.clone());
-                    continue;
+                Flat::Keep => keep[i] = true,
+                Flat::Drop if unplaced.is_some() => {
+                    let popup = d.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Popup");
+                    let key: &[u8] = if popup { b"Parent" } else { b"IRT" };
+                    if let Ok(to) = d.get(key).and_then(|o| o.as_reference()) {
+                        goes_with.entry(to).or_default().push(i);
+                    }
                 }
                 Flat::Drop => {}
-                Flat::Draw => shown.extend(self.placement(d)),
+                Flat::Draw => match self.placement(d) {
+                    Some(p) => shown.push(p),
+                    None if unplaced.is_some() => {
+                        let flags = d.get(b"F").ok().and_then(|o| self.int_value(o));
+                        // Hidden ones still go undrawn: nothing shown is lost.
+                        if flags.unwrap_or(0) & (HIDDEN | NO_VIEW) == 0 {
+                            keep[i] = true;
+                            held.push(id);
+                        }
+                    }
+                    None => {}
+                },
             }
-            removed.insert(id);
+        }
+        // Its popup and replies, and theirs, are its comment.
+        let mut todo = held.clone();
+        while let Some(id) = todo.pop() {
+            for &i in goes_with.get(&id).into_iter().flatten() {
+                if !keep[i] {
+                    keep[i] = true;
+                    todo.extend(annots[i].as_reference().ok());
+                }
+            }
+        }
+        if let Some(list) = unplaced.as_mut() {
+            list.extend(&held);
+        }
+        let mut kept = Vec::new();
+        for (a, &k) in annots.iter().zip(&keep) {
+            match (k, a.as_reference()) {
+                (false, Ok(id)) => {
+                    removed.insert(id);
+                }
+                _ => kept.push(a.clone()),
+            }
         }
         if kept.len() == annots.len() {
             return Ok(0);

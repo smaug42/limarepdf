@@ -63,7 +63,7 @@ with the status it would have had otherwise.
 | `limarepdf-cli form fill in.pdf -o out.pdf --set name=Ann --set agree=on` | Fill in fields. Checkboxes take `on` or `off`; a multi-select list takes its choices separated by `\|` |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json` | Fill in fields from a JSON object in the form `limarepdf-cli form list --json` prints, so you can list, edit and fill. A choice can be given by its export value or by the text shown for it. `--set` can be added and is applied after the file |
 | `limarepdf-cli form reset in.pdf -o out.pdf` | Put every field back to its default value |
-| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so they can no longer be filled in. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable. Refuses, naming the fields, when a shown value has no drawing and LimarePDF can't draw it (text beyond Latin, Greek and Cyrillic), rather than lose it |
+| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so they can no longer be filled in. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable. Refuses, naming the fields, when a shown value has no drawing and LimarePDF can't draw it (text beyond Latin, Greek and Cyrillic), rather than lose it, and refuses a form whose fields are nested more than 32 levels deep, which LimarePDF can't follow to the end |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json --flatten` | Fill in, then flatten |
 
 Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
@@ -90,7 +90,7 @@ with that reason. Hybrid forms, which carry ordinary fields alongside the XFA, a
 | --- | --- |
 | `limarepdf-cli annot remove in.pdf -o out.pdf` | Remove every annotation (links and form fields stay) |
 | `limarepdf-cli annot remove in.pdf -o out.pdf --type highlight,note --author Sam --pages 1-3` | Remove only those: of these types, by this author (exact match), on these pages. Any of the three can be left out |
-| `limarepdf-cli annot flatten in.pdf -o out.pdf` | Draw the annotations into the pages as they look now and remove them, so they are no longer annotations (they become page content). `--pages 1-3` for some pages only |
+| `limarepdf-cli annot flatten in.pdf -o out.pdf` | Draw the annotations into the pages as they look now and remove them, so they are no longer annotations (they become page content). `--pages 1-3` for some pages only. One LimarePDF can't draw is left as it was, with a warning |
 
 The types are `highlight`, `underline`, `strikeout`, `squiggly`, `note`, `textbox`, `square`, `circle`, `line`,
 `polygon`, `polyline`, `ink` (freehand drawing) and `stamp`; other types can be named as the file does, for example
@@ -99,7 +99,14 @@ The types are `highlight`, `underline`, `strikeout`, `squiggly`, `note`, `textbo
 Flattening draws highlights, notes, text boxes, shapes, lines, drawings, stamps and carets; replies and comment
 pop-ups are removed without being drawn, and hidden annotations are removed. Links, form fields, file attachments,
 sound and video, and redaction marks are kept. Annotations stored without a drawing get LimarePDF's drawing first (see
-[How comments are drawn](comments-and-markup.md#how-comments-are-drawn)).
+[How comments are drawn](comments-and-markup.md#how-comments-are-drawn)), all of a page's, also past the 10,000 the
+app shows. One LimarePDF can't draw (its drawing has no size or no place on the page, or it has none and LimarePDF
+can't make one) is left as it was, with its pop-up and replies, rather than lost. The output is still written, and a
+warning on standard error says how many were left and on which pages:
+
+```
+warning: 2 annotation(s) LimarePDF can't draw were left as they were (pages 3, 7)
+```
 
 ## Pages
 

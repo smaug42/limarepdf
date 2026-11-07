@@ -46,7 +46,9 @@ shows the field you are in: its name, its description and whether it is required
 - **Reset form**, which puts every field back to its default.
 - **Flatten form…** (also in ☰ > Forms and sign and the command search), which makes the fields part of the
   pages as they look now, so nobody can change the values, here or in other readers. It asks first, and Undo
-  brings the fields back until you close the document.
+  brings the fields back until you close the document. Every field is drawn, also in a form with more than the
+  10,000 fields LimarePDF lists. A form whose fields are nested more than 32 levels deep (fields inside fields)
+  can't be followed to its end, so flattening it stops with a message and nothing is changed.
 
 ## Signature fields
 

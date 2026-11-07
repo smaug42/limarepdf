@@ -461,8 +461,8 @@ impl Pdf {
     ) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
         let missing = self.missing_appearances(&self.page_ids());
-        let fields =
-            (all_fields || self.signature_count() > 0) && !self.appearances_to_draw().is_empty();
+        let fields = (all_fields || self.signature_count() > 0)
+            && !self.appearances_to_draw(self.form_nodes()).is_empty();
         let swaps = crate::unfillable::swaps(&self.doc, &mut self.checked);
         if ids.is_empty() && missing.is_empty() && !fields && swaps.is_empty() {
             return self.snapshot();

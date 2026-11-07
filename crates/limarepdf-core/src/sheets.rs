@@ -540,7 +540,14 @@ impl Pdf {
         out.draw_annotations(&missing);
         let mut drawings = Vec::with_capacity(ids.len());
         for &page in &ids {
-            out.flatten_page(page, print_annot, None, "LimareAnnot", &mut HashSet::new())?;
+            out.flatten_page(
+                page,
+                print_annot,
+                None,
+                "LimareAnnot",
+                &mut HashSet::new(),
+                None,
+            )?;
             drawings.push(out.as_drawing(page)?);
         }
         // What goes to the pages, which the sheets replace, goes; their labels too.

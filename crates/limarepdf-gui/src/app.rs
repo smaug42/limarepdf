@@ -5260,8 +5260,12 @@ impl App {
                 Outcome::Apply => {
                     if self.still(asked) {
                         let t = &mut self.tabs[self.active];
-                        if t.edit(ctx, |p| p.flatten_annotations(None).map(|_| ())) {
-                            t.notice = Some("Flattened the annotations".into());
+                        let mut done = Default::default();
+                        if t.edit(ctx, |p| {
+                            done = p.flatten_annotations(None)?;
+                            Ok(())
+                        }) {
+                            t.notice = Some(flattened_notice(&done));
                         }
                     }
                     done = true;
@@ -8454,6 +8458,35 @@ fn plural(n: usize, one: &str, many: &str) -> String {
         one.to_string()
     } else {
         many.replace("{n}", &n.to_string())
+    }
+}
+
+/// The notice after Flatten annotations, naming the pages of any annotations LimarePDF
+/// can't draw, which were left as they were rather than lost (H-06).
+fn flattened_notice(done: &limarepdf_core::Flattened) -> String {
+    let n = done.kept.len();
+    if n == 0 {
+        return "Flattened the annotations".into();
+    }
+    let mut pages: Vec<String> = done.kept.iter().map(|p| (p + 1).to_string()).collect();
+    pages.dedup();
+    let pages: Vec<&str> = pages.iter().map(String::as_str).collect();
+    let on = format!(
+        "{} {}",
+        if pages.len() == 1 { "page" } else { "pages" },
+        limarepdf_core::short_list(&pages)
+    );
+    if done.drawn == 0 {
+        format!(
+            "LimarePDF can't draw {} on {on}, so {}. Nothing was flattened.",
+            plural(n, "the annotation", "the {n} annotations"),
+            plural(n, "it was left as it was", "they were left as they were")
+        )
+    } else {
+        format!(
+            "Flattened the annotations, except {n} that LimarePDF can't draw, on {on}. {}",
+            plural(n, "It was left as it was.", "They were left as they were.")
+        )
     }
 }
 
@@ -15023,6 +15056,79 @@ mod tests {
             matches!(&app.dialog, Dialog::Message(_, text) if text.contains("changed while")),
             "no message saying why"
         );
+    }
+
+    /// Put a square on page `page` (zero-based) whose drawing has no box, so LimarePDF
+    /// can't place it on the page.
+    fn unboxed_square(p: &mut Pdf, page: usize) -> limarepdf_core::Result<()> {
+        use lopdf::{dictionary, Object, Stream};
+        let drawing = Stream::new(
+            dictionary! { "Subtype" => "Form" },
+            b"0 0 1 rg 0 0 5 5 re f".to_vec(),
+        );
+        let ap = p.doc.add_object(drawing);
+        let rect: Vec<Object> = [20, 20, 120, 70].map(Object::from).to_vec();
+        let a = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Square", "F" => 4, "Rect" => rect,
+            "AP" => dictionary! { "N" => ap },
+        });
+        let id = p.page_ids()[page];
+        let page = p.doc.get_dictionary_mut(id)?;
+        let mut annots = match page.get(b"Annots") {
+            Ok(a) => a.as_array()?.clone(),
+            Err(_) => Vec::new(),
+        };
+        annots.push(a.into());
+        page.set("Annots", annots);
+        Ok(())
+    }
+
+    /// H-06: what Flatten annotations can't draw stays, and the notice says how many and
+    /// on which pages.
+    #[test]
+    fn flattening_says_which_annotations_it_left_as_they_were() {
+        let cases: [(&[usize], bool, &str); 5] = [
+            (&[], true, "Flattened the annotations"),
+            (
+                &[1],
+                true,
+                "Flattened the annotations, except 1 that LimarePDF can't draw, on page 2. It \
+                 was left as it was.",
+            ),
+            (
+                &[0, 1, 1],
+                true,
+                "Flattened the annotations, except 3 that LimarePDF can't draw, on pages 1 and \
+                 2. They were left as they were.",
+            ),
+            (
+                &[0],
+                false,
+                "LimarePDF can't draw the annotation on page 1, so it was left as it was. \
+                 Nothing was flattened.",
+            ),
+            (
+                &[1, 1],
+                false,
+                "LimarePDF can't draw the 2 annotations on page 2, so they were left as they \
+                 were. Nothing was flattened.",
+            ),
+        ];
+        for (squares, notes, said) in cases {
+            let ctx = egui::Context::default();
+            let mut app = app_with(&ctx, 1);
+            assert!(app.tabs[0].edit(&ctx, |p| {
+                squares.iter().try_for_each(|&i| unboxed_square(p, i))
+            }));
+            if notes {
+                with_notes(&mut app, &ctx);
+            }
+            app.act(&ctx, Act::FlattenAnnots);
+            click(&mut app, &ctx, "Flatten annotations");
+            let t = &app.tabs[0];
+            assert_eq!(t.notice.as_deref(), Some(said));
+            assert_eq!(t.pdf.annotations().len(), squares.len(), "{said}");
+        }
     }
 
     /// Esc answers a question as Cancel, and the app's shortcuts wait while it is open.

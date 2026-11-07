@@ -4,6 +4,7 @@
 #[path = "common/tool.rs"]
 mod tool;
 
+use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{FieldValue, Pdf};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
@@ -453,6 +454,177 @@ fn undrawable_answers_are_named_before_flattening() {
     p.doc.get_dictionary_mut(ids[0]).unwrap().remove(b"V");
     p.doc.get_dictionary_mut(ids[1]).unwrap().set("AS", "Off");
     assert!(p.undrawable_fields().is_empty());
+}
+
+/// How many fields LimarePDF lists.
+const LISTED: usize = 10_000;
+
+/// A form of [`LISTED`] empty text fields on the first page, sharing one drawing, then one
+/// more, `last`, holding `value` with no drawing.
+fn past_the_fields_listed(value: Object) -> Pdf {
+    let (mut p, _) = doc(Vec::new());
+    let look = lopdf::Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect(0.0, 0.0, 10.0, 10.0),
+        },
+        Vec::new(),
+    );
+    let look = p.doc.add_object(look);
+    let mut ids: Vec<Object> = (0..LISTED)
+        .map(|i| {
+            let d = widget(dictionary! {
+                "FT" => "Tx", "T" => text(&format!("f{i}")), "F" => 4,
+                "Rect" => rect(0.0, 0.0, 10.0, 10.0), "AP" => dictionary! { "N" => look },
+            });
+            p.doc.add_object(d).into()
+        })
+        .collect();
+    let last = widget(dictionary! {
+        "FT" => "Tx", "T" => text("last"), "F" => 4, "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+        "V" => value,
+    });
+    ids.push(p.doc.add_object(last).into());
+    let pg = p.page_ids()[0];
+    p.doc
+        .get_dictionary_mut(pg)
+        .unwrap()
+        .set("Annots", ids.clone());
+    let form = p.doc.catalog().unwrap().get(b"AcroForm").unwrap();
+    let form = form.as_reference().unwrap();
+    p.doc.get_dictionary_mut(form).unwrap().set("Fields", ids);
+    p
+}
+
+/// PB-90: flattening draws the value of a field past those listed, with no drawing of its
+/// own, as it does the first 10,000's. It was removed without being drawn.
+#[test]
+fn flattening_draws_a_value_past_the_fields_listed() {
+    let mut p = past_the_fields_listed(text("PASTLIMIT"));
+    assert_eq!(p.form_fields().len(), LISTED);
+    assert!(p.undrawable_fields().is_empty());
+
+    p.flatten_form(None).unwrap();
+    assert!(!has_form(&p));
+    assert_eq!(annots(&p, 0), 0);
+    let back = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    let text = back.page_text(0);
+    assert!(text.contains("PASTLIMIT"), "{text}");
+}
+
+/// PB-90: a field past those listed whose value LimarePDF can't draw is named, and
+/// flattening refuses with nothing changed, as for one among the first 10,000.
+#[test]
+fn flattening_refuses_a_value_past_the_fields_listed_it_cannot_draw() {
+    let mut p = past_the_fields_listed(utf16("שלום"));
+    assert_eq!(p.undrawable_fields(), ["last"]);
+    let before = p.state_before();
+
+    let e = p.flatten_form(None).unwrap_err().to_string();
+    assert_eq!(
+        e,
+        "LimarePDF can't draw the value of the field \"last\", so flattening would lose it. \
+         Nothing was changed."
+    );
+    assert_eq!(p.state_since(&before), []);
+}
+
+/// A form whose one text field is `levels` fields below the top one, which holds
+/// "DEEPVALUE": its widget, with no drawing, on the first page.
+fn deep_form(levels: usize) -> Pdf {
+    let (mut p, _) = doc(Vec::new());
+    let w = p.doc.add_object(widget(dictionary! {
+        "Rect" => rect(10.0, 150.0, 150.0, 20.0), "F" => 4,
+    }));
+    place(&mut p, 0, w);
+    let mut kid = w;
+    for d in (0..levels).rev() {
+        let node = p.doc.add_object(dictionary! {
+            "T" => text(&format!("level-{d}")), "Kids" => vec![Object::Reference(kid)],
+        });
+        p.doc.get_dictionary_mut(kid).unwrap().set("Parent", node);
+        kid = node;
+    }
+    let top = p.doc.get_dictionary_mut(kid).unwrap();
+    top.set("FT", "Tx");
+    top.set("V", text("DEEPVALUE"));
+    let form = p.doc.catalog().unwrap().get(b"AcroForm").unwrap();
+    let form = form.as_reference().unwrap();
+    let form = p.doc.get_dictionary_mut(form).unwrap();
+    form.set("Fields", vec![Object::Reference(kid)]);
+    p
+}
+
+/// PB-90: flattening refuses, with nothing changed, a form whose fields are nested more
+/// than 32 deep, where it can't follow them all (the deepest is 33 below the top here). It
+/// removed the widget without drawing its value. The field list still leaves it out, as
+/// before. Just inside the limit, the value is drawn.
+#[test]
+fn flattening_refuses_a_form_nested_too_deep_to_follow() {
+    let mut p = deep_form(34);
+    assert!(p.form_fields().is_empty());
+    let before = p.state_before();
+    let e = p.flatten_form(None).unwrap_err().to_string();
+    assert_eq!(
+        e,
+        "This form's fields are nested too deeply for LimarePDF to follow (more than 32 \
+         levels), so flattening could lose some of them. Nothing was changed."
+    );
+    assert_eq!(p.state_since(&before), []);
+    assert!(p.form_fields().is_empty());
+
+    let mut p = deep_form(33);
+    assert_eq!(p.form_fields().len(), 1);
+    p.flatten_form(None).unwrap();
+    assert!(!has_form(&p));
+    let back = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    assert!(back.page_text(0).contains("DEEPVALUE"));
+}
+
+/// Paper the size of [`doc`]'s pages with no margins: a sheet is its page as it is.
+fn as_is() -> PageSetup {
+    PageSetup {
+        paper: Paper {
+            id: "page".into(),
+            label: "page".into(),
+            size: (300.0, 200.0),
+            margins: Some([0.0; 4]),
+        },
+        orientation: Orientation::Automatic,
+        scale: Scale::ShrinkOversized,
+        per_sheet: PerSheet::default(),
+        booklet: None,
+    }
+}
+
+/// PB-90: printing draws the value of a field past those listed as it does the first
+/// 10,000's, and names one it can't draw. It left the value off the paper unnamed.
+#[test]
+fn printing_draws_a_value_past_the_fields_listed() {
+    let p = past_the_fields_listed(text("PASTLIMIT"));
+    assert!(p.unprintable_fields(&[0]).is_empty());
+    let sheets = p.print_sheets(&[0], &as_is()).unwrap();
+    let text = sheets.page_text(0);
+    assert!(text.contains("PASTLIMIT"), "{text}");
+
+    let p = past_the_fields_listed(utf16("שלום"));
+    assert_eq!(p.unprintable_fields(&[0]), ["last"]);
+}
+
+/// Printing a form nested too deep to follow refuses, as it did: the copy for the printer
+/// is made of the pages taken out ([`Pdf::extract`]), which refuses it. Just inside the
+/// limit, the value is printed.
+#[test]
+fn printing_a_form_nested_too_deep_refuses_as_before() {
+    let p = deep_form(34);
+    for pages in [&[0, 1][..], &[0]] {
+        let Err(e) = p.print_sheets(pages, &as_is()) else {
+            panic!("printing pages {pages:?} of a form nested too deep worked");
+        };
+        let e = format!("{e:#}");
+        assert!(e.contains("nested more than 32 deep"), "{e}");
+    }
+    let sheets = deep_form(33).print_sheets(&[0], &as_is()).unwrap();
+    assert!(sheets.page_text(0).contains("DEEPVALUE"));
 }
 
 /// Poppler reads the drawn answers on the appended pages too. Opt-in: needs `pdftotext`.

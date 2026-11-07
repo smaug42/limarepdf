@@ -4,7 +4,7 @@ use crate::doc::encode_text;
 use crate::embed::{cant_write, unwritable};
 use crate::fonts::{FontChoice, FontCtx};
 use crate::form_ap::{self, Body, Border, BoxSetting, Look, Metrics, OwnFont};
-use crate::forms::{button_export, Node, MAX_DEPTH};
+use crate::forms::{button_export, Node, Reach, MAX_DEPTH};
 use crate::layout::SetIn;
 use crate::{std14, Field, FieldKind, FieldValue, Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -239,8 +239,15 @@ impl Pdf {
     /// (`/NeedAppearances`). Fields LimarePDF can't draw are left as they are. Returns how
     /// many widgets were drawn.
     pub fn refresh_appearances(&mut self) -> usize {
+        self.refresh_reaching(Reach::Listed)
+    }
+
+    /// [`Pdf::refresh_appearances`] for the fields `reach` takes: every field for
+    /// flattening and printing.
+    pub(crate) fn refresh_reaching(&mut self, reach: Reach) -> usize {
         let mut n = 0;
-        for (field, node, todo) in self.appearances_to_draw() {
+        let nodes = self.field_nodes(reach).0;
+        for (field, node, todo) in self.appearances_to_draw(nodes) {
             for w in todo {
                 let drawn = match &field.kind {
                     FieldKind::Text { .. } | FieldKind::Choice { .. } => {
@@ -259,16 +266,19 @@ impl Pdf {
         n
     }
 
-    /// The widgets [`Pdf::refresh_appearances`] would draw, by field: only fields LimarePDF can
-    /// draw.
-    pub(crate) fn appearances_to_draw(&self) -> Vec<(Field, Node, Vec<ObjectId>)> {
+    /// The widgets [`Pdf::refresh_appearances`] would draw of `nodes` (as
+    /// [`Pdf::field_nodes`] gives them), by field: only fields LimarePDF can draw.
+    pub(crate) fn appearances_to_draw(
+        &self,
+        nodes: Vec<(Field, Node)>,
+    ) -> Vec<(Field, Node, Vec<ObjectId>)> {
         let all = self
             .acro_form()
             .and_then(|f| f.get(b"NeedAppearances").ok())
             .and_then(|o| o.as_bool().ok())
             .unwrap_or(false);
         let mut out = Vec::new();
-        for (field, node) in self.form_nodes() {
+        for (field, node) in nodes {
             let drawable = matches!(
                 field.kind,
                 FieldKind::Text { .. } | FieldKind::Choice { .. } | FieldKind::Check

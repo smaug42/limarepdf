@@ -4090,9 +4090,25 @@ fn run(cmd: Cmd) -> Result<()> {
                     Some(r) => Some(parse_page_range(&r, p.page_count())?),
                     None => None,
                 };
-                let n = p.flatten_annotations(idx.as_deref())?;
+                let done = p.flatten_annotations(idx.as_deref())?;
                 save_edited(&io, &mut p, &original, false)?;
-                out!("flattened {n} annotation(s); wrote {}", io.output.display());
+                // What it can't draw stays as it was, rather than being lost (H-06).
+                if !done.kept.is_empty() {
+                    let mut on = done.kept.clone();
+                    on.dedup();
+                    eprintln!(
+                        "warning: {} annotation(s) LimarePDF can't draw were left as they were \
+                         ({} {})",
+                        done.kept.len(),
+                        if on.len() == 1 { "page" } else { "pages" },
+                        format_page_range(&on)
+                    );
+                }
+                out!(
+                    "flattened {} annotation(s); wrote {}",
+                    done.drawn,
+                    io.output.display()
+                );
             }
         },
         Cmd::Printers { paper } => {
