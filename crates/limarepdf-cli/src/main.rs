@@ -1745,11 +1745,14 @@ fn redact(
             .iter()
             .map(|(t, places)| serde_json::json!({ "text": t, "found": places }))
             .collect();
+        let pictures: Vec<usize> = rep.pictures_elsewhere.iter().map(|p| p + 1).collect();
         out!(
             "{}",
-            serde_json::to_string_pretty(
-                &serde_json::json!({ "pages": pages, "found_elsewhere": elsewhere })
-            )?
+            serde_json::to_string_pretty(&serde_json::json!({
+                "pages": pages,
+                "found_elsewhere": elsewhere,
+                "pictures_elsewhere": pictures,
+            }))?
         );
         return Ok(());
     }
@@ -1785,6 +1788,9 @@ fn redact(
             limarepdf_core::display_line(t, 60),
             places.join(", ")
         );
+    }
+    for notice in rep.picture_notices() {
+        out!("warning: {notice}");
     }
     out!("wrote {}", io.output.display());
     Ok(())

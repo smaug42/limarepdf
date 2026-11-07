@@ -947,13 +947,36 @@ What is still drawn after a redaction or Remove hidden information is found by `
 PB-84), one walk over every page, annotation appearance, form, pattern, soft-mask group and Type 3 glyph, each
 visited once per `(id, fingerprint of the resources it inherits)`, so drawings that draw themselves end. It gives
 the nodes and what each draws, the objects drawn (`Reach::drawn`), every dictionary listing resources
-(`Reach::holders`, streams' included) and each node's alternative text (named and inline `ActualText`, `Alt`,
-`E`). `drop_unused_xobjects` unlists from those holders what the change dropped and nothing draws, and
+(`Reach::holders`, streams' included), each node's alternative text (named and inline `ActualText`, `Alt`, `E`),
+the pictures and forms it draws (`Node::xobjects`), the `/Properties` entries its marked content uses
+(`Node::properties`) and whether its content could be read (`Node::unread`: one that can't counts as drawing and
+using everything its resources list). `Reach::certain` marks the nodes certainly drawn: pages, every
+annotation appearance state (`Reach::appearances`) and what a readable node certainly drawn draws.
 `find_elsewhere` reports removed text met in alternative text by the pages reaching it
 (`Reach::pages_drawing`). Each rewritten copy (a page's resources, a form's copy) keeps only the `XObject` and
 `Properties` names its new content uses, plus those its kept inheriting streams use, followed down
-(`Redactor::needs`); the replaced form's name is re-pointed to its copy or removed. Fonts and other resource
-kinds are left alone. A kept inheriting stream that can't be read keeps every name, and `report.left` says so.
+(`Redactor::needs`); a kept inheriting stream that can't be read keeps every name, and `report.left` names its
+page. A replacement (a cut picture, a redacted form's copy) is bound under a fresh name in the
+copy made for the marked invocation only; an original name is never re-pointed, so a kept drawing drawing it by
+an inherited name keeps the original (S1-01's amendment A1, CP-03). Fonts and other resource kinds are left
+alone. Remove hidden information unlists dropped pictures with `drop_unused_xobjects`, from `Reach::holders` only
+(PB-111: the resources of a pattern nothing paints with aren't among them).
+
+After the change, `retained.rs` (`Pdf::clear_retained`; amendments A2 and A3, CP-01 and CP-02) works with the walk
+after and what redaction removed (`retained::Removed`: the originals replaced or removed under a mark, the
+alternative text taken off, the redacted pages' old content, thumbnails and private data, the annotations
+removed). An original is kept when a certainly drawn readable node draws it, and those pages are reported
+(`RedactReport::pictures_elsewhere`, one notice a page); used only by nodes that can't be read, it stays and the
+page goes to `report.left`; drawn by nothing, it is unlisted. Then every `/Resources` and `/DR` in the file, at
+any depth in any object, whatever holds it and whether or not anything draws with it, is found, and in their
+`/XObject` and `/Properties` dictionaries the entries for unused originals, and properties holding removed
+alternative text that no node uses (by reference, or a direct one by equality), are worked out first, reading
+only, then removed in place, shared dictionaries too. Last, an independent walk follows every reference from the
+trailer, as saving keeps it: the tag tree (`StructTreeRoot`) and private application data (`PieceInfo`) are
+followed after everything else, so an object something else reaches counts as that, and each route still
+reaching anything removed is a `report.left` sentence naming it ("removed content may still be in the file,
+through the tag tree"), which makes both callers refuse: the app rolls back, the CLI writes nothing. Nothing is
+cut on those routes (that needs its own design).
 Decoded content is cached by object (`reach::Decoded`) and shared by the walks before and after a redaction,
 which only adds objects; Remove hidden information edits streams in place, so its walk after starts afresh.
 

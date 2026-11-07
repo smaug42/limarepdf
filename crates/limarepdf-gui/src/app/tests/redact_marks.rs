@@ -393,3 +393,144 @@ fn one_undo_takes_back_applied_redactions() {
     gone(&app, "Redo");
     assert_eq!(steps(&app), before + 1, "Redo");
 }
+
+/// A 300 × 200 pt page drawing `content` with the resources `objects` returns, given the
+/// page once it has added the objects they list.
+fn page_of(
+    content: &str,
+    objects: impl FnOnce(&mut Pdf, lopdf::ObjectId) -> lopdf::Dictionary,
+) -> Pdf {
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let page = p.page_ids()[0];
+    let res = objects(&mut p, page);
+    let s = p.doc.add_object(lopdf::Stream::new(
+        lopdf::Dictionary::new(),
+        content.as_bytes().to_vec(),
+    ));
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set("Contents", s);
+    d.set("Resources", res);
+    p
+}
+
+/// A tab showing `pdf`, with one redaction mark over `areas` (page points, y down) on its
+/// page; the window settled.
+fn marked_tab(ctx: &egui::Context, pdf: Pdf, areas: &[[f32; 4]]) -> App {
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    assert!(app.add_tab(ctx, pdf, None, None, false));
+    let add = |p: &mut Pdf| p.add_redaction_mark(0, areas, "").map(drop);
+    assert!(app.tabs[0].edit(ctx, add));
+    settle(&mut app, ctx);
+    app
+}
+
+/// CP-03: applying a mark over a picture that a form left as it is also draws says once,
+/// in the message, that the page still draws the original.
+#[test]
+fn applying_says_where_an_original_picture_is_still_drawn() {
+    use lopdf::{dictionary, Object, Stream};
+    let ctx = test_ctx();
+    let content = "q 50 0 0 50 10 100 cm /Im1 Do Q q 1 0 0 1 110 100 cm /B Do Q";
+    let pdf = page_of(content, |p, _| {
+        let picture = dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        };
+        let im = p.doc.add_object(Stream::new(picture, vec![255]));
+        let bbox: Vec<Object> = [0, 0, 50, 50].map(Object::from).to_vec();
+        let form = dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox };
+        let b = (p.doc).add_object(Stream::new(form, b"q 50 0 0 50 0 0 cm /Im1 Do Q".to_vec()));
+        dictionary! { "XObject" => dictionary! { "Im1" => im, "B" => b } }
+    });
+    let mut app = marked_tab(&ctx, pdf, &[[10.0, 50.0, 60.0, 100.0]]);
+    app.act(&ctx, Act::ApplyRedactions);
+    click(&mut app, &ctx, "Apply redactions");
+    let (title, text) = message(&app);
+    assert_eq!(title, "Redactions applied");
+    let notice = "An original picture affected by redaction is still drawn elsewhere on page 1 \
+                  and may retain the removed content.";
+    assert_eq!(text.matches(notice).count(), 1, "{text}");
+}
+
+/// A3: applying a mark whose removed content the file would keep through the tag tree is
+/// refused, saying why, and changes nothing: not the page, not the mark, and not the
+/// pattern nothing paints with, whose copy of the original form goes before the check
+/// refuses.
+#[test]
+fn applying_what_the_tag_tree_would_keep_changes_nothing() {
+    use lopdf::{dictionary, Object, Stream};
+    let ctx = test_ctx();
+    let pdf = page_of("q /Fm1 Do Q", |p, page| {
+        let font = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let bbox: Vec<Object> = [0, 0, 300, 200].map(Object::from).to_vec();
+        let form = dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox.clone(),
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        };
+        let text = "BT /F1 20 Tf 30 100 Td (FormSecretZebra) Tj ET \
+                    BT /F1 20 Tf 30 40 Td (Kept) Tj ET";
+        let fm = p
+            .doc
+            .add_object(Stream::new(form, text.as_bytes().to_vec()));
+        let pattern = dictionary! {
+            "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+            "BBox" => bbox, "XStep" => 300, "YStep" => 200,
+            "Resources" => dictionary! { "XObject" => dictionary! { "Original" => fm } },
+        };
+        let pt = p
+            .doc
+            .add_object(Stream::new(pattern, b"/Original Do".to_vec()));
+        let root = p.doc.new_object_id();
+        let mcr = dictionary! { "Type" => "MCR", "Pg" => page, "Stm" => fm, "MCID" => 0 };
+        let elem = p.doc.add_object(dictionary! {
+            "Type" => "StructElem", "S" => "P", "P" => root, "Pg" => page,
+            "K" => vec![Object::Dictionary(mcr)],
+        });
+        let tree = dictionary! { "Type" => "StructTreeRoot", "K" => elem };
+        p.doc.objects.insert(root, tree.into());
+        let c = p.doc.catalog_mut().unwrap();
+        c.set("StructTreeRoot", root);
+        c.set("MarkInfo", dictionary! { "Marked" => true });
+        dictionary! {
+            "XObject" => dictionary! { "Fm1" => fm }, "Pattern" => dictionary! { "Pt" => pt },
+        }
+    });
+    let boxes: Vec<[f32; 4]> = (pdf.find_redaction_marks("formsecretzebra").unwrap())
+        .into_iter()
+        .map(|m| m.1)
+        .collect();
+    assert_eq!(boxes.len(), 1, "{boxes:?}");
+    let mut app = marked_tab(&ctx, pdf, &boxes);
+    let (was, before) = (app.tabs[0].state(), app.tabs[0].pdf.state_before());
+    app.act(&ctx, Act::ApplyRedactions);
+    click(&mut app, &ctx, "Apply redactions");
+    let t = &mut app.tabs[0];
+    let said = t.error.take().unwrap_or_default();
+    let why = "removed content may still be in the file, through the tag tree";
+    assert!(
+        said.starts_with("Nothing was changed") && said.contains(why),
+        "{said}"
+    );
+    assert!(t.state() == was, "the tab changed");
+    assert_eq!(t.pdf.state_since(&before), []);
+    assert_eq!(t.pdf.redaction_marks().len(), 1);
+    assert!(t.pdf.page_text(0).contains("FormSecretZebra"));
+    let at = |o: &Object| t.pdf.doc.dereference(o).unwrap().1.clone();
+    let res = at(t
+        .pdf
+        .doc
+        .get_dictionary(t.pdf.page_ids()[0])
+        .unwrap()
+        .get(b"Resources")
+        .unwrap());
+    let pt = at(res.as_dict().unwrap().get(b"Pattern").unwrap());
+    let pt = at(pt.as_dict().unwrap().get(b"Pt").unwrap());
+    let listed = &pt.as_stream().unwrap().dict;
+    let listed = at(listed.get(b"Resources").unwrap());
+    let listed = at(listed.as_dict().unwrap().get(b"XObject").unwrap());
+    assert!(listed.as_dict().unwrap().has(b"Original"), "{listed:?}");
+}

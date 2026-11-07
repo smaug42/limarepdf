@@ -30,13 +30,27 @@
   hundreds of millions of pixels) no longer makes LimarePDF ask for gigabytes of memory when it draws the page,
   prints it as a picture or reads it with OCR. The picture is left out, and the page's notice says a picture
   can't be shown, as for any picture LimarePDF can't read; the document keeps it, and saving doesn't change it.
-- Redaction no longer leaves removed words in the saved file. Alternative text kept apart from the content it
-  describes (in a page's or a group's named properties) went on being saved after its text was redacted, and so
-  did the original of a redacted group in some files (one drawing with the page's resources, listing itself, or
-  listed by another group), with the redacted text in it, though the check afterwards found nothing left. Both
-  are gone now, as are pictures only those originals drew; content another page still draws is kept, and removed
-  text still in alternative text there is listed with the other places it was found. A group kept inside a
-  redacted one keeps the pictures, fonts and properties it uses.
+- Redaction no longer leaves removed words in the saved file where the check afterwards didn't look.
+  Alternative text kept apart from the content it describes (in the named properties of a page, of the pages
+  above it that pass theirs down, or of a group) went on being saved after its text was redacted, and so did the
+  original of a redacted group in some files (one drawing with the page's resources, listing itself, or listed by
+  another group, a pattern, a soft mask, a Type 3 font or resources another page shares, though nothing drew it
+  there), with the redacted text in it. Both are now taken out of every list of resources in the file holding
+  them, shared ones too, as are pictures only those originals drew. What is still drawn as it was (on another
+  page, in a comment's drawing, in a pattern or a group the marks don't touch) is kept, and removed text still in
+  alternative text there is listed with the other places it was found. A group kept inside a redacted one keeps
+  the pictures, fonts and properties it uses.
+- Redacting a picture no longer takes it out of a group elsewhere on the page that draws it with the page's
+  pictures; there it is kept as it was. The report says, once for each page, where an original picture or group
+  that redaction changed is still drawn outside the marks, since it still holds what the marks covered ("An
+  original picture affected by redaction is still drawn elsewhere on page 2 and may retain the removed
+  content."); `limarepdf-cli redact` says so on a `warning:` line, and lists the pages as `pictures_elsewhere`
+  with `--json`.
+- Redaction refuses, changing nothing, when the saved file would still hold something it removed another way:
+  through the tag tree (in a tagged document that includes a removed link or comment the tags point to), through
+  private application data, or through any other part of the file. The message says which ("removed content may
+  still be in the file, through the tag tree"), and `limarepdf-cli redact` writes no file. It refuses too when a
+  drawing that may use something removed can't be read, anywhere in the document.
 - Remove hidden information now also leaves out a hidden layer's picture listed by a group inside another group;
   before, the picture was no longer drawn but stayed in the saved file.
 - Redaction, and Remove hidden information with hidden layers, refuse a file whose drawings lead to one another

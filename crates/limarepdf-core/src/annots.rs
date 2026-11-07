@@ -367,7 +367,16 @@ impl Pdf {
 
     /// Remove the annotations `gone` (of any kind, links and form widgets too), with the
     /// replies to them and their popups. Returns how many were removed, replies included.
-    pub(crate) fn drop_annotations(&mut self, mut gone: HashSet<ObjectId>) -> Result<usize> {
+    pub(crate) fn drop_annotations(&mut self, gone: HashSet<ObjectId>) -> Result<usize> {
+        Ok(self.drop_annotations_ids(gone)?.0)
+    }
+
+    /// As [`Pdf::drop_annotations`]: how many were removed, and the annotations removed,
+    /// popups too.
+    pub(crate) fn drop_annotations_ids(
+        &mut self,
+        mut gone: HashSet<ObjectId>,
+    ) -> Result<(usize, HashSet<ObjectId>)> {
         let all = self.every_annotation();
         loop {
             let before = gone.len();
@@ -380,21 +389,19 @@ impl Pdf {
                 break;
             }
         }
+        let mut off = HashSet::new();
         if gone.is_empty() {
-            return Ok(0);
+            return Ok((0, off));
         }
         for page in self.page_ids() {
             let Some(refs) = self.annots_array(page) else {
                 continue;
             };
-            let kept: Vec<Object> = refs
-                .iter()
-                .filter(|o| {
-                    o.as_reference()
-                        .map_or(true, |id| !gone.contains(&id) && !self.popup_of(id, &gone))
-                })
-                .cloned()
-                .collect();
+            let (kept, taken): (Vec<Object>, Vec<Object>) = refs.iter().cloned().partition(|o| {
+                o.as_reference()
+                    .map_or(true, |id| !gone.contains(&id) && !self.popup_of(id, &gone))
+            });
+            off.extend(taken.iter().filter_map(|o| o.as_reference().ok()));
             if kept.len() < refs.len() {
                 let pd = self.doc.get_dictionary_mut(page)?;
                 if kept.is_empty() {
@@ -404,7 +411,8 @@ impl Pdf {
                 }
             }
         }
-        Ok(gone.len())
+        off.extend(&gone);
+        Ok((gone.len(), off))
     }
 
     /// Draw the annotations into the pages' content as they look now and remove them, so
