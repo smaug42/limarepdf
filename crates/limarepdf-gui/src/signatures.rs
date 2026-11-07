@@ -385,16 +385,6 @@ fn tone_icon(ui: &Ui, glyph: &str, tone: Tone) -> RichText {
     }
 }
 
-/// The certificates that could be trusted as an authority from a signature: those it
-/// carries that are certificate authorities.
-pub fn authorities(s: &DigitalSignature) -> Vec<CertInfo> {
-    s.certificates
-        .iter()
-        .filter(|c| limarepdf_core::is_authority(c))
-        .cloned()
-        .collect()
-}
-
 // ------------------------------------------------------------------ side tab
 
 /// What a click in the Signatures tab asks for.
@@ -655,8 +645,30 @@ pub struct DetailsOut {
     pub close: bool,
     pub trust_signer: bool,
     pub trust_authority: bool,
+    /// Trust the authority of the signature's embedded timestamp.
+    pub trust_timestamp: bool,
     pub signed_version: bool,
     pub go_to: Option<(usize, f32)>,
+}
+
+/// The trust question for what the Details window of `s` asked for, if it asked to trust
+/// someone.
+pub fn trust_question(s: &DigitalSignature, out: &DetailsOut) -> Option<TrustAsk> {
+    if out.trust_authority {
+        let cas = s.authorities();
+        return (!cas.is_empty()).then(|| TrustAsk::new(TrustRole::Authority, cas, false));
+    }
+    if out.trust_timestamp {
+        let tsa = s.timestamp.as_ref()?.authority.clone();
+        return Some(TrustAsk::new(TrustRole::Signer, vec![tsa], false).for_timestamps());
+    }
+    let cert = s.signer.clone().filter(|_| out.trust_signer)?;
+    let ask = TrustAsk::new(TrustRole::Signer, vec![cert], false);
+    Some(if s.kind == SigKind::DocumentTimestamp {
+        ask.for_timestamps()
+    } else {
+        ask
+    })
 }
 
 /// The details of signature `i` of `c`'s report, as a window.
@@ -703,18 +715,41 @@ pub fn details(ctx: &Context, doc: &str, c: &Checked, i: usize) -> DetailsOut {
                         out.trust_signer = true;
                     }
                 }
-                if !authorities(s).is_empty() {
+                if !s.authorities().is_empty() {
+                    let from = if s.timestamp.is_some() {
+                        "the certificates this signature and its timestamp carry"
+                    } else {
+                        "this signature's certificates"
+                    };
                     let b = ui
                         .add_enabled(valid, egui::Button::new("Trust an authority…"))
-                        .on_hover_text(
-                            "Trust a certificate authority from this signature's certificates, \
-                             so everyone it issued certificates to is trusted in LimarePDF.",
-                        )
+                        .on_hover_text(format!(
+                            "Trust a certificate authority from {from}, so everyone it issued \
+                             certificates to is trusted in LimarePDF."
+                        ))
                         .on_disabled_hover_text(
                             "LimarePDF only trusts authorities from a valid signature.",
                         );
                     if b.clicked() {
                         out.trust_authority = true;
+                    }
+                }
+                let stamp_trusted = s
+                    .timestamp
+                    .as_ref()
+                    .is_some_and(|t| matches!(t.trust, Some(Trust::Signer { .. })));
+                if s.timestamp.is_some() && !stamp_trusted {
+                    let b = ui
+                        .add_enabled(valid, egui::Button::new("Trust the timestamp authority…"))
+                        .on_hover_text(
+                            "Trust the authority that timestamped this signature, so its time \
+                             is used in LimarePDF.",
+                        )
+                        .on_disabled_hover_text(
+                            "LimarePDF only trusts authorities from a valid signature.",
+                        );
+                    if b.clicked() {
+                        out.trust_timestamp = true;
                     }
                 }
                 match signed_version_blocked(s) {
@@ -1036,6 +1071,8 @@ pub struct TrustAsk {
     label_edited: bool,
     /// The role can be chosen (a certificate file, rather than a signature).
     pub choose_role: bool,
+    /// The certificate is a timestamp authority's ([`TrustAsk::for_timestamps`]).
+    stamp: bool,
     pub error: Option<String>,
 }
 
@@ -1052,7 +1089,17 @@ impl TrustAsk {
             label,
             label_edited: false,
             choose_role,
+            stamp: false,
             error: None,
+        }
+    }
+
+    /// Asks about a timestamp authority (trusted as a signer): trusting it trusts its
+    /// timestamps.
+    pub fn for_timestamps(self) -> Self {
+        Self {
+            stamp: true,
+            ..self
         }
     }
 
@@ -1060,13 +1107,17 @@ impl TrustAsk {
         self.choices.get(self.pick)
     }
 
-    /// The window; `Apply` means trust [`TrustAsk::cert`] as [`TrustAsk::role`].
-    pub fn ui(&mut self, ctx: &Context) -> Outcome {
-        let title = match self.role {
+    pub fn title(&self) -> &'static str {
+        match self.role {
+            TrustRole::Signer if self.stamp => "Trust a timestamp authority",
             TrustRole::Signer => "Trust a signer",
             TrustRole::Authority => "Trust a certificate authority",
-        };
-        let shell = Shell::new(title)
+        }
+    }
+
+    /// The window; `Apply` means trust [`TrustAsk::cert`] as [`TrustAsk::role`].
+    pub fn ui(&mut self, ctx: &Context) -> Outcome {
+        let shell = Shell::new(self.title())
             .id("trust ask")
             .width(480.0)
             .esc(!self.label_edited);
@@ -1139,6 +1190,14 @@ impl TrustAsk {
                 egui::Label::new(
                     "Everyone this authority issued a certificate to, directly or through \
                      authorities it allowed to, will show as trusted.",
+                )
+                .wrap(),
+            );
+        } else if self.stamp {
+            ui.add(
+                egui::Label::new(
+                    "Timestamps this authority made will show as trusted, and LimarePDF will \
+                     use their times as signing times.",
                 )
                 .wrap(),
             );
@@ -1444,6 +1503,132 @@ mod tests {
         );
     }
 
+    /// Draws the details of signature `i` of `c`, clicks the button named `name`, and gives
+    /// what the window asked for. The screen is tall enough for the whole window: what is
+    /// scrolled out of view can't be clicked.
+    fn clicked_in_details(c: &Checked, i: usize, name: &str) -> DetailsOut {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let frame = |events| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 2400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = DetailsOut::default();
+            let mut o = ctx.run_ui(raw, |ui| out = details(ui.ctx(), "walrus.pdf", c, i));
+            o.textures_delta.clear();
+            (out, o.platform_output.accesskit_update)
+        };
+        let mut tree = None;
+        for _ in 0..5 {
+            tree = frame(vec![]).1;
+        }
+        let tree = tree.expect("the widgets");
+        let (_, n) = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some(name))
+            .unwrap_or_else(|| panic!("no {name}"));
+        let b = n.bounds().expect("placed");
+        let at = egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(vec![egui::Event::PointerMoved(at), press(true)]);
+        frame(vec![press(false)]).0
+    }
+
+    /// PB-116: an embedded timestamp's authority is trusted from the signature's Details;
+    /// with the signer trusted too, the signature is green, with the timestamp's time.
+    #[test]
+    fn a_timestamp_authority_is_trusted_from_details() {
+        use crate::dialogs::drawn;
+        const STAMP: &str = "Trust the timestamp authority…";
+        let size = egui::vec2(1200.0, 900.0);
+        let shown = |c: &Checked, i: usize, name: &str| {
+            let tree = drawn(size, |ctx| {
+                details(ctx, "walrus.pdf", c, i);
+            });
+            tree.nodes.iter().any(|(_, n)| n.label() == Some(name))
+        };
+        let plain = Checked {
+            report: report(SELF_MADE, &TrustList::default()),
+            trust: TrustStatus::default(),
+        };
+        assert!(!shown(&plain, 0, STAMP), "a signature with no timestamp");
+
+        let mut r = report(
+            "pyhanko/minimal-two-fields-signed-twice.pdf",
+            &TrustList::default(),
+        );
+        let mut list = TrustList::default();
+        let der = r.signatures[0].signer.as_ref().unwrap().der.clone();
+        list.add(&der, TrustRole::Signer, Some("Sig")).unwrap();
+        r.apply_trust(&list);
+        let mut c = Checked {
+            report: r,
+            trust: TrustStatus::default(),
+        };
+        let out = clicked_in_details(&c, 1, STAMP);
+        assert!(out.trust_timestamp && !out.trust_signer && !out.trust_authority);
+        let s = &c.report.signatures[1];
+        let ask = trust_question(s, &out).expect("a question");
+        assert_eq!(
+            (ask.title(), ask.role),
+            ("Trust a timestamp authority", TrustRole::Signer)
+        );
+        let tsa = &s.timestamp.as_ref().unwrap().authority;
+        assert_eq!(ask.choices, std::slice::from_ref(tsa));
+        assert_eq!(ask.label, "Globalsign TSA for AATL on DSS - SHA384 - G5");
+        let cert = ask.cert().unwrap();
+        list.add(&cert.der, ask.role, Some(&ask.label)).unwrap();
+        c.report.apply_trust(&list);
+        // Both signatures' timestamps are from that authority.
+        for s in &c.report.signatures {
+            assert_eq!(level(s), Level::Good, "{:?}", s.timestamp);
+            assert_eq!(s.time.unwrap().source, TimeSource::Timestamp);
+        }
+        assert!(!shown(&c, 1, STAMP), "trusted already");
+        assert!(shown(&c, 1, "View signed version"));
+    }
+
+    /// PB-116: the certificate authorities a signature's timestamp carries can be trusted
+    /// from Details too, and trusting the one above the timestamp authority trusts it.
+    #[test]
+    fn authorities_from_a_timestamp_can_be_trusted() {
+        let mut r = report("dss/Signature-P-PK7-2.pdf", &TrustList::default());
+        let c = Checked {
+            report: r.clone(),
+            trust: TrustStatus::default(),
+        };
+        let out = clicked_in_details(&c, 0, "Trust an authority…");
+        assert!(out.trust_authority && !out.trust_signer && !out.trust_timestamp);
+        let ask = trust_question(&r.signatures[0], &out).expect("a question");
+        assert_eq!(
+            (ask.title(), ask.role),
+            ("Trust a certificate authority", TrustRole::Authority)
+        );
+        let names: Vec<_> = ask.choices.iter().map(CertInfo::display_name).collect();
+        assert_eq!(names, ["RootCAOK"]);
+        let mut list = TrustList::default();
+        list.add(&ask.cert().unwrap().der, ask.role, None).unwrap();
+        r.apply_trust(&list);
+        let ts = r.signatures[0].timestamp.as_ref().unwrap();
+        assert!(
+            ts.trust.as_ref().is_some_and(Trust::is_trusted),
+            "{:?}",
+            ts.trust
+        );
+    }
+
     #[test]
     fn broken_is_bad() {
         let r = report("pyhanko/one-byterange.pdf", &TrustList::default());
@@ -1539,6 +1724,17 @@ mod tests {
             summary(ts)
         );
         assert!(title(1, ts).starts_with("2. Timestamp by "));
+        // Its "Trust this authority…" asks about a timestamp authority.
+        let out = DetailsOut {
+            trust_signer: true,
+            ..DetailsOut::default()
+        };
+        let ask = trust_question(ts, &out).expect("a question");
+        assert_eq!(
+            (ask.title(), ask.role),
+            ("Trust a timestamp authority", TrustRole::Signer)
+        );
+        assert_eq!(ask.cert(), ts.signer.as_ref());
     }
 
     #[test]
@@ -1706,7 +1902,9 @@ mod tests {
 
     /// G08: Signature details and the Trust question on short and narrow screens: the
     /// window inside the screen with its buttons in view and every control clearly named;
-    /// Esc closes details, and the question until its name is changed.
+    /// Esc closes details, and the question until its name is changed. PB-116: also with
+    /// every trust button, the timestamp's among them, and asking about a timestamp
+    /// authority.
     #[test]
     fn signature_windows_fit_short_screens() {
         use crate::dialogs::{drawn_window, fits, unclear_names};
@@ -1716,22 +1914,33 @@ mod tests {
             report: r,
             trust: TrustStatus::default(),
         };
+        let stamped = Checked {
+            report: report("dss/Signature-P-PK7-2.pdf", &TrustList::default()),
+            trust: TrustStatus::default(),
+        };
+        let s = &stamped.report.signatures[0];
+        let tsa = s.timestamp.as_ref().expect("a timestamp").authority.clone();
         let mut ask = TrustAsk::new(TrustRole::Signer, vec![cert], true);
+        let mut stamp_ask = TrustAsk::new(TrustRole::Signer, vec![tsa], false).for_timestamps();
         for size in [
             egui::vec2(1200.0, 300.0),
             egui::vec2(400.0, 300.0),
             egui::vec2(400.0, 800.0),
         ] {
-            let (tree, window) = drawn_window(size, |ctx| {
-                details(ctx, "walrus.pdf", &c, 0);
-            });
-            fits(&tree, window, size, &["Close"]).unwrap();
-            assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
-            let (tree, window) = drawn_window(size, |ctx| {
-                ask.ui(ctx);
-            });
-            fits(&tree, window, size, &["Trust", "Cancel"]).unwrap();
-            assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+            for c in [&c, &stamped] {
+                let (tree, window) = drawn_window(size, |ctx| {
+                    details(ctx, "walrus.pdf", c, 0);
+                });
+                fits(&tree, window, size, &["Close"]).unwrap();
+                assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+            }
+            for ask in [&mut ask, &mut stamp_ask] {
+                let (tree, window) = drawn_window(size, |ctx| {
+                    ask.ui(ctx);
+                });
+                fits(&tree, window, size, &["Trust", "Cancel"]).unwrap();
+                assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+            }
         }
         let esc_closes = |show: &mut dyn FnMut(&Context) -> bool| {
             let ctx = Context::default();

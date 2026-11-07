@@ -1008,12 +1008,17 @@ enum TrustCmd {
         trust_file: Option<PathBuf>,
     },
     /// Trust a certificate: from a certificate file (.cer, .crt, .pem, .p7c), or the
-    /// signer of a signature in a PDF. Compare its SHA-256 fingerprint with its owner first
+    /// signer of a signature in a PDF (or its timestamp's authority). Compare its SHA-256
+    /// fingerprint with its owner first
     Add {
         input: PathBuf,
         /// Trust it as a certificate authority: every signer it issued a certificate to
         #[arg(long)]
         authority: bool,
+        /// From a PDF: trust the authority of the signature's embedded timestamp rather than
+        /// its signer, so the timestamp's time is used
+        #[arg(long, conflicts_with = "authority")]
+        timestamp: bool,
         /// From a PDF: the signature whose signer to trust, numbered as `limarepdf-cli verify`
         /// lists them (needed when there are several)
         #[arg(long, value_name = "N")]
@@ -1971,10 +1976,22 @@ fn print_verify(input: &Path, rep: &SignatureReport) -> Result<()> {
                         "{when}, claimed by {by} (NOT TRUSTED: {}; this time isn't used)",
                         clean(why)
                     ),
-                    _ => format!(
-                        "{when}, claimed by {by} (LimarePDF can't confirm this authority, so \
-                         this time isn't used)"
-                    ),
+                    t => {
+                        let mut line = format!(
+                            "{when}, claimed by {by} (LimarePDF can't confirm this authority, \
+                             so this time isn't used)"
+                        );
+                        if matches!(t, Some(Trust::Unknown(_))) {
+                            line.push_str(&format!(
+                                "; to trust it, run: limarepdf-cli trust add \"{}\" --signature \
+                                 {} --timestamp (and compare its fingerprint with the \
+                                 authority's)",
+                                input.display(),
+                                i + 1
+                            ));
+                        }
+                        line
+                    }
                 },
             );
         }
@@ -2142,6 +2159,7 @@ fn run_trust(cmd: TrustCmd) -> Result<()> {
         TrustCmd::Add {
             input,
             authority,
+            timestamp,
             signature,
             pick,
             label,
@@ -2208,24 +2226,42 @@ fn run_trust(cmd: TrustCmd) -> Result<()> {
                     ),
                 }
                 if authority {
-                    // An authority from the certificates the signature carries, as in
-                    // Acrobat's certificate viewer.
-                    let cas = s
-                        .certificates
-                        .iter()
-                        .filter(|c| limarepdf_core::is_authority(c))
-                        .cloned()
-                        .collect();
-                    choose(cas, "certificate authority in that signature")?
+                    // An authority from the certificates the signature and its timestamp
+                    // carry, as in Acrobat's certificate viewer.
+                    choose(
+                        s.authorities(),
+                        "certificate authority in that signature or its timestamp",
+                    )?
                 } else {
                     if pick.is_some() {
                         bail!("--pick chooses an authority (with --authority) or a certificate in a file");
                     }
-                    s.signer
-                        .clone()
-                        .context("the signature has no signer certificate")?
+                    if timestamp {
+                        if s.kind == SigKind::DocumentTimestamp {
+                            bail!(
+                                "signature {n} is a document timestamp: leave out --timestamp \
+                                 to trust its authority"
+                            );
+                        }
+                        s.timestamp
+                            .as_ref()
+                            .map(|t| t.authority.clone())
+                            .with_context(|| {
+                                format!(
+                                    "signature {n} has no embedded timestamp; leave out \
+                                     --timestamp to trust its signer"
+                                )
+                            })?
+                    } else {
+                        s.signer
+                            .clone()
+                            .context("the signature has no signer certificate")?
+                    }
                 }
             } else {
+                if timestamp {
+                    bail!("--timestamp is for PDF files");
+                }
                 if signature.is_some() {
                     bail!(
                         "--signature is for PDF files; for a certificate file, choose with --pick"
@@ -2254,6 +2290,8 @@ fn run_trust(cmd: TrustCmd) -> Result<()> {
                     "Signers whose certificates it issued, directly or through authorities it \
                      allowed to, are now trusted."
                 );
+            } else if timestamp {
+                out!("Its timestamps are now trusted, and their times used as signing times.");
             }
             out!(
                 "Make sure this fingerprint is right by checking it with the certificate's owner \

@@ -116,6 +116,7 @@ The steps in the app are in [Trusting signers](signatures.md#trusting-signers). 
 limarepdf-cli verify contract.pdf                                   # read the SHA-256 line of signature 1
 limarepdf-cli trust add contract.pdf --signature 1                  # trust that signer
 limarepdf-cli trust add contract.pdf --signature 1 --authority      # or an authority from that signature's chain
+limarepdf-cli trust add contract.pdf --signature 1 --timestamp      # or the authority that timestamped it
 limarepdf-cli trust add jane.cer                                    # or a certificate file someone sent you
 limarepdf-cli trust add company-ca.cer --authority --label "Our company"
 limarepdf-cli trust list
@@ -126,12 +127,12 @@ limarepdf-cli trust remove 2                                        # by its num
 owner in a way you trust, such as reading it out over the phone. A certificate taken from a signed PDF is only as
 trustworthy as that comparison: whoever made the PDF chose the certificate.
 
-When a signature carries several authority certificates, `--authority` lists them and `--pick N` chooses one, as
-does a certificate file holding several. Trusting an authority trusts every signer it issued a certificate to,
+`--authority` chooses from the authority certificates the signature and its embedded timestamp carry; when there
+are several it lists them and `--pick N` chooses one, as does a certificate file holding several. Trusting an authority trusts every signer it issued a certificate to,
 directly or through the intermediate authorities it allowed to issue them; trust the most specific authority that
 covers the signers you mean. A certificate you already trust can be added again with the other role to change it.
 A certificate authority must say it is one (basic constraints) and be allowed to sign certificates, or LimarePDF refuses
-to add it as one. `limarepdf-cli trust add` on a PDF only takes the signer of a valid signature.
+to add it as one. `limarepdf-cli trust add` on a PDF only takes certificates from a valid signature.
 
 The list is `trust.txt` in LimarePDF's settings folder (`$XDG_CONFIG_HOME/limarepdf/` or `~/.config/limarepdf/` on Linux,
 `~/Library/Application Support/limarepdf/` on macOS, `%APPDATA%\limarepdf\` on Windows), a text file with each certificate in
@@ -526,11 +527,12 @@ trust at this time, so without a trusted timestamp the check relies on the signe
 A timestamp from an authority you haven't trusted is still shown, on the Timestamp line, as *claimed by* that
 authority, but its time isn't used: anyone can make a timestamp that names any time, so it counts only once you
 trust whoever made it. Trust the authority, or the authority that issued its certificate, and the signing time
-becomes the timestamp's. For an embedded timestamp that takes the certificate as a file from the timestamp
-service (**Trusted certificates… > Add certificate file…**, or `limarepdf-cli trust add`): the signature's
-**Trust** buttons offer only the signer and the authorities in the signature itself. A document timestamp has its
-own **Trust this authority…** button, and its time is shown as *claimed by a timestamp authority that isn't
-trusted* until you trust it.
+becomes the timestamp's. For an embedded timestamp, press **Trust the timestamp authority…** in the signature's
+Details (or run `limarepdf-cli trust add FILE --signature N --timestamp`, which `limarepdf-cli verify` suggests on
+the Timestamp line); **Trust an authority…** (`--authority`) also offers the authorities the timestamp carries.
+Compare the fingerprint with the timestamp service first, as for a signer. A document timestamp has its own
+**Trust this authority…** button, and its time is shown as *claimed by a timestamp authority that isn't trusted*
+until you trust it.
 
 ### Certification and locked fields
 

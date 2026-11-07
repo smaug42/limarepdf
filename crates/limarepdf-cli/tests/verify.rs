@@ -185,3 +185,119 @@ fn an_untrusted_timestamp_is_neither_used_nor_trusted() {
     assert!(!text.contains("(from the signer's computer)"), "{text}");
     assert!(text.contains(" (trusted)"), "{text}");
 }
+
+/// `limarepdf-cli ARGS --trust-file trust.txt`, run in `dir` (`args` split at spaces): the
+/// exit code, what it printed and its errors.
+fn cli(dir: &Path, args: &str) -> (Option<i32>, String, String) {
+    let out = limarepdf_core::child_seam::output(
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .current_dir(dir)
+            .args(args.split(' '))
+            .args(["--trust-file", "trust.txt"]),
+    )
+    .unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// A committed sample signed file, copied into `dir` as `name`.
+fn sample_in(dir: &Path, sample: &str, name: &str) {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../limarepdf-core/tests/data/signatures")
+        .join(sample);
+    std::fs::copy(from, dir.join(name)).unwrap();
+}
+
+/// PB-116: `trust add --timestamp` trusts the authority of a signature's embedded timestamp,
+/// and `verify` says how; with the signer trusted too, the signature is fully trusted, with
+/// the timestamp's time.
+#[test]
+fn a_timestamp_authority_is_trusted_from_the_pdf() {
+    let (dir, _) = setup("trust-timestamp");
+    let (code, text, err) = cli(&dir, "verify input.pdf");
+    assert_eq!(code, Some(0), "{err}");
+    let hint = "this time isn't used); to trust it, run: limarepdf-cli trust add \"input.pdf\" \
+                --signature 2 --timestamp (and compare its fingerprint with the authority's)";
+    assert!(text.contains(hint), "{text}");
+
+    let (code, _, err) = cli(&dir, "trust add input.pdf --signature 1");
+    assert_eq!(code, Some(0), "{err}");
+    let (code, said, err) = cli(&dir, "trust add input.pdf --signature 2 --timestamp");
+    assert_eq!(code, Some(0), "{err}");
+    for line in [
+        "Now trusting \"Globalsign TSA for AATL on DSS - SHA384 - G5\" as a signer.",
+        "Its timestamps are now trusted, and their times used as signing times.",
+    ] {
+        assert!(said.contains(line), "{said}");
+    }
+    // Both signatures' timestamps are from that authority.
+    let (code, text, err) = cli(&dir, "verify input.pdf --require-trusted");
+    assert_eq!(code, Some(0), "{text}{err}");
+    assert!(text.contains("(from a timestamp authority)"), "{text}");
+    assert!(!text.contains("(from the signer's computer)"), "{text}");
+    assert!(!text.contains("--timestamp"), "{text}");
+}
+
+/// PB-116: `--timestamp` needs a signature with an embedded timestamp, in a PDF, and chooses
+/// nothing else.
+#[test]
+fn trusting_a_timestamp_authority_needs_one() {
+    let (dir, _) = setup("trust-timestamp-refused");
+    sample_in(&dir, "node-signpdf/signed.pdf", "plain.pdf");
+    sample_in(
+        &dir,
+        "pyhanko/pades-lta-dss-indirect-arrs-test.pdf",
+        "lta.pdf",
+    );
+    sample_in(&dir, "keys/tsa.crt.der", "tsa.cer");
+    let before = std::fs::read(dir.join("trust.txt")).unwrap();
+    for (args, code, says) in [
+        (
+            "input.pdf --signature 1 --timestamp --authority",
+            2,
+            "cannot be used with",
+        ),
+        (
+            "input.pdf --signature 1 --timestamp --pick 1",
+            1,
+            "--pick chooses an authority (with --authority) or a certificate in a file",
+        ),
+        ("tsa.cer --timestamp", 1, "--timestamp is for PDF files"),
+        (
+            "plain.pdf --timestamp",
+            1,
+            "signature 1 has no embedded timestamp",
+        ),
+        (
+            "lta.pdf --signature 2 --timestamp",
+            1,
+            "signature 2 is a document timestamp: leave out --timestamp to trust its authority",
+        ),
+    ] {
+        let (got, _, err) = cli(&dir, &format!("trust add {args}"));
+        assert_eq!(got, Some(code), "{args}: {err}");
+        assert!(err.contains(says), "{args}: {err}");
+        unchanged(&dir.join("trust.txt"), &before);
+    }
+}
+
+/// PB-116: `trust add --authority` chooses from the certificate authorities a signature's
+/// timestamp carries too; trusting the one that issued the timestamp authority's
+/// certificate trusts the timestamp.
+#[test]
+fn an_authority_carried_by_a_timestamp_can_be_trusted() {
+    let (dir, _) = setup("trust-timestamp-authority");
+    sample_in(&dir, "dss/Signature-P-PK7-2.pdf", "pk7.pdf");
+    let (code, said, err) = cli(&dir, "trust add pk7.pdf --authority");
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        said.contains("Now trusting \"RootCAOK\" as a certificate authority."),
+        "{said}"
+    );
+    let (_, text, err) = cli(&dir, "verify pk7.pdf");
+    assert!(text.contains("by TSA (trusted)"), "{text}{err}");
+    assert!(text.contains("(from a timestamp authority)"), "{text}");
+}

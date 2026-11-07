@@ -82,8 +82,11 @@ To trust a signer:
 Every open document is judged again as soon as the list changes.
 
 - **An authority:** **Trust an authority…** in Details does the same for an authority from the certificates the
-  signature carries (choose one when there are several). Trust the most specific authority that covers the signers
-  you mean.
+  signature and its timestamp carry (choose one when there are several). Trust the most specific authority that
+  covers the signers you mean.
+- **A timestamp authority:** when a signature has a timestamp whose authority isn't trusted, LimarePDF shows the
+  signer's own claimed time instead. **Trust the timestamp authority…** in Details trusts the authority that made the
+  timestamp, after the same fingerprint check, so its time is used as the signing time.
 - **A certificate someone sent you** (`.cer`, `.crt`, `.pem`, or `.p7c` as Acrobat exports it): choose **Forms and
   sign > Digital signature > Trusted certificates…** (also ☰ > Forms and sign > Digital signatures >
   Trusted certificates…, and at the bottom of the Digital signatures view), then **Add certificate file…**.

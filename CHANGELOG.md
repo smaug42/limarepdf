@@ -142,7 +142,10 @@
   don't trust is now amber rather than green, the banner says LimarePDF can't confirm every timestamp authority,
   and `limarepdf-cli verify --require-trusted` exits with status 1. A document timestamp from an untrusted
   authority shows its time as *claimed by a timestamp authority that isn't trusted* (`unconfirmed_timestamp` in
-  `--json`).
+  `--json`). To trust the authority of an embedded timestamp, press **Trust the timestamp authority…** in the
+  signature's Details, or run `limarepdf-cli trust add FILE --signature N --timestamp`, which
+  `limarepdf-cli verify` suggests on the Timestamp line; **Trust an authority…** and `--authority` now also offer
+  the authorities the timestamp carries.
 - A timestamp authority's certificate is now held to RFC 3161's profile: its extended key usage must list
   timestamping alone and be marked critical, and its key usage, if any, must allow signing and nothing else. The
   warning says which part it misses ("the timestamp authority's certificate doesn't insist on being used only for
@@ -154,7 +157,7 @@
   certificates for signing documents", naming the authority). Before, only the signer's own certificate was
   checked. Core:
   `SigWarning::NotATimestampAuthority` carries its reason, `TimeSource::UnconfirmedTimestamp`,
-  `DigitalSignature::signer_time` and `DigitalSignature::fully_trusted`.
+  `DigitalSignature::signer_time`, `DigitalSignature::fully_trusted` and `DigitalSignature::authorities`.
 
 ## [0.13.0] - 2026-11-03
 

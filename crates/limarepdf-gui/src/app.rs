@@ -1442,25 +1442,21 @@ impl App {
                 let t = &self.tabs[ti];
                 let c = t.sig_report()?;
                 let out = sigs::details(ctx, &t.title(), c, i);
-                let s = c.report.signatures.get(i);
-                let signer = s.and_then(|s| s.signer.clone());
-                let cas = s.map(sigs::authorities).unwrap_or_default();
-                Some((ti, out, signer, cas))
+                let ask = c
+                    .report
+                    .signatures
+                    .get(i)
+                    .and_then(|s| sigs::trust_question(s, &out));
+                Some((ti, out, ask))
             });
             match shown {
                 None => self.sig_details = None,
-                Some((ti, out, signer, cas)) => {
+                Some((ti, out, ask)) => {
                     if out.close {
                         self.sig_details = None;
                     }
-                    if out.trust_signer {
-                        if let Some(cert) = signer {
-                            self.trust_ask =
-                                Some(TrustAsk::new(TrustRole::Signer, vec![cert], false));
-                        }
-                    }
-                    if out.trust_authority && !cas.is_empty() {
-                        self.trust_ask = Some(TrustAsk::new(TrustRole::Authority, cas, false));
+                    if ask.is_some() {
+                        self.trust_ask = ask;
                     }
                     if let Some((p, y)) = out.go_to {
                         self.active = ti;

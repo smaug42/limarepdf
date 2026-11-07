@@ -1203,6 +1203,44 @@ fn timestamp_authorities_with_the_profile_are_trusted() {
     }
 }
 
+#[test]
+fn authorities_come_from_the_signature_and_its_timestamp() {
+    // PB-116: a signature carrying the intermediate, with a timestamp from an authority
+    // under the test CA whose token carries the CA. The authority's own certificate isn't
+    // a certificate authority, and one carried by both is listed once.
+    let names = |extra_certs: Vec<Vec<u8>>, stamped: bool| {
+        let by = stamper(
+            tsa_cert(vec![eku(true, &[TIME_STAMPING])]),
+            vec![cert_der("ca")],
+        );
+        let pdf = sign(
+            &base_pdf(),
+            &id("t-leaf"),
+            &Field::default(),
+            &Cms {
+                extra_certs,
+                timestamp: stamped.then_some(("20260601120500Z", false)),
+                timestamp_by: stamped.then_some(by),
+                ..Cms::default()
+            },
+        );
+        let r = report(&pdf, &TrustList::default());
+        let s = &r.signatures[0];
+        assert_eq!(s.status, SigStatus::Valid, "{s:#?}");
+        assert_eq!(s.timestamp.is_some(), stamped);
+        s.authorities()
+            .iter()
+            .map(|c| c.display_name().to_string())
+            .collect::<Vec<_>>()
+    };
+    let inter = || cert_der("t-inter");
+    assert_eq!(names(vec![inter()], false), ["Trust Test Intermediate"]);
+    let both = ["Trust Test Intermediate", "Test Root CA"];
+    assert_eq!(names(vec![inter()], true), both);
+    assert_eq!(names(vec![inter(), cert_der("ca")], true), both);
+    assert_eq!(names(Vec::new(), true), ["Test Root CA"]);
+}
+
 // ------------------------------------------------------------------ which time counts
 
 /// Signed with the p256 key and a certificate from the test CA valid `from` `to`, at
