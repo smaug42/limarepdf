@@ -3419,7 +3419,7 @@ fn run(cmd: Cmd) -> Result<()> {
             for (h, n) in &rep.removed {
                 out!("removed {n:>5}  {}", h.label());
             }
-            if let Some(note) = rep.note() {
+            for note in rep.notes() {
                 out!("{note}");
             }
             let output = output.context("--output is needed")?;
