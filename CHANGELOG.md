@@ -158,6 +158,16 @@
   checked. Core:
   `SigWarning::NotATimestampAuthority` carries its reason, `TimeSource::UnconfirmedTimestamp`,
   `DigitalSignature::signer_time`, `DigitalSignature::fully_trusted` and `DigitalSignature::authorities`.
+- A signature now shows the digest its value is made with, not only the one it names, and both when the document
+  is digested with another ("SHA-1 for the document, SHA-256 for the signature", as `adbe.pkcs7.sha1` signatures
+  do). A signature or timestamp that names one digest but is made with another, a mix the standards don't allow,
+  now *can't be checked*, and the reason names both.
+  Before, a signature naming SHA-256 but made with SHA-1 was valid, showed SHA-256 and gave no SHA-1 warning.
+  Timestamps show their digests too, under the timestamp in Details (Timestamp digest) and in
+  `limarepdf-cli verify` (a `digest:` line; `digest` and `signature_digest` in `--json`, and `signature_digest`
+  for each signature), and an embedded timestamp relying on SHA-1 gets a warning ("the embedded timestamp uses
+  SHA-1, which is no longer safe against forgery"). Core: `DigitalSignature::signature_digest` and `digest_text`,
+  `Timestamp::digest`, `signature_digest` and `digest_text`, `SigWarning::WeakTimestampDigest`.
 
 ## [0.13.0] - 2026-11-03
 

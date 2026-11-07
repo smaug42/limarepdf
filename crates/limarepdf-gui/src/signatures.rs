@@ -917,26 +917,32 @@ fn signature_facts(ui: &mut Ui, c: &Checked, s: &DigitalSignature, kind: String)
 /// Who signed, or which authority stamped: their certificate and how it signed.
 fn signer_facts(ui: &mut Ui, s: &DigitalSignature) {
     let stamp = s.kind == SigKind::DocumentTimestamp;
-    let mut alg: Vec<String> = Vec::new();
-    if let Some(c) = &s.signer {
-        alg.push(c.key.clone());
-    }
-    alg.extend(s.algorithm.map(String::from));
-    alg.extend(s.digest.map(String::from));
-    if !s.sub_filter.is_empty() {
-        alg.push(clean(&s.sub_filter));
-    }
-    if s.signer.is_none() && alg.is_empty() {
+    let alg = algorithm_text(s);
+    if s.signer.is_none() && alg.is_none() {
         return;
     }
     dialogs::group(ui, if stamp { "Authority" } else { "Signer" }, |ui| {
         if let Some(cert) = &s.signer {
             signer_cert_facts(ui, cert, stamp);
         }
-        if !alg.is_empty() {
-            fact(ui, "Algorithm", alg.join(", "));
+        if let Some(alg) = alg {
+            fact(ui, "Algorithm", alg);
         }
     });
+}
+
+/// The Algorithm line: the key, the signature algorithm, the digests and the kind.
+fn algorithm_text(s: &DigitalSignature) -> Option<String> {
+    let mut alg: Vec<String> = Vec::new();
+    if let Some(c) = &s.signer {
+        alg.push(c.key.clone());
+    }
+    alg.extend(s.algorithm.map(String::from));
+    alg.extend(s.digest_text());
+    if !s.sub_filter.is_empty() {
+        alg.push(clean(&s.sub_filter));
+    }
+    (!alg.is_empty()).then(|| alg.join(", "))
 }
 
 /// The signer's certificate: who it names, who issued it, and which it is.
@@ -1022,6 +1028,7 @@ fn time_lines(s: &DigitalSignature) -> Vec<(&'static str, String)> {
                 ),
             },
         ));
+        lines.push(("Timestamp digest", ts.digest_text()));
     }
     lines
 }
@@ -1449,7 +1456,7 @@ mod tests {
              authority, so the signing time is the signer's own."
         );
         let lines = time_lines(last);
-        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines.len(), 3, "{lines:?}");
         assert_eq!(lines[0].0, "Signed at");
         assert!(
             lines[0].1.ends_with(" (from the signer's computer)"),
@@ -1463,6 +1470,7 @@ mod tests {
                 ),
             "{lines:?}"
         );
+        assert_eq!(lines[2], ("Timestamp digest", "SHA-256".to_string()));
         let b = banner_of(r.clone());
         assert_eq!(b.tone, Tone::Caution);
         assert_eq!(
@@ -1503,6 +1511,40 @@ mod tests {
         assert_eq!(
             (b.tone, b.text.as_str()),
             (Tone::Good, "Signed, and all signatures are valid.")
+        );
+    }
+
+    /// The digests a signature and its embedded timestamp rely on: one name where the two
+    /// agree, else what each one digests.
+    #[test]
+    fn digests_are_named_with_what_they_digest() {
+        let r = report(
+            "pyhanko/minimal-two-fields-signed-twice.pdf",
+            &TrustList::default(),
+        );
+        let mut s = r.signatures[1].clone();
+        assert_eq!(
+            algorithm_text(&s).as_deref(),
+            Some("RSA 4096-bit, RSA PKCS#1 v1.5, SHA-256, adbe.pkcs7.detached")
+        );
+        // As an `adbe.pkcs7.sha1` signature by a SHA-256 signer is reported.
+        s.sub_filter = "adbe.pkcs7.sha1".into();
+        (s.digest, s.signature_digest) = (Some("SHA-1"), Some("SHA-256"));
+        assert_eq!(
+            algorithm_text(&s).as_deref(),
+            Some(
+                "RSA 4096-bit, RSA PKCS#1 v1.5, SHA-1 for the document, SHA-256 for the \
+                 signature, adbe.pkcs7.sha1"
+            )
+        );
+        let ts = s.timestamp.as_mut().unwrap();
+        (ts.digest, ts.signature_digest) = ("SHA-256", "SHA-1");
+        assert_eq!(
+            time_lines(&s).get(2),
+            Some(&(
+                "Timestamp digest",
+                "SHA-256 for the signature it stamps, SHA-1 for its own signature".to_string()
+            ))
         );
     }
 

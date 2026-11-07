@@ -299,6 +299,15 @@ pub fn sign_hash(key: &Key, h: Hash, hash: &[u8], pss: bool) -> (Vec<u8>, Vec<u8
     }
 }
 
+fn rsa_pkcs1_oid(h: Hash) -> &'static str {
+    match h {
+        Hash::Sha1 => "1.2.840.113549.1.1.5",
+        Hash::Sha256 => "1.2.840.113549.1.1.11",
+        Hash::Sha384 => "1.2.840.113549.1.1.12",
+        Hash::Sha512 => "1.2.840.113549.1.1.13",
+    }
+}
+
 fn ecdsa_oid(h: Hash) -> &'static str {
     match h {
         Hash::Sha1 => "1.2.840.10045.4.1",
@@ -354,11 +363,16 @@ pub struct Cms {
     pub digest_alg: Option<Vec<u8>>,
     /// The signature algorithm identifier to write instead of the real one.
     pub sig_alg: Option<Vec<u8>>,
+    /// Sign with this digest instead of `hash`, naming it in the signature algorithm, while
+    /// the digest algorithm (and any document digest) stays `hash`'s.
+    pub sig_hash: Option<Hash>,
     /// An embedded timestamp from [`tsa`] at this GeneralizedTime; with the flag set, for
     /// other data than the signature value.
     pub timestamp: Option<(&'static str, bool)>,
     /// The authority of that timestamp instead of [`tsa`].
     pub timestamp_by: Option<Stamper>,
+    /// The digests of that timestamp.
+    pub timestamp_digests: StampDigests,
     /// Indefinite lengths on the outer structures (BER).
     pub ber: bool,
     /// Flip a bit of the signature value.
@@ -385,8 +399,10 @@ impl Default for Cms {
             econtent: None,
             digest_alg: None,
             sig_alg: None,
+            sig_hash: None,
             timestamp: None,
             timestamp_by: None,
+            timestamp_digests: StampDigests::default(),
             ber: false,
             corrupt: false,
         }
@@ -407,6 +423,26 @@ impl Stamper {
         Id {
             key: id(self.key).key,
             cert: self.cert.clone(),
+        }
+    }
+}
+
+/// The digests of a timestamp token: the imprint's, which digests the data stamped, and the
+/// token's own (its signer's digest algorithm); with `sig`, the token is signed with that
+/// digest instead, while still naming `token`'s.
+#[derive(Clone, Copy, Debug)]
+pub struct StampDigests {
+    pub imprint: Hash,
+    pub token: Hash,
+    pub sig: Option<Hash>,
+}
+
+impl Default for StampDigests {
+    fn default() -> Self {
+        Self {
+            imprint: Hash::Sha256,
+            token: Hash::Sha256,
+            sig: None,
         }
     }
 }
@@ -479,11 +515,17 @@ fn signer_info(signer: &Id, message: &[&[u8]], o: &Cms) -> Vec<u8> {
         (message.iter().map(|p| p.to_vec()).collect(), None)
     };
     let parts: Vec<&[u8]> = to_sign.iter().map(Vec::as_slice).collect();
-    let hash = o.hash.of(&parts);
-    let (mut value, sig_alg) = match (&signer.key, o.pss, o.pss_salt) {
-        (Key::Rsa(k), true, Some(salt)) => sign_pss(k, o.hash, &hash, salt),
-        _ => sign_hash(&signer.key, o.hash, &hash, o.pss),
+    let sig_hash = o.sig_hash.unwrap_or(o.hash);
+    let hash = sig_hash.of(&parts);
+    let (mut value, mut sig_alg) = match (&signer.key, o.pss, o.pss_salt) {
+        (Key::Rsa(k), true, Some(salt)) => sign_pss(k, sig_hash, &hash, salt),
+        _ => sign_hash(&signer.key, sig_hash, &hash, o.pss),
     };
+    // PKCS#1 v1.5 is written as rsaEncryption, which leaves the digest to the digest
+    // algorithm; a digest of its own has to be named.
+    if let (Key::Rsa(_), false, Some(h)) = (&signer.key, o.pss, o.sig_hash) {
+        sig_alg = seq(&[&oid(rsa_pkcs1_oid(h)), &null()]);
+    }
     if o.corrupt {
         let n = value.len() / 2;
         value[n] ^= 1;
@@ -491,12 +533,11 @@ fn signer_info(signer: &Id, message: &[&[u8]], o: &Cms) -> Vec<u8> {
     let mut unsigned = None;
     if let Some((time, wrong)) = o.timestamp {
         let data: &[u8] = if wrong { b"something else" } else { &value };
-        let token = match &o.timestamp_by {
-            Some(a) => {
-                timestamp_token_carrying(&a.id(), &[data], time, Hash::Sha256, a.carrying.clone())
-            }
-            None => timestamp_token(&tsa(), &[data], time, Hash::Sha256),
+        let (by, carrying) = match &o.timestamp_by {
+            Some(a) => (a.id(), a.carrying.clone()),
+            None => (tsa(), Vec::new()),
         };
+        let token = timestamp_token_with(&by, &[data], time, o.timestamp_digests, carrying);
         unsigned = Some(ctx(1, &attr(TIMESTAMP_TOKEN, &token)));
     }
     let sid = if o.ski { tlv(0x80, &ski) } else { isn };
@@ -664,7 +705,8 @@ fn build_cert(
     seq(&[&tbs, &alg, &tlv(0x03, &[&[0u8][..], &value].concat())])
 }
 
-/// A timestamp token (RFC 3161) from `tsa` over `data` at `time` (GeneralizedTime).
+/// A timestamp token (RFC 3161) from `tsa` over `data` at `time` (GeneralizedTime), its
+/// imprint made with `h` and the token signed with SHA-256.
 pub fn timestamp_token(tsa: &Id, data: &[&[u8]], time: &str, h: Hash) -> Vec<u8> {
     timestamp_token_carrying(tsa, data, time, h, Vec::new())
 }
@@ -677,10 +719,25 @@ pub fn timestamp_token_carrying(
     h: Hash,
     extra_certs: Vec<Vec<u8>>,
 ) -> Vec<u8> {
+    let d = StampDigests {
+        imprint: h,
+        ..StampDigests::default()
+    };
+    timestamp_token_with(tsa, data, time, d, extra_certs)
+}
+
+/// [`timestamp_token_carrying`] with the digests `d`.
+pub fn timestamp_token_with(
+    tsa: &Id,
+    data: &[&[u8]],
+    time: &str,
+    d: StampDigests,
+    extra_certs: Vec<Vec<u8>>,
+) -> Vec<u8> {
     let info = seq(&[
         &int(1),
         &oid("1.2.3.4.5"),
-        &seq(&[&h.alg(), &octets(&h.of(data))]),
+        &seq(&[&d.imprint.alg(), &octets(&d.imprint.of(data))]),
         &int(42),
         &gen_time(time),
     ]);
@@ -688,6 +745,8 @@ pub fn timestamp_token_carrying(
         tsa,
         &[&info],
         &Cms {
+            hash: d.token,
+            sig_hash: d.sig,
             content_type: Some(TST_INFO),
             econtent_type: TST_INFO,
             econtent: Some(info.clone()),

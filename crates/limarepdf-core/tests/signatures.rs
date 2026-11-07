@@ -451,7 +451,16 @@ fn adbe_pkcs7_sha1() {
     });
     let s = only(&good);
     assert_valid(&s);
-    assert!(s.warnings.contains(&SigWarning::WeakDigest("SHA-1")));
+    // The document is digested with SHA-1 whatever the signer uses (SHA-256 here).
+    assert_eq!(
+        (s.digest, s.signature_digest),
+        (Some("SHA-1"), Some("SHA-256"))
+    );
+    assert_eq!(
+        s.digest_text().as_deref(),
+        Some("SHA-1 for the document, SHA-256 for the signature")
+    );
+    assert_eq!(s.warnings, [SigWarning::WeakDigest("SHA-1")]);
     let wrong = sign_with(&base_pdf(), &f, |_| {
         let digest = Hash::Sha1.of(&[b"another document"]);
         cms(
@@ -478,6 +487,11 @@ fn adbe_x509_rsa_sha1() {
         let s = only(&b);
         assert_valid(&s);
         assert_eq!(s.warnings.contains(&SigWarning::WeakDigest("SHA-1")), weak);
+        assert_eq!(s.digest, s.signature_digest);
+        assert_eq!(
+            s.digest_text().as_deref(),
+            Some(if weak { "SHA-1" } else { "SHA-256" })
+        );
         assert_eq!(
             s.signer.unwrap().common_name.as_deref(),
             Some("Test Signer RSA-2048")
@@ -510,6 +524,8 @@ fn embedded_timestamp() {
         ts.authority.common_name.as_deref(),
         Some("Test Timestamp Authority")
     );
+    assert_eq!((ts.digest, ts.signature_digest), ("SHA-256", "SHA-256"));
+    assert_eq!(ts.digest_text(), "SHA-256");
     // The empty list doesn't trust the authority, so the time is the signer's own.
     let t = s.time.unwrap();
     assert_eq!(
@@ -532,16 +548,21 @@ fn embedded_timestamp() {
     );
 }
 
-#[test]
-fn document_timestamp() {
-    let f = Field {
+/// The field of a document timestamp.
+fn timestamp_field() -> Field {
+    Field {
         name: "Timestamp1",
         sub_filter: "ETSI.RFC3161",
         doc_timestamp: true,
         m: None,
         reason: None,
         ..Field::default()
-    };
+    }
+}
+
+#[test]
+fn document_timestamp() {
+    let f = timestamp_field();
     let b = sign_with(&signed(), &f.clone(), |r| {
         timestamp_token(&tsa(), r, "20260601130000Z", Hash::Sha256)
     });
@@ -560,6 +581,10 @@ fn document_timestamp() {
     assert_eq!(
         s.signer.as_ref().unwrap().common_name.as_deref(),
         Some("Test Timestamp Authority")
+    );
+    assert_eq!(
+        (s.digest, s.signature_digest),
+        (Some("SHA-256"), Some("SHA-256"))
     );
     assert!(s.warnings.is_empty(), "{:?}", s.warnings);
     // An authority without the timestamping purpose.
@@ -833,6 +858,136 @@ fn unsigned_document_has_no_signatures() {
     let r = report(&base_pdf());
     assert!(r.signatures.is_empty() && r.empty_fields.is_empty());
     assert!(r.all_valid());
+}
+
+// ---------------------------------------------------------------- digests
+
+/// A file signed by `key`, naming `hash` as the digest algorithm but signed with `sig_hash`.
+fn mixed_pdf(key: &str, hash: Hash, sig_hash: Hash, signed_attrs: bool, pss: bool) -> Vec<u8> {
+    let o = Cms {
+        hash,
+        sig_hash: Some(sig_hash),
+        signed_attrs,
+        pss,
+        ..Cms::default()
+    };
+    sign(&base_pdf(), &id(key), &Field::default(), &o)
+}
+
+/// The signature of [`mixed_pdf`], checked.
+fn mixed(key: &str, hash: Hash, sig_hash: Hash, signed_attrs: bool, pss: bool) -> DigitalSignature {
+    only(&mixed_pdf(key, hash, sig_hash, signed_attrs, pss))
+}
+
+#[test]
+fn signature_made_with_another_digest_than_it_names() {
+    // The signature is made over a digest made with the one named (RFC 5652 sections 5.4 and
+    // 5.5), so the two must agree: with signed attributes, which hold that digest (RFC 8933
+    // section 3); either way round, RSA or RSA-PSS.
+    let s = mixed("rsa3072", Hash::Sha256, Hash::Sha1, true, false);
+    assert_cant(
+        &s,
+        "the signature names SHA-256 for what it signs but is made with SHA-1, a mix the \
+         standards don't allow",
+    );
+    let s = mixed("rsa3072", Hash::Sha1, Hash::Sha256, true, false);
+    assert_cant(&s, "names SHA-1 for what it signs but is made with SHA-256");
+    let s = mixed("rsa3072", Hash::Sha256, Hash::Sha1, true, true);
+    assert_cant(&s, "names SHA-256 for what it signs but is made with SHA-1");
+    // ECDSA always (RFC 5753 section 2.1.1).
+    for attrs in [true, false] {
+        let s = mixed("p256", Hash::Sha256, Hash::Sha1, attrs, false);
+        assert_cant(&s, "names SHA-256 for what it signs but is made with SHA-1");
+    }
+
+    // And RSA without them, over the document's digest itself, as pdfsig and OpenSSL hold
+    // too (PB-117).
+    for pss in [false, true] {
+        let s = mixed("rsa3072", Hash::Sha256, Hash::Sha1, false, pss);
+        assert_cant(&s, "names SHA-256 for what it signs but is made with SHA-1");
+        let s = mixed("rsa3072", Hash::Sha1, Hash::Sha256, false, pss);
+        assert_cant(&s, "names SHA-1 for what it signs but is made with SHA-256");
+    }
+}
+
+#[test]
+fn timestamp_digests() {
+    // Each pair: the imprint's (what is stamped) and the token's own.
+    let pairs = [
+        (Hash::Sha256, Hash::Sha1, ("SHA-256", "SHA-1")),
+        (Hash::Sha1, Hash::Sha256, ("SHA-1", "SHA-256")),
+    ];
+    for (imprint, token, (d, sd)) in pairs {
+        let digests = StampDigests {
+            imprint,
+            token,
+            sig: None,
+        };
+        // A document timestamp: its digests are the signature's.
+        let b = sign_with(&base_pdf(), &timestamp_field(), |r| {
+            timestamp_token_with(&tsa(), r, "20260601130000Z", digests, Vec::new())
+        });
+        let s = only(&b);
+        assert_valid(&s);
+        assert_eq!((s.digest, s.signature_digest), (Some(d), Some(sd)));
+        assert_eq!(
+            s.digest_text().unwrap(),
+            format!("{d} for the document, {sd} for the signature")
+        );
+        assert_eq!(s.warnings, [SigWarning::WeakDigest("SHA-1")]);
+
+        // An embedded one: shown with the timestamp, warned for apart from the signature's.
+        let o = Cms {
+            timestamp: Some(("20260601120500Z", false)),
+            timestamp_digests: digests,
+            ..Cms::default()
+        };
+        let s = only(&sign(&base_pdf(), &id("rsa3072"), &Field::default(), &o));
+        assert_valid(&s);
+        assert_eq!(
+            (s.digest, s.signature_digest),
+            (Some("SHA-256"), Some("SHA-256"))
+        );
+        let ts = s.timestamp.as_ref().unwrap();
+        assert_eq!((ts.digest, ts.signature_digest), (d, sd));
+        assert_eq!(
+            ts.digest_text(),
+            format!("{d} for the signature it stamps, {sd} for its own signature")
+        );
+        assert_eq!(s.warnings, [SigWarning::WeakTimestampDigest("SHA-1")]);
+        assert_eq!(
+            s.warnings[0].to_string(),
+            "the embedded timestamp uses SHA-1, which is no longer safe against forgery"
+        );
+    }
+
+    // A token signed with another digest than it names is refused like any signature.
+    let digests = StampDigests {
+        sig: Some(Hash::Sha1),
+        ..StampDigests::default()
+    };
+    let b = sign_with(&base_pdf(), &timestamp_field(), |r| {
+        timestamp_token_with(&tsa(), r, "20260601130000Z", digests, Vec::new())
+    });
+    assert_cant(
+        &only(&b),
+        "names SHA-256 for what it signs but is made with SHA-1",
+    );
+    let o = Cms {
+        timestamp: Some(("20260601120500Z", false)),
+        timestamp_digests: digests,
+        ..Cms::default()
+    };
+    let s = only(&sign(&base_pdf(), &id("rsa3072"), &Field::default(), &o));
+    assert_valid(&s);
+    assert!(s.timestamp.is_none());
+    assert_eq!(s.time.unwrap().source, TimeSource::SignerClock);
+    assert!(
+        matches!(&s.warnings[..], [SigWarning::TimestampProblem(w)]
+            if w.contains("names SHA-256 for what it signs but is made with SHA-1")),
+        "{:?}",
+        s.warnings
+    );
 }
 
 // ---------------------------------------------------------------- byte range attacks
@@ -1805,6 +1960,23 @@ fn dss_samples() {
     assert!(
         warn("pades-signed-filled-form.pdf").contains(&SigWarning::CertificateNotValidAtSigning)
     );
+    // Embedded timestamps signed with SHA-1; the first's signature itself uses SHA-256.
+    for (file, weak) in [
+        ("certified-no-change-permitted.pdf", false),
+        ("pkcs7_sha1.pdf", true),
+        ("wrong-digest-algo.pdf", true),
+    ] {
+        let w = warn(file);
+        assert!(
+            w.contains(&SigWarning::WeakTimestampDigest("SHA-1")),
+            "{file}: {w:?}"
+        );
+        assert_eq!(
+            w.contains(&SigWarning::WeakDigest("SHA-1")),
+            weak,
+            "{file}: {w:?}"
+        );
+    }
     let r = report(&std::fs::read(dir.join("fieldmdp-include.pdf")).unwrap());
     assert!(r.signatures[0].locks.is_some() || r.certification().is_some());
     assert!(sample_authorities_pass(&[dir]) > 0);
@@ -1912,6 +2084,87 @@ fn cross_check_with_pdfsig_and_openssl() {
             openssl_accepts(dir.path(), bytes),
             limarepdf_valid,
             "{name}: openssl and LimarePDF disagree"
+        );
+    }
+}
+
+/// What pdfsig and OpenSSL make of signatures made with another digest than they name, beside
+/// LimarePDF's verdict. Only reported, as the standards decide these, not the other tools:
+/// `cargo test -p limarepdf-core --test signatures -- --ignored mixed_digests --nocapture`.
+#[test]
+#[ignore]
+fn cross_check_mixed_digests_with_pdfsig_and_openssl() {
+    let dir = tool::Scratch::new("sig-mixed-digests");
+    let (s256, s1) = (Hash::Sha256, Hash::Sha1);
+    let token = StampDigests {
+        sig: Some(s1),
+        ..StampDigests::default()
+    };
+    let files: Vec<(&str, Vec<u8>, bool)> = vec![
+        (
+            "rsa-attrs.pdf",
+            mixed_pdf("rsa3072", s256, s1, true, false),
+            false,
+        ),
+        (
+            "rsa-attrs-reverse.pdf",
+            mixed_pdf("rsa3072", s1, s256, true, false),
+            false,
+        ),
+        (
+            "pss-attrs.pdf",
+            mixed_pdf("rsa3072", s256, s1, true, true),
+            false,
+        ),
+        (
+            "p256-attrs.pdf",
+            mixed_pdf("p256", s256, s1, true, false),
+            false,
+        ),
+        (
+            "p256-no-attrs.pdf",
+            mixed_pdf("p256", s256, s1, false, false),
+            false,
+        ),
+        (
+            "rsa-no-attrs.pdf",
+            mixed_pdf("rsa3072", s256, s1, false, false),
+            false,
+        ),
+        (
+            "timestamp-token.pdf",
+            sign_with(&base_pdf(), &timestamp_field(), |r| {
+                timestamp_token_with(&tsa(), r, "20260601130000Z", token, Vec::new())
+            }),
+            false,
+        ),
+    ];
+    for (name, bytes, valid) in &files {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let s = only(bytes);
+        assert_eq!(
+            s.status == SigStatus::Valid,
+            *valid,
+            "{name}: {:?}",
+            s.status
+        );
+        let out = tool::output(std::process::Command::new("pdfsig").arg(&path))
+            .expect("pdfsig installed");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let pdfsig = text
+            .lines()
+            .find(|l| l.contains("Signature Validation:"))
+            .map_or("(no verdict)", str::trim);
+        // A document timestamp holds its content, so it isn't checked against the ranges.
+        let openssl = match s.kind {
+            SigKind::DocumentTimestamp => "not checked",
+            _ if openssl_accepts(dir.path(), bytes) => "accepts",
+            _ => "refuses",
+        };
+        println!(
+            "{name}: LimarePDF {:?}; pdfsig {pdfsig}; OpenSSL {openssl}",
+            s.status
         );
     }
 }
