@@ -135,6 +135,26 @@
   still points at), and says what; `limarepdf-cli sanitise` writes no file. Before, that was ignored and the
   removal reported success. When a picture that was cut is still drawn elsewhere on the page, the summary now
   says so, as redaction's does.
+- A signature's time now comes from its embedded timestamp only when you trust the timestamp authority; until
+  then the signing time is the signer's own, and the timestamp is shown as *claimed by* its authority with "this
+  time isn't used". Before, any valid timestamp's time was used, so a timestamp anyone could make decided whether
+  a trusted signer's certificate was valid at the signing time. A signature with a timestamp from an authority you
+  don't trust is now amber rather than green, the banner says LimarePDF can't confirm every timestamp authority,
+  and `limarepdf-cli verify --require-trusted` exits with status 1. A document timestamp from an untrusted
+  authority shows its time as *claimed by a timestamp authority that isn't trusted* (`unconfirmed_timestamp` in
+  `--json`).
+- A timestamp authority's certificate is now held to RFC 3161's profile: its extended key usage must list
+  timestamping alone and be marked critical, and its key usage, if any, must allow signing and nothing else. The
+  warning says which part it misses ("the timestamp authority's certificate doesn't insist on being used only for
+  timestamps, as RFC 3161 requires"), and such an authority isn't trusted. An embedded timestamp from an authority
+  with a short RSA key gets a warning too. Before, any certificate listing timestamping among its uses passed.
+- Trust now checks the extended key usage of every certificate in a chain, the trusted authority's included: an
+  authority whose listed uses leave none for signing documents (or, above a timestamp authority, none for
+  timestamps) no longer vouches for the certificates below it ("the certificate of … doesn't allow it to issue
+  certificates for signing documents", naming the authority). Before, only the signer's own certificate was
+  checked. Core:
+  `SigWarning::NotATimestampAuthority` carries its reason, `TimeSource::UnconfirmedTimestamp`,
+  `DigitalSignature::signer_time` and `DigitalSignature::fully_trusted`.
 
 ## [0.13.0] - 2026-11-03
 

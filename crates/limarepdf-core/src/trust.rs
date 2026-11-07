@@ -616,34 +616,127 @@ fn authority_problem(c: &Cert) -> Option<String> {
     None
 }
 
+impl Purpose {
+    /// Why the signer's certificate `c` can't be used for this purpose, if it can't: what
+    /// its key usage and extended key usage allow, without the dates. The trust verdict and
+    /// the warnings both use it, so they give the same reason.
+    pub(crate) fn leaf_use_problem(self, c: &Cert) -> Option<String> {
+        use x509_cert::ext::pkix::{ExtendedKeyUsage, KeyUsage, KeyUsages};
+        match self {
+            Purpose::Signing => {
+                if !c.key_usage_allows_signing() {
+                    return Some("the signer's certificate doesn't allow its key to sign".into());
+                }
+                let uses = c.extension::<ExtendedKeyUsage>().map(|e| e.0);
+                if uses.is_some_and(|u| !u.iter().any(|o| SIGNING_USES.contains(o))) {
+                    return Some(
+                        "the signer's certificate is meant for other uses than signing documents"
+                            .into(),
+                    );
+                }
+            }
+            // RFC 3161 2.3: one extended key usage, timeStamping, marked critical.
+            Purpose::Timestamping => {
+                let Some((critical, uses)) = c
+                    .extension_critical::<ExtendedKeyUsage>()
+                    .filter(|(_, e)| e.0.contains(&ext::TIME_STAMPING))
+                else {
+                    return Some(
+                        "the timestamp authority's certificate isn't meant for timestamps".into(),
+                    );
+                };
+                if uses.0.iter().any(|o| *o != ext::TIME_STAMPING) {
+                    return Some(
+                        "the timestamp authority's certificate is also meant for other uses, but \
+                         RFC 3161 requires it to be for timestamps only"
+                            .into(),
+                    );
+                }
+                if !critical {
+                    return Some(
+                        "the timestamp authority's certificate doesn't insist on being used only \
+                         for timestamps, as RFC 3161 requires"
+                            .into(),
+                    );
+                }
+                if let Some(k) = c.extension::<KeyUsage>() {
+                    if !c.key_usage_allows_signing() {
+                        return Some(
+                            "the timestamp authority's certificate doesn't allow its key to sign"
+                                .into(),
+                        );
+                    }
+                    if !(k.0 - (KeyUsages::DigitalSignature | KeyUsages::NonRepudiation)).is_empty()
+                    {
+                        return Some(
+                            "the timestamp authority's key may also be used for other things, \
+                             but RFC 3161 requires a key kept for timestamps"
+                                .into(),
+                        );
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Why `issuer` can't vouch for certificates for this purpose, if it can't. `path` runs
+    /// from the signer up to the certificate `issuer` issued. Each certificate on the way that
+    /// lists extended key usages, other than any use, keeps only those: what is left must
+    /// still allow the purpose. Only the issuer that leaves nothing is at fault; the ones
+    /// below were checked on the way up.
+    fn issuer_use_problem(self, path: &[Cert], issuer: &Cert) -> Option<String> {
+        use x509_cert::ext::pkix::ExtendedKeyUsage;
+        let all = || -> Vec<Oid> {
+            match self {
+                Purpose::Signing => SIGNING_USES
+                    .into_iter()
+                    .filter(|o| *o != ext::ANY_EKU)
+                    .collect(),
+                Purpose::Timestamping => vec![ext::TIME_STAMPING],
+            }
+        };
+        let mut allowed = all();
+        let limit = |allowed: &mut Vec<Oid>, c: &Cert| {
+            if let Some(uses) = c
+                .extension::<ExtendedKeyUsage>()
+                .filter(|e| !e.0.contains(&ext::ANY_EKU))
+            {
+                allowed.retain(|o| uses.0.contains(o));
+            }
+        };
+        for c in path {
+            limit(&mut allowed, c);
+        }
+        if allowed.is_empty() {
+            return None;
+        }
+        limit(&mut allowed, issuer);
+        if !allowed.is_empty() {
+            return None;
+        }
+        let what = match self {
+            Purpose::Timestamping => "timestamps",
+            Purpose::Signing => {
+                let mut own = all();
+                limit(&mut own, issuer);
+                if own.is_empty() {
+                    "signing documents"
+                } else {
+                    "the uses the signer's certificate is meant for"
+                }
+            }
+        };
+        Some(format!(
+            "the certificate of {} doesn't allow it to issue certificates for {what}",
+            name_of(issuer)
+        ))
+    }
+}
+
 /// Why the signer's certificate `c` can't be trusted for `purpose` at `at`, if it can't.
 fn leaf_problem(c: &Cert, at: DateTime<Utc>, purpose: Purpose) -> Option<String> {
-    use x509_cert::ext::pkix::ExtendedKeyUsage;
-    if let Some(p) = cert_problem(c, at) {
-        return Some(p);
-    }
-    let uses = c.extension::<ExtendedKeyUsage>().map(|e| e.0);
-    match purpose {
-        Purpose::Signing => {
-            if !c.key_usage_allows_signing() {
-                return Some("the signer's certificate doesn't allow its key to sign".into());
-            }
-            if uses.is_some_and(|u| !u.iter().any(|o| SIGNING_USES.contains(o))) {
-                return Some(
-                    "the signer's certificate is meant for other uses than signing documents"
-                        .into(),
-                );
-            }
-        }
-        Purpose::Timestamping => {
-            if !uses.is_some_and(|u| u.contains(&ext::TIME_STAMPING)) {
-                return Some(
-                    "the timestamp authority's certificate isn't meant for timestamps".into(),
-                );
-            }
-        }
-    }
-    None
+    cert_problem(c, at).or_else(|| purpose.leaf_use_problem(c))
 }
 
 /// Why a digital ID with the certificate `c` can't sign, if it can't: the checks a signer's
@@ -934,6 +1027,7 @@ struct Search<'a> {
     subjects: &'a [NameKey],
     pool: &'a [Cert],
     at: DateTime<Utc>,
+    purpose: Purpose,
     checks: usize,
     /// The first problem found on a way to a trusted authority.
     failed: Option<String>,
@@ -1058,7 +1152,10 @@ impl Search<'_> {
                     name_of(&current)
                 ));
             }
-            if let Some(p) = authority_problem(issuer).or_else(|| cert_problem(issuer, self.at)) {
+            if let Some(p) = authority_problem(issuer)
+                .or_else(|| cert_problem(issuer, self.at))
+                .or_else(|| self.purpose.issuer_use_problem(path, issuer))
+            {
                 problem.get_or_insert(p);
             }
             {
@@ -1155,6 +1252,7 @@ pub(crate) fn evaluate(
         subjects: &subjects,
         pool: &unique,
         at,
+        purpose,
         checks: 0,
         failed: None,
         unknown: None,

@@ -33,7 +33,9 @@ pub struct SignatureReport {
 
 impl SignatureReport {
     /// Decides, for every valid signature and its embedded timestamp, whether the signer
-    /// is someone `list` trusts ([`DigitalSignature::trust`], [`Timestamp::trust`]).
+    /// is someone `list` trusts ([`DigitalSignature::trust`], [`Timestamp::trust`]). An
+    /// embedded timestamp's time becomes the signing time only when its authority is
+    /// trusted; otherwise the signer's own time is used ([`DigitalSignature::time`]).
     /// [`verify_signatures`] does this already; call it again when the list changes.
     pub fn apply_trust(&mut self, list: &TrustList) {
         let parse = |certs: &[CertInfo]| -> Vec<Cert> {
@@ -59,12 +61,18 @@ impl SignatureReport {
             }
             if let Some(ts) = &mut s.timestamp {
                 let at = ts.time.with_timezone(&Utc);
-                ts.trust = Some(judge(
-                    &ts.authority,
-                    &ts.certificates,
-                    at,
-                    Purpose::Timestamping,
-                ));
+                let trust = judge(&ts.authority, &ts.certificates, at, Purpose::Timestamping);
+                // The timestamp's time counts only when its authority is trusted.
+                s.time = if trust.is_trusted() {
+                    Some(SigningTime {
+                        time: ts.time,
+                        source: TimeSource::Timestamp,
+                    })
+                } else {
+                    s.signer_time
+                };
+                ts.trust = Some(trust);
+                validity_warning(s);
             }
             let Some(signer) = &s.signer else {
                 continue;
@@ -75,18 +83,25 @@ impl SignatureReport {
             };
             // Certificates are checked at the signing time; with none given, now.
             let at = s.time.map_or(now, |t| t.time.with_timezone(&Utc));
-            s.trust = Some(judge(signer, &s.certificates, at, purpose));
+            let trust = judge(signer, &s.certificates, at, purpose);
+            if s.kind == SigKind::DocumentTimestamp {
+                if let Some(t) = &mut s.time {
+                    t.source = if trust.is_trusted() {
+                        TimeSource::Timestamp
+                    } else {
+                        TimeSource::UnconfirmedTimestamp
+                    };
+                }
+            }
+            s.trust = Some(trust);
         }
     }
 
     /// True when the document has signatures and every one checked as valid with a
-    /// signer the trust list vouches for.
+    /// signer the trust list vouches for, and the authority of any timestamp a signature
+    /// carries too ([`DigitalSignature::fully_trusted`]).
     pub fn all_trusted(&self) -> bool {
-        !self.signatures.is_empty()
-            && self
-                .signatures
-                .iter()
-                .all(|s| s.trust.as_ref().is_some_and(Trust::is_trusted))
+        !self.signatures.is_empty() && self.signatures.iter().all(DigitalSignature::fully_trusted)
     }
 
     /// The certification signature, if the document is certified, with what it allows.
@@ -114,6 +129,44 @@ impl DigitalSignature {
     /// nothing changed).
     pub fn changes_allowed(&self) -> bool {
         self.changes.iter().all(Change::allowed)
+    }
+
+    /// True when the signer is trusted, and so is the authority of any timestamp the
+    /// signature carries.
+    pub fn fully_trusted(&self) -> bool {
+        let trusted = |t: &Option<Trust>| t.as_ref().is_some_and(Trust::is_trusted);
+        trusted(&self.trust) && self.timestamp.as_ref().is_none_or(|ts| trusted(&ts.trust))
+    }
+}
+
+/// Puts [`SigWarning::CertificateNotValidAtSigning`] in its place among `s`'s warnings when
+/// the signer's certificate wasn't valid at `s.time`, and takes it out when it was: the time
+/// can change with the trust list.
+fn validity_warning(s: &mut DigitalSignature) {
+    let invalid = match (&s.signer, s.time) {
+        (Some(c), Some(t)) => {
+            let t = t.time.with_timezone(&Utc);
+            t < c.not_before || t > c.not_after
+        }
+        _ => false,
+    };
+    s.warnings
+        .retain(|w| *w != SigWarning::CertificateNotValidAtSigning);
+    if invalid {
+        let at = s
+            .warnings
+            .iter()
+            .position(|w| {
+                matches!(
+                    w,
+                    SigWarning::KeyNotForSigning
+                        | SigWarning::CertificationNotFirst
+                        | SigWarning::CertificationNotRegistered
+                )
+            })
+            .unwrap_or(s.warnings.len());
+        s.warnings
+            .insert(at, SigWarning::CertificateNotValidAtSigning);
     }
 }
 
@@ -156,8 +209,13 @@ pub struct DigitalSignature {
     pub reason: Option<String>,
     pub location: Option<String>,
     pub contact: Option<String>,
-    /// When it was signed, and where that time comes from.
+    /// When it was signed, and where that time comes from: an embedded timestamp's time
+    /// when its authority is trusted, otherwise [`signer_time`](Self::signer_time). A
+    /// document timestamp's time is always the timestamp's.
     pub time: Option<SigningTime>,
+    /// The time the signer's computer gave (the signing time, else `/M`), whether or not
+    /// [`time`](Self::time) is a trusted timestamp's.
+    pub signer_time: Option<SigningTime>,
     /// A timestamp from a timestamp authority embedded in the signature, if valid.
     pub timestamp: Option<Timestamp>,
     /// The digest algorithm, such as "SHA-256".
@@ -214,13 +272,16 @@ pub struct SigningTime {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimeSource {
-    /// A timestamp authority's timestamp, checked.
+    /// A timestamp authority's timestamp, checked, from an authority the trust list vouches
+    /// for.
     Timestamp,
     /// The signer's computer clock, from the signature itself.
     SignerClock,
     /// The signer's computer clock, from the signature dictionary (`/M`), which the
     /// signature covers but which is only a claim.
     Dictionary,
+    /// A document timestamp's time, from a timestamp authority that isn't trusted.
+    UnconfirmedTimestamp,
 }
 
 /// A checked timestamp from a timestamp authority.
@@ -292,10 +353,12 @@ pub enum SigWarning {
     ShortKey(usize),
     /// The signer's certificate had expired or wasn't valid yet at the signing time.
     CertificateNotValidAtSigning,
-    /// The certificate restricts its key to uses other than signing.
+    /// The signer's certificate limits its key, or itself, to uses other than signing
+    /// documents (its key usage or extended key usage).
     KeyNotForSigning,
-    /// The timestamp authority's certificate isn't marked for timestamping.
-    NotATimestampAuthority,
+    /// The timestamp authority's certificate doesn't meet RFC 3161's profile, with the
+    /// reason.
+    NotATimestampAuthority(String),
     /// An embedded timestamp couldn't be confirmed, with the reason; the signing time
     /// then comes from the signer's computer.
     TimestampProblem(String),
@@ -327,12 +390,7 @@ impl fmt::Display for SigWarning {
                 )
             }
             Self::KeyNotForSigning => write!(f, "the signer's certificate isn't meant for signing"),
-            Self::NotATimestampAuthority => {
-                write!(
-                    f,
-                    "the timestamp authority's certificate isn't meant for timestamps"
-                )
-            }
+            Self::NotATimestampAuthority(why) => write!(f, "{why}"),
             Self::TimestampProblem(why) => write!(f, "the embedded timestamp can't be used: {why}"),
             Self::DataAfterSignature => write!(f, "extra data follows the signature value"),
             Self::SharedByFields => write!(f, "the same signature is used by more than one field"),
@@ -570,6 +628,7 @@ fn check_one(
         location: None,
         contact: None,
         time: None,
+        signer_time: None,
         timestamp: None,
         digest: None,
         algorithm: None,
@@ -795,12 +854,13 @@ fn check_into(
         "ETSI.RFC3161" => {
             let stamp = cms_check::check_timestamp(value, &ranges)?;
             s.algorithm = Some("RFC 3161 timestamp");
-            if !stamp.authority.for_timestamping() {
-                s.warnings.push(SigWarning::NotATimestampAuthority);
+            if let Some(why) = Purpose::Timestamping.leaf_use_problem(&stamp.authority) {
+                s.warnings.push(SigWarning::NotATimestampAuthority(why));
             }
+            // Confirmed when the trust list vouches for the authority (`apply_trust`).
             s.time = Some(SigningTime {
                 time: stamp.time,
-                source: TimeSource::Timestamp,
+                source: TimeSource::UnconfirmedTimestamp,
             });
             // Every certificate the token carries, so that a chain through intermediate
             // authorities can be built; carried ones are never trusted for being there.
@@ -818,13 +878,19 @@ fn check_into(
     if let Some((token, sig_value)) = stamp_token {
         match cms_check::check_timestamp(&token, &[&sig_value]) {
             Ok(st) => {
-                if !st.authority.for_timestamping() {
-                    s.warnings.push(SigWarning::NotATimestampAuthority);
+                if let Some(why) = Purpose::Timestamping.leaf_use_problem(&st.authority) {
+                    s.warnings.push(SigWarning::NotATimestampAuthority(why));
                 }
                 if !st.authority.valid_at(st.time) {
                     s.warnings.push(SigWarning::TimestampProblem(
                         "the timestamp authority's certificate wasn't valid at that time".into(),
                     ));
+                }
+                if let Some(bits) = cms_check::rsa_bits(&st.authority).filter(|&b| b < 2048) {
+                    s.warnings.push(SigWarning::TimestampProblem(format!(
+                        "the timestamp authority uses a short {bits}-bit RSA key; 2048 bits is \
+                         the minimum considered safe"
+                    )));
                 }
                 s.timestamp = Some(Timestamp {
                     time: st.time,
@@ -838,35 +904,32 @@ fn check_into(
             }
         }
     }
+    s.signer_time = claimed
+        .map(|time| SigningTime {
+            time,
+            source: TimeSource::SignerClock,
+        })
+        .or(dict_time.map(|time| SigningTime {
+            time,
+            source: TimeSource::Dictionary,
+        }));
+    // An embedded timestamp's time replaces the signer's only once its authority is
+    // trusted (`apply_trust`).
     if s.time.is_none() {
-        s.time = s
-            .timestamp
-            .as_ref()
-            .map(|t| SigningTime {
-                time: t.time,
-                source: TimeSource::Timestamp,
-            })
-            .or(claimed.map(|time| SigningTime {
-                time,
-                source: TimeSource::SignerClock,
-            }))
-            .or(dict_time.map(|time| SigningTime {
-                time,
-                source: TimeSource::Dictionary,
-            }));
+        s.time = s.signer_time;
     }
 
     if let Some(bits) = cms_check::rsa_bits(&signer).filter(|&b| b < 2048) {
         s.warnings.push(SigWarning::ShortKey(bits));
     }
-    if s.time.is_some_and(|t| !signer.valid_at(t.time)) {
-        s.warnings.push(SigWarning::CertificateNotValidAtSigning);
-    }
-    if s.kind != SigKind::DocumentTimestamp && !signer.key_usage_allows_signing() {
+    // A document timestamp's key usage is checked by the timestamp rule above.
+    if s.kind != SigKind::DocumentTimestamp && Purpose::Signing.leaf_use_problem(&signer).is_some()
+    {
         s.warnings.push(SigWarning::KeyNotForSigning);
     }
     s.signer = Some(signer.info());
     s.certificates = certs.iter().map(Cert::info).collect();
+    validity_warning(s);
     Ok(())
 }
 

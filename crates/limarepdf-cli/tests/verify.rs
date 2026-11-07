@@ -1,5 +1,6 @@
 //! `limarepdf-cli verify --signed-version` never changes its input, whatever name the output
-//! is given for it (audit R16).
+//! is given for it (audit R16); and `verify` uses an embedded timestamp's time only when its
+//! authority is trusted.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -118,4 +119,69 @@ fn a_hard_link_to_the_input_leaves_it_unchanged() {
         refused(&out);
         unchanged(&alias, &before);
     }
+}
+
+/// An embedded timestamp counts only when its authority is trusted: trusting the signer
+/// alone gives the signer's own time, and `--require-trusted` fails.
+#[test]
+fn an_untrusted_timestamp_is_neither_used_nor_trusted() {
+    use limarepdf_core::{TrustList, TrustRole};
+    let (dir, input) = setup("timestamps");
+    let r = limarepdf_core::verify_signatures(
+        &std::fs::read(&input).unwrap(),
+        None,
+        &TrustList::default(),
+    )
+    .unwrap();
+    let mut list = TrustList::default();
+    let signer = &r.signatures[0].signer.as_ref().unwrap().der;
+    list.add(signer, TrustRole::Signer, None).unwrap();
+    list.save(&dir.join("trust.txt")).unwrap();
+    let verify = |json: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"));
+        cmd.current_dir(&dir).arg("verify").arg(&input).args([
+            "--trust-file",
+            "trust.txt",
+            "--require-trusted",
+        ]);
+        if json {
+            cmd.arg("--json");
+        }
+        let out = limarepdf_core::child_seam::output(&mut cmd).unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+    let (code, text) = verify(false);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("(from the signer's computer)"), "{text}");
+    assert!(!text.contains("(from a timestamp authority)"), "{text}");
+    assert!(
+        text.contains(", claimed by ")
+            && text.contains("(LimarePDF can't confirm this authority, so this time isn't used)"),
+        "{text}"
+    );
+    // The sample's signatures give their time only in the signature dictionary (`/M`).
+    let (code, json) = verify(true);
+    assert_eq!(code, Some(1), "{json}");
+    assert!(
+        json.contains("\"time_source\": \"signature_dictionary\""),
+        "{json}"
+    );
+    assert!(!json.contains("\"time_source\": \"timestamp\""), "{json}");
+
+    // The authorities trusted too: their time, and every signature trusted.
+    for s in &r.signatures {
+        let der = &s.timestamp.as_ref().expect("a timestamp").authority.der;
+        if !list.entries.iter().any(|e| e.cert.der == *der) {
+            list.add(der, TrustRole::Signer, None).unwrap();
+        }
+    }
+    list.save(&dir.join("trust.txt")).unwrap();
+    let (code, text) = verify(false);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("(from a timestamp authority)"), "{text}");
+    assert!(!text.contains("(from the signer's computer)"), "{text}");
+    assert!(text.contains(" (trusted)"), "{text}");
 }

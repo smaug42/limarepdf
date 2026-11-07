@@ -16,8 +16,8 @@ digital signatures…" meanwhile, and then gives the result, coloured by the wor
 
 | Colour | Meaning |
 | --- | --- |
-| Green | Every signature is valid, nothing changed after any of them that the signer didn't allow, you trust every signer, and there are no warnings. |
-| Amber | Nothing is broken and nothing changed that the signers didn't allow, but LimarePDF can't confirm who signed (you haven't trusted them), or there are warnings. |
+| Green | Every signature is valid, nothing changed after any of them that the signer didn't allow, you trust every signer and every timestamp authority a signature carries, and there are no warnings. |
+| Amber | Nothing is broken and nothing changed that the signers didn't allow, but LimarePDF can't confirm who signed or who gave a timestamp's time (you haven't trusted them), or there are warnings. |
 | Grey | LimarePDF can't check a signature (see [Can't check](#what-each-result-means)). |
 | Red | A signature is broken, the document was changed after signing in ways the signer didn't allow, or a signer you trust has a certificate that fails a check. |
 
@@ -149,10 +149,10 @@ documentation; not yet tried with a LimarePDF signature).
 
 A trusted signer's own certificate must be usable for signing at the signing time:
 
-- valid at the signing time (or now, when the signature gives no time);
+- valid at the signing time (see [Signing times](#signing-times); now, when the signature gives no time);
 - its key allowed to sign (key usage) and meant for documents: when it limits its uses (extended key usage), they
   must include email protection, code signing, any use, Adobe Authentic Documents, document signing or Microsoft
-  document signing (Acrobat's list plus the two document-signing uses);
+  document signing (Acrobat's list plus the two document-signing uses: the *document-signing uses* below);
 - an RSA key of at least 2048 bits, no repeated extensions, and no critical extension LimarePDF doesn't know.
 
 For a chain to a trusted authority, each certificate on the way must also be signed by the next one's key (checked
@@ -160,6 +160,11 @@ over the certificate exactly as written, with matching signature algorithms, and
 see the RSA-PSS rules under [What each result means](#what-each-result-means)), and each issuer must:
 
 - say it is a certificate authority and, if it limits its key's uses, allow signing certificates;
+- if it limits the uses of its own certificate (extended key usage), leave a document-signing use open. Each
+  certificate from the signer's up to the trusted authority that lists its uses narrows the document-signing uses
+  to those it lists, and at least one must be left at the top: an authority listing only web server uses can't
+  vouch for a signer meant for documents. A certificate listing *any use*, or no uses, doesn't narrow them. The
+  trusted authority is checked too, though you trust it;
 - be valid at the signing time;
 - allow as many authorities below it as the chain has (path length);
 - not sign with SHA-1 or MD5, and have an RSA key of at least 2048 bits;
@@ -173,10 +178,21 @@ up to ten certificates long. Those certificates only help find the way: trust co
 list's own certificate for an authority is the end of the chain, whatever the document carries under that name.
 
 A **timestamp authority** is judged the same way, for its timestamp: trusted directly or through an authority (the
-certificates the timestamp carries help find the way, as a signature's do), and its certificate must be meant for
-timestamps. A document timestamp's Trust line is about its authority, and an
-embedded timestamp shows *(trusted)*, *(LimarePDF can't confirm this authority)* or *(NOT TRUSTED: …)* on its Timestamp
-line.
+certificates the timestamp carries help find the way, as a signature's do). Its certificate must meet the profile
+RFC 3161 sets for timestamp authorities:
+
+- its extended key usage lists timestamping and nothing else, and is marked critical (the certificate insists on
+  it);
+- if it limits its key's uses (key usage), they allow signing (digital signature or non-repudiation) and nothing
+  more;
+- each issuer above it that lists its uses allows timestamping, up to and including the trusted authority.
+
+A timestamp authority whose certificate misses the profile gets a warning saying how, whether you trust it or not,
+and isn't trusted.
+
+A document timestamp's Trust line is about its authority. An embedded timestamp shows *(trusted)*, *(LimarePDF can't
+confirm this authority, so this time isn't used)* or *(NOT TRUSTED: …; this time isn't used)* on its Timestamp line.
+A signature with an embedded timestamp is green only when its timestamp authority is trusted too.
 
 ## Digital IDs in detail
 
@@ -461,9 +477,14 @@ A warning doesn't make a valid signature invalid, but is worth knowing:
 - *the signer's certificate wasn't valid at the signing time*: expired, or not yet valid, according to the signing
   time shown.
 - *the signer's certificate isn't meant for signing*: the certificate limits its key to other uses.
-- *the timestamp authority's certificate isn't meant for timestamps*.
+- *the timestamp authority's certificate isn't meant for timestamps*, *… is also meant for other uses, but RFC 3161
+  requires it to be for timestamps only*, *… doesn't insist on being used only for timestamps, as RFC 3161
+  requires*, *… doesn't allow its key to sign*, or *the timestamp authority's key may also be used for other things,
+  but RFC 3161 requires a key kept for timestamps*: the authority's certificate misses RFC 3161's profile (see
+  [What LimarePDF checks before trusting](#what-limarepdf-checks-before-trusting)), so it isn't trusted.
 - *the embedded timestamp can't be used*: the signature is still checked, but its time then comes from the signer's
-  computer.
+  computer. The reason follows, for example a timestamp authority whose certificate wasn't valid at that time or
+  that uses a short RSA key.
 - *extra data follows the signature value*: unusual, harmless to the check itself.
 - *the same signature is used by more than one field*: a sign of tampering.
 - *the signature's details were replaced after signing*: the reason, name or time was changed in a later addition;
@@ -483,9 +504,12 @@ A certificate you trust, or one leading to an authority you trust, failed a chec
 - *… names "AUTHORITY", which you trust, as its issuer, but the issuer's signature on the certificate doesn't
   match*: a certificate claiming to come from a trusted authority that didn't issue it. Treat it as forged.
 - *it was issued under "AUTHORITY", which you trust, but …*: the chain reaches a trusted authority but a link fails:
-  an issuer that isn't a certificate authority or may not sign certificates, too many authorities for a path
-  length, an expired intermediate, SHA-1 or a short RSA key, name constraints, an unknown critical extension, or no
-  certificate policy running through the chain when one is required.
+  an issuer that isn't a certificate authority or may not sign certificates, an issuer whose extended key usage
+  leaves no document-signing use (*the certificate of "NAME" doesn't allow it to issue certificates for signing
+  documents*, or *… for the uses the signer's certificate is meant for*; *… for timestamps* for a timestamp
+  authority), too many authorities for a path length, an expired intermediate, SHA-1 or a short RSA key, name
+  constraints, an unknown critical extension, or no certificate policy running through the chain when one is
+  required.
 - *the signer's certificate doesn't allow its key to sign* or *is meant for other uses than signing documents*:
   for example a web server's certificate.
 - *… has a 1024-bit RSA key*, *repeats an extension*, *has a critical extension LimarePDF doesn't know*.
@@ -495,9 +519,18 @@ They mean LimarePDF can't vouch for who holds the key.
 
 ### Signing times
 
-A signing time comes from a **timestamp authority** when the signature carries a valid timestamp; otherwise from
-**the signer's computer**, which can be set to any time. Certificates are checked for trust at this time, so
-without a timestamp the check relies on the signer's claim of when they signed.
+A signing time comes from a **timestamp authority** when the signature carries a valid timestamp from an authority
+you trust; otherwise from **the signer's computer**, which can be set to any time. Certificates are checked for
+trust at this time, so without a trusted timestamp the check relies on the signer's claim of when they signed.
+
+A timestamp from an authority you haven't trusted is still shown, on the Timestamp line, as *claimed by* that
+authority, but its time isn't used: anyone can make a timestamp that names any time, so it counts only once you
+trust whoever made it. Trust the authority, or the authority that issued its certificate, and the signing time
+becomes the timestamp's. For an embedded timestamp that takes the certificate as a file from the timestamp
+service (**Trusted certificates… > Add certificate file…**, or `limarepdf-cli trust add`): the signature's
+**Trust** buttons offer only the signer and the authorities in the signature itself. A document timestamp has its
+own **Trust this authority…** button, and its time is shown as *claimed by a timestamp authority that isn't
+trusted* until you trust it.
 
 ### Certification and locked fields
 
@@ -569,6 +602,11 @@ counts as an annotation that isn't a comment, so filling it in isn't allowed.
   look or reason replaced) are refused.
 - **Trust** agrees with OpenSSL's chain checks, except where LimarePDF is stricter by design (name constraints,
   1024-bit RSA authorities, SHA-1 links). EU qualified-signature chains are trusted once their authority is.
+  Extended key usage differs from OpenSSL's S/MIME signing check in two ways: OpenSSL refuses an intermediate
+  authority listing *any use* or code signing alone, which LimarePDF accepts (RFC 5280 says *any use* sets no
+  limit, and code signing is one of Acrobat's signing uses); and above a timestamp authority OpenSSL checks no
+  issuer's uses, where LimarePDF requires each issuer that lists its uses to allow timestamping. The timestamp
+  authority's own certificate is judged as OpenSSL judges it.
 - **Digital ID files** made by OpenSSL and Windows, in each form other apps write, can be imported, and OpenSSL
   reads the ones LimarePDF writes.
 - **Saving a signed document** with a comment added keeps every signature valid in LimarePDF and `pdfsig` alike.
@@ -587,8 +625,14 @@ The full record, with the files used, is in [Testing](developer/testing.md#digit
   chain, and authorities that set name constraints aren't trusted. Old documents from authorities that used SHA-1
   show *NOT TRUSTED* with that reason, even though the signature itself is valid.
 - Certificates are checked at the signing time, which comes from the signer's computer unless the signature has a
-  timestamp, so a signer with a stolen key could claim a time when the certificate was still valid. Revocation
-  (below) would catch that; LimarePDF doesn't check it.
+  timestamp from an authority you trust, so a signer with a stolen key could claim a time when the certificate was
+  still valid. Revocation (below) would catch that; LimarePDF doesn't check it.
+- Timestamp authorities are held to RFC 3161's profile, which some services' certificates miss (an extended key
+  usage not marked critical, say); such a timestamp isn't trusted. An embedded timestamp so damaged that it can't
+  be checked at all is reported as a warning, but doesn't stop `limarepdf-cli verify --require-trusted` from
+  passing; the signer's own time is used.
+- An embedded timestamp's authority can't yet be trusted from the signature in the app; add its certificate file
+  instead (see [Signing times](#signing-times)).
 - Acrobat's `.fdf` certificate exchange files can't be imported; export the certificate as `.cer` or `.p7c`
   instead.
 - Changes after signing are judged strictly where Acrobat's exact behaviour isn't documented, so LimarePDF may refuse
