@@ -41,9 +41,11 @@ With nothing selected, the inspector says how many form fields the document has,
 shows the field you are in: its name, its description and whether it is required. It also has these, which are in
 **Forms and sign > Fill fields ▾** too:
 
-- **Clear field**, which empties the field you are in.
+- **Clear field**, which empties the field you are in. A cleared list stays empty, also one in a group of fields
+  that has a value of its own.
 - **Highlight fields**, the same switch as above.
-- **Reset form**, which puts every field back to its default.
+- **Reset form**, which puts every field back to its default. If one can't be (its default has characters
+  LimarePDF can't write, say), none is, and a message says why.
 - **Flatten form…** (also in ☰ > Forms and sign and the command search), which makes the fields part of the
   pages as they look now, so nobody can change the values, here or in other readers. It asks first, and Undo
   brings the fields back until you close the document. Every field is drawn, also in a form with more than the
@@ -82,6 +84,11 @@ are refused with a message rather than saved wrongly, and stay typed in the fiel
 once you close the message, so you can change it. Fields that have a value but no drawing of their own are drawn
 when the file opens. A field set to centre or right-align its text shows it from the left while you type, and
 aligned once kept.
+
+A value that can't be written changes nothing: the field keeps its value and its drawing, wherever it appears on
+the pages. In a digitally signed document, a field written in Helvetica, Times or Courier because its own font
+can't be used keeps naming its own font, and only its drawing uses the new one, so filling it in stays a change
+the signatures allow (see [Saving a signed document](signatures.md#saving-a-signed-document)).
 
 A value filled in by another app in characters LimarePDF can't write (Hebrew or Arabic, for example) shows only
 if that app drew it. If it didn't, LimarePDF can't either: Flatten form… stops and names the fields rather than lose their values, and Print

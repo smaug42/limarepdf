@@ -101,6 +101,17 @@
   Printing draws them too, and asks about them as about the others. A form whose fields are nested more than 32
   levels deep, which LimarePDF can't follow to the end, is refused with nothing changed, rather than flattened
   with the deeper fields lost.
+- A list or drop-down that is cleared, or reset to an empty default, now stays empty when it is in a group of
+  fields that has a value of its own. Before, it was saved without a value, so LimarePDF and other readers showed
+  the group's value in it again.
+- Filling in a field of a digitally signed form is now a change the signatures allow when the value is written in
+  Helvetica, Times or Courier because the field's own font can't be used (a font the file holds only some letters
+  of, say). Before, the field was changed to name the new font, which was added to the form's settings, so the
+  signatures listed a changed field and saving asked first (`limarepdf-cli` needed `--accept-disallowed`). The
+  field now keeps naming its own font, and only its drawing uses the new one.
+- Core: `Pdf::set_field` and `Pdf::reset_form` change nothing when they return an error. Before, a value could be
+  left written with some of its drawings or none, or the fields before the one that failed left reset; the app
+  and `limarepdf-cli form` already put the document back.
 - Save no longer writes over a file that another app changed while it was being saved. Before the file is
   replaced it is checked once more: if it changed, it is left as the other app saved it, the document stays
   unsaved, and Save asks, as it does before saving, whether to save as a new file or replace the changed one.
