@@ -116,6 +116,25 @@
   discarded. Before, nothing was said, errors included.
 - When a save fails while Save or Save as was chosen again meanwhile, the message now says that wasn't done
   either. Before, the second save was dropped without a word.
+- Remove hidden information now removes a script that follows an ordinary action (a link, a bookmark, a field's
+  action, the action run on opening) through a list of further actions stored apart in the file. Before, the
+  script stayed, and the summary didn't count it.
+- Remove hidden information now removes content a layer rule hides. A layer rule combines layers ("shown when
+  layer A is on and layer B is off"). A rule written as an expression was read without it, so content it hid
+  stayed in the saved file, and content a rule hides while every layer it names is on stayed too. Rules are now
+  read as other PDF readers read them, and the number shown beside Hidden layers counts the rules hiding content
+  with every layer on. A rule that stays but named a removed layer is rewritten without it, so switching the
+  layers that stay still shows and hides what it did. A rule that can't be read (an operator LimarePDF doesn't
+  know, a rule containing itself, more than 32 levels deep), or rules that would take more than about a million
+  steps to check, stop the removal with a message, changing nothing.
+- Remove hidden information now removes a comment's or field's drawing that is in a hidden layer of its own,
+  rather than through the comment. When that is the drawing normally shown, the comment goes too. Before, the
+  drawing stayed in the saved file.
+- Remove hidden information with Content outside the visible page area refuses, changing nothing, when
+  redaction's check afterwards finds something it couldn't remove for certain (such as a drawing the tag tree
+  still points at), and says what; `limarepdf-cli sanitise` writes no file. Before, that was ignored and the
+  removal reported success. When a picture that was cut is still drawn elsewhere on the page, the summary now
+  says so, as redaction's does.
 
 ## [0.13.0] - 2026-11-03
 

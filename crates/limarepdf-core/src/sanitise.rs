@@ -3,13 +3,14 @@
 //! private application data), and optionally comments, form values, bookmarks and what
 //! lies outside the visible page area.
 
+use crate::budget::{self, TooComplex, Work};
 use crate::fonts::FontCtx;
 use crate::inline::Inline;
 use crate::reach;
 use crate::{Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
-use lopdf::{Dictionary, Object, ObjectId};
+use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 
 /// A kind of hidden information.
@@ -95,6 +96,10 @@ pub struct HiddenReport {
     /// Compressed data looked into for hidden layers was complete but had a wrong checksum;
     /// it was read in full, as other readers do.
     pub faults_overlooked: bool,
+    /// The pages (zero-based, in order) where cutting what lies outside the crop box left a
+    /// drawing that still draws an original picture or form it cut, as
+    /// [`crate::RedactReport::pictures_elsewhere`].
+    pub pictures_elsewhere: Vec<usize>,
 }
 
 impl HiddenReport {
@@ -105,12 +110,22 @@ impl HiddenReport {
             .map_or(0, |(_, n)| *n)
     }
 
-    /// What to tell people about the removal besides the counts, if anything.
-    pub fn note(&self) -> Option<&'static str> {
-        self.faults_overlooked.then_some(
-            "Some of this document's data had a small fault in it (other PDF readers overlook \
-             it too). It was all read, and nothing was skipped.",
-        )
+    /// What to tell people about the removal besides the counts, a sentence each.
+    pub fn notes(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.faults_overlooked {
+            out.push(
+                "Some of this document's data had a small fault in it (other PDF readers \
+                 overlook it too). It was all read, and nothing was skipped."
+                    .to_string(),
+            );
+        }
+        let pictures = crate::RedactReport {
+            pictures_elsewhere: self.pictures_elsewhere.clone(),
+            ..Default::default()
+        };
+        out.extend(pictures.picture_notices());
+        out
     }
 }
 
@@ -135,8 +150,437 @@ const ACTIVE: [&[u8]; 6] = [
 ];
 
 /// Deepest nesting of drawings (forms, patterns, glyphs, soft masks) looked into for hidden
-/// layers. Deeper ones make the removal refuse rather than leave them.
+/// layers, and of the expressions in a layer rule. Deeper ones make the removal refuse
+/// rather than leave them.
 const MAX_NESTING: usize = 32;
+
+/// Most steps working out a document's layer rules may take: each operator and each operand
+/// of an expression is one, and each layer a rule without an expression lists.
+const RULE_STEPS: u64 = 1 << 20;
+
+/// A layer rule (an optional content membership dictionary, `/Type /OCMD`): one stored as
+/// an object of its own, or one written in place, by what it is.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum RuleKey {
+    Stored(ObjectId),
+    Direct(String),
+}
+
+/// How a layer rule reads with the layers that are off: whether it hides its content, and
+/// whether it names a layer that's off; or why it can't be read, to follow "can't be read".
+type Reading = std::result::Result<(bool, bool), String>;
+
+/// Why a layer rule couldn't be worked out: a fault in it, or the steps ran out.
+enum Fault {
+    Bad(String),
+    Too(TooComplex),
+}
+
+fn bad(why: &str) -> Fault {
+    Fault::Bad(why.to_string())
+}
+
+/// An expression of a layer rule with the layers that are off taken as off for good.
+#[derive(Clone)]
+enum Folded {
+    /// The same whatever the layers that stay are.
+    Const(bool),
+    /// What to write in its place: it still depends on layers that stay.
+    Live(Object),
+}
+
+/// The layers switched off in the default configuration, and how the layer rules read with
+/// them (ISO 32000-1, 8.11.2.2: `/VE` first, else `/OCGs` and `/P`). Every other layer
+/// counts as on. Each rule and each stored expression is worked out once, within one budget
+/// of [`RULE_STEPS`]; what the scan found the rules something uses do is kept here too.
+struct Layers {
+    off: HashSet<ObjectId>,
+    /// Stored expressions worked out: whether each is true, how many levels deep it
+    /// reaches, and whether it names a layer that's off.
+    exprs: HashMap<ObjectId, (bool, usize, bool)>,
+    rules: HashMap<RuleKey, Reading>,
+    /// The stored expressions being worked out, to find one that contains itself.
+    open: HashSet<ObjectId>,
+    work: Work,
+    /// The steps ran out.
+    too: Option<TooComplex>,
+    /// Some rule something uses hides its content.
+    hides: bool,
+    /// Some rule something uses can't be read.
+    unread: bool,
+    /// The rules counted as found: those hiding their content though every layer they name
+    /// is on, and those that can't be read.
+    counted: HashSet<RuleKey>,
+    /// Stored expressions with the layers that are off taken out, and what each becomes.
+    folds: HashMap<ObjectId, Folded>,
+    exprs_new: HashMap<ObjectId, Vec<Object>>,
+    /// Rules kept that name a layer that's off, and what each becomes.
+    rewrites: HashMap<RuleKey, Dictionary>,
+}
+
+/// The rule `oc` is, if it is one: by reference, or written in place.
+fn rule_of<'a>(doc: &'a Document, oc: &'a Object) -> Option<(RuleKey, &'a Dictionary)> {
+    let (id, d) = match oc {
+        Object::Reference(id) => (Some(*id), doc.get_dictionary(*id).ok()?),
+        Object::Dictionary(d) => (None, d),
+        _ => return None,
+    };
+    if d.get(b"Type").and_then(Object::as_name).ok() != Some(b"OCMD") {
+        return None;
+    }
+    let key = id.map_or_else(|| RuleKey::Direct(format!("{d:?}")), RuleKey::Stored);
+    Some((key, d))
+}
+
+/// The layers a rule's `/OCGs` lists: one, or an array of them (others are left out).
+fn rule_groups(d: &Dictionary) -> Vec<ObjectId> {
+    match d.get(b"OCGs") {
+        Ok(Object::Reference(id)) => vec![*id],
+        Ok(Object::Array(a)) => a.iter().filter_map(|o| o.as_reference().ok()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+impl Layers {
+    fn new(off: HashSet<ObjectId>) -> Layers {
+        Layers {
+            off,
+            exprs: HashMap::new(),
+            rules: HashMap::new(),
+            open: HashSet::new(),
+            work: Work::new("checking the layers", budget::limit(RULE_STEPS)),
+            too: None,
+            hides: false,
+            unread: false,
+            counted: HashSet::new(),
+            folds: HashMap::new(),
+            exprs_new: HashMap::new(),
+            rewrites: HashMap::new(),
+        }
+    }
+
+    /// Whether there is anything to remove: a layer switched off, or content a rule hides.
+    fn to_remove(&self) -> bool {
+        !self.off.is_empty() || self.hides
+    }
+
+    /// How many are found: the layers switched off and the rules counted.
+    fn found(&self) -> usize {
+        self.off.len() + self.counted.len()
+    }
+
+    /// Whether the removal refuses, by what `scan` found: some rule can't be read, or there
+    /// is something to remove and some drawing couldn't be looked into.
+    fn refuses(&self, scan: &LayerScan) -> bool {
+        self.unread || (self.to_remove() && !scan.blocked.is_empty())
+    }
+
+    fn step(&mut self) -> std::result::Result<(), Fault> {
+        self.work.take(1).map_err(Fault::Too)
+    }
+
+    /// How rule `d` (`key`) reads. When the steps run out, that is kept for the scan to
+    /// refuse, and the rule reads as showing its content.
+    fn read(&mut self, doc: &Document, key: &RuleKey, d: &Dictionary) -> Reading {
+        if let Some(r) = self.rules.get(key) {
+            return r.clone();
+        }
+        let r = match self.work_out(doc, d) {
+            Ok(r) => Ok(r),
+            Err(Fault::Bad(why)) => Err(why),
+            Err(Fault::Too(t)) => {
+                self.too.get_or_insert(t);
+                return Ok((false, false));
+            }
+        };
+        self.rules.insert(key.clone(), r.clone());
+        r
+    }
+
+    fn work_out(
+        &mut self,
+        doc: &Document,
+        d: &Dictionary,
+    ) -> std::result::Result<(bool, bool), Fault> {
+        let groups = rule_groups(d);
+        let names_off = groups.iter().any(|g| self.off.contains(g));
+        if let Ok(ve) = d.get(b"VE") {
+            let (shown, _, off) = match ve {
+                Object::Array(a) => self.expr(doc, a, 1)?,
+                Object::Reference(id)
+                    if doc.get_object(*id).is_ok_and(|o| o.as_array().is_ok()) =>
+                {
+                    self.stored(doc, *id, 1)?
+                }
+                _ => return Err(bad("its /VE isn't an expression")),
+            };
+            return Ok((!shown, off || names_off));
+        }
+        for _ in &groups {
+            self.step()?;
+        }
+        if groups.is_empty() {
+            return Ok((false, false));
+        }
+        let on: Vec<bool> = groups.iter().map(|g| !self.off.contains(g)).collect();
+        let shown = match d.get(b"P").and_then(Object::as_name).unwrap_or(b"AnyOn") {
+            b"AllOn" => on.iter().all(|o| *o),
+            b"AnyOff" => on.iter().any(|o| !o),
+            b"AllOff" => on.iter().all(|o| !o),
+            _ => on.iter().any(|o| *o),
+        };
+        Ok((!shown, names_off))
+    }
+
+    /// Expression `a`, at `level` (the top of a rule's `/VE` is 1): whether it is true, how
+    /// many levels deep it reaches from itself, and whether it names a layer that's off.
+    fn expr(
+        &mut self,
+        doc: &Document,
+        a: &[Object],
+        level: usize,
+    ) -> std::result::Result<(bool, usize, bool), Fault> {
+        if level > MAX_NESTING {
+            return Err(bad("it is nested more than 32 deep"));
+        }
+        self.step()?;
+        let Some(Object::Name(op)) = a.first() else {
+            return Err(bad(
+                "an expression in it doesn't start with /And, /Or or /Not",
+            ));
+        };
+        let args = &a[1..];
+        match op.as_slice() {
+            b"Not" if args.len() != 1 => {
+                return Err(bad("a /Not in it doesn't have exactly one operand"))
+            }
+            b"And" | b"Or" if args.is_empty() => {
+                return Err(bad("an /And or /Or in it has nothing to combine"))
+            }
+            b"Not" | b"And" | b"Or" => {}
+            _ => {
+                return Err(Fault::Bad(format!(
+                    "it combines layers with /{}, which isn't a way to combine them",
+                    String::from_utf8_lossy(op)
+                )))
+            }
+        }
+        let neither = "something in it is neither a layer nor an expression";
+        let (mut all, mut any, mut height, mut names_off) = (true, false, 1, false);
+        for x in args {
+            self.step()?;
+            let (v, h, off) = match x {
+                Object::Reference(id) => match doc.get_object(*id) {
+                    Ok(Object::Dictionary(_)) => {
+                        let off = self.off.contains(id);
+                        (!off, 0, off)
+                    }
+                    Ok(Object::Array(_)) => self.stored(doc, *id, level + 1)?,
+                    _ => return Err(bad(neither)),
+                },
+                Object::Array(inner) => self.expr(doc, inner, level + 1)?,
+                _ => return Err(bad(neither)),
+            };
+            all &= v;
+            any |= v;
+            height = height.max(h + 1);
+            names_off |= off;
+        }
+        let v = match op.as_slice() {
+            b"Not" => !all,
+            b"And" => all,
+            _ => any,
+        };
+        Ok((v, height, names_off))
+    }
+
+    /// The expression stored as object `id`, at `level`: worked out once, and checked for
+    /// how deep it reaches at each place it is used. A fault isn't kept, as how deep it
+    /// reaches depends on where it was first used.
+    fn stored(
+        &mut self,
+        doc: &Document,
+        id: ObjectId,
+        level: usize,
+    ) -> std::result::Result<(bool, usize, bool), Fault> {
+        if let Some(&(v, h, off)) = self.exprs.get(&id) {
+            if level - 1 + h > MAX_NESTING {
+                return Err(bad("it is nested more than 32 deep"));
+            }
+            return Ok((v, h, off));
+        }
+        if !self.open.insert(id) {
+            return Err(bad("it contains itself"));
+        }
+        let got = match doc.get_object(id) {
+            Ok(Object::Array(a)) => self.expr(doc, a, level),
+            _ => Err(bad("something in it is neither a layer nor an expression")),
+        };
+        self.open.remove(&id);
+        let got = got?;
+        self.exprs.insert(id, got);
+        Ok(got)
+    }
+
+    /// Note how rule `d` (`key`), which something uses, reads: content it hides, counting
+    /// it when every layer it names is on; that it can't be read, counting it too; and when
+    /// it is kept but names a layer that's off, what it becomes. Returns how it reads.
+    fn used(&mut self, doc: &Document, key: &RuleKey, d: &Dictionary) -> Reading {
+        let r = self.read(doc, key, d);
+        match r {
+            Ok((true, names_off)) => {
+                self.hides = true;
+                if !names_off {
+                    self.counted.insert(key.clone());
+                }
+            }
+            Ok((false, true)) if !self.rewrites.contains_key(key) => match self.rewritten(doc, d) {
+                Ok(new) => {
+                    self.rewrites.insert(key.clone(), new);
+                }
+                Err(Fault::Too(t)) => {
+                    self.too.get_or_insert(t);
+                }
+                Err(Fault::Bad(_)) => {}
+            },
+            Ok(_) => {}
+            Err(_) => {
+                self.unread = true;
+                self.counted.insert(key.clone());
+            }
+        }
+        r
+    }
+
+    /// Rule `d`, kept and naming a layer that's off, with the layers that are off taken as
+    /// off for good, so the layers that stay switch its content as before and no layer
+    /// that's off is named in it. One shown for good has no effect: `<< /Type /OCMD >>`.
+    fn rewritten(
+        &mut self,
+        doc: &Document,
+        d: &Dictionary,
+    ) -> std::result::Result<Dictionary, Fault> {
+        let mut out = Dictionary::new();
+        out.set("Type", "OCMD");
+        if let Ok(ve) = d.get(b"VE") {
+            let folded = match ve {
+                Object::Reference(id) => self.fold_stored(doc, *id)?,
+                Object::Array(a) => self.fold(doc, a)?,
+                _ => return Err(bad("its /VE isn't an expression")),
+            };
+            match folded {
+                Folded::Const(_) => {}
+                Folded::Live(Object::Reference(id)) if doc.get_dictionary(id).is_ok() => {
+                    out.set("OCGs", Object::Reference(id));
+                }
+                Folded::Live(x) => out.set("VE", x),
+            }
+            return Ok(out);
+        }
+        let kept: Vec<Object> = (rule_groups(d).into_iter())
+            .filter(|g| !self.off.contains(g))
+            .map(Object::Reference)
+            .collect();
+        match d.get(b"P").and_then(Object::as_name).unwrap_or(b"AnyOn") {
+            // A layer in it is off for good, so its content shows for good.
+            b"AnyOff" => {}
+            b"AllOff" if kept.is_empty() => {}
+            _ => {
+                out = d.clone();
+                out.set("OCGs", kept);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Expression `a` folded: each layer that's off is the constant "off", and constants
+    /// fold. What isn't changed stays as it was.
+    fn fold(&mut self, doc: &Document, a: &[Object]) -> std::result::Result<Folded, Fault> {
+        self.step()?;
+        let Some(Object::Name(op)) = a.first() else {
+            return Err(bad(
+                "an expression in it doesn't start with /And, /Or or /Not",
+            ));
+        };
+        if op == b"Not" {
+            self.step()?;
+            let x = a
+                .get(1)
+                .ok_or_else(|| bad("a /Not in it doesn't have exactly one operand"))?;
+            return Ok(match self.fold_operand(doc, x)? {
+                Folded::Const(v) => Folded::Const(!v),
+                Folded::Live(x) => Folded::Live(Object::Array(vec![a[0].clone(), x])),
+            });
+        }
+        // What leaves an `/And` as it is (true), or an `/Or` (false).
+        let same = op == b"And";
+        let mut kept = vec![a[0].clone()];
+        let mut dropped = false;
+        for x in &a[1..] {
+            self.step()?;
+            match self.fold_operand(doc, x)? {
+                Folded::Const(v) if v == same => dropped = true,
+                Folded::Const(v) => return Ok(Folded::Const(v)),
+                Folded::Live(x) => kept.push(x),
+            }
+        }
+        Ok(match kept.len() {
+            1 => Folded::Const(same),
+            2 if dropped => Folded::Live(kept.remove(1)),
+            _ => Folded::Live(Object::Array(kept)),
+        })
+    }
+
+    fn fold_operand(&mut self, doc: &Document, x: &Object) -> std::result::Result<Folded, Fault> {
+        match x {
+            Object::Reference(id) => match doc.get_object(*id) {
+                Ok(Object::Array(_)) => self.fold_stored(doc, *id),
+                _ if self.off.contains(id) => Ok(Folded::Const(false)),
+                _ => Ok(Folded::Live(x.clone())),
+            },
+            Object::Array(a) => self.fold(doc, a),
+            _ => Ok(Folded::Live(x.clone())),
+        }
+    }
+
+    /// The expression stored as object `id` folded, once: one that changes, but still
+    /// depends on layers that stay, is rewritten where it is (so every rule using it sees
+    /// the same, and nothing is copied out of it), and is used as it was, by reference.
+    fn fold_stored(&mut self, doc: &Document, id: ObjectId) -> std::result::Result<Folded, Fault> {
+        let live = Folded::Live(Object::Reference(id));
+        if let Some(f) = self.folds.get(&id) {
+            return Ok(f.clone());
+        }
+        let Ok(Object::Array(a)) = doc.get_object(id) else {
+            return Ok(live);
+        };
+        if self.exprs.get(&id).is_some_and(|e| !e.2) {
+            return Ok(live);
+        }
+        let f = match self.fold(doc, a)? {
+            Folded::Const(v) => Folded::Const(v),
+            Folded::Live(Object::Array(new)) => {
+                if new != *a {
+                    self.exprs_new.insert(id, new);
+                }
+                live
+            }
+            Folded::Live(x) => {
+                self.exprs_new
+                    .insert(id, vec![Object::Name(b"And".to_vec()), x]);
+                live
+            }
+        };
+        self.folds.insert(id, f.clone());
+        Ok(f)
+    }
+}
+
+/// A rule written into a drawing's own content that can't be read: why, to follow the name
+/// of the drawing.
+#[derive(Debug, thiserror::Error)]
+#[error("has a layer rule that can't be read ({0})")]
+struct InlineRule(String);
 
 /// A drawing hidden layers are taken out of.
 enum Drawn {
@@ -322,7 +766,8 @@ type Read = std::result::Result<(Vec<u8>, bool), Unread>;
 
 impl Pdf {
     /// What [`Pdf::remove_hidden`] would remove of every kind, worked out on a copy. Hidden
-    /// layers are counted even when their removal would be refused.
+    /// layers and content outside the crop box are counted even when their removal would be
+    /// refused.
     pub fn find_hidden(&self) -> Result<HiddenReport> {
         self.clone().remove_kinds(&Hidden::ALL, false)
     }
@@ -330,25 +775,43 @@ impl Pdf {
     /// Remove the kinds of hidden information in `what`. Unused objects go when the
     /// document is saved, which rewrites the whole file, so nothing removed is kept in it.
     /// Refuses, with nothing changed, when it couldn't remove all of a kind: hidden layers
-    /// in drawings it can't read or nested too deep, a form nested too deep.
+    /// in drawings it can't read or nested too deep, a layer rule it can't read, a form
+    /// nested too deep, content outside the crop box redaction's check finds left.
     pub fn remove_hidden(&mut self, what: &[Hidden]) -> Result<HiddenReport> {
-        self.remove_kinds(what, true)
+        let before = self.before();
+        let got = self.remove_kinds(what, true);
+        if got.is_err() {
+            self.go_back(before);
+        }
+        got
     }
 
     /// Why [`Pdf::remove_hidden`] would refuse to remove `what`, if it would; changes nothing.
-    /// For checking before anything else is done for the removal.
+    /// For checking before anything else is done for the removal. Content outside the crop
+    /// box is only found left by redacting it.
     pub fn check_remove_hidden(&self, what: &[Hidden]) -> Result<()> {
-        if what.contains(&Hidden::HiddenLayers) {
-            if let Some((_, _, hidden)) = self.hidden_layers() {
-                refuse_blocked(&self.scan_layers(&hidden))?;
-                // What is no longer drawn is found by following the drawings afterwards.
-                self.reach(&mut reach::work(), &mut reach::Decoded::new())?;
-            }
+        if what.contains(&Hidden::HiddenLayers) && self.layers_to_remove()? {
+            // What is no longer drawn is found by following the drawings afterwards.
+            self.reach(&mut reach::work(), &mut reach::Decoded::new())?;
         }
         if what.contains(&Hidden::FormValues) {
             self.orphan_widgets(&self.value_nodes()?)?;
         }
         Ok(())
+    }
+
+    /// Whether removing hidden layers has anything to do; refuses when it can't be done for
+    /// certain. Its budget of steps is done with when it returns.
+    fn layers_to_remove(&self) -> Result<bool> {
+        let Some((_, _, off)) = self.layer_list() else {
+            return Ok(false);
+        };
+        let mut layers = Layers::new(off);
+        let scan = self.scan_layers(&mut layers)?;
+        if layers.refuses(&scan) {
+            refuse_blocked(&scan)?;
+        }
+        Ok(layers.to_remove())
     }
 
     fn remove_kinds(&mut self, what: &[Hidden], strict: bool) -> Result<HiddenReport> {
@@ -362,7 +825,11 @@ impl Pdf {
                 continue;
             }
             let n = match h {
-                Hidden::OutsideCrop => self.cut_outside_crop()?,
+                Hidden::OutsideCrop => {
+                    let (n, pictures) = self.cut_outside_crop(strict)?;
+                    report.pictures_elsewhere = pictures;
+                    n
+                }
                 Hidden::HiddenLayers => {
                     let (n, faults) = self.drop_hidden_layers(strict)?;
                     report.faults_overlooked |= faults;
@@ -472,17 +939,44 @@ impl Pdf {
             .filter(|(_, o)| o.as_dict().is_ok_and(is_active))
             .map(|(id, _)| *id)
             .collect();
+        // Lists of next actions stored as objects of their own (`/Next 12 0 R`).
+        fn next_lists(o: &Object, out: &mut Vec<ObjectId>) {
+            let d = match o {
+                Object::Dictionary(d) => d,
+                Object::Stream(s) => &s.dict,
+                Object::Array(a) => return a.iter().for_each(|x| next_lists(x, out)),
+                _ => return,
+            };
+            if let Ok(id) = d.get(b"Next").and_then(Object::as_reference) {
+                out.push(id);
+            }
+            d.iter().for_each(|(_, v)| next_lists(v, out));
+        }
+        let mut lists = Vec::new();
+        for o in self.doc.objects.values() {
+            next_lists(o, &mut lists);
+        }
+        let lists: HashSet<ObjectId> = (lists.into_iter())
+            .filter(|id| self.doc.get_object(*id).is_ok_and(|o| o.as_array().is_ok()))
+            .collect();
         let mut n = self.drop_names(&[b"JavaScript"]);
         let xfa_only = self.xfa_only();
-        for obj in self.doc.objects.values_mut() {
+        for (id, obj) in self.doc.objects.iter_mut() {
+            if let (true, Object::Array(a)) = (lists.contains(id), &mut *obj) {
+                let before = a.len();
+                a.retain(|o| !is_script(o, &bad));
+                n += before - a.len();
+            }
             n += without_scripts(obj, &bad, xfa_only);
         }
         n
     }
 
     /// Delete what lies outside each page's crop box, then make the crop box the page.
-    /// Returns how many pages were cut.
-    fn cut_outside_crop(&mut self) -> Result<usize> {
+    /// Returns how many pages were cut, and the pages where a drawing left as it was still
+    /// draws an original picture or form cut ([`crate::RedactReport::pictures_elsewhere`]).
+    /// When `strict`, refuses, after redacting, when redaction's check finds something left.
+    fn cut_outside_crop(&mut self, strict: bool) -> Result<(usize, Vec<usize>)> {
         let mut marks = Vec::new();
         let mut cut = Vec::new();
         for (i, page) in self.page_ids().into_iter().enumerate() {
@@ -508,9 +1002,17 @@ impl Pdf {
             cut.push((page, crop));
         }
         if marks.is_empty() {
-            return Ok(0);
+            return Ok((0, Vec::new()));
         }
-        self.redact(&marks)?;
+        let rep = self.redact(&marks)?;
+        if strict && !rep.left.is_empty() {
+            return Err(anyhow!(
+                "Content outside the visible page area can't be removed for certain: the check \
+                 after redacting found {}. Nothing was changed; leave out content outside the \
+                 visible page area to remove the rest.",
+                rep.left.join("; ")
+            ));
+        }
         for (page, crop) in &cut {
             let d = self.doc.get_dictionary_mut(*page)?;
             d.set(
@@ -521,12 +1023,12 @@ impl Pdf {
                 d.remove(k);
             }
         }
-        Ok(cut.len())
+        Ok((cut.len(), rep.pictures_elsewhere))
     }
 
     /// The layer properties, their default configuration, and the layers (optional content
-    /// groups) switched off in it; `None` when no layer is.
-    fn hidden_layers(&self) -> Option<(Dictionary, Dictionary, HashSet<ObjectId>)> {
+    /// groups) switched off in it; `None` when the document has no layer list.
+    fn layer_list(&self) -> Option<(Dictionary, Dictionary, HashSet<ObjectId>)> {
         let props = self
             .doc
             .catalog()
@@ -548,25 +1050,37 @@ impl Pdf {
         } else {
             refs(d.get(b"OFF").ok()).into_iter().collect()
         };
-        (!hidden.is_empty()).then_some((props, d, hidden))
+        Some((props, d, hidden))
     }
 
     /// Delete the content of the layers (optional content groups) that are switched off,
-    /// and take those layers out of the layer list. Returns how many layers went, and
+    /// and what layer rules hide, and take those layers out of the layer list; rules kept
+    /// that named them are rewritten without them. Returns how many were found (the layers
+    /// switched off, and the rules hiding content with every layer they name on), and
     /// whether data with a wrong checksum was read. When `strict`, refuses with nothing
-    /// changed if some drawing couldn't be looked into; otherwise (finding) counts the
-    /// layers and changes nothing then.
+    /// changed if some rule couldn't be read, or there is something to remove and some
+    /// drawing couldn't be looked into; otherwise (finding) counts them and changes nothing
+    /// then. With nothing to remove, nothing changes.
     fn drop_hidden_layers(&mut self, strict: bool) -> Result<(usize, bool)> {
-        let Some((props, d, hidden)) = self.hidden_layers() else {
+        let Some((props, d, hidden)) = self.layer_list() else {
             return Ok((0, false));
         };
-        let scan = self.scan_layers(&hidden);
+        let mut layers = Layers::new(hidden.clone());
+        let scan = match self.scan_layers(&mut layers) {
+            Ok(scan) => scan,
+            Err(e) if strict => return Err(e.into()),
+            // Found, so Remove can say why it stops.
+            Err(_) => return Ok((hidden.len().max(1), false)),
+        };
         let faults = scan.faults;
-        if !scan.blocked.is_empty() {
+        if layers.refuses(&scan) {
             if strict {
                 refuse_blocked(&scan)?;
             }
-            return Ok((hidden.len(), faults));
+            return Ok((layers.found(), faults));
+        }
+        if !layers.to_remove() {
+            return Ok((0, false));
         }
         for (drawn, ops, inline) in scan.edits {
             match drawn {
@@ -585,18 +1099,13 @@ impl Pdf {
             }
         }
         // Pictures and forms in a hidden layer are no longer drawn: out of the resources.
-        let layered: HashSet<ObjectId> = self
-            .doc
-            .objects
-            .iter()
-            .filter(|(_, o)| {
-                o.as_stream()
-                    .ok()
-                    .and_then(|s| s.dict.get(b"OC").ok())
-                    .is_some_and(|oc| self.oc_hidden(oc, &hidden))
-            })
-            .map(|(id, _)| *id)
-            .collect();
+        let mut layered = HashSet::new();
+        for (id, o) in &self.doc.objects {
+            let oc = o.as_stream().ok().and_then(|s| s.dict.get(b"OC").ok());
+            if oc.is_some_and(|oc| self.oc_hidden(oc, &mut layers)) {
+                layered.insert(*id);
+            }
+        }
         if !layered.is_empty() {
             // The streams were changed in place, so they are read afresh. Finding (on a
             // copy) leaves them listed when the drawings are too complex to follow.
@@ -606,24 +1115,74 @@ impl Pdf {
                 Err(_) => {}
             }
         }
-        // Annotations in a hidden layer.
+        // Annotations in a hidden layer, and their drawings in one: a drawing for a state
+        // goes, and the annotation when its normal drawing does.
         let mut gone = HashSet::new();
+        let mut looks = Vec::new();
         for page in self.page_ids() {
             for id in self.all_annot_refs(page) {
-                let oc = self
-                    .doc
-                    .get_dictionary(id)
-                    .ok()
-                    .and_then(|d| d.get(b"OC").ok());
-                if oc.is_some_and(|o| self.oc_hidden(o, &hidden)) {
+                let Ok(annot) = self.doc.get_dictionary(id) else {
+                    continue;
+                };
+                if annot
+                    .get(b"OC")
+                    .is_ok_and(|o| self.oc_hidden(o, &mut layers))
+                {
+                    gone.insert(id);
+                    continue;
+                }
+                let Ok(ap) = annot.get(b"AP") else {
+                    continue;
+                };
+                let mut ap = self.resolved_dict(Some(ap));
+                let mut changed = false;
+                for (k, v) in ap.clone().iter() {
+                    match self.doc.dereference(v) {
+                        Ok((_, Object::Stream(_))) => {
+                            if self.look_hidden(v, &mut layers) {
+                                ap.remove(k);
+                                changed = true;
+                            }
+                        }
+                        Ok((_, Object::Dictionary(states))) => {
+                            let mut states = states.clone();
+                            let hidden: Vec<Vec<u8>> = (states.iter())
+                                .filter(|(_, s)| self.look_hidden(s, &mut layers))
+                                .map(|(n, _)| n.clone())
+                                .collect();
+                            if hidden.is_empty() {
+                                continue;
+                            }
+                            changed = true;
+                            for n in hidden {
+                                states.remove(&n);
+                            }
+                            if states.is_empty() {
+                                ap.remove(k);
+                            } else {
+                                ap.set(k.clone(), states);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if changed && ap.has(b"N") {
+                    looks.push((id, ap));
+                } else if changed {
                     gone.insert(id);
                 }
+            }
+        }
+        for (id, ap) in looks {
+            if let Ok(d) = self.doc.get_dictionary_mut(id) {
+                d.set("AP", ap);
             }
         }
         if !gone.is_empty() {
             self.drop_annotations(gone)?;
         }
-        self.drop_hidden_properties(&hidden);
+        self.drop_hidden_properties(&layers);
+        self.rewrite_rules(&layers);
 
         // The layer list: hidden layers out, the rest on.
         let keep = |o: &Object| o.as_reference().map_or(true, |id| !hidden.contains(&id));
@@ -655,25 +1214,75 @@ impl Pdf {
             .catalog_mut()
             .map_err(|e| anyhow!("{e}"))?
             .set("OCProperties", props);
-        Ok((hidden.len(), faults))
+        Ok((layers.found(), faults))
     }
 
-    /// Every drawing that can hold content of the `hidden` layers, without it: the pages'
-    /// content, then what their resources and their annotations' appearances draw (forms,
-    /// tiling patterns, Type 3 glyphs, soft masks), nested up to [`MAX_NESTING`], each once
-    /// (layer states are the document's, so a drawing with its own resources looks the same
+    /// Whether `look`, an annotation's drawing, is in a hidden layer of its own.
+    fn look_hidden(&self, look: &Object, layers: &mut Layers) -> bool {
+        let oc = (self.doc.dereference(look).ok())
+            .and_then(|(_, s)| s.as_stream().ok())
+            .and_then(|s| s.dict.get(b"OC").ok());
+        oc.is_some_and(|oc| self.oc_hidden(oc, layers))
+    }
+
+    /// Put in place what `layers` found the rules kept that named a layer that's off, and
+    /// the expressions stored apart that they use, become.
+    fn rewrite_rules(&mut self, layers: &Layers) {
+        for (id, e) in &layers.exprs_new {
+            self.doc.objects.insert(*id, Object::Array(e.clone()));
+        }
+        let mut direct = false;
+        for (key, new) in &layers.rewrites {
+            match key {
+                RuleKey::Stored(id) => {
+                    self.doc
+                        .objects
+                        .insert(*id, Object::Dictionary(new.clone()));
+                }
+                RuleKey::Direct(_) => direct = true,
+            }
+        }
+        if !direct {
+            return;
+        }
+        fn walk(o: &mut Object, rewrites: &HashMap<RuleKey, Dictionary>) {
+            let d = match o {
+                Object::Dictionary(d) => d,
+                Object::Stream(s) => &mut s.dict,
+                Object::Array(a) => return a.iter_mut().for_each(|x| walk(x, rewrites)),
+                _ => return,
+            };
+            if d.get(b"Type").and_then(Object::as_name).ok() == Some(b"OCMD") {
+                if let Some(new) = rewrites.get(&RuleKey::Direct(format!("{d:?}"))) {
+                    *d = new.clone();
+                    return;
+                }
+            }
+            d.iter_mut().for_each(|(_, v)| walk(v, rewrites));
+        }
+        for o in self.doc.objects.values_mut() {
+            walk(o, &layers.rewrites);
+        }
+    }
+
+    /// Every drawing that can hold content `layers` hide, without it: the pages' content,
+    /// then what their resources and their annotations' appearances draw (forms, tiling
+    /// patterns, Type 3 glyphs, soft masks), nested up to [`MAX_NESTING`], each once (layer
+    /// states are the document's, so a drawing with its own resources looks the same
     /// wherever it is used). One without resources of its own is checked against every
-    /// place it is used from. What couldn't be read, is nested deeper, or would lose
-    /// different content in different places, goes in `blocked`.
-    fn scan_layers(&self, hidden: &HashSet<ObjectId>) -> LayerScan {
+    /// place it is used from. What couldn't be read (a layer rule too), is nested deeper,
+    /// or would lose different content in different places, goes in `blocked`. Refuses when
+    /// working out the layer rules would take too many steps.
+    fn scan_layers(&self, layers: &mut Layers) -> std::result::Result<LayerScan, TooComplex> {
         let mut scan = LayerScan::default();
+        self.read_rules(layers, &mut scan);
         let mut seen = HashMap::new();
         for (i, page) in self.page_ids().into_iter().enumerate() {
             let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
             let content = self.page_content(page);
             let name = format!("page {}'s content", i + 1);
-            self.scan_read(Drawn::Page(page), content, &res, hidden, &name, &mut scan);
-            self.scan_resources(&res, hidden, &mut seen, 0, &mut scan);
+            self.scan_read(Drawn::Page(page), content, &res, layers, &name, &mut scan);
+            self.scan_resources(&res, layers, &mut seen, 0, &mut scan);
             for annot in self.all_annot_refs(page) {
                 let ap = self
                     .doc
@@ -691,21 +1300,65 @@ impl Pdf {
                         _ => look.as_reference().ok().into_iter().collect(),
                     };
                     for id in ids {
-                        self.scan_drawing(id, &Dictionary::new(), hidden, &mut seen, 0, &mut scan);
+                        self.scan_drawing(id, &Dictionary::new(), layers, &mut seen, 0, &mut scan);
                     }
                 }
             }
         }
         let mut once = HashSet::new();
         scan.blocked.retain(|b| once.insert(b.clone()));
-        scan
+        match layers.too.take() {
+            Some(too) => Err(too),
+            None => Ok(scan),
+        }
+    }
+
+    /// Note in `layers` how each layer rule something in the file uses reads (the `/OC` of
+    /// a drawing or an annotation, or an entry of `/Properties`), and in `scan.blocked`
+    /// each that can't be read.
+    fn read_rules(&self, layers: &mut Layers, scan: &mut LayerScan) {
+        fn uses<'a>(doc: &'a Document, o: &'a Object, out: &mut Vec<&'a Object>) {
+            let d = match o {
+                Object::Dictionary(d) => d,
+                Object::Stream(s) => &s.dict,
+                Object::Array(a) => return a.iter().for_each(|x| uses(doc, x, out)),
+                _ => return,
+            };
+            out.extend(d.get(b"OC").ok());
+            let props = match d.get(b"Properties") {
+                Ok(Object::Reference(id)) => doc.get_dictionary(*id).ok(),
+                Ok(Object::Dictionary(p)) => Some(p),
+                _ => None,
+            };
+            out.extend(props.iter().flat_map(|p| p.iter().map(|(_, v)| v)));
+            d.iter().for_each(|(_, v)| uses(doc, v, out));
+        }
+        for (holder, o) in &self.doc.objects {
+            let mut found = Vec::new();
+            uses(&self.doc, o, &mut found);
+            for oc in found {
+                let Some((key, d)) = rule_of(&self.doc, oc) else {
+                    continue;
+                };
+                if let Err(why) = layers.used(&self.doc, &key, d) {
+                    scan.blocked.push(match key {
+                        RuleKey::Stored(id) => {
+                            format!("a layer rule (object {}) can't be read ({why})", id.0)
+                        }
+                        RuleKey::Direct(_) => {
+                            format!("a layer rule in object {} can't be read ({why})", holder.0)
+                        }
+                    });
+                }
+            }
+        }
     }
 
     /// [`Pdf::scan_layers`] for the drawings resources `res` hold, at nesting `depth`.
     fn scan_resources(
         &self,
         res: &Dictionary,
-        hidden: &HashSet<ObjectId>,
+        layers: &mut Layers,
         seen: &mut HashMap<ObjectId, Seen>,
         depth: usize,
         scan: &mut LayerScan,
@@ -765,7 +1418,7 @@ impl Pdf {
                     .push(format!("drawings are nested more than {MAX_NESTING} deep"));
                 return;
             }
-            self.scan_drawing(id, &outer, hidden, seen, depth + 1, scan);
+            self.scan_drawing(id, &outer, layers, seen, depth + 1, scan);
         }
     }
 
@@ -776,7 +1429,7 @@ impl Pdf {
         &self,
         id: ObjectId,
         outer: &Dictionary,
-        hidden: &HashSet<ObjectId>,
+        layers: &mut Layers,
         seen: &mut HashMap<ObjectId, Seen>,
         depth: usize,
         scan: &mut LayerScan,
@@ -788,7 +1441,7 @@ impl Pdf {
         let own = s.dict.get(b"Resources").ok();
         if let Some(was) = seen.get_mut(&id) {
             if own.is_none() {
-                self.check_shared(id, s, outer, hidden, was, scan);
+                self.check_shared(id, s, outer, layers, was, scan);
             }
             return;
         }
@@ -796,12 +1449,12 @@ impl Pdf {
         let mut was = Seen::default();
         if own.is_none() {
             was.first = Some(res.clone());
-            was.checked.push(self.hidden_names(&res, hidden));
+            was.checked.push(self.hidden_names(&res, layers));
         }
         seen.insert(id, was);
         let name = format!("a drawing in the file (object {})", id.0);
-        self.scan_read(Drawn::Stream(id), readable(s), &res, hidden, &name, scan);
-        self.scan_resources(&res, hidden, seen, depth, scan);
+        self.scan_read(Drawn::Stream(id), readable(s), &res, layers, &name, scan);
+        self.scan_resources(&res, layers, seen, depth, scan);
     }
 
     /// Check drawing `id` (stream `s`), which has no resources of its own and was looked
@@ -813,11 +1466,11 @@ impl Pdf {
         id: ObjectId,
         s: &lopdf::Stream,
         res: &Dictionary,
-        hidden: &HashSet<ObjectId>,
+        layers: &mut Layers,
         was: &mut Seen,
         scan: &mut LayerScan,
     ) {
-        let names = self.hidden_names(res, hidden);
+        let names = self.hidden_names(res, layers);
         if was.checked.contains(&names) {
             return;
         }
@@ -825,7 +1478,7 @@ impl Pdf {
         let (Some(first), Ok((data, _))) = (&was.first, readable(s)) else {
             return;
         };
-        let looks = [first, res].map(|r| self.without_hidden(&data, r, hidden, false));
+        let looks = [first, res].map(|r| self.without_hidden(&data, r, layers, false));
         let name = format!("a drawing in the file (object {})", id.0);
         if let Some(why) = looks
             .iter()
@@ -855,13 +1508,13 @@ impl Pdf {
         }
     }
 
-    /// The names resources `res` give content in the `hidden` layers, and their fonts, as
+    /// The names resources `res` give content `layers` hide, and their fonts, as
     /// [`Pdf::without_hidden`] looks them up.
-    fn hidden_names(&self, res: &Dictionary, hidden: &HashSet<ObjectId>) -> HiddenNames {
+    fn hidden_names(&self, res: &Dictionary, layers: &mut Layers) -> HiddenNames {
         let props = self.resolved_dict(res.get(b"Properties").ok());
-        let mut layers: Vec<Vec<u8>> = props
+        let mut names: Vec<Vec<u8>> = props
             .iter()
-            .filter(|(_, o)| self.oc_hidden(o, hidden))
+            .filter(|(_, o)| self.oc_hidden(o, layers))
             .map(|(n, _)| n.clone())
             .collect();
         let xobjs = self.resolved_dict(res.get(b"XObject").ok());
@@ -873,7 +1526,7 @@ impl Pdf {
                     .ok()
                     .and_then(|(_, s)| s.as_stream().ok())
                     .and_then(|s| s.dict.get(b"OC").ok())
-                    .is_some_and(|oc| self.oc_hidden(oc, hidden))
+                    .is_some_and(|oc| self.oc_hidden(oc, layers))
             })
             .map(|(n, _)| n.clone())
             .collect();
@@ -887,10 +1540,10 @@ impl Pdf {
                 (n.clone(), format!("{font:?}"))
             })
             .collect();
-        layers.sort();
+        names.sort();
         drawings.sort();
         fonts.sort();
-        (layers, drawings, fonts)
+        (names, drawings, fonts)
     }
 
     /// Page `page`'s content streams, read with [`readable`] and joined as lopdf joins them,
@@ -920,14 +1573,14 @@ impl Pdf {
         drawn: Drawn,
         read: Read,
         res: &Dictionary,
-        hidden: &HashSet<ObjectId>,
+        layers: &mut Layers,
         name: &str,
         scan: &mut LayerScan,
     ) {
         let page = matches!(drawn, Drawn::Page(_));
         let edit = read.and_then(|(data, fault)| {
             scan.faults |= fault;
-            self.without_hidden(&data, res, hidden, page)
+            self.without_hidden(&data, res, layers, page)
                 .map_err(Unread::Other)
         });
         match edit {
@@ -937,26 +1590,27 @@ impl Pdf {
                 scan.damaged = true;
                 scan.blocked.push(format!("{name} is damaged"));
             }
-            Err(Unread::Other(e)) => scan.blocked.push(match e.downcast_ref::<Unsure>() {
-                Some(why) => format!("{name} {why}"),
-                None => format!("{name} can't be read ({e})"),
-            }),
+            Err(Unread::Other(e)) => {
+                let why = (e.downcast_ref::<Unsure>().map(|u| u.to_string()))
+                    .or_else(|| e.downcast_ref::<InlineRule>().map(|r| r.to_string()));
+                scan.blocked.push(match why {
+                    Some(why) => format!("{name} {why}"),
+                    None => format!("{name} can't be read ({e})"),
+                })
+            }
         }
     }
 
-    /// Take the entries naming hidden layers out of every `/Properties` resource dictionary:
-    /// the content that used them is gone.
-    fn drop_hidden_properties(&mut self, hidden: &HashSet<ObjectId>) {
-        let hidden_ocmds: HashSet<ObjectId> = self
-            .doc
-            .objects
-            .iter()
-            .filter(|(_, o)| o.as_dict().is_ok_and(|d| membership_hidden(d, hidden)))
-            .map(|(id, _)| *id)
-            .collect();
+    /// Take the entries naming hidden layers, or rules hiding their content, out of every
+    /// `/Properties` resource dictionary: the content that used them is gone.
+    fn drop_hidden_properties(&mut self, layers: &Layers) {
+        let hides = |key: RuleKey| matches!(layers.rules.get(&key), Some(Ok((true, _))));
         let gone = |o: &Object| match o {
-            Object::Reference(id) => hidden.contains(id) || hidden_ocmds.contains(id),
-            Object::Dictionary(d) => membership_hidden(d, hidden),
+            Object::Reference(id) => layers.off.contains(id) || hides(RuleKey::Stored(*id)),
+            Object::Dictionary(d) => {
+                d.get(b"Type").and_then(Object::as_name).ok() == Some(b"OCMD")
+                    && hides(RuleKey::Direct(format!("{d:?}")))
+            }
             _ => false,
         };
         fn walk(o: &mut Object, gone: &dyn Fn(&Object) -> bool, lists: &mut Vec<ObjectId>) {
@@ -1002,36 +1656,33 @@ impl Pdf {
         }
     }
 
-    /// Whether optional content `oc` (a layer, or a membership dictionary combining
-    /// layers) is hidden when `hidden` layers are off.
-    fn oc_hidden(&self, oc: &Object, hidden: &HashSet<ObjectId>) -> bool {
-        if let Ok(id) = oc.as_reference() {
-            if hidden.contains(&id) {
-                return true;
-            }
+    /// Whether optional content `oc` (a layer, or a layer rule) is hidden, by `layers`. A
+    /// rule that can't be read hides nothing here; the scan refuses for it.
+    fn oc_hidden(&self, oc: &Object, layers: &mut Layers) -> bool {
+        if oc.as_reference().is_ok_and(|id| layers.off.contains(&id)) {
+            return true;
         }
-        self.doc
-            .dereference(oc)
-            .ok()
-            .and_then(|(_, o)| o.as_dict().ok())
-            .is_some_and(|d| membership_hidden(d, hidden))
+        rule_of(&self.doc, oc)
+            .is_some_and(|(key, d)| matches!(layers.read(&self.doc, &key, d), Ok((true, _))))
     }
 
-    /// A content stream without what is in hidden layers: marked content tagged with a
-    /// hidden layer, and pictures and forms that belong to one. `None` when nothing was.
-    /// `page`: the stream is a page's content, which starts with the default text state (a
-    /// form or other drawing starts with that of where it is used).
+    /// A content stream without what `layers` hide: marked content tagged with a hidden
+    /// layer or a rule hiding it, and pictures and forms that belong to one; a rule written
+    /// in it that is kept but names a layer that's off is rewritten. `None` when nothing
+    /// changed. `page`: the stream is a page's content, which starts with the default text
+    /// state (a form or other drawing starts with that of where it is used).
     ///
     /// Hidden content still sets what is drawn after it (ISO 32000-1, 8.11.3.2), so only
     /// its painting goes: settings (colour, position, line style, text state) are kept, a
     /// clipping path still clips, and hidden text becomes spacing as wide. Refuses with
-    /// [`Unsure`] where the result wouldn't look the same.
+    /// [`Unsure`] where the result wouldn't look the same, and with [`InlineRule`] where a
+    /// rule written in it can't be read.
     #[allow(clippy::type_complexity)]
     fn without_hidden(
         &self,
         data: &[u8],
         res: &Dictionary,
-        hidden: &HashSet<ObjectId>,
+        layers: &mut Layers,
         page: bool,
     ) -> Result<Option<(Vec<Operation>, Inline)>> {
         let (data, inline) = crate::inline::extract(data).map_err(|e| anyhow!("{e}"))?;
@@ -1053,7 +1704,7 @@ impl Pdf {
         let mut path: Vec<Operation> = Vec::new();
         // A path begun in what is kept and not yet painted, which hidden content may paint.
         let mut open = false;
-        for o in ops {
+        for mut o in ops {
             let name = o.operator.as_str();
             text.follow(&o, &mut saved);
             if matches!(name, "BT" | "ET" | "Td" | "TD" | "T*" | "Tm" | "'" | "\"") {
@@ -1109,21 +1760,35 @@ impl Pdf {
             if lost && matches!(name, "Tj" | "TJ") {
                 return Err(Unsure::WIDTH.into());
             }
-            let oc_layer = |prop: Option<&Object>| -> bool {
-                match prop {
-                    Some(Object::Name(n)) => props.get(n).is_ok_and(|o| self.oc_hidden(o, hidden)),
-                    Some(o) => self.oc_hidden(o, hidden),
-                    None => false,
-                }
-            };
             match o.operator.as_str() {
-                "BDC"
-                    if o.operands.first().and_then(|t| t.as_name().ok()) == Some(b"OC")
-                        && oc_layer(o.operands.get(1)) =>
-                {
-                    skip = Some(1);
-                    changed = true;
-                    continue;
+                "BDC" if o.operands.first().and_then(|t| t.as_name().ok()) == Some(b"OC") => {
+                    let mut rewrite = None;
+                    let hides = match o.operands.get(1) {
+                        Some(Object::Name(n)) => {
+                            props.get(n).is_ok_and(|p| self.oc_hidden(p, layers))
+                        }
+                        Some(oc @ Object::Dictionary(_)) => match rule_of(&self.doc, oc) {
+                            Some((key, d)) => match layers.used(&self.doc, &key, d) {
+                                Err(why) => return Err(InlineRule(why).into()),
+                                Ok((hides, _)) => {
+                                    rewrite = layers.rewrites.get(&key).cloned();
+                                    hides
+                                }
+                            },
+                            None => false,
+                        },
+                        Some(oc) => self.oc_hidden(oc, layers),
+                        None => false,
+                    };
+                    if hides {
+                        skip = Some(1);
+                        changed = true;
+                        continue;
+                    }
+                    if let Some(new) = rewrite {
+                        o.operands[1] = Object::Dictionary(new);
+                        changed = true;
+                    }
                 }
                 "Do" => {
                     let oc = o
@@ -1134,7 +1799,7 @@ impl Pdf {
                         .and_then(|e| self.doc.dereference(e).ok())
                         .and_then(|(_, s)| s.as_stream().ok())
                         .and_then(|s| s.dict.get(b"OC").ok());
-                    if oc.is_some_and(|oc| self.oc_hidden(oc, hidden)) {
+                    if oc.is_some_and(|oc| self.oc_hidden(oc, layers)) {
                         changed = true;
                         continue;
                     }
@@ -1278,39 +1943,21 @@ fn refuse_blocked(scan: &LayerScan) -> Result<()> {
     ))
 }
 
-/// Whether `d` is an optional content membership dictionary (`/Type /OCMD`) that hides
-/// what it applies to when `hidden` layers are off.
-fn membership_hidden(d: &Dictionary, hidden: &HashSet<ObjectId>) -> bool {
-    if d.get(b"Type").and_then(|o| o.as_name()).ok() != Some(b"OCMD") {
-        return false;
-    }
-    let groups: Vec<bool> = match d.get(b"OCGs") {
-        Ok(Object::Reference(id)) => vec![hidden.contains(id)],
-        Ok(Object::Array(a)) => a
-            .iter()
-            .filter_map(|o| o.as_reference().ok())
-            .map(|id| hidden.contains(&id))
-            .collect(),
-        _ => return false,
-    };
-    if groups.is_empty() {
-        return false;
-    }
-    let policy = d.get(b"P").and_then(|o| o.as_name()).unwrap_or(b"AnyOn");
-    let visible = match policy {
-        b"AllOn" => groups.iter().all(|h| !h),
-        b"AnyOff" => groups.iter().any(|h| *h),
-        b"AllOff" => groups.iter().all(|h| *h),
-        _ => groups.iter().any(|h| !h),
-    };
-    !visible
-}
-
 /// Whether an action dictionary runs something by itself.
 fn is_active(d: &Dictionary) -> bool {
     d.get(b"S")
         .and_then(|o| o.as_name())
         .is_ok_and(|s| ACTIVE.contains(&s))
+}
+
+/// Whether `o` is an action that runs something by itself: one of `bad` (the objects that
+/// are such actions), or one written in place.
+fn is_script(o: &Object, bad: &HashSet<ObjectId>) -> bool {
+    match o {
+        Object::Reference(id) => bad.contains(id),
+        Object::Dictionary(d) => is_active(d),
+        _ => false,
+    }
 }
 
 /// Take the actions that run something out of `o` and out of every dictionary written
@@ -1330,11 +1977,7 @@ fn without_scripts(o: &mut Object, bad: &HashSet<ObjectId>, xfa_only: bool) -> u
         }
         _ => return 0,
     };
-    let is_bad = |o: &Object| match o {
-        Object::Reference(id) => bad.contains(id),
-        Object::Dictionary(d) => is_active(d),
-        _ => false,
-    };
+    let is_bad = |o: &Object| is_script(o, bad);
     // Additional actions: on opening, closing, printing, keystrokes, focus….
     let mut n = usize::from(d.remove(b"AA").is_some());
     for key in [&b"A"[..], b"OpenAction"] {

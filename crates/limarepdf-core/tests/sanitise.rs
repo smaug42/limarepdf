@@ -960,17 +960,17 @@ fn hidden_layers_in_data_with_a_wrong_checksum_are_removed_and_the_fault_reporte
     saved.assert_gone(&["WALRUS-CHECKSUM"]);
     saved.assert_kept(&["Visible tail"]);
     assert_eq!(
-        rep.note(),
-        Some(
+        rep.notes(),
+        [
             "Some of this document's data had a small fault in it (other PDF readers overlook \
              it too). It was all read, and nothing was skipped."
-        )
+        ]
     );
     // Data without faults gives no note.
     let mut p = layered_page(long_layered(Dictionary::new(), "WALRUS", "Visible"));
     let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
     assert_eq!(rep.count(Hidden::HiddenLayers), 1);
-    assert_eq!(rep.note(), None);
+    assert!(rep.notes().is_empty());
 }
 
 #[test]
@@ -1198,4 +1198,926 @@ fn cross_check_removed_information_with_poppler_and_ghostscript() {
         assert!(!text.contains("WALRUS"), "{text}");
         assert_eq!(text.matches("Visible shared").count(), 2, "{text}");
     }
+}
+
+/// S1-02 (H-03): actions whose next actions are a list stored as an object of its own,
+/// `/Next 12 0 R`: on the opening action, a link (the list holding an ordinary action whose
+/// own next actions are another stored list), a bookmark (a stored list of actions written
+/// in place) and a button, whose two actions name each other through stored lists.
+fn stored_next_lists() -> Pdf {
+    let mut p = make(
+        "BT /F1 12 Tf 10 180 Td (Page text) Tj ET",
+        Dictionary::new(),
+    );
+    let page = p.page_ids()[0];
+    let fit = || vec![Object::Reference(page), "Fit".into()];
+    let js = |p: &mut Pdf, what: &str| {
+        p.doc.add_object(
+            dictionary! { "S" => "JavaScript", "JS" => s(&format!("app.alert('{what}')")) },
+        )
+    };
+    let list = |p: &mut Pdf, items: Vec<Object>| p.doc.add_object(Object::Array(items));
+    // The opening action.
+    let open = js(&mut p, "WALRUS-OPEN");
+    let opened = list(&mut p, vec![open.into()]);
+    catalog_set(
+        &mut p,
+        "OpenAction",
+        dictionary! { "S" => "GoTo", "D" => fit(), "Next" => opened }.into(),
+    );
+    // A link: its list holds a web address, followed by a stored list of its own, and a
+    // script.
+    let launch = list(
+        &mut p,
+        vec![dictionary! { "S" => "Launch", "F" => s("WALRUS-LAUNCH.exe") }.into()],
+    );
+    let listed = p.doc.add_object(dictionary! {
+        "S" => "URI", "URI" => s("https://example.org/listed"), "Next" => launch,
+    });
+    let link_js = js(&mut p, "WALRUS-LINK");
+    let next = list(&mut p, vec![listed.into(), link_js.into()]);
+    let link = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Link", "Rect" => rect([0, 0, 50, 50]),
+        "A" => dictionary! { "S" => "URI", "URI" => s("https://example.org/link"), "Next" => next },
+    });
+    add_annot(&mut p, link);
+    // A bookmark: a stored list of actions written in place.
+    let in_place = list(
+        &mut p,
+        vec![
+            dictionary! { "S" => "JavaScript", "JS" => s("WALRUS-OUTLINE") }.into(),
+            dictionary! { "S" => "URI", "URI" => s("https://example.org/outline") }.into(),
+        ],
+    );
+    let item = p.doc.add_object(dictionary! {
+        "Title" => s("Chapter"),
+        "A" => dictionary! { "S" => "GoTo", "D" => fit(), "Next" => in_place },
+    });
+    let root = p.doc.add_object(
+        dictionary! { "Type" => "Outlines", "First" => item, "Last" => item, "Count" => 1 },
+    );
+    p.doc.get_dictionary_mut(item).unwrap().set("Parent", root);
+    catalog_set(&mut p, "Outlines", Object::Reference(root));
+    // A button: action a's next is [b], b's is [a, a script].
+    let (a, b) = (p.doc.new_object_id(), p.doc.new_object_id());
+    let after_a = list(&mut p, vec![b.into()]);
+    let button_js = js(&mut p, "WALRUS-BUTTON");
+    let after_b = list(&mut p, vec![a.into(), button_js.into()]);
+    p.doc.objects.insert(
+        a,
+        dictionary! { "S" => "URI", "URI" => s("https://example.org/a"), "Next" => after_a }.into(),
+    );
+    p.doc.objects.insert(
+        b,
+        dictionary! { "S" => "URI", "URI" => s("https://example.org/b"), "Next" => after_b }.into(),
+    );
+    let button = widget(
+        &mut p,
+        dictionary! {
+            "FT" => "Btn", "Ff" => 1 << 16, "T" => s("go"), "Rect" => rect([180, 0, 230, 50]),
+            "A" => a,
+        },
+    );
+    catalog_set(
+        &mut p,
+        "AcroForm",
+        dictionary! { "Fields" => vec![Object::Reference(button)] }.into(),
+    );
+    p
+}
+
+#[test]
+fn scripts_in_stored_lists_of_next_actions_are_removed() {
+    let mut p = stored_next_lists();
+    assert!(!Saved::of(&mut p).actions().is_empty());
+    // One for each script in a list: the opening action's, two of the link's (one in the
+    // list its web address leads to), the bookmark's and the button's.
+    let found = p.find_hidden().unwrap();
+    assert_eq!(found.count(Hidden::Scripts), 5, "{found:?}");
+    let rep = p.remove_hidden(&[Hidden::Scripts]).unwrap();
+    assert_eq!(rep.count(Hidden::Scripts), 5, "{rep:?}");
+    let saved = Saved::of(&mut p);
+    let left = saved.actions();
+    assert!(left.is_empty(), "{left:?}");
+    saved.assert_gone(&[
+        "WALRUS-OPEN",
+        "WALRUS-LINK",
+        "WALRUS-LAUNCH",
+        "WALRUS-OUTLINE",
+        "WALRUS-BUTTON",
+    ]);
+    // Kept: the ordinary actions, also those that come before a removed one.
+    saved.assert_kept(&[
+        "https://example.org/link",
+        "https://example.org/listed",
+        "https://example.org/outline",
+        "https://example.org/a",
+        "https://example.org/b",
+    ]);
+    assert!(saved.doc.catalog().unwrap().has(b"OpenAction"));
+    let q = Pdf::from_bytes(&saved.bytes, None).unwrap();
+    assert_eq!(q.outline()[0].page, Some(0));
+}
+
+/// Two layers in the layer list, `LAYER-A`, shown, and `LAYER-B`, switched off when
+/// `b_off`; as references.
+fn two_layers(p: &mut Pdf, b_off: bool) -> (Object, Object) {
+    let a = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCG", "Name" => s("LAYER-A") });
+    let b = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCG", "Name" => s("LAYER-B") });
+    let off: Vec<Object> = if b_off { vec![b.into()] } else { vec![] };
+    catalog_set(
+        p,
+        "OCProperties",
+        dictionary! {
+            "OCGs" => vec![Object::Reference(a), Object::Reference(b)],
+            "D" => dictionary! { "OFF" => off, "Order" => vec![Object::Reference(a), Object::Reference(b)] },
+        }
+        .into(),
+    );
+    (a.into(), b.into())
+}
+
+/// Text in the content of the layer rule `/R`, and text outside it.
+const RULED: &str = "/OC /R BDC BT /F1 12 Tf 30 150 Td (RULE-SECRET) Tj ET EMC \
+                     BT /F1 12 Tf 30 100 Td (Visible text) Tj ET";
+
+/// A page drawing [`RULED`], its rule `/R` made by `rule` from [`two_layers`]' layers (a
+/// layer rule is an optional content membership dictionary, `/Type /OCMD`); and the rule.
+fn ruled(
+    b_off: bool,
+    rule: impl FnOnce(&mut Pdf, Object, Object) -> Dictionary,
+) -> (Pdf, ObjectId) {
+    let mut p = make(RULED, Dictionary::new());
+    let (a, b) = two_layers(&mut p, b_off);
+    let mut d = rule(&mut p, a, b);
+    d.set("Type", "OCMD");
+    let r = p.doc.add_object(d);
+    page_res_set(&mut p, "Properties", dictionary! { "R" => r }.into());
+    (p, r)
+}
+
+/// A visibility expression: `op` (`And`, `Or` or `Not`) over `args`.
+fn ve(op: &str, args: Vec<Object>) -> Object {
+    let mut a = vec![Object::Name(op.as_bytes().to_vec())];
+    a.extend(args);
+    Object::Array(a)
+}
+
+/// A layer rule made from the layers a and b.
+type Rule = fn(&mut Pdf, Object, Object) -> Dictionary;
+
+/// Rules hiding their content with LAYER-B switched off. `/VE` comes first (ISO 32000-1,
+/// 8.11.2.2), also over `/OCGs` and `/P` that would show it.
+const HIDING_WITH_B_OFF: [(&str, Rule); 6] = [
+    ("and", |_, a, b| {
+        dictionary! {
+            "OCGs" => vec![a.clone(), b.clone()], "P" => "AnyOn", "VE" => ve("And", vec![a, b]),
+        }
+    }),
+    ("or", |_, a, b| {
+        dictionary! { "VE" => ve("Or", vec![b, ve("Not", vec![a])]) }
+    }),
+    ("not", |_, a, b| {
+        dictionary! { "VE" => ve("Not", vec![ve("Or", vec![a, b])]) }
+    }),
+    ("nested", |_, a, b| {
+        let inner = ve("And", vec![a.clone(), ve("Not", vec![a.clone()])]);
+        dictionary! { "VE" => ve("And", vec![a, ve("Or", vec![b, inner])]) }
+    }),
+    ("a stored sub-expression", |p, a, b| {
+        let e = p.doc.add_object(ve("And", vec![a.clone(), b]));
+        dictionary! { "VE" => ve("Or", vec![e.into(), ve("Not", vec![a])]) }
+    }),
+    ("a stored expression", |p, a, b| {
+        let e = p.doc.add_object(ve("And", vec![a, b]));
+        dictionary! { "VE" => e }
+    }),
+];
+
+#[test]
+fn content_a_layer_rule_hides_is_removed() {
+    for (case, rule) in HIDING_WITH_B_OFF {
+        let (mut p, _) = ruled(true, rule);
+        let found = p.find_hidden().unwrap();
+        assert_eq!(found.count(Hidden::HiddenLayers), 1, "{case}");
+        let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        assert_eq!(rep.count(Hidden::HiddenLayers), 1, "{case}");
+        let saved = Saved::of(&mut p);
+        let left = saved.places("RULE-SECRET");
+        assert!(
+            left.is_empty(),
+            "{case}: the hidden content is left in {left:?}"
+        );
+        let gone = saved.places("LAYER-B");
+        assert!(
+            gone.is_empty(),
+            "{case}: the removed layer is still named in {gone:?}"
+        );
+        saved.assert_kept(&["Visible text", "LAYER-A"]);
+    }
+}
+
+#[test]
+fn content_a_layer_rule_hides_on_a_page_and_in_a_form_is_removed_from_both() {
+    let (mut p, r) = ruled(true, HIDING_WITH_B_OFF[0].1);
+    let font = helvetica(&mut p);
+    let form = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "F1" => font }, "Properties" => dictionary! { "R" => r },
+            },
+        },
+        b"/OC /R BDC BT /F1 12 Tf 30 60 Td (FORM-SECRET) Tj ET EMC \
+          BT /F1 12 Tf 30 40 Td (Form text) Tj ET"
+            .to_vec(),
+    ));
+    page_res_set(&mut p, "XObject", dictionary! { "Fm" => form }.into());
+    let page = p.page_ids()[0];
+    let id = p.doc.get_page_contents(page)[0];
+    let content = format!("{RULED} q /Fm Do Q");
+    p.doc.objects.insert(
+        id,
+        Stream::new(Dictionary::new(), content.into_bytes()).into(),
+    );
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["RULE-SECRET", "FORM-SECRET", "LAYER-B"]);
+    saved.assert_kept(&["Visible text", "Form text"]);
+}
+
+/// `/VE` shows the content though `/OCGs` and `/P` alone would hide it: it is kept, and the
+/// rule, which named the removed layer, now names only the layer that is left.
+fn shown_by_ve_over_p() -> (Pdf, ObjectId) {
+    ruled(true, |_, a, b| {
+        dictionary! { "OCGs" => vec![b.clone()], "P" => "AllOn", "VE" => ve("Or", vec![a, b]) }
+    })
+}
+
+#[test]
+fn content_a_layer_rule_shows_by_its_expression_is_kept() {
+    let (mut p, r) = shown_by_ve_over_p();
+    let a = p
+        .doc
+        .get_dictionary(r)
+        .unwrap()
+        .get(b"VE")
+        .unwrap()
+        .as_array()
+        .unwrap()[1]
+        .clone();
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let rule = p.doc.get_dictionary(r).unwrap();
+    assert_eq!(rule.get(b"OCGs").ok(), Some(&a), "{rule:?}");
+    assert!(!rule.has(b"VE") && !rule.has(b"P"), "{rule:?}");
+    let saved = Saved::of(&mut p);
+    saved.assert_kept(&["RULE-SECRET", "Visible text", "LAYER-A"]);
+    saved.assert_gone(&["LAYER-B"]);
+}
+
+/// A removal that can't read a layer rule something uses refuses before changing anything,
+/// saying `why`, while finding counts the rule as one found (so the box can be ticked, and
+/// Remove says why it stops) and the other kinds are still removed.
+fn refuses_rule(mut p: Pdf, why: &str) {
+    p.set_info(&Info {
+        title: Some("Walrus title".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    let before = p.state_before();
+    let err = p.check_remove_hidden(&[Hidden::HiddenLayers]).unwrap_err();
+    assert!(format!("{err:#}").contains(why), "{err:#}");
+    let err = p
+        .remove_hidden(&[Hidden::Metadata, Hidden::HiddenLayers])
+        .unwrap_err();
+    assert!(format!("{err:#}").contains(why), "{err:#}");
+    assert_eq!(p.state_since(&before), []);
+    let found = p.find_hidden().unwrap();
+    assert_eq!(found.count(Hidden::HiddenLayers), 1, "{why}");
+    assert_eq!(found.count(Hidden::Metadata), 1);
+    p.remove_hidden(&[Hidden::Metadata]).unwrap();
+    assert_eq!(p.info().title, None);
+}
+
+/// An expression made from the layers a and b.
+type Expr = fn(&mut Pdf, Object, Object) -> Object;
+
+/// A rule whose `/VE` is `expr` of the two layers, both shown (so no layer is off).
+fn ve_rule(expr: Expr) -> (Pdf, ObjectId) {
+    ruled(false, |p, a, b| {
+        let e = expr(p, a, b);
+        dictionary! { "VE" => e }
+    })
+}
+
+/// `/VE` of `n` levels: `n - 1` of `/Not` around `[/Or b]`.
+fn deep(b: Object, n: usize) -> Object {
+    (1..n).fold(ve("Or", vec![b]), |e, _| ve("Not", vec![e]))
+}
+
+#[test]
+fn layer_rules_that_cant_be_read_are_refused() {
+    let cant = |r: ObjectId, why: &str| {
+        format!(
+            "hidden layers can't be removed for certain: a layer rule (object {}) can't be read \
+             ({why}). Nothing was changed; leave out hidden layers to remove the rest",
+            r.0
+        )
+    };
+    let cases: [(Expr, &str); 7] = [
+        (
+            |_, a, b| ve("Xor", vec![a, b]),
+            "it combines layers with /Xor, which isn't a way to combine them",
+        ),
+        (
+            |_, a, b| ve("Not", vec![a, b]),
+            "a /Not in it doesn't have exactly one operand",
+        ),
+        (
+            |_, _, _| ve("And", vec![]),
+            "an /And or /Or in it has nothing to combine",
+        ),
+        (
+            |_, a, _| ve("And", vec![a, Object::Integer(5)]),
+            "something in it is neither a layer nor an expression",
+        ),
+        (
+            |p, a, _| {
+                let e = p.doc.new_object_id();
+                p.doc.objects.insert(e, ve("Or", vec![a, e.into()]));
+                e.into()
+            },
+            "it contains itself",
+        ),
+        (|_, _, b| deep(b, 33), "it is nested more than 32 deep"),
+        (|_, a, _| a, "its /VE isn't an expression"),
+    ];
+    for (expr, why) in cases {
+        let (p, r) = ve_rule(expr);
+        refuses_rule(p, &cant(r, why));
+    }
+    // An expression 32 deep is read: 31 of /Not around b, which is shown, hide.
+    let (mut p, _) = ve_rule(|_, _, b| deep(b, 32));
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    Saved::of(&mut p).assert_gone(&["RULE-SECRET"]);
+    // A rule written into the content itself.
+    let mut p = make("", Dictionary::new());
+    let (a, _) = two_layers(&mut p, false);
+    let page = p.page_ids()[0];
+    let id = p.doc.get_page_contents(page)[0];
+    let content = format!(
+        "/OC << /Type /OCMD /VE [/Xor {} 0 R] >> BDC BT /F1 12 Tf 30 150 Td (RULE-SECRET) Tj \
+         ET EMC",
+        a.as_reference().unwrap().0
+    );
+    p.doc.objects.insert(
+        id,
+        Stream::new(Dictionary::new(), content.into_bytes()).into(),
+    );
+    refuses_rule(
+        p,
+        "page 1's content has a layer rule that can't be read (it combines layers with /Xor, \
+         which isn't a way to combine them)",
+    );
+}
+
+/// An expression is worked out once and remembered, but how deep it reaches is checked for
+/// each place it is used: here 20 deep, used at the top by one rule and 15 deep by another.
+#[test]
+fn a_stored_expression_used_deeper_by_another_rule_is_refused() {
+    for first in ["R1", "R2"] {
+        let mut p = make(
+            "/OC /R1 BDC BT /F1 12 Tf 30 150 Td (RULE-ONE) Tj ET EMC \
+             /OC /R2 BDC BT /F1 12 Tf 30 120 Td (RULE-TWO) Tj ET EMC",
+            Dictionary::new(),
+        );
+        let (_, b) = two_layers(&mut p, false);
+        let e = p
+            .doc
+            .add_object((1..20).fold(ve("Not", vec![b]), |e, _| ve("Not", vec![e])));
+        let r1 = p
+            .doc
+            .add_object(dictionary! { "Type" => "OCMD", "VE" => e });
+        let deeper = (1..14).fold(ve("Not", vec![e.into()]), |x, _| ve("Not", vec![x]));
+        let r2 = p
+            .doc
+            .add_object(dictionary! { "Type" => "OCMD", "VE" => deeper });
+        let props = match first {
+            "R1" => dictionary! { "R1" => r1, "R2" => r2 },
+            _ => dictionary! { "R2" => r2, "R1" => r1 },
+        };
+        page_res_set(&mut p, "Properties", props.into());
+        let why = format!(
+            "a layer rule (object {}) can't be read (it is nested more than 32 deep)",
+            r2.0
+        );
+        refuses_rule(p, &why);
+    }
+}
+
+/// A rule of `n` layer names, `/VE [/Or b b …]`, which shows its content: `n + 1` steps
+/// (each operator and each operand is one).
+fn wide_rule(n: usize) -> Pdf {
+    ruled(
+        false,
+        |_, _, b| dictionary! { "VE" => ve("Or", vec![b; n]) },
+    )
+    .0
+}
+
+#[test]
+fn checking_layer_rules_has_a_step_limit() {
+    use limarepdf_core::{budget_seam, TooComplex};
+    let p = wide_rule(2000);
+    let (got, taken) =
+        budget_seam::with_limit(2001, || p.check_remove_hidden(&[Hidden::HiddenLayers]));
+    got.unwrap();
+    assert_eq!(taken.first(), Some(&2001), "{taken:?}");
+    let mut p = wide_rule(2000);
+    let before = p.state_before();
+    let (got, _) = budget_seam::with_limit(2000, || p.remove_hidden(&[Hidden::HiddenLayers]));
+    let e = got.unwrap_err();
+    let too = e.downcast_ref::<TooComplex>().expect("too complex");
+    assert_eq!(
+        (too.what, too.limit),
+        ("checking the layers", 2000),
+        "{e:#}"
+    );
+    assert_eq!(p.state_since(&before), []);
+    // A stored expression two rules share is checked once.
+    let mut p = make(
+        "/OC /R1 BDC (one) Tj EMC /OC /R2 BDC (two) Tj EMC",
+        Dictionary::new(),
+    );
+    let (_, b) = two_layers(&mut p, false);
+    let e = p.doc.add_object(ve("Or", vec![b; 2000]));
+    let rules: Vec<ObjectId> = (0..2)
+        .map(|_| {
+            p.doc
+                .add_object(dictionary! { "Type" => "OCMD", "VE" => e })
+        })
+        .collect();
+    page_res_set(
+        &mut p,
+        "Properties",
+        dictionary! { "R1" => rules[0], "R2" => rules[1] }.into(),
+    );
+    let (got, taken) =
+        budget_seam::with_limit(u64::MAX, || p.check_remove_hidden(&[Hidden::HiddenLayers]));
+    got.unwrap();
+    assert!(taken[0] < 2 * 2001, "{taken:?}");
+}
+
+/// Rules hiding their content with every layer shown (V-03).
+const HIDING_ALL_ON: [(&str, Rule); 4] = [
+    (
+        "not a",
+        |_, a, _| dictionary! { "VE" => ve("Not", vec![a]) },
+    ),
+    (
+        "any off",
+        |_, a, b| dictionary! { "OCGs" => vec![a, b], "P" => "AnyOff" },
+    ),
+    (
+        "all off",
+        |_, a, b| dictionary! { "OCGs" => vec![a, b], "P" => "AllOff" },
+    ),
+    ("nested", |_, a, b| {
+        let either = ve("Or", vec![ve("Not", vec![a.clone()]), ve("Not", vec![b])]);
+        dictionary! { "VE" => ve("And", vec![a, either]) }
+    }),
+];
+
+#[test]
+fn content_a_layer_rule_hides_with_every_layer_shown_is_removed() {
+    for (case, rule) in HIDING_ALL_ON {
+        let (mut p, _) = ruled(false, rule);
+        let found = p.find_hidden().unwrap();
+        assert_eq!(found.count(Hidden::HiddenLayers), 1, "{case}");
+        let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        assert_eq!(rep.count(Hidden::HiddenLayers), 1, "{case}");
+        let saved = Saved::of(&mut p);
+        let left = saved.places("RULE-SECRET");
+        assert!(
+            left.is_empty(),
+            "{case}: the hidden content is left in {left:?}"
+        );
+        saved.assert_kept(&["Visible text", "LAYER-A", "LAYER-B"]);
+    }
+    // A rule written into the content itself.
+    let mut p = make("", Dictionary::new());
+    let (a, _) = two_layers(&mut p, false);
+    let page = p.page_ids()[0];
+    let id = p.doc.get_page_contents(page)[0];
+    let content = format!(
+        "/OC << /Type /OCMD /VE [/Not {} 0 R] >> BDC BT /F1 12 Tf 30 150 Td (RULE-SECRET) Tj \
+         ET EMC BT /F1 12 Tf 30 100 Td (Visible text) Tj ET",
+        a.as_reference().unwrap().0
+    );
+    p.doc.objects.insert(
+        id,
+        Stream::new(Dictionary::new(), content.into_bytes()).into(),
+    );
+    assert_eq!(p.find_hidden().unwrap().count(Hidden::HiddenLayers), 1);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["RULE-SECRET"]);
+    saved.assert_kept(&["Visible text"]);
+}
+
+/// The control: rules that show their content with every layer shown, among them the
+/// brief's nested example. Nothing is found and nothing changes.
+#[test]
+fn layer_rules_showing_their_content_with_every_layer_shown_change_nothing() {
+    let shown: [Rule; 3] = [
+        |_, a, b| {
+            let both = ve("And", vec![a.clone(), b]);
+            dictionary! { "VE" => ve("Or", vec![ve("Not", vec![a]), both]) }
+        },
+        |_, a, b| dictionary! { "VE" => ve("Or", vec![a, b]) },
+        |_, a, b| dictionary! { "OCGs" => vec![a, b], "P" => "AllOn" },
+    ];
+    for rule in shown {
+        let (mut p, _) = ruled(false, rule);
+        assert_eq!(p.find_hidden().unwrap().count(Hidden::HiddenLayers), 0);
+        let before = p.state_before();
+        let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        assert_eq!(rep.count(Hidden::HiddenLayers), 0);
+        assert_eq!(p.state_since(&before), []);
+    }
+}
+
+/// Q4 (a): with every layer shown and every rule shown, a damaged drawing doesn't stop the
+/// removal (there is nothing to remove); with a rule that hides, it does.
+#[test]
+fn a_damaged_drawing_refuses_only_when_a_layer_rule_hides() {
+    let damaged = |hides: bool| {
+        let content = "BT /F1 12 Tf 10 20 Td (Page text) Tj ET q /Fm Do Q";
+        let (mut p, r) = ruled(
+            false,
+            |_, a, b| dictionary! { "VE" => ve("Or", vec![a, b]) },
+        );
+        let page = p.page_ids()[0];
+        let id = p.doc.get_page_contents(page)[0];
+        let content = match hides {
+            true => format!("{RULED} {content} /OC /H BDC (WALRUS) Tj EMC"),
+            false => format!("{RULED} {content}"),
+        };
+        p.doc.objects.insert(
+            id,
+            Stream::new(Dictionary::new(), content.into_bytes()).into(),
+        );
+        let broken = p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+                "Filter" => "FlateDecode",
+            },
+            b"not compressed data".to_vec(),
+        ));
+        page_res_set(&mut p, "XObject", dictionary! { "Fm" => broken }.into());
+        let mut props = dictionary! { "R" => r };
+        if hides {
+            let a = p
+                .doc
+                .get_dictionary(r)
+                .unwrap()
+                .get(b"VE")
+                .unwrap()
+                .as_array()
+                .unwrap()[1]
+                .clone();
+            let h = p
+                .doc
+                .add_object(dictionary! { "Type" => "OCMD", "VE" => ve("Not", vec![a]) });
+            props.set("H", h);
+        }
+        page_res_set(&mut p, "Properties", props.into());
+        p
+    };
+    let mut p = damaged(false);
+    let before = p.state_before();
+    assert_eq!(p.find_hidden().unwrap().count(Hidden::HiddenLayers), 0);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 0);
+    assert_eq!(p.state_since(&before), []);
+
+    let mut p = damaged(true);
+    let before = p.state_before();
+    let e = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap_err();
+    assert!(e.is::<limarepdf_core::LayersDamaged>(), "{e:#}");
+    assert_eq!(p.state_since(&before), []);
+}
+
+/// The rule `r` in `p`.
+fn rule_of(p: &Pdf, r: ObjectId) -> Dictionary {
+    p.doc.get_dictionary(r).unwrap().clone()
+}
+
+/// LAYER-A, as a reference: the first in the layer list [`two_layers`] made.
+fn layer_a(p: &Pdf) -> Object {
+    let props = p.doc.catalog().unwrap().get(b"OCProperties").unwrap();
+    let ocgs = props.as_dict().unwrap().get(b"OCGs").unwrap();
+    ocgs.as_array().unwrap()[0].clone()
+}
+
+/// Kept rules that named a removed layer are worked out again with it off for good, so the
+/// layers that stay switch the content as before, and no removed layer is named anywhere.
+#[test]
+fn kept_layer_rules_that_named_a_removed_layer_are_rewritten() {
+    // `/VE`: the one layer left.
+    let (mut p, r) = ruled(true, |_, a, b| dictionary! { "VE" => ve("Or", vec![b, a]) });
+    let a = layer_a(&p);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let rule = rule_of(&p, r);
+    assert_eq!(rule.get(b"OCGs").ok(), Some(&a), "{rule:?}");
+    assert!(!rule.has(b"VE") && !rule.has(b"P"), "{rule:?}");
+    let saved = Saved::of(&mut p);
+    saved.assert_kept(&["RULE-SECRET", "LAYER-A"]);
+    saved.assert_gone(&["LAYER-B"]);
+
+    // `/P`: each policy, the rule shown with LAYER-B off, and whether what it becomes is
+    // right, given LAYER-A.
+    type Becomes = fn(&Dictionary, &Object) -> bool;
+    let cases: [(&str, Rule, Becomes); 4] = [
+        (
+            "any on",
+            |_, a, b| dictionary! { "OCGs" => vec![a, b], "P" => "AnyOn" },
+            |d, a| d.get(b"OCGs").ok() == Some(&Object::Array(vec![a.clone()])),
+        ),
+        (
+            "all off",
+            |_, _, b| dictionary! { "OCGs" => vec![b], "P" => "AllOff" },
+            |d, _| {
+                d.get(b"OCGs")
+                    .map_or(true, |o| o.as_array().is_ok_and(|a| a.is_empty()))
+            },
+        ),
+        (
+            "any off",
+            |_, a, b| dictionary! { "OCGs" => vec![a, b], "P" => "AnyOff" },
+            |d, _| d.len() == 1 && d.has(b"Type"),
+        ),
+        (
+            "shown for good",
+            |_, a, b| dictionary! { "VE" => ve("Or", vec![a, ve("Not", vec![b])]) },
+            |d, _| d.len() == 1 && d.has(b"Type"),
+        ),
+    ];
+    for (case, rule, rewritten) in cases {
+        let (mut p, r) = ruled(true, rule);
+        let a = layer_a(&p);
+        p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        let rule = rule_of(&p, r);
+        assert!(rewritten(&rule, &a), "{case}: {rule:?}");
+        let saved = Saved::of(&mut p);
+        saved.assert_kept(&["RULE-SECRET", "Visible text"]);
+        let named = saved.places("LAYER-B");
+        assert!(
+            named.is_empty(),
+            "{case}: the removed layer is named in {named:?}"
+        );
+    }
+
+    // `/AllOn` with LAYER-B off hides: its content goes, and nothing is left using it.
+    let (mut p, _) = ruled(
+        true,
+        |_, a, b| dictionary! { "OCGs" => vec![a, b], "P" => "AllOn" },
+    );
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    Saved::of(&mut p).assert_gone(&["RULE-SECRET", "LAYER-B"]);
+}
+
+/// A stored expression two rules share is rewritten where it is: both rules still use it,
+/// and the file doesn't grow.
+#[test]
+fn a_shared_stored_expression_is_rewritten_once_in_place() {
+    let mut p = make(
+        "/OC /R1 BDC BT /F1 12 Tf 30 150 Td (RULE-ONE) Tj ET EMC \
+         /OC /R2 BDC BT /F1 12 Tf 30 120 Td (RULE-TWO) Tj ET EMC",
+        Dictionary::new(),
+    );
+    let (a, b) = two_layers(&mut p, true);
+    let mut ops = vec![b.clone(), ve("Not", vec![a.clone()])];
+    ops.extend(std::iter::repeat_n(a.clone(), 200));
+    let e = p.doc.add_object(ve("Or", ops));
+    let r1 = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCMD", "VE" => ve("And", vec![a, e.into()]) });
+    let r2 = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCMD", "VE" => ve("Or", vec![e.into(), b.clone()]) });
+    page_res_set(
+        &mut p,
+        "Properties",
+        dictionary! { "R1" => r1, "R2" => r2 }.into(),
+    );
+    let size = p.clone().to_bytes().unwrap().len();
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    let names = |o: &Object, x: &Object| -> bool {
+        fn walk(o: &Object, x: &Object) -> bool {
+            o == x || o.as_array().is_ok_and(|a| a.iter().any(|y| walk(y, x)))
+        }
+        walk(o, x)
+    };
+    let expr = p.doc.get_object(e).unwrap().clone();
+    assert!(!names(&expr, &b), "{expr:?}");
+    for r in [r1, r2] {
+        let rule = rule_of(&p, r);
+        let uses = rule.iter().any(|(_, v)| names(v, &e.into()));
+        assert!(uses, "{rule:?}");
+    }
+    let saved = Saved::of(&mut p);
+    saved.assert_kept(&["RULE-ONE", "RULE-TWO"]);
+    saved.assert_gone(&["LAYER-B"]);
+    assert!(saved.bytes.len() <= size, "{} > {size}", saved.bytes.len());
+}
+
+/// Poppler shows and hides the content of a rewritten rule by the layer left in it:
+/// `cargo test -p limarepdf-core --test sanitise -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_rewritten_and_expression_rules_with_poppler() {
+    let visible = tools::pdftoppm(
+        &make(
+            "BT /F1 12 Tf 30 100 Td (Visible text) Tj ET",
+            Dictionary::new(),
+        )
+        .to_bytes()
+        .unwrap(),
+    );
+    // `/VE` read before `/OCGs` and `/P`: kept, it shows, and looks as before.
+    let (mut p, _) = shown_by_ve_over_p();
+    let before = tools::pdftoppm(&p.to_bytes().unwrap());
+    assert!(changed(&before, &visible) > 0, "Poppler hides it");
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(
+        changed(&tools::pdftoppm(&p.to_bytes().unwrap()), &before),
+        0
+    );
+    // The rewritten rule follows LAYER-A: switched off, the content hides.
+    let (mut p, _) = ruled(true, |_, a, b| dictionary! { "VE" => ve("Or", vec![b, a]) });
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    let shown = tools::pdftoppm(&p.to_bytes().unwrap());
+    assert!(changed(&shown, &visible) > 0, "hidden with LAYER-A on");
+    let a = layer_a(&p);
+    let mut off = p.clone();
+    let props = off
+        .doc
+        .catalog_mut()
+        .unwrap()
+        .get_mut(b"OCProperties")
+        .unwrap();
+    let d = props
+        .as_dict_mut()
+        .unwrap()
+        .get_mut(b"D")
+        .unwrap()
+        .as_dict_mut()
+        .unwrap();
+    d.set("OFF", vec![a]);
+    let hidden = tools::pdftoppm(&off.to_bytes().unwrap());
+    assert_eq!(changed(&hidden, &visible), 0, "shown with LAYER-A off");
+    // Content hidden with every layer shown: Poppler doesn't show it either before.
+    for (case, rule) in HIDING_ALL_ON {
+        let (mut p, _) = ruled(false, rule);
+        let before = tools::pdftoppm(&p.to_bytes().unwrap());
+        assert_eq!(changed(&before, &visible), 0, "{case}: Poppler shows it");
+        p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        let after = tools::pdftoppm(&p.to_bytes().unwrap());
+        assert_eq!(changed(&after, &before), 0, "{case}: what shows changed");
+        assert!(!tools::pdftotext(&p.to_bytes().unwrap()).contains("RULE-SECRET"));
+    }
+}
+
+/// The side finding: a comment's drawing with a hidden layer of its own (`/OC` on its
+/// appearance form, not on the comment) goes with the layer.
+#[test]
+fn a_comment_drawing_in_a_hidden_layer_goes_with_it() {
+    let mut p = make(
+        "BT /F1 12 Tf 30 100 Td (Visible text) Tj ET",
+        Dictionary::new(),
+    );
+    let (_, b) = two_layers(&mut p, true);
+    let font = helvetica(&mut p);
+    let look = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 100, 40]), "OC" => b,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        },
+        b"BT /F1 12 Tf 5 15 Td (AP-SECRET) Tj ET".to_vec(),
+    ));
+    let annot = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Square", "Rect" => rect([20, 140, 120, 180]),
+        "AP" => dictionary! { "N" => look },
+    });
+    add_annot(&mut p, annot);
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    Saved::of(&mut p).assert_gone(&["AP-SECRET", "LAYER-B"]);
+}
+
+/// PB-85: a page cropped, with a form partly outside the crop box that the document's tag
+/// tree points at, so redaction's check finds the original may still be in the file.
+fn crop_with_a_tagged_form() -> Pdf {
+    let mut p = make(
+        "BT /F1 12 Tf 100 100 Td (Inside) Tj ET q /Fm Do Q",
+        Dictionary::new(),
+    );
+    let font = helvetica(&mut p);
+    let form = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        },
+        b"BT /F1 6 Tf 2 100 Td (OutZebra) Tj ET BT /F1 12 Tf 100 60 Td (Kept) Tj ET".to_vec(),
+    ));
+    page_res_set(&mut p, "XObject", dictionary! { "Fm" => form }.into());
+    p.crop_page(0, [50.0, 20.0, 250.0, 180.0]).unwrap();
+    // As tests/redact.rs's `tag_tree_pointing_at`.
+    let page = p.page_ids()[0];
+    let root = p.doc.new_object_id();
+    let mcr = dictionary! { "Type" => "MCR", "Pg" => page, "Stm" => form, "MCID" => 0 };
+    let elem = p.doc.add_object(dictionary! {
+        "Type" => "StructElem", "S" => "P", "P" => root, "Pg" => page,
+        "K" => vec![Object::Dictionary(mcr)],
+    });
+    p.doc.objects.insert(
+        root,
+        dictionary! { "Type" => "StructTreeRoot", "K" => elem }.into(),
+    );
+    let c = p.doc.catalog_mut().unwrap();
+    c.set("StructTreeRoot", root);
+    c.set("MarkInfo", dictionary! { "Marked" => true });
+    p
+}
+
+#[test]
+fn content_outside_the_crop_box_that_redaction_leaves_is_refused() {
+    let why = "Content outside the visible page area can't be removed for certain: the check \
+               after redacting found removed content may still be in the file, through the tag \
+               tree. Nothing was changed; leave out content outside the visible page area to \
+               remove the rest.";
+    for what in [
+        &[Hidden::OutsideCrop][..],
+        &[Hidden::Metadata, Hidden::OutsideCrop],
+    ] {
+        let mut p = crop_with_a_tagged_form();
+        p.set_info(&Info {
+            title: Some("Walrus title".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let before = p.state_before();
+        // Finding counts the page, so it can be chosen; removing then says why it stops.
+        let found = p.find_hidden().unwrap();
+        assert_eq!(found.count(Hidden::OutsideCrop), 1, "{what:?}");
+        let e = p.remove_hidden(what).unwrap_err();
+        assert!(format!("{e:#}").contains(why), "{what:?}: {e:#}");
+        assert_eq!(p.state_since(&before), [], "{what:?}");
+    }
+}
+
+/// When redaction warns that an original picture it cut is still drawn, unchanged, elsewhere
+/// on the page, the removal says so too.
+#[test]
+fn a_picture_cut_outside_the_crop_box_and_still_drawn_inside_it_is_reported() {
+    let mut p = make(
+        "q 40 0 0 40 5 100 cm /Im1 Do Q q 1 0 0 1 110 100 cm /B Do Q",
+        Dictionary::new(),
+    );
+    let im = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+        vec![255],
+    ));
+    let b = p.doc.add_object(Stream::new(
+        dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 50, 50]) },
+        b"q 50 0 0 50 0 0 cm /Im1 Do Q".to_vec(),
+    ));
+    page_res_set(
+        &mut p,
+        "XObject",
+        dictionary! { "Im1" => im, "B" => b }.into(),
+    );
+    p.crop_page(0, [50.0, 20.0, 250.0, 180.0]).unwrap();
+    let rep = p.remove_hidden(&[Hidden::OutsideCrop]).unwrap();
+    assert_eq!(rep.count(Hidden::OutsideCrop), 1);
+    assert_eq!(rep.pictures_elsewhere, [0]);
+    assert_eq!(
+        rep.notes(),
+        [
+            "An original picture affected by redaction is still drawn elsewhere on page 1 and may \
+             retain the removed content."
+        ]
+    );
 }

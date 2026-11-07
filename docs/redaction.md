@@ -154,28 +154,34 @@ What is ticked at first:
   XML metadata in the document and in pictures and other parts.
 - **JavaScript and actions that run by themselves:** document scripts, actions run on opening, closing, saving or
   printing, form field scripts (formatting, checking, calculating), and actions that launch programs, send form data,
-  import data or open attached files, wherever they are: also when they follow an ordinary action (a link that
-  opens a web page and then runs a script loses only the script). Ordinary links to pages and web addresses stay.
-  A form with both XFA and ordinary fields loses its XFA part (it holds scripts); a form made only for Adobe Reader
-  (XFA only) keeps it.
+  import data or open attached files, wherever they are: also when they follow an ordinary action, in a list
+  written into it or stored apart (a link that opens a web page and then runs a script loses only the script).
+  Ordinary links to pages and web addresses stay. A form with both XFA and ordinary fields loses its XFA part (it
+  holds scripts); a form made only for Adobe Reader (XFA only) keeps it.
 - **Attached files:** files attached to the document or to comments.
-- **Hidden layers and their content:** the content of layers that are switched off is deleted, wherever it is
-  drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments' and fields' drawings, in patterns,
-  soft masks and Type 3 fonts. A picture only a hidden layer drew is left out of the saved file, also when it was
-  listed by a form inside a form. Those layers leave the layer list; layers that are shown stay. What shows doesn't
-  change: a colour, position or clip a hidden layer sets still applies to what is drawn after it, and hidden text
-  is replaced by a gap as wide, so text after it on the line stays where it was. If some drawing can't be read,
-  or is nested deeper, LimarePDF can't tell whether it holds hidden content, so the command stops with a message
-  saying what, and changes nothing. It stops in the same way for a drawing without resources of its own that is
-  used in places giving its layers or fonts different meanings (hidden in one, shown in another), as its hidden
-  content can't be taken out of one place only; and where removing hidden content would change what shows:
-  hidden text that clips what comes after it, hidden text whose width LimarePDF can't work out (its font is set
-  where the drawing is used) with visible text after it on the same line, or a shape begun in a hidden layer and
-  painted outside it, or when the document's drawings are too complex to follow (as for redaction). Leave hidden
-  layers out to remove the rest. Compressed data is
-  checked to its end: if it is cut off or damaged part way, the command stops in the same way ("Part of this
-  document is damaged..."). Data that is complete but whose checksum at the end is wrong is read in full, as other
-  PDF readers read it, and the result says so.
+- **Hidden layers and their content:** the content of layers that are switched off is deleted, and so is content
+  a layer rule hides, wherever it is drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments'
+  and fields' drawings, in patterns, soft masks and Type 3 fonts. A layer rule combines layers ("shown when layer A
+  is on and layer B is off"), and rules can sit inside rules; LimarePDF reads them as other PDF readers do, so
+  what a rule hides goes even when every layer it names is on. A picture only hidden content drew is left out of
+  the saved file, also when it was listed by a form inside a form. Layers that are off leave the layer list;
+  layers that are shown stay. A rule that stays but named a removed layer is rewritten without it, so switching
+  the layers that stay still shows and hides what it did. What shows doesn't change: a colour, position or clip
+  hidden content sets still applies to what is drawn after it, and hidden text is replaced by a gap as wide, so
+  text after it on the line stays where it was. The number shown is the layers switched off plus the rules that
+  hide content though every layer they name is on. If some drawing or layer rule can't be read (a rule with an
+  operator LimarePDF doesn't know, or containing itself), or is nested deeper, LimarePDF can't tell whether it
+  holds hidden content, so the command stops with a message saying what, and changes nothing; a rule that can't
+  be read counts in the number, so Remove can say why. It stops in the same way for a drawing without resources
+  of its own that is used in places giving its layers or fonts different meanings (hidden in one, shown in
+  another), as its hidden content can't be taken out of one place only; and where removing hidden content would
+  change what shows: hidden text that clips what comes after it, hidden text whose width LimarePDF can't work out
+  (its font is set where the drawing is used) with visible text after it on the same line, or a shape begun in a
+  hidden layer and painted outside it, or when the document's drawings are too complex to follow (as for
+  redaction). Leave hidden layers out to remove the rest. Compressed data is checked to its end: if it is cut off
+  or damaged part way, the command stops in the same way ("Part of this document is damaged..."). Data that is
+  complete but whose checksum at the end is wrong is read in full, as other PDF readers read it, and the result
+  says so.
 - **Thumbnails and private application data:** page thumbnail pictures, data programs keep for themselves (such
   as Illustrator's, and LimarePDF's note of the paragraphs whose edges or alignment you set, with the date the
   page was last changed), and web capture information. Afterwards those paragraphs' edges are worked out from
@@ -194,7 +200,11 @@ Not ticked at first, as they are often wanted:
   values out to remove the rest.
 - **Bookmarks.**
 - **Content outside the visible page area:** what lies outside each page's crop box is redacted and the page becomes
-  the size it is shown at.
+  the size it is shown at. If redaction's check afterwards finds something it couldn't remove for certain (such
+  as a drawing the document's tag tree still points at), the command stops with a message saying what, and
+  changes nothing; leave content outside the visible page area out to remove the rest. The pages are still
+  counted in the list, since the check is made only when removing. When a picture that was
+  cut is still drawn, unchanged, elsewhere on the page, the summary says so, as for redaction.
 
 Nothing else is kept: saving rewrites the whole file, leaving out everything no longer used, and earlier versions
 of the file aren't kept in it.
@@ -220,7 +230,12 @@ of the file aren't kept in it.
   command, even where other readers would show what comes before the damage, since what follows it can't be
   checked. A file with such damage can have its other kinds of hidden information removed with hidden layers left
   out. Data in the older compressions (LZW, run length) is checked only as far as lopdf reads it: if it decodes to
-  nothing it stops the command.
+  nothing it stops the command. In a file with layers where nothing is hidden (no layer is off, and no rule
+  LimarePDF can read hides anything), a damaged drawing doesn't stop it, as there's nothing to remove; a layer
+  rule written inside that damaged drawing would be missed.
+- Removing hidden layers stops, changing nothing, at a layer rule nested more than 32 deep, or when checking the
+  document's rules would take more than about a million steps (each layer named and each and, or and not is a
+  step; a rule used in many places is checked once).
 
 ## How this was tested
 
