@@ -1379,6 +1379,9 @@ mod tests {
     }
 
     const SELF_MADE: &str = "node-signpdf/signed.pdf";
+    /// Alice's signature, with an embedded timestamp from an authority under "Root CA", then
+    /// a document timestamp.
+    const LTA: &str = "pyhanko/pades-lta-dss-indirect-arrs-test.pdf";
 
     #[test]
     fn unknown_signer_is_caution() {
@@ -1601,10 +1604,13 @@ mod tests {
     }
 
     /// PB-116: the certificate authorities a signature's timestamp carries can be trusted
-    /// from Details too, and trusting the one above the timestamp authority trusts it.
+    /// from Details too, and trusting the one above the timestamp authority trusts it. The
+    /// signature's own certificates are left out, so only its timestamp offers authorities.
     #[test]
     fn authorities_from_a_timestamp_can_be_trusted() {
-        let mut r = report("dss/Signature-P-PK7-2.pdf", &TrustList::default());
+        let mut r = report(LTA, &TrustList::default());
+        r.signatures[0].certificates.clear();
+        assert!(r.signatures[0].timestamp.is_some());
         let c = Checked {
             report: r.clone(),
             trust: TrustStatus::default(),
@@ -1617,7 +1623,7 @@ mod tests {
             ("Trust a certificate authority", TrustRole::Authority)
         );
         let names: Vec<_> = ask.choices.iter().map(CertInfo::display_name).collect();
-        assert_eq!(names, ["RootCAOK"]);
+        assert_eq!(names, ["Root CA", "Intermediate CA"]);
         let mut list = TrustList::default();
         list.add(&ask.cert().unwrap().der, ask.role, None).unwrap();
         r.apply_trust(&list);
@@ -1915,7 +1921,7 @@ mod tests {
             trust: TrustStatus::default(),
         };
         let stamped = Checked {
-            report: report("dss/Signature-P-PK7-2.pdf", &TrustList::default()),
+            report: report(LTA, &TrustList::default()),
             trust: TrustStatus::default(),
         };
         let s = &stamped.report.signatures[0];

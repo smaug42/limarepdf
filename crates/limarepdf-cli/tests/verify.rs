@@ -284,20 +284,37 @@ fn trusting_a_timestamp_authority_needs_one() {
     }
 }
 
-/// PB-116: `trust add --authority` chooses from the certificate authorities a signature's
-/// timestamp carries too; trusting the one that issued the timestamp authority's
-/// certificate trusts the timestamp.
+/// PB-116: `trust add --authority` lists the certificate authorities a signature and its
+/// timestamp carry, and trusting the one that issued the timestamp authority's certificate
+/// trusts the timestamp. The signature here carries them too: that those only its timestamp
+/// carries are offered is tested in limarepdf-core (signature_trust.rs) and the app.
 #[test]
-fn an_authority_carried_by_a_timestamp_can_be_trusted() {
+fn trusting_the_authority_above_a_timestamp_trusts_it() {
     let (dir, _) = setup("trust-timestamp-authority");
-    sample_in(&dir, "dss/Signature-P-PK7-2.pdf", "pk7.pdf");
-    let (code, said, err) = cli(&dir, "trust add pk7.pdf --authority");
+    sample_in(
+        &dir,
+        "pyhanko/pades-lta-dss-indirect-arrs-test.pdf",
+        "lta.pdf",
+    );
+    let before = std::fs::read(dir.join("trust.txt")).unwrap();
+    let (code, _, err) = cli(&dir, "trust add lta.pdf --signature 1 --authority");
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("there are 2 to choose from"), "{err}");
+    assert!(err.contains("  1. CN=Root CA,"), "{err}");
+    assert!(err.contains("  2. CN=Intermediate CA,"), "{err}");
+    unchanged(&dir.join("trust.txt"), &before);
+    let (_, text, err) = cli(&dir, "verify lta.pdf");
+    assert!(text.contains("(from the signer's computer)"), "{text}{err}");
+    let (code, said, err) = cli(&dir, "trust add lta.pdf --signature 1 --authority --pick 1");
     assert_eq!(code, Some(0), "{err}");
     assert!(
-        said.contains("Now trusting \"RootCAOK\" as a certificate authority."),
+        said.contains("Now trusting \"Root CA\" as a certificate authority."),
         "{said}"
     );
-    let (_, text, err) = cli(&dir, "verify pk7.pdf");
-    assert!(text.contains("by TSA (trusted)"), "{text}{err}");
+    let (_, text, err) = cli(&dir, "verify lta.pdf");
+    assert!(
+        text.contains("by Time Stamping Authority (trusted)"),
+        "{text}{err}"
+    );
     assert!(text.contains("(from a timestamp authority)"), "{text}");
 }
