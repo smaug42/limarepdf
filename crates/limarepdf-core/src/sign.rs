@@ -985,7 +985,8 @@ impl Pdf {
         }
         let mut drawn = 0;
         for page in self.page_ids() {
-            drawn += self.flatten_page(page, which, None, "LimareSign", &mut HashSet::new())?;
+            drawn +=
+                self.flatten_page(page, which, None, "LimareSign", &mut HashSet::new(), None)?;
         }
         Ok(drawn)
     }

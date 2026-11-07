@@ -87,6 +87,20 @@
   started running with its output open: at the limit (10 seconds for a question to CUPS, 2 minutes for a job) that
   is stopped with everything else the program started, and a job is reported as it was before, as possibly sent.
   An answer from CUPS longer than 16 MB is refused as too long rather than read whole.
+- Flatten annotations no longer removes, without drawing it, an annotation it can't draw: one whose drawing has no
+  size or no place on the page, or one without a drawing that LimarePDF can't make one for. It is left as it was,
+  with its pop-up and replies, and the notice says how many were left and on which pages ("Flattened the
+  annotations, except 2 that LimarePDF can't draw, on pages 3 and 7. They were left as they were.");
+  `limarepdf-cli annot flatten` says so on a `warning:` line and still writes the file.
+- On a page with more than 10,000 annotations, those past the 10,000th that the file stores without a drawing are
+  now drawn by flattening, printing, the page pictures and exported images, as the others are. Before, flattening
+  removed them without drawing them, and printing and the pictures left them out; a text box among them whose
+  text LimarePDF can't write is now refused, naming its page, as one among the first 10,000 is.
+- Flatten form now draws every field, also in a form with more than 10,000 fields, where the ones past the
+  10,000th were removed with their values; it refuses, naming them, those it can't draw, as it does the others.
+  Printing draws them too, and asks about them as about the others. A form whose fields are nested more than 32
+  levels deep, which LimarePDF can't follow to the end, is refused with nothing changed, rather than flattened
+  with the deeper fields lost.
 
 ## [0.13.0] - 2026-11-03
 

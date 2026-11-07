@@ -502,7 +502,7 @@ fn flattening_keeps_the_look_and_removes_the_annotations() {
         dictionary! {},
     );
     let before = ink(&mut p, [0, 0, 300, 200]);
-    assert_eq!(p.flatten_annotations(None).unwrap(), 2);
+    assert_eq!(p.flatten_annotations(None).unwrap().drawn, 2);
     let left = p.annotations();
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].kind, AnnotKind::Other("FileAttachment".into()));
@@ -537,7 +537,7 @@ fn flattening_some_pages_leaves_the_others() {
         [50.0, 50.0, 150.0, 150.0],
         dictionary! {},
     );
-    assert_eq!(p.flatten_annotations(Some(&[1])).unwrap(), 1);
+    assert_eq!(p.flatten_annotations(Some(&[1])).unwrap().drawn, 1);
     let left = p.annotations();
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].page, 0);
@@ -768,7 +768,7 @@ fn a_text_box_reads_upright_on_a_turned_page() {
     assert!(ink(&mut p, [10, 100, 90, 140]).1 > 50);
     assert!(ink(&mut p, [100, 100, 180, 140]).1 > 50);
     let before = ink(&mut p, [10, 100, 190, 140]);
-    assert_eq!(p.flatten_annotations(None).unwrap(), 1);
+    assert_eq!(p.flatten_annotations(None).unwrap().drawn, 1);
     assert!(p.annotations().is_empty());
     assert_eq!(ink(&mut p, [10, 100, 190, 140]), before);
 }
@@ -1210,7 +1210,7 @@ fn a_stamp_is_centred_where_clicked_and_survives_flattening() {
     assert!(before.0 > 100, "the stamp is drawn");
     let bytes = p.to_bytes().unwrap();
     let mut p = Pdf::from_bytes(&bytes, None).unwrap();
-    assert_eq!(p.flatten_annotations(None).unwrap(), 1);
+    assert_eq!(p.flatten_annotations(None).unwrap().drawn, 1);
     assert_eq!(ink(&mut p, [0, 0, 300, 200]), before);
 }
 
@@ -1338,7 +1338,7 @@ fn a_typed_signature_is_drawn_as_shapes_labelled_and_survives_flattening() {
     let bytes = p.to_bytes().unwrap();
     let mut p = Pdf::from_bytes(&bytes, None).unwrap();
     assert_eq!(p.annotations()[0].label(), "Signature");
-    assert_eq!(p.flatten_annotations(None).unwrap(), 1);
+    assert_eq!(p.flatten_annotations(None).unwrap().drawn, 1);
     assert_eq!(ink(&mut p, [0, 0, 300, 200]), before);
 }
 

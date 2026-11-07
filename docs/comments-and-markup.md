@@ -171,7 +171,10 @@ empty to save no name.
 now and removes them, so they are no longer comments in any reader: they can't be changed or removed as comments.
 Their comment text is dropped. What was drawn is page content, so content editing can still move, resize or delete
 each as a whole ([Move, resize or delete](content-editing.md#move-resize-or-delete)). Links and form fields stay,
-and so do file attachments. Undo brings them back until you close the document.
+and so do file attachments. An annotation LimarePDF can't draw is left as it was, with its pop-up and replies,
+rather than lost: one whose drawing has no size or no place on the page, or one without a drawing that LimarePDF
+can't make one for (freehand drawing without its strokes, for example). The notice afterwards says how many were
+left and on which pages. Undo brings them back until you close the document.
 
 ## How comments are drawn
 
@@ -186,7 +189,8 @@ shows them as `?` when LimarePDF draws it, so flattening refuses one without a d
 page, and a text box with its own drawing keeps it: a new colour, style, size or text for it is refused ([Troubleshooting](troubleshooting.md#limarepdf-cant-draw-this-text-box-again)). [Rendering](rendering.md#known-to-be-wrong) lists what isn't
 reproduced.
 
-The app shows up to 10,000 annotations on a page, with a notice on a page that has more.
+The app shows up to 10,000 annotations on a page, with a notice on a page that has more. Flattening and printing
+draw all of them.
 
 ## From the command line
 

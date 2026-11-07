@@ -93,7 +93,7 @@ mod typefaces;
 mod unfillable;
 mod viewprefs;
 
-pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle, MAX_ANNOTS};
+pub use annots::{Annot, AnnotKind, Flattened, ShapeLook, TextStyle, MAX_ANNOTS};
 #[cfg(any(test, feature = "test-seams"))]
 pub use atomic::sync_seam;
 pub use atomic::NotConfirmed;

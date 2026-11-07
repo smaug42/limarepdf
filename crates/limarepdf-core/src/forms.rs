@@ -138,6 +138,16 @@ pub(crate) struct Node {
     pub opt: Vec<(String, String)>,
 }
 
+/// How much of the field tree a walk takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Reach {
+    /// The fields LimarePDF lists: the first [`MAX_FIELDS`].
+    Listed,
+    /// Every field: for flattening and printing, where a field left out loses its value
+    /// (PB-90).
+    Every,
+}
+
 /// State kept while walking the field tree.
 struct Walk {
     /// Each annotation's page, from the pages' `/Annots`.
@@ -146,6 +156,10 @@ struct Walk {
     to_vis: HashMap<usize, Option<M>>,
     seen: HashSet<ObjectId>,
     out: Vec<(Field, Node)>,
+    /// How many fields the walk takes.
+    limit: usize,
+    /// Whether a field was left out for being nested more than [`MAX_DEPTH`] deep.
+    too_deep: bool,
 }
 
 impl Pdf {
@@ -191,10 +205,16 @@ impl Pdf {
             .collect()
     }
 
-    /// The fields with where each is in the file.
+    /// The fields with where each is in the file: those LimarePDF lists.
     pub(crate) fn form_nodes(&self) -> Vec<(Field, Node)> {
+        self.field_nodes(Reach::Listed).0
+    }
+
+    /// The fields with where each is in the file, as far as `reach` goes, and whether some
+    /// were left out for being nested more than [`MAX_DEPTH`] deep.
+    pub(crate) fn field_nodes(&self, reach: Reach) -> (Vec<(Field, Node)>, bool) {
         let Some(form) = self.acro_form() else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let top = Inherited {
             da: form.get(b"DA").ok().and_then(|o| self.string_bytes(o)),
@@ -207,20 +227,25 @@ impl Pdf {
             .and_then(|o| self.doc.dereference(o).ok())
             .and_then(|(_, o)| o.as_array().ok())
         else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let mut walk = Walk {
             pages: self.annot_pages(),
             to_vis: HashMap::new(),
             seen: HashSet::new(),
             out: Vec::new(),
+            limit: match reach {
+                Reach::Listed => MAX_FIELDS,
+                Reach::Every => usize::MAX,
+            },
+            too_deep: false,
         };
         for f in fields {
             if let Ok(id) = f.as_reference() {
                 self.walk_field(id, "", &top, 0, &mut walk);
             }
         }
-        walk.out
+        (walk.out, walk.too_deep)
     }
 
     /// Every node of the field tree, fields and widgets, each once, with whether it belongs to
@@ -327,7 +352,11 @@ impl Pdf {
     }
 
     fn walk_field(&self, id: ObjectId, parent: &str, inh: &Inherited, depth: usize, w: &mut Walk) {
-        if depth > MAX_DEPTH || w.out.len() >= MAX_FIELDS || !w.seen.insert(id) {
+        if depth > MAX_DEPTH {
+            w.too_deep |= self.doc.get_dictionary(id).is_ok();
+            return;
+        }
+        if w.out.len() >= w.limit || !w.seen.insert(id) {
             return;
         }
         let Ok(d) = self.doc.get_dictionary(id) else {

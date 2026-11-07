@@ -845,7 +845,7 @@ fn another_apps_text_box_is_never_redrawn_with_question_marks() {
     // One whose text it can write is drawn, and flattened, as before.
     let mut p = page();
     their_text_box(&mut p, "Łódź notes", [20, 200, 200, 240], false);
-    assert_eq!(p.flatten_annotations(None).unwrap(), 1);
+    assert_eq!(p.flatten_annotations(None).unwrap().drawn, 1);
     assert!(reopened(&mut p).page_text(0).contains("Łódź notes"));
 }
 

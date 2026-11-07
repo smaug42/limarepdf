@@ -16,6 +16,16 @@ use std::collections::HashSet;
 /// file from running away. Removing information reads them all.
 pub const MAX_ANNOTS: usize = 10_000;
 
+/// What [`Pdf::flatten_annotations`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Flattened {
+    /// How many annotations were drawn into the pages.
+    pub drawn: usize,
+    /// The page (zero-based) of each annotation left as it was because LimarePDF can't
+    /// draw it, in page order.
+    pub kept: Vec<usize>,
+}
+
 /// Annotation flags (`/F`).
 const HIDDEN: i64 = 1 << 1;
 pub(crate) const NO_VIEW: i64 = 1 << 5;
@@ -420,10 +430,13 @@ impl Pdf {
     /// which content editing can still move or delete). `pages` (zero-based) limits this
     /// to some pages. Links, form fields, file attachments, media and redaction marks are kept;
     /// replies and popups go without being drawn, as do hidden annotations. Annotations
-    /// without a drawing get LimarePDF's first. Returns how many were drawn. Refused, with
-    /// nothing changed, when one of those is a text box whose text its font can't write
-    /// ([`Pdf::box_unwritable`]), rather than draw `?` into the page for good (BUG-39).
-    pub fn flatten_annotations(&mut self, pages: Option<&[usize]>) -> Result<usize> {
+    /// without a drawing get LimarePDF's first. Every annotation is flattened, past the
+    /// 10,000 a page shows too. One LimarePDF can't draw (no `/Rect`, or no drawing it can
+    /// place or make) is left as it was, with its popup and replies, and counted in
+    /// [`Flattened::kept`] (S1-05). Refused, with nothing changed, when one to draw is a
+    /// text box whose text its font can't write ([`Pdf::box_unwritable`]), rather than draw
+    /// `?` into the page for good (BUG-39).
+    pub fn flatten_annotations(&mut self, pages: Option<&[usize]>) -> Result<Flattened> {
         let ids = self.page_ids();
         let pages = self.page_list(pages)?;
         let on: Vec<ObjectId> = pages.iter().map(|&i| ids[i]).collect();
@@ -448,20 +461,30 @@ impl Pdf {
             })
             .collect();
         self.draw_annotations(&missing);
-        let mut drawn = 0;
-        for page in on {
-            drawn +=
-                self.flatten_page(page, flat_annot, None, "LimareAnnot", &mut HashSet::new())?;
+        let mut done = Flattened::default();
+        for (&i, page) in pages.iter().zip(on) {
+            let mut unplaced = Vec::new();
+            let removed = &mut HashSet::new();
+            done.drawn += self.flatten_page(
+                page,
+                flat_annot,
+                None,
+                "LimareAnnot",
+                removed,
+                Some(&mut unplaced),
+            )?;
+            done.kept.extend(std::iter::repeat_n(i, unplaced.len()));
         }
-        Ok(drawn)
+        Ok(done)
     }
 
     /// The annotations on `pages` that LimarePDF can draw and that have no drawing of their own
-    /// (no `/AP /N`). Hidden ones and replies are left out.
+    /// (no `/AP /N`), past the 10,000 a page shows too (H-06). Hidden ones and replies are
+    /// left out.
     pub(crate) fn missing_appearances(&self, pages: &[ObjectId]) -> Vec<ObjectId> {
         let mut out = Vec::new();
         for &page in pages {
-            for id in self.annot_refs(page) {
+            for id in self.all_annot_refs(page) {
                 let Ok(d) = self.doc.get_dictionary(id) else {
                     continue;
                 };
