@@ -525,7 +525,18 @@ impl Pdf {
     /// as it was. A symbolic link is followed, and an existing file keeps its permissions;
     /// while it is written, the temporary file is readable only by this user (on Unix).
     pub fn save(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        crate::atomic::replace(path.as_ref(), crate::atomic::Access::Keep, |w| {
+        self.save_expecting(path, None)
+    }
+
+    /// [`Pdf::save`], over a file expected to be as `expect` found it: when something else
+    /// changed it while this was written, it isn't replaced, and the error is a
+    /// [`ChangedOnDisk`](crate::ChangedOnDisk).
+    pub fn save_expecting(
+        &mut self,
+        path: impl AsRef<Path>,
+        expect: Option<&crate::disk::Version>,
+    ) -> Result<()> {
+        crate::atomic::replace(path.as_ref(), crate::atomic::Access::Keep, expect, |w| {
             self.write_to(w)
         })
     }
@@ -1289,7 +1300,17 @@ pub(crate) fn decode_shown_text(b: &[u8]) -> String {
 /// Writes `bytes` (such as a signed document) to `path` the way [`Pdf::save`] does: whole
 /// or not at all.
 pub fn write_file(path: impl AsRef<Path>, bytes: &[u8]) -> Result<()> {
-    crate::atomic::replace(path.as_ref(), crate::atomic::Access::Keep, |w| {
+    write_file_expecting(path, bytes, None)
+}
+
+/// [`write_file`], over a file expected to be as `expect` found it, as
+/// [`Pdf::save_expecting`].
+pub fn write_file_expecting(
+    path: impl AsRef<Path>,
+    bytes: &[u8],
+    expect: Option<&crate::disk::Version>,
+) -> Result<()> {
+    crate::atomic::replace(path.as_ref(), crate::atomic::Access::Keep, expect, |w| {
         Ok(w.write_all(bytes)?)
     })
 }

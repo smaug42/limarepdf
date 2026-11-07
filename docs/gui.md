@@ -228,6 +228,16 @@ Quitting with one document unsaved asks about it the same way. With several, it 
 about each in turn, or **Discard all**, which quits. Nothing closes until LimarePDF quits: cancelling part way, or
 a save that fails, leaves every document open, the ones already saved saved and the rest with their changes.
 
+Quitting also waits for files still being written: splitting into files, exporting pages as images, saving
+pictures, printing and signing. Meanwhile the status bar says what it is waiting for, such as **Quitting when
+Split into files finishes…**. Each one's message shows when it ends, saying what it wrote or what went wrong, and
+quitting goes on once you close it. If a task that only changes the document is still running (recognising text,
+optimising scanned pages, removing blank pages, reducing file size or Replace all), quitting asks first: **Quit
+now** stops it, and its result is lost, while **Cancel** keeps LimarePDF open.
+
+If you close a document while one of these tasks is running for it, its message still shows when it ends, naming
+the document. For a task that changes the document, the message says its result was discarded.
+
 Closing a tab behind the one you are reading leaves you where you are, also when it asks about unsaved changes
 first; closing the tab in front takes you to the next one, or the one before when it was the last.
 
@@ -273,13 +283,16 @@ why. A digitally signed document can't be reduced: its saves keep exactly what w
 The file is written in the background: while it is, the status bar shows **Saving** with the file's name, and you
 can go on reading and editing. A change made meanwhile isn't in the saved file, so the document stays marked
 unsaved. Saving it again, closing it or quitting waits for the save to finish, and Reload and signing it are
-available again once it has.
+available again once it has. If the save fails, a Save chosen again meanwhile isn't done either, and the message
+says so.
 
 A file is open in one tab at a time: opening it again, by any path or link to it, brings its tab to the front.
 Before saving over the file, LimarePDF checks it still holds what LimarePDF last read or saved there. If another
 app (or another LimarePDF window) changed it since, Save asks first: **Save as…** writes your version to a new
 file and keeps theirs, **Replace** puts your version in its place, and Cancel keeps both the file and your
-changes. Save As, saving selected text, exporting text or images, saving pictures, splitting and signing don't
+changes. It checks once more just before the file is replaced, so a change made while it is being saved isn't
+written over either: Save asks the same question. Signing over the file says so in the signing window instead.
+Save As, saving selected text, exporting text or images, saving pictures, splitting and signing don't
 write over a file that is open in another tab: close that tab first, or choose another name. Nor do they write a
 file LimarePDF is still saving or writing from another tab, by any name for it (in capitals too): wait until it
 is done, or choose another name.

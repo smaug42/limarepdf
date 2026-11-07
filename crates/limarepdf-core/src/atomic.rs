@@ -52,12 +52,40 @@ impl std::fmt::Display for NotConfirmed {
 
 impl std::error::Error for NotConfirmed {}
 
+/// A file wasn't replaced: another app (or tab) changed it while the new contents were being
+/// written, so it no longer held what the caller expected (PB-99). Nothing was renamed and the
+/// temporary file is removed: the file is as the other app left it.
+#[derive(Debug)]
+pub struct ChangedOnDisk {
+    pub path: PathBuf,
+    /// The file as it now is.
+    pub now: crate::disk::Version,
+}
+
+impl std::fmt::Display for ChangedOnDisk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = self.path.file_name().unwrap_or(self.path.as_os_str());
+        write!(
+            f,
+            "\"{}\" was changed by another app while it was being saved, so it wasn't replaced",
+            name.to_string_lossy()
+        )
+    }
+}
+
+impl std::error::Error for ChangedOnDisk {}
+
 /// Writes a file through `write` to a temporary file beside `path`, then renames it over
 /// `path` and syncs the folder. On failure only the temporary file this call created is
 /// removed. When only the folder sync fails, the error is a [`NotConfirmed`].
+///
+/// With `expect`, the file at `path` is compared with it just before the rename: when it
+/// holds anything else, nothing is renamed and the error is a [`ChangedOnDisk`]. A file gone
+/// or unreadable then is replaced, as the app's stale check treats one.
 pub(crate) fn replace(
     path: &Path,
     access: Access,
+    expect: Option<&crate::disk::Version>,
     write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
 ) -> Result<()> {
     let path = match access {
@@ -89,6 +117,19 @@ pub(crate) fn replace(
             f.set_permissions(p)?;
         }
         drop(f);
+        #[cfg(any(test, feature = "test-seams"))]
+        commit_seam::wait(&path);
+        // Checked as late as possible: a change after this, before the rename, is still
+        // replaced (there is no locking).
+        if let Some(known) = expect {
+            if let Ok(crate::disk::OnDisk::Changed(now)) = crate::disk::compare(&path, known) {
+                return Err(ChangedOnDisk {
+                    path: path.clone(),
+                    now,
+                }
+                .into());
+            }
+        }
         std::fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
     })();
@@ -150,6 +191,122 @@ pub mod sync_seam {
             .iter()
             .chain(named.as_ref())
             .any(|d| folder.starts_with(d))
+    }
+}
+
+/// A test seam (PB-99): replacing a file in a folder a test holds stops on any thread just
+/// before the file is checked and renamed over, and waits there until the test lets it go,
+/// so the test can change the file from outside at that moment. Built only for tests, as
+/// [`sync_seam`] is.
+#[cfg(any(test, feature = "test-seams"))]
+pub mod commit_seam {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+    use std::time::Duration;
+
+    /// How long a test waits for a replacement to arrive before it fails.
+    const PATIENCE: Duration = Duration::from_secs(60);
+
+    #[derive(Default)]
+    struct State {
+        /// Files whose replacement waits at the boundary, not yet taken by [`Hold::arrived`].
+        arrived: Vec<PathBuf>,
+        /// Releases given and not yet used.
+        released: usize,
+        /// The hold was dropped: every replacement goes on.
+        ended: bool,
+    }
+
+    #[derive(Default)]
+    struct Gate {
+        state: Mutex<State>,
+        changed: Condvar,
+    }
+
+    impl Gate {
+        fn lock(&self) -> MutexGuard<'_, State> {
+            self.state.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    }
+
+    static HOLDS: Mutex<Vec<(PathBuf, Arc<Gate>)>> = Mutex::new(Vec::new());
+
+    fn holds() -> MutexGuard<'static, Vec<(PathBuf, Arc<Gate>)>> {
+        HOLDS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn canonical(dir: &Path) -> PathBuf {
+        std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
+    }
+
+    /// Replacements of files in one folder, held until released one at a time. Dropping it
+    /// lets every one go.
+    pub struct Hold {
+        dir: PathBuf,
+        gate: Arc<Gate>,
+    }
+
+    /// From now on, each replacement of a file directly in `dir` waits at the boundary for a
+    /// [`Hold::release`].
+    pub fn hold(dir: &Path) -> Hold {
+        let dir = canonical(dir);
+        let gate = Arc::new(Gate::default());
+        holds().push((dir.clone(), gate.clone()));
+        Hold { dir, gate }
+    }
+
+    impl Hold {
+        /// Waits until a replacement arrives at the boundary, and returns the file it is to
+        /// replace. Panics when none arrives within a minute.
+        pub fn arrived(&self) -> PathBuf {
+            let mut s = self.gate.lock();
+            while s.arrived.is_empty() {
+                let (g, wait) = self
+                    .gate
+                    .changed
+                    .wait_timeout(s, PATIENCE)
+                    .unwrap_or_else(|e| e.into_inner());
+                s = g;
+                assert!(
+                    !wait.timed_out() || !s.arrived.is_empty(),
+                    "no replacement arrived in {}",
+                    self.dir.display()
+                );
+            }
+            s.arrived.remove(0)
+        }
+
+        /// Lets one held replacement go on (the next to arrive, when none waits yet).
+        pub fn release(&self) {
+            self.gate.lock().released += 1;
+            self.gate.changed.notify_all();
+        }
+    }
+
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            holds().retain(|(_, g)| !Arc::ptr_eq(g, &self.gate));
+            self.gate.lock().ended = true;
+            self.gate.changed.notify_all();
+        }
+    }
+
+    /// Called just before the file `path` is checked and replaced: waits there while a test
+    /// holds its folder.
+    pub(super) fn wait(path: &Path) {
+        let folder = canonical(path.parent().unwrap_or(Path::new(".")));
+        let gate = holds()
+            .iter()
+            .find(|(d, _)| *d == folder)
+            .map(|(_, g)| g.clone());
+        let Some(gate) = gate else { return };
+        let mut s = gate.lock();
+        s.arrived.push(path.to_path_buf());
+        gate.changed.notify_all();
+        while s.released == 0 && !s.ended {
+            s = gate.changed.wait(s).unwrap_or_else(|e| e.into_inner());
+        }
+        s.released = s.released.saturating_sub(1);
     }
 }
 
@@ -372,7 +529,7 @@ pub(crate) mod tests {
         std::fs::write(&doc, "old").unwrap();
         set_mode(&doc, 0o600);
         let (d, o) = (dir.clone(), doc.clone());
-        replace(&doc, Access::Keep, |w| {
+        replace(&doc, Access::Keep, None, |w| {
             all_private(&d, &[&o]);
             for _ in 0..1000 {
                 w.write_all(&[b'x'; 1024])?;
@@ -609,7 +766,7 @@ pub(crate) mod tests {
         std::fs::write(&doc, "original").unwrap();
         #[cfg(unix)]
         set_mode(&doc, 0o640);
-        let e = replace(&doc, Access::Keep, |w| {
+        let e = replace(&doc, Access::Keep, None, |w| {
             w.write_all(&[b'x'; 3 << 20])?;
             bail!("the disk is full")
         })
@@ -706,6 +863,167 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 6);
         // Working again, the same split is done.
         assert_eq!(p.split(crate::SplitBy::Every(1), part).unwrap(), 6);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Runs `save` on this thread, with `outside` done (as another app would) while the save
+    /// waits at the replacement boundary, its temporary file complete. What `save` returns.
+    fn at_the_boundary(
+        dir: &Path,
+        outside: impl FnOnce() + Send,
+        save: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let hold = super::commit_seam::hold(dir);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let arrived = hold.arrived();
+                assert_eq!(
+                    arrived.parent(),
+                    Some(dir.canonicalize().unwrap().as_path())
+                );
+                let tmp: Vec<_> = std::fs::read_dir(dir)
+                    .unwrap()
+                    .map(|e| e.unwrap())
+                    .filter(|e| e.file_name().to_string_lossy().contains(".limarepdf-"))
+                    .collect();
+                assert_eq!(tmp.len(), 1, "one temporary file");
+                assert!(tmp[0].metadata().unwrap().len() > 0, "written");
+                outside();
+                hold.release();
+            });
+            save()
+        })
+    }
+
+    /// PB-99: a file another app changes while the new contents are written isn't replaced.
+    /// The save is refused at the replacement boundary with a `ChangedOnDisk`: the file keeps
+    /// the other app's bytes, no temporary file is left and the folder isn't synced. The same
+    /// through `write_file_expecting` (signed saves) and `Pdf::save_expecting`.
+    #[test]
+    fn a_file_changed_while_it_is_saved_is_not_replaced() {
+        let dir = folder("changed");
+        let doc = dir.join("doc.pdf");
+        std::fs::write(&doc, "old").unwrap();
+        let known = crate::disk::version(&doc).unwrap();
+        let syncs = std::rc::Rc::new(std::cell::Cell::new(0));
+        let c = syncs.clone();
+        on_folder_sync(move |_| {
+            c.set(c.get() + 1);
+            Ok(())
+        });
+        // Written over in place, as an app that doesn't save atomically does.
+        let e = at_the_boundary(
+            &dir,
+            || std::fs::write(&doc, "outside").unwrap(),
+            || crate::write_file_expecting(&doc, b"new", Some(&known)),
+        )
+        .unwrap_err();
+        let changed = e.downcast_ref::<ChangedOnDisk>().expect("changed on disk");
+        assert_eq!(changed.path, doc.canonicalize().unwrap());
+        assert!(changed.now.same_bytes(&crate::disk::version(&doc).unwrap()));
+        assert_eq!(
+            e.to_string(),
+            "\"doc.pdf\" was changed by another app while it was being saved, so it wasn't \
+             replaced"
+        );
+        assert_eq!(std::fs::read(&doc).unwrap(), b"outside");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(syncs.get(), 0);
+
+        // Replaced by another file, as an app that saves atomically does.
+        let known = crate::disk::version(&doc).unwrap();
+        let mut p = crate::Pdf::new();
+        p.insert_blank(0, 300.0, 200.0).unwrap();
+        let other = dir.join("other");
+        let e = at_the_boundary(
+            &dir,
+            || {
+                std::fs::write(&other, "renamed over").unwrap();
+                std::fs::rename(&other, &doc).unwrap();
+            },
+            || p.save_expecting(&doc, Some(&known)),
+        )
+        .unwrap_err();
+        assert!(e.downcast_ref::<ChangedOnDisk>().is_some(), "{e:#}");
+        assert_eq!(std::fs::read(&doc).unwrap(), b"renamed over");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(syncs.get(), 0);
+        unwatch();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// With an expectation, a file still as expected at the boundary is replaced as before:
+    /// unchanged, touched with the same bytes, removed, or unreadable. Private files, kept
+    /// permissions and "saved, not confirmed" are as without one.
+    #[test]
+    fn an_expected_file_is_replaced() {
+        let dir = folder("expected");
+        let doc = dir.join("doc.pdf");
+        let now = || crate::disk::version(&doc).unwrap();
+        let read = || std::fs::read(&doc).unwrap();
+        std::fs::write(&doc, "old").unwrap();
+        #[cfg(unix)]
+        set_mode(&doc, 0o640);
+        let known = now();
+        at_the_boundary(
+            &dir,
+            || {},
+            || crate::write_file_expecting(&doc, b"new", Some(&known)),
+        )
+        .unwrap();
+        assert_eq!(read(), b"new");
+        #[cfg(unix)]
+        assert_eq!(mode(&doc), 0o640);
+
+        // Touched: written again with the same bytes, so its time is new.
+        let known = now();
+        at_the_boundary(
+            &dir,
+            || std::fs::write(&doc, "new").unwrap(),
+            || crate::write_file_expecting(&doc, b"newer", Some(&known)),
+        )
+        .unwrap();
+        assert_eq!(read(), b"newer");
+
+        let known = now();
+        at_the_boundary(
+            &dir,
+            || std::fs::remove_file(&doc).unwrap(),
+            || crate::write_file_expecting(&doc, b"again", Some(&known)),
+        )
+        .unwrap();
+        assert_eq!(read(), b"again");
+
+        // A user who can read anything finds it unchanged, which is replaced too.
+        #[cfg(unix)]
+        {
+            let known = now();
+            at_the_boundary(
+                &dir,
+                || set_mode(&doc, 0o000),
+                || crate::write_file_expecting(&doc, b"unreadable", Some(&known)),
+            )
+            .unwrap();
+            assert_eq!(read(), b"unreadable");
+            assert_eq!(mode(&doc), 0o640);
+        }
+
+        let known = now();
+        replace(&doc, Access::Private, Some(&known), |w| {
+            Ok(w.write_all(b"private")?)
+        })
+        .unwrap();
+        assert_eq!(read(), b"private");
+        #[cfg(unix)]
+        assert_eq!(mode(&doc), 0o600);
+
+        let known = now();
+        super::sync_seam::fail_in(&dir);
+        let e = crate::write_file_expecting(&doc, b"unconfirmed", Some(&known)).unwrap_err();
+        super::sync_seam::stop_failing_in(&dir);
+        assert!(e.downcast_ref::<NotConfirmed>().is_some(), "{e:#}");
+        assert_eq!(read(), b"unconfirmed");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

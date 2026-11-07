@@ -1006,6 +1006,9 @@ pub struct Input {
     pub art: Option<(Saved, Vec<u8>)>,
     /// Where the signed document is written.
     pub out: PathBuf,
+    /// The version of the tab's own file at `out` that may be replaced, when it is there
+    /// (see `App::stale`).
+    pub expect: Option<limarepdf_core::disk::Version>,
 }
 
 /// A document signed and written.
@@ -1134,6 +1137,14 @@ impl SignWindow {
         self.task.is_some()
     }
 
+    /// For the app's tests: signs from `store`, with `password` typed.
+    #[cfg(test)]
+    pub(crate) fn test_store(&mut self, store: IdStore, password: &str) {
+        self.store = Ok(store);
+        self.reload();
+        self.password = Secret(password.into());
+    }
+
     /// The chosen ID can sign.
     fn can_sign(&self) -> bool {
         self.list
@@ -1192,7 +1203,12 @@ impl SignWindow {
                     accept_disallowed,
                 },
             )?;
-            let confirmed = match limarepdf_core::write_file(&input.out, &signed.bytes) {
+            let written = limarepdf_core::write_file_expecting(
+                &input.out,
+                &signed.bytes,
+                input.expect.as_ref(),
+            );
+            let confirmed = match written {
                 Ok(()) => true,
                 // The signed file is in place all the same (decision D7).
                 Err(e) if crate::app::not_confirmed(&e) => false,
@@ -1241,6 +1257,15 @@ impl SignWindow {
                         }
                         None if wrong_password(&e) => {
                             self.field_error = Some((Field::Password, sentence(&e)));
+                        }
+                        // As before signing, when it was changed already (PB-99).
+                        None if e.downcast_ref::<limarepdf_core::ChangedOnDisk>().is_some() => {
+                            self.error = Some(
+                                "Another app or tab changed this file while it was being \
+                                 signed, so it wasn't replaced. Reload it first, or choose \
+                                 another name."
+                                    .into(),
+                            );
                         }
                         None => {
                             let again = "Type the ID's password again to try again.";
@@ -1581,6 +1606,7 @@ mod tests {
             edited,
             art: None,
             out: out.to_path_buf(),
+            expect: None,
         };
         w.start(&ctx, input);
         assert!(w.busy());
@@ -1623,6 +1649,7 @@ mod tests {
             edited: None,
             art: None,
             out: out.to_path_buf(),
+            expect: None,
         };
         let ctx = Context::default();
         let out = dir.join("signed.pdf");
@@ -1705,6 +1732,7 @@ mod tests {
             edited: None,
             art: None,
             out: out.clone(),
+            expect: None,
         };
         for certify in [false, true] {
             w.certify = certify;
@@ -1795,6 +1823,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// PB-99: the tab's own file, changed by another app while it was being signed, isn't
+    /// replaced; the window says so, as it does when the change is found before signing.
+    #[test]
+    fn a_file_changed_while_it_was_signed_is_not_replaced() {
+        let (mut w, dir) = window("changed");
+        let mut doc = Pdf::from_text("Hello", (612.0, 792.0)).unwrap();
+        let base = doc.to_bytes().unwrap();
+        let folder = dir.join("out");
+        std::fs::create_dir_all(&folder).unwrap();
+        let out = folder.join("signed.pdf");
+        std::fs::write(&out, &base).unwrap();
+        let input = |known: limarepdf_core::disk::Version| Input {
+            base: Arc::from(base.as_slice()),
+            edited: None,
+            art: None,
+            out: out.clone(),
+            expect: Some(known),
+        };
+        let (_, known) = limarepdf_core::disk::read(&out).unwrap();
+        let ctx = Context::default();
+        let hold = limarepdf_core::commit_seam::hold(&folder);
+        w.password = Secret(PASSWORD.into());
+        w.start(&ctx, input(known));
+        hold.arrived();
+        let theirs = b"%PDF-1.7\n% another app's version, longer than before\n".to_vec();
+        std::fs::write(&out, &theirs).unwrap();
+        hold.release();
+        let (out_now, _) = drawn(&mut w);
+        assert!(matches!(out_now, SignOut::Open), "signed over their file");
+        let error = w.error.clone().expect("no error said");
+        assert!(
+            error.starts_with("Another app or tab changed this file while"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&out).unwrap(), theirs);
+        drop(hold);
+
+        // Unchanged since, it is replaced.
+        let (_, now) = limarepdf_core::disk::read(&out).unwrap();
+        w.password = Secret(PASSWORD.into());
+        w.start(&ctx, input(now));
+        let SignOut::Done(s) = drawn(&mut w).0 else {
+            panic!("not signed: {:?}", w.error);
+        };
+        assert_eq!(std::fs::read(&out).unwrap(), s.bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn wrong_passwords_and_disallowed_changes_are_said() {
         let (mut w, dir) = window("refused");
@@ -1816,6 +1892,7 @@ mod tests {
                 edited: None,
                 art: None,
                 out: out.clone(),
+                expect: None,
             },
         );
         let r = w.task.take().unwrap().recv().unwrap();
