@@ -8,7 +8,7 @@ use crate::colour::Paint;
 use crate::decorate::Decoration;
 use crate::edit::{pieces, plan, Drawn, Ink, PartFont, TextPart, Way};
 use crate::fonts::FontChoice;
-use crate::layout::Setter;
+use crate::layout::{Laid, Setter};
 use crate::matrix::{self as mx, apply, M};
 use crate::objects::{PageObject, Parsed, TextData, TextSpan};
 use crate::own_font::{LineFont, PageFonts};
@@ -156,22 +156,20 @@ impl Paragraph {
         matches!((at(k), at(k + 1)), (Some((a, i)), Some((b, j))) if a == b && j == i + 1)
     }
 
-    /// Whether character `k` of [`Paragraph::text`] is a spacing accent drawn over the
-    /// letter after it, in another text object on its line, nothing put between them: the
-    /// letter starts inside the accent's width, as TeX draws "ü" (PB-73). The move back
-    /// between them as drawn is kept while they stay next to each other, as between
+    /// Whether the character after character `k` of [`Paragraph::text`] is drawn from inside
+    /// `k`'s width, in another text object on its line, nothing put between them: a letter
+    /// moved back under the accent TeX draws over it to make "ü" (PB-73), or a Chinese word
+    /// drawn into the empty half of the "、" before it (S1-14). The move back between them as
+    /// drawn is kept while they stay next to each other, as between
     /// [`Paragraph::neighbours`]; other pieces of a line keep the gap a word's text has.
-    pub(crate) fn accent_over(&self, k: usize) -> bool {
+    pub(crate) fn drawn_into(&self, k: usize) -> bool {
         let (Some(c), Some(next)) = (self.chars.get(k), self.chars.get(k + 1)) else {
             return false;
         };
         let apart = matches!((c.from, next.from), (Some((a, _)), Some((b, _))) if a != b);
         let width = c.x.1 - c.x.0;
         let under = next.x.0 <= c.x.1 && next.x.0 >= c.x.0 - width;
-        apart
-            && under
-            && self.lines.iter().any(|&(a, b)| a <= k && k + 1 < b)
-            && self.text.chars().nth(k).is_some_and(spacing_accent)
+        apart && under && self.lines.iter().any(|&(a, b)| a <= k && k + 1 < b)
     }
 
     /// What was drawn from the end of character `k`'s glyph to the start of character
@@ -236,13 +234,6 @@ impl Placing {
             }
         }
     }
-}
-
-/// Whether `c` is an accent drawn on its own, with a width of its own (Unicode's modifier
-/// symbols): what TeX draws over a letter to make "ü" or "é" where its font has no such
-/// letter.
-fn spacing_accent(c: char) -> bool {
-    "^`~\u{A8}\u{AF}\u{B4}\u{B8}\u{2C6}\u{2C7}".contains(c) || ('\u{2D8}'..='\u{2DD}').contains(&c)
 }
 
 /// The words of a document as its lines show them, counted: the evidence a line-end hyphen
@@ -718,6 +709,10 @@ struct Measured {
     /// Where a line may end: before each of these characters (the text's end the last),
     /// and whether it must.
     breaks: Vec<(usize, bool)>,
+    /// Before each character (and at the end), whether a line may be broken there at all:
+    /// between graphemes, and not inside a cluster a font draws whole (a ligature among the
+    /// words set in another font, or one kept as the page drew it).
+    legal: Vec<bool>,
 }
 
 impl Measured {
@@ -754,7 +749,8 @@ impl Measured {
 
     /// Where a line from character `a` that may be `room` wide ends, breaking where
     /// Unicode's rule allows (UAX #14) and taking what fits, as Word and Google Docs break; a
-    /// word wider than the line is broken between characters. At least one character.
+    /// word wider than the line is broken between clusters, never inside one. At least one
+    /// cluster, alone on the line when it is wider than the room.
     fn line_end(&self, a: usize, room: f32) -> usize {
         let mut best = None;
         for &(b, must) in self.breaks.iter().filter(|(b, _)| *b > a) {
@@ -769,11 +765,8 @@ impl Measured {
                 break;
             }
             // Nothing fits: as many of the word's clusters as do.
-            let text: String = self.chars[a..b].iter().collect();
             let mut end = a;
-            let mut k = a;
-            for g in text.graphemes(true) {
-                k += g.chars().count();
+            for k in (a + 1..=b).filter(|&k| self.legal[k]) {
                 if end > a && self.width(a, k) > room + 1e-3 {
                     break;
                 }
@@ -783,6 +776,73 @@ impl Measured {
         }
         best.unwrap_or(self.chars.len()).max(a + 1)
     }
+}
+
+/// A stretch of a line written anew as the writer writes it ([`ParagraphSetting::laid_in`]).
+#[derive(Clone, Debug)]
+pub(crate) enum Unit {
+    /// Characters kept in their part's font, from and to.
+    Kept(usize, usize),
+    /// A word in another font: its first character, the font, what it writes (its soft
+    /// hyphens left out, a hyphen shown where the line ends in one) and its glyphs, as they
+    /// were measured.
+    Word {
+        at: usize,
+        font: FontChoice,
+        text: String,
+        laid: Laid,
+    },
+    /// A space between words in another font, written as a move this wide in points (the
+    /// line's stretch apart).
+    Space(usize, f32),
+}
+
+/// What an edit's lines are measured by ([`ParagraphSetting::finalise`]): its parts, how
+/// each character is written, the text measured, and a setter for each font words go to.
+struct Laying<'a> {
+    parts: &'a [TextPart],
+    plan: &'a [Planned],
+    m: &'a Measured,
+    setters: &'a [(FontChoice, Setter)],
+}
+
+/// An edited paragraph set ([`ParagraphSetting::laid_in`]), with what its lines written
+/// anew are written as.
+pub(crate) struct LaidParagraph {
+    pub set: SetParagraph,
+    /// Each line's stretches; none for a line kept.
+    pub units: Vec<Vec<Unit>>,
+    /// How each character of the edited text is written.
+    pub plan: Vec<Planned>,
+    /// Why the words in another font can't be written, when they can't: a character no
+    /// font has, or a font that can't be read.
+    pub refused: Option<String>,
+    frame: Frame,
+    measured: Measured,
+}
+
+/// Why the words of `units` in another font can't be written by `setters`, as a pen would
+/// refuse them ([`Pdf::pen_with`]), each font's in the order first used.
+fn refusal(units: &[Vec<Unit>], setters: &[(FontChoice, Setter)]) -> Option<String> {
+    let mut texts: Vec<(FontChoice, String)> = Vec::new();
+    for u in units.iter().flatten() {
+        let Unit::Word { font, text, .. } = u else {
+            continue;
+        };
+        match texts.iter_mut().find(|(f, _)| f == font) {
+            Some((_, all)) => all.push_str(text),
+            None => texts.push((*font, text.clone())),
+        }
+    }
+    texts.iter().find_map(|(f, text)| {
+        let setter = &setters.iter().find(|(g, _)| g == f)?.1;
+        if let Some(why) = setter.unusable() {
+            return Some(why);
+        }
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        let missing = setter.missing(&text);
+        (!missing.is_empty()).then(|| crate::embed::refusal(*f, &missing))
+    })
 }
 
 impl Pdf {
@@ -923,7 +983,29 @@ impl ParagraphSetting {
     /// text takes no first-line indent; left or justified, a paragraph takes its own (none
     /// for one read as centred or right-aligned).
     pub fn set_in(&self, parts: &[TextPart], edges: (f32, f32), align: Align) -> SetParagraph {
-        let new = self.measure(parts);
+        self.laid_in(parts, edges, align).set
+    }
+
+    /// [`ParagraphSetting::set_in`] with what each line written is written as, measured as
+    /// it is written ([`ParagraphSetting::finalise`]): each line's end found by the words'
+    /// clusters, then the line measured as the writer writes it and its end moved back
+    /// while it doesn't fit.
+    pub(crate) fn laid_in(
+        &self,
+        parts: &[TextPart],
+        edges: (f32, f32),
+        align: Align,
+    ) -> LaidParagraph {
+        let plan = self.planned(parts);
+        let chars: Vec<char> = parts.iter().flat_map(|p| p.text.chars()).collect();
+        let setters = self.setters(&chars, &away_pieces(&plan));
+        let new = self.measure_with(parts, &plan, &setters);
+        let lay = Laying {
+            parts,
+            plan: &plan,
+            m: &new,
+            setters: &setters,
+        };
         let old = &self.old;
         let para = &self.para;
         let frame = self.frame_in(edges, align);
@@ -958,11 +1040,21 @@ impl ParagraphSetting {
                 hyphen: end > a && old.chars[end - 1] == '\u{AD}',
             }
         };
+        let laid = |lines: Vec<SetLine>, units: Vec<Vec<Unit>>, marked: Vec<usize>| {
+            let refused = refusal(&units, &setters);
+            LaidParagraph {
+                set: SetParagraph { lines, marked },
+                units,
+                plan: plan.clone(),
+                refused,
+                frame,
+                measured: new.clone(),
+            }
+        };
         if prefix == nl && nl == ol && !moved && !realigned {
-            return SetParagraph {
-                lines: (0..rows).map(|n| kept(n, 0)).collect(),
-                marked: Vec::new(),
-            };
+            let lines: Vec<SetLine> = (0..rows).map(|n| kept(n, 0)).collect();
+            let units = vec![Vec::new(); lines.len()];
+            return laid(lines, units, Vec::new());
         }
         // The line the first change is in, a space joining two lines in the one before;
         // with the edges moved, the first.
@@ -987,6 +1079,7 @@ impl ParagraphSetting {
             }
         }
         let mut lines: Vec<SetLine> = (0..first).map(|n| kept(n, 0)).collect();
+        let mut units: Vec<Vec<Unit>> = vec![Vec::new(); first];
         let mut a = starts[first];
         let mut n = first;
         let mut push = 0.0f32;
@@ -1000,6 +1093,7 @@ impl ParagraphSetting {
         while a < nl {
             if !moved && n > first && push == 0.0 && n < rows && was(a) == Some(starts[n]) {
                 lines.extend((n..rows).map(|m| kept(m, nl as isize - ol as isize)));
+                units.resize(lines.len(), Vec::new());
                 break;
             }
             let opens = starts_paragraph(&new, a);
@@ -1019,8 +1113,8 @@ impl ParagraphSetting {
                     e = end_now;
                 }
             }
+            let (e, width, written) = self.finalise(&lay, a, e, Some(room));
             let end = new.trimmed(a, e);
-            let width = new.width(a, e);
             // A line with larger text than the paragraph's gets the room below the one
             // before that it needs, 1.2 times its size, at most what its size grew by: a
             // paragraph set tighter keeps its spacing.
@@ -1047,6 +1141,7 @@ impl ParagraphSetting {
                 let (x0, stretch0) = line.on(&para.frame);
                 if same && (x - x0).abs() < 1e-3 && (stretch - stretch0).abs() < 1e-3 {
                     lines.push(kept(n, a as isize - starts[n] as isize));
+                    units.push(Vec::new());
                     a = e;
                     n += 1;
                     continue;
@@ -1061,13 +1156,19 @@ impl ParagraphSetting {
                 stretch,
                 hyphen: end > a && new.chars[end - 1] == '\u{AD}',
             });
+            units.push(written);
             a = e;
             n += 1;
         }
         // Realigned in the frame as it was: the lines kept keep their words, each written
-        // anew where the new alignment places it otherwise than the old one did.
+        // anew where the new alignment places it otherwise than the old one did, as wide as
+        // it is written.
         if realigned && !moved {
-            for l in lines.iter_mut().filter(|l| l.kept.is_some()) {
+            for (l, u) in lines
+                .iter_mut()
+                .zip(&mut units)
+                .filter(|(l, _)| l.kept.is_some())
+            {
                 let (a, e) = l.chars;
                 let end = new.trimmed(a, e);
                 let line = Placing {
@@ -1080,7 +1181,10 @@ impl ParagraphSetting {
                 let (x, stretch) = line.on(&frame);
                 let (x0, stretch0) = line.on(&para.frame);
                 if (x - x0).abs() > 1e-3 || (stretch - stretch0).abs() > 1e-3 {
-                    (l.kept, l.x, l.stretch) = (None, x, stretch);
+                    let (_, width, written) = self.finalise(&lay, a, e, None);
+                    let (x, stretch) = Placing { width, ..line }.on(&frame);
+                    (l.kept, l.x, l.width, l.stretch) = (None, x, width, stretch);
+                    *u = written;
                 }
             }
         }
@@ -1097,7 +1201,185 @@ impl ParagraphSetting {
                 }
             }
         }
-        SetParagraph { lines, marked }
+        laid(lines, units, marked)
+    }
+
+    /// Characters `a..end` of an edit (as `lay` has it), a line without the spaces it ends
+    /// with, in the stretches the writer writes them in ([`Unit`]), each word in another
+    /// font set by its font's setter.
+    fn units(&self, lay: &Laying, a: usize, end: usize) -> Vec<Unit> {
+        let (plan, chars) = (lay.plan, &lay.m.chars);
+        let mut line: Vec<Unit> = Vec::new();
+        let mut j = a;
+        while j < end {
+            let pl = plan[j];
+            if pl.kept.is_some() {
+                let mut k = j;
+                while k < end && plan[k].kept.is_some() && plan[k].part == pl.part {
+                    k += 1;
+                }
+                line.push(Unit::Kept(j, k));
+                j = k;
+                continue;
+            }
+            let p = &lay.parts[pl.part];
+            let setter = (lay.setters.iter())
+                .find(|(f, _)| *f == pl.away)
+                .map(|(_, s)| s);
+            let mut k = j;
+            while k < end
+                && plan[k].kept.is_none()
+                && plan[k].part == pl.part
+                && !chars[k].is_whitespace()
+            {
+                k += 1;
+            }
+            if k == j {
+                // A space between words in another font: a move, a space in their font.
+                let [tc, _, th] = self.spacing(p);
+                let space = setter.map_or(0.25 * p.size, |s| s.width(" ", p.size));
+                line.push(Unit::Space(j, space * th + tc * th));
+                j += 1;
+                continue;
+            }
+            let mut text: String = (chars[j..k].iter()).filter(|&&c| c != '\u{AD}').collect();
+            if chars[k - 1] == '\u{AD}' && k == end {
+                text.push('-');
+            }
+            let setter = setter.expect("a setter for each font words go to");
+            let laid = (*setter.lay(&text)).clone();
+            line.push(Unit::Word {
+                at: j,
+                font: pl.away,
+                text,
+                laid,
+            });
+            j = k;
+        }
+        line
+    }
+
+    /// How wide `units` (a line of an edit, as `lay` has it, ending at `end` without its
+    /// spaces) are as the writer writes them: the kept characters as they were measured,
+    /// each word its glyphs' advances and the character spacing once a code, each space its
+    /// move.
+    fn units_width(&self, lay: &Laying, units: &[Unit], end: usize) -> f32 {
+        let m = lay.m;
+        let width = |u: &Unit| match u {
+            Unit::Kept(j, k) => {
+                let shown = match *k == end && m.chars[k - 1] == '\u{AD}' {
+                    true => m.shown[k - 1],
+                    false => 0.0,
+                };
+                m.widths[*j..*k].iter().sum::<f32>() + shown
+            }
+            Unit::Word { at, laid, .. } => {
+                let p = &lay.parts[lay.plan[*at].part];
+                let [tc, _, th] = self.spacing(p);
+                laid.width(p.size) * th + tc * th * laid.codes() as f32
+            }
+            Unit::Space(_, w) => *w,
+        };
+        units.iter().map(width).sum()
+    }
+
+    /// Line `a..e` of an edit (as `lay` has it) measured as the writer writes it: where it
+    /// ends, how wide it is (the spaces it ends with left out) and its stretches. While it
+    /// is wider than `room` (when that is given), its end moves back a place at a time: to
+    /// where Unicode's rule lets a line break, else between clusters, until it fits or one
+    /// cluster stands alone.
+    fn finalise(
+        &self,
+        lay: &Laying,
+        a: usize,
+        mut e: usize,
+        room: Option<f32>,
+    ) -> (usize, f32, Vec<Unit>) {
+        let m = lay.m;
+        loop {
+            let end = m.trimmed(a, e);
+            let units = self.units(lay, a, end);
+            let width = self.units_width(lay, &units, end);
+            if room.is_none_or(|r| width <= r + 1e-3) {
+                return (e, width, units);
+            }
+            let back = (m.breaks.iter().map(|&(b, _)| b))
+                .rev()
+                .find(|&b| a < b && b < e)
+                .or_else(|| (a + 1..e).rev().find(|&k| m.legal[k]));
+            match back {
+                Some(b) => e = b,
+                None => return (e, width, units),
+            }
+        }
+    }
+
+    /// Line `n` of `laid` written again with every character in the font its word goes to
+    /// (the writer's second try at a line that didn't read back as typed, or didn't sit
+    /// where it was set), by a setter made for its text: its stretches worked out again,
+    /// its end where it was, and the line placed again in the frame. Refused when it no
+    /// longer fits its room (by more than half a point) where it did, or when one of its
+    /// words can't be written.
+    pub(crate) fn retry(
+        &self,
+        laid: &mut LaidParagraph,
+        parts: &[TextPart],
+        n: usize,
+    ) -> Result<()> {
+        let l = laid.set.lines[n].clone();
+        let (a, e) = l.chars;
+        for pl in &mut laid.plan[a..e] {
+            pl.kept = None;
+        }
+        let m = &laid.measured;
+        let away: Vec<(FontChoice, usize, usize, usize)> = (away_pieces(&laid.plan).into_iter())
+            .map(|(f, p, x, y)| (f, p, x.max(a), y.min(e)))
+            .filter(|w| w.2 < w.3)
+            .collect();
+        let setters = self.setters(&m.chars, &away);
+        let lay = Laying {
+            parts,
+            plan: &laid.plan,
+            m,
+            setters: &setters,
+        };
+        let (_, width, units) = self.finalise(&lay, a, e, None);
+        if let Some(why) = refusal(std::slice::from_ref(&units), &setters) {
+            bail!("{why}");
+        }
+        let opens = a == 0 || m.chars[a - 1] == '\u{2029}';
+        let room = room_in(&laid.frame, opens);
+        if width > room + 0.5 && l.width <= room + 1e-3 {
+            bail!("a line of the edited paragraph doesn't fit its frame in the fonts its words go to; nothing was changed");
+        }
+        let end = m.trimmed(a, e);
+        // Its narrowest space, as `space_in` reads one: now a move in its words' font.
+        let narrowest = (units.iter())
+            .filter_map(|u| match u {
+                Unit::Space(j, w) if m.chars[*j] == ' ' => Some(*w),
+                _ => None,
+            })
+            .fold(f32::MAX, f32::min);
+        let line = Placing {
+            opens,
+            width,
+            gaps: m.chars[a..end].iter().filter(|c| **c == ' ').count(),
+            last: e >= m.chars.len() || matches!(m.chars[e - 1], '\u{2029}' | '\n'),
+            space: if narrowest == f32::MAX {
+                0.0
+            } else {
+                narrowest
+            },
+        };
+        let (x, stretch) = line.on(&laid.frame);
+        laid.set.lines[n] = SetLine {
+            x,
+            width,
+            stretch,
+            ..l
+        };
+        laid.units[n] = units;
+        Ok(())
     }
 
     /// How far apart its lines' baselines are set: its frame's spacing, else (a line on its
@@ -1244,7 +1526,28 @@ impl ParagraphSetting {
             PartFont::Choice(_) => 0,
         };
         let part = parts.get(i).or(parts.first());
-        let [tc, tw, th] = part.map_or([0.0, 0.0, 1.0], |p| p.spacing);
+        self.unstretched(part.map_or([0.0, 0.0, 1.0], |p| p.spacing))
+    }
+
+    /// The spacing a character of part `p` of an edit, written as `pl` says, is written
+    /// with: one kept with what drew it, its show's ([`Drawn::spacing`]), as a part's may
+    /// differ from show to show (a word spaced to fit); any other, its part's
+    /// ([`ParagraphSetting::spacing`]).
+    pub(crate) fn kept_spacing(&self, p: &TextPart, pl: &Planned) -> [f32; 3] {
+        let k = match pl.kept {
+            Some((_, Way::Own(o))) => Some(o),
+            Some((_, Way::WithBefore)) => pl.from,
+            _ => None,
+        };
+        match k.and_then(|k| self.drawn(k)) {
+            Some(d) => self.unstretched(d.spacing),
+            None => self.spacing(p),
+        }
+    }
+
+    /// Spacing as the paragraph is written with it: no word spacing in one read as
+    /// justified ([`ParagraphSetting::spacing`]).
+    fn unstretched(&self, [tc, tw, th]: [f32; 3]) -> [f32; 3] {
         match self.para.frame.align {
             Align::Justified => [tc, 0.0, th],
             _ => [tc, tw, th],
@@ -1255,10 +1558,26 @@ impl ParagraphSetting {
     /// kept in its part's own font by where it was drawn (and its spacing to its neighbour
     /// there, while that is still its neighbour), or by the font's width for its code; the
     /// words that go to another font by that font. The parts' character spacing and scaling
-    /// apply throughout, their word spacing to single-byte spaces.
+    /// apply throughout (a kept character's, its show's: [`ParagraphSetting::kept_spacing`]),
+    /// their word spacing to single-byte spaces.
     fn measure(&self, parts: &[TextPart]) -> Measured {
-        let para = &self.para;
         let plan = self.planned(parts);
+        let chars: Vec<char> = parts.iter().flat_map(|p| p.text.chars()).collect();
+        let setters = self.setters(&chars, &away_pieces(&plan));
+        self.measure_with(parts, &plan, &setters)
+    }
+
+    /// [`ParagraphSetting::measure`] with `parts` written as `plan` says, the words that go
+    /// to another font set by `setters` ([`ParagraphSetting::setters`]). Each word's glyph
+    /// clusters are measured where they start, an approximation of the word as it is
+    /// written ([`ParagraphSetting::finalise`] measures a line as it is).
+    fn measure_with(
+        &self,
+        parts: &[TextPart],
+        plan: &[Planned],
+        setters: &[(FontChoice, Setter)],
+    ) -> Measured {
+        let para = &self.para;
         let mut m = Measured {
             chars: parts.iter().flat_map(|p| p.text.chars()).collect(),
             ..Default::default()
@@ -1279,7 +1598,7 @@ impl ParagraphSetting {
                 continue;
             };
             let font = &self.fonts[i].0;
-            let [tc, tw, th] = self.spacing(p);
+            let [tc, tw, th] = self.kept_spacing(p, &pl);
             let scale = p.size / para.spans[i].font_size.max(1e-3);
             let glyph = |k: usize| {
                 let x = para.chars[k].x;
@@ -1329,7 +1648,7 @@ impl ParagraphSetting {
                         matches!(q.kept, Some((_, Way::Own(_) | Way::WithBefore)))
                             && q.from == Some(k + 1)
                             && !m.chars[j + 1].is_whitespace()
-                    }) && (para.neighbours(k) || para.accent_over(k));
+                    }) && (para.neighbours(k) || para.drawn_into(k));
                     match (neighbour, way) {
                         (true, _) => glyph(k) + para.gap_after(k) * scale,
                         (false, Way::Own(_)) => own(k) + tc * th,
@@ -1344,22 +1663,30 @@ impl ParagraphSetting {
             };
         }
         // Each font's words, measured with a setter that has all of its text, as the
-        // writer's has.
-        let away = away_pieces(&plan);
-        for (f, setter) in self.setters(&m.chars, &away) {
-            for &(_, pi, a, b) in away.iter().filter(|w| w.0 == f) {
+        // writer's has: each glyph cluster's advance on its first character. Inside a
+        // cluster no line may end.
+        let mut inside = vec![false; n + 1];
+        let away = away_pieces(plan);
+        for (f, setter) in setters {
+            for &(_, pi, a, b) in away.iter().filter(|w| w.0 == *f) {
                 let p = &parts[pi];
                 let (size, [tc, _, th]) = (p.size, self.spacing(p));
                 let text: String = m.chars[a..b].iter().collect();
-                // Each stretch between two places a line may break, its spaces apart.
+                // Each stretch between two places a line may break, its spaces apart, set
+                // on its own: a ligature drawn across a hyphen's break doesn't take the
+                // break away.
                 let mut at = a;
                 for seg in segments(&text) {
                     let n = seg.chars().count();
                     let word = seg.trim_end_matches(char::is_whitespace);
                     let wn = word.chars().count();
-                    let plain: String = word.chars().filter(|&c| c != '\u{AD}').collect();
-                    if wn > 0 {
-                        m.widths[at] = setter.width(&plain, size) * th + tc * th * wn as f32;
+                    // Its letters, without its soft hyphens, by their place in the text.
+                    let letters: Vec<usize> =
+                        (at..at + wn).filter(|&k| m.chars[k] != '\u{AD}').collect();
+                    let plain: String = letters.iter().map(|&k| m.chars[k]).collect();
+                    for ((s, e), advance) in setter.lay(&plain).clusters() {
+                        m.widths[letters[s]] += advance / 1000.0 * size * th + tc * th;
+                        inside[letters[s] + 1..=letters[e - 1]].fill(true);
                     }
                     if word.ends_with('\u{AD}') {
                         m.shown[at + wn - 1] = setter.width("-", size) * th + tc * th;
@@ -1377,8 +1704,18 @@ impl ParagraphSetting {
             char_at[b] = k;
         }
         char_at[text.len()] = m.chars.len();
+        m.legal = vec![false; n + 1];
+        for (b, _) in text.grapheme_indices(true) {
+            m.legal[char_at[b]] = true;
+        }
+        m.legal[n] = true;
+        for k in 1..n {
+            let with_before = matches!(plan[k].kept, Some((_, Way::WithBefore)));
+            m.legal[k] &= !(inside[k] || with_before);
+        }
         m.breaks = (linebreaks(&text))
             .map(|(b, o)| (char_at[b], o == BreakOpportunity::Mandatory))
+            .filter(|&(b, _)| m.legal[b])
             .collect();
         m
     }
@@ -1466,5 +1803,48 @@ mod tests {
         assert_eq!(read("Jean-", "Pierre came"), None);
         assert_eq!(read("pages 10-", "20"), None);
         assert_eq!(read("and -", "then"), None);
+    }
+
+    /// A word typed in a font that draws "ffi" as one glyph may break before the cluster
+    /// and after it, never inside it (S1-14).
+    #[test]
+    fn no_line_breaks_inside_a_ligature() {
+        use lopdf::{dictionary, Dictionary, Stream};
+        let mut p = Pdf::new();
+        p.insert_blank(0, 612.0, 792.0).unwrap();
+        let font = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        });
+        let content = b"BT /F1 12 Tf 72 700 Td (Old text) Tj ET\n".to_vec();
+        let s = p.doc.add_object(Stream::new(Dictionary::new(), content));
+        let page = p.page_ids()[0];
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", s);
+        d.set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => font } },
+        );
+        let blocks = p.page_blocks(0).unwrap();
+        let para = p.paragraph(0, &blocks[0], &p.document_words()).unwrap();
+        let setting = p.paragraph_setting(&para).unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let serif = dir.join("tests/data/fonts/SourceSerif4-Regular.otf");
+        let n = crate::add_font_files(&[serif.as_path()])[0];
+        let face = FontChoice {
+            family: crate::fonts::Family::Installed(n),
+            bold: false,
+            italic: false,
+        };
+        let parts = [TextPart {
+            text: "office".into(),
+            font: PartFont::Choice(face),
+            size: 12.0,
+            color: [0.0; 3],
+            rise: 0.0,
+            from: None,
+            origins: Vec::new(),
+        }];
+        let m = setting.measure(&parts);
+        assert_eq!(m.legal, [true, true, false, false, true, true, true]);
     }
 }

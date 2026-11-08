@@ -9,6 +9,28 @@
 
 ### Fixed
 
+- An edited paragraph with a word too long for its frame (a long web address, a word that goes to another font,
+  letters joined in a ligature) is now written as wide as it was laid out, so its lines stay inside the frame.
+  Before, the line holding the word's first letter was laid out as if it held the whole word, and the next line as
+  if it held nothing: a 100-letter word in a 40-point frame ran 792 points past the frame's edge, and centred, its
+  first line was placed off the page. Such a word now breaks between letters, never inside a ligature or between
+  a letter and its accent, and a single letter wider than the frame stands on a line of its own. Each line written
+  is now checked against where it was laid out: one that doesn't sit there is written again in the fonts its words
+  go to, and the edit is refused, with nothing changed, if it still doesn't.
+- Editing a line drawn in parts of different sizes ("Big" in 40 points, then smaller words) no longer joins two
+  words or moves the words after a gap: changing "small" to "smell" read back as "Bigsmell words", and a gap
+  before a part kept as it was could be written twice, moving the words after it 3 points right. An edited line
+  whose unchanged words would move is written again with its changed words in another font, and refused, with
+  nothing changed, if they still would.
+- In a paragraph with an accent drawn over the letter after it (as TeX draws ü), a line typed in no longer comes
+  out more than a point narrower than it was laid out, the accented letter starting inside the letter before it.
+- A paragraph of Chinese text whose words are each drawn back into the empty half of the "、" before them keeps
+  them there when it is realigned. Before, those moves back were lost, and its lines ran past the frame's edge.
+- A paragraph whose lines draw some letters with different letter spacing from the rest keeps each letter where
+  it was from the others when it is edited or realigned. Before, all of a line's letters in one style were written
+  with one spacing, moving the letters after the change of spacing.
+- An edited line or paragraph written a second time in another font, because its first try read back wrong, no
+  longer leaves the first try's font listed in the page.
 - Exporting pages as images no longer writes a page cut short, or fails with an internal error, on a very long or
   very wide page at a high resolution (a 10 × 10,000 point strip at 576 dpi came out with its bottom missing, and
   turned on its side it failed). A page image has at most 65,280 pixels a side, as well as 268 million in all; an export

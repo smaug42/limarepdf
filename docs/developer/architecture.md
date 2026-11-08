@@ -247,12 +247,28 @@ space, else -250; a move that would start a show (where it reads as no space) go
 piece before. Spacing numbers that would stand side by side in a `TJ` are written as one, and one that moves
 nothing is left out (`tj`): a reader takes each number alone, so the move back across a `Tm` of the line as read
 followed by that show's own number forward again would read as a word gap (batch 31, stage 3; pdf.js
-`issue19182`). A part that is its span's own text, unchanged, keeps its shows as they were. A line in one part,
+`issue19182`). A part that is its span's own text, unchanged, keeps its shows as they were. A gap read as a space
+after one of its shows (`Run.gap`, which counts the next show's opening number) is written as the page had it
+(S1-14): before a show kept as it was, only the move from where the one ends to where the next starts, the next
+keeping its own number (PB-47: the whole gap was written and the number kept too, moving the words after it);
+before a part written anew, after the show where a `TJ` number that size reads as a space (`reads_as_space`), as
+a number of its own (`then_gap`: `tj` would join it to a number the show ends with), else as the next part's
+opening number, which the reader counts between shows (PB-30: a 3-point gap after a
+40-point show is −75, no space, and "Big smell" read back "Bigsmell"). A line in one part,
 its style unchanged, in one spacing, starting with a show of characters, written all in its own font, becomes
 one `TJ` in place of its first show (`in_place`); others go on top as before. Every line with characters
 written this way is read back (`misread`; a line changed in place is found by its operator and may read as one
 with text next to it): one that reads otherwise is written again with only its unchanged parts in its own
-font, and its id returned (the app's "similar font" message).
+font, and its id returned (the app's "similar font" message). One that reads right is then checked for where its
+words sit (`Pdf::misplaced`, S1-14, from the new operators parsed as the page will be): words that end before
+the first changed character must start where they did (the word the change is in may move), and those that start
+after the last changed one must all move by one shared amount (the line's reflow), each within 0.5 points
+(`kept_extents`, from the edit's origins: a line with no word before the change and fewer than two after it isn't
+checked). A line that fails is written again as a misread one is, held to the same words as its first try (a
+misread line's retry is held only in its parts kept whole), and one that fails again refuses the edit with nothing
+changed. Each try given up puts the page's
+own `/Resources` back as it was before the first (PB-46: a retry left the first try's font named on the page;
+`add_resource` writes only there, never through a reference).
 
 The typing preview draws a kept embedded font's own glyphs (plan Q6): `LineFont::preview` writes a small
 OpenType font (`preview_font.rs`, LimarePDF's own writer: CFF outlines recorded with a skrifa pen, a
@@ -2409,14 +2425,25 @@ form XObject, and per inline image.
   `FontChoice::of_font`); `ParagraphSetting::set(&[TextPart])` lays an edit out (`SetParagraph`: each line's
   characters, the old line it keeps or none, x, baseline, width, the stretch a space when justified, a soft hyphen
   shown), measured as written: a kept letter by where it was drawn, and what was drawn between it and its old
-  neighbour while they stay neighbours (in one text object, or a spacing accent TeX drew over the letter after it
-  from another, `Paragraph::accent_over`: the letter starts inside the accent's width, as `\"u` is drawn, PB-73;
-  the writer writes that move back after the accent, so Poppler reads the letter and its mark in order again, where
-  it had read "̈u" once the line was rewritten, pdf.js `issue1127`; other abutting objects keep a word's own
+  neighbour while they stay neighbours (in one text object, or a letter drawn from inside the one before it from
+  another, `Paragraph::drawn_into`: it starts inside that one's width, as TeX draws `\"u` with the accent first,
+  PB-73, and pdf.js `issue12402` each Chinese word after a "、" in the comma's empty half, S1-14; the writer writes
+  that move back, so Poppler reads the letter and its mark in order again, where it had read "̈u" once the line was
+  rewritten, pdf.js `issue1127`, and a move back can't read as a space; other abutting objects keep a word's own
   gap, as keeping theirs misread more lines in the corpus edit run); a typed one by its font's PDF width
   (`LineFont::advance`); a space by the
   font's space or, where it has none, the narrower quarter of the paragraph's drawn spaces; words in another font
-  by a `Setter` holding all of that font's words. Greedy breaking at UAX #14's places from the line the edit can
+  by a `Setter` holding all of that font's words, each glyph cluster's advance on its first character (S1-14,
+  M-12: the whole word's width went on its first character, so a word broken across lines was measured as all on
+  the first). Lines break only where `Measured.legal` allows: a grapheme boundary not inside a cluster, whether
+  the setter shaped it (`Face::spelled` maps each character it writes back to the caller's, `Laid::clusters`) or
+  the page drew it as one code (a ligature). Once a line's end is chosen it is measured as it will be written
+  (`ParagraphSetting::finalise`: its units, `Unit::Kept` stretches, `Unit::Space` and each `Unit::Word { .. }` laid by
+  its setter, Tc counted once a code written), and moved back a boundary while wider than its room; one cluster
+  wider than the room stands alone on its line, as overflow. `laid_in` returns those units with the
+  `SetParagraph`, and the writer draws the glyphs that were measured (`pen_laid`), shaping nothing again; a line
+  retried in its fallback fonts is measured again in place (`retry`) and refused if it no longer fits its room
+  plus 0.5 points. Greedy breaking at UAX #14's places from the line the edit can
   first change: the line before is rewritten only when the next line's first word fits now and didn't before; a
   line that starts where it did ends where it did when the words greedy breaking would add fitted before too (the
   producer's breaks stand where the edit doesn't move them); once a line starts at an old line's start with the
@@ -2497,7 +2524,19 @@ form XObject, and per inline image.
   of text it reads as join as the parser joins a line's pieces, a space where one starts a word's gap past the
   other or on another line, `apart`, so a line whose wide move reads it as two isn't taken as misread, nor one
   with a raised footnote mark: 2b-2, found by the corpus edit run); one that misreads is written again with its
-  letters in the fonts their words go to, and a second misread refuses the edit with nothing changed. Returns the lines whose letters went to another font.
+  letters in the fonts their words go to, and a second misread refuses the edit with nothing changed. Lines that
+  read right are then checked for where they sit (`Pdf::misplaced`, S1-14): the first character must start at
+  the line's x, the last end at x plus its width and stretch, and the box stay inside the frame's right edge
+  (unless the line was set wider than its frame), each within 0.5 points, from the new operators parsed as the
+  page will be; a line that fails is written again as a misread one is, and fails again refuses the edit. Each
+  try given up puts the page's own `/Resources` back (PB-46). Kept pieces of one line are written with the move
+  the measure counted between them (`to_neighbour`, PB-75: the move between "r" and "¨" was lost, so "Pr¨ufung"'s
+  "u" started 1.2 points inside the "r"). A kept letter is written with the character spacing of the show it was
+  drawn in, as the measure counts it (S1-14), and what was drawn between two neighbours in different shows of one
+  text object opens the later one's show where, at the end of the earlier one's, `tj` would make it one number
+  that reads as a space (`ends_in_space`, S1-14: pdf.js `issue12294-print` draws "th" and "e" 0.176 em apart in
+  two shows, no space between shows, and they read "th e" written as one `TJ`). Returns the lines whose letters
+  went to another font.
   Building `DocWords` reads every page (the app runs it off the window's thread, `Pdf::document_words_on` with two
   threads of its own, when a tab gets its document; until it is there, hyphens read as unknown).
   `ParagraphSetting::pieces` gives an edit's stretches in one font each, kept in a part's own font or sent to the

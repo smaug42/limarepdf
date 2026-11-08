@@ -83,7 +83,8 @@ this list once it works. The feature table below has the details.
   ([details](../content-editing.md#limits)). A text box from another app with inner margins, clouds or a callout
   can wrap differently while typed than once kept (PB-60). A space the line had as a small gap (after a subscript) may no
   longer read as one between larger letters, so such a line is written with its changed words in another font
-  (PB-50); a line the page draws twice (a label over a halo) is edited where clicked, the copy under it
+  (PB-50), as is one whose words before or after the change would move, and if they still would, the edit is
+  refused with nothing changed (S1-14); a line the page draws twice (a label over a halo) is edited where clicked, the copy under it
   keeping the old words (PB-51); the first line selected on a page with heavy content waits for the page to be
   read, a tenth to a third of a second on 2.5 % of the corpus's pages, once a page (PB-52). Fonts installed under
   code names are shown by the typeface they stand in for only for the URW fonts Linux installs; others show
@@ -99,7 +100,9 @@ this list once it works. The feature table below has the details.
   (said in the inspector). Typing over
   words selected in different paragraphs types nothing (a note says to type within one paragraph), and deleting
   or cutting words outside a paragraph doesn't join lines: a line emptied that way is left blank, the lines around
-  it where they were.
+  it where they were. A word wider than its frame breaks between letters, never inside a ligature or between a
+  letter and its accent, so each line stays inside its frame, except a single letter (or ligature) wider than the
+  frame, which stands on a line of its own and runs past the frame's edge (S1-14).
 - Words selected with the read tool have no caret: the arrow keys, Home and End without Shift keep their reading
   meanings (scrolling, pages) rather than moving to the selection's start or end as a word processor does; with
   Shift they extend the selection.

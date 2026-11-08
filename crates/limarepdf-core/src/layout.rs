@@ -52,18 +52,21 @@ impl SetIn {
 }
 
 /// Text as it is set ([`Setter::lay`]): stretches, each in one font and one script.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Laid {
     pub runs: Vec<Run>,
 }
 
 /// A stretch of text set in one font and one script.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Run {
     pub font: SetIn,
     /// What it writes, which its glyphs' characters index: its characters put together as
     /// the face writes them ([`Face::spelled`]).
     pub text: Vec<char>,
+    /// For each of `text`, the characters of the text set ([`Setter::lay`]'s) it came from,
+    /// from and to.
+    pub from: Vec<(usize, usize)>,
     /// Its glyphs; in a standard font itself, each glyph is a character's WinAnsi code.
     pub glyphs: Vec<Shaped>,
 }
@@ -76,6 +79,30 @@ impl Laid {
             .map(|g| g.advance)
             .sum();
         units * size / 1000.0
+    }
+
+    /// Its glyph clusters in order, what a line may not break inside: each one's characters
+    /// in the text set (from and to) and its advance, in thousandths of the size. A cluster
+    /// is a glyph that draws characters and the glyphs after it that draw none (a mark
+    /// placed apart, say).
+    pub(crate) fn clusters(&self) -> Vec<((usize, usize), f32)> {
+        let mut out: Vec<((usize, usize), f32)> = Vec::new();
+        for run in &self.runs {
+            for g in &run.glyphs {
+                let (a, b) = g.chars;
+                match out.last_mut() {
+                    Some(last) if b <= a => last.1 += g.advance,
+                    _ if b <= a => {}
+                    _ => out.push(((run.from[a].0, run.from[b - 1].1), g.advance)),
+                }
+            }
+        }
+        out
+    }
+
+    /// How many codes it is written in: what character spacing is added for, once each.
+    pub(crate) fn codes(&self) -> usize {
+        self.runs.iter().map(|r| r.glyphs.len()).sum()
     }
 }
 
@@ -171,7 +198,11 @@ impl Setter {
             }
             i += 1;
             for (a, b, script) in items(&chars[from..to]) {
-                runs.push(self.run(font, &chars[from + a..from + b], script));
+                let mut run = self.run(font, &chars[from + a..from + b], script);
+                for r in &mut run.from {
+                    *r = (r.0 + from + a, r.1 + from + a);
+                }
+                runs.push(run);
             }
         }
         Laid { runs }
@@ -395,7 +426,8 @@ impl Setter {
         break_lines(text, width, |line| self.width(line, size))
     }
 
-    /// A stretch of the text in one font and one script, set.
+    /// A stretch of the text in one font and one script, set, its characters mapped to
+    /// `chars`.
     fn run(&self, font: SetIn, chars: &[char], script: Script) -> Run {
         let script = harfrust_script(script);
         let language = self.language.as_ref();
@@ -405,12 +437,19 @@ impl Setter {
                     return Run {
                         font,
                         text: Vec::new(),
+                        from: Vec::new(),
                         glyphs: Vec::new(),
                     };
                 };
-                let text = face.spelled(&chars.iter().collect::<String>()).0;
+                let spelled = face.spelled(&chars.iter().collect::<String>());
+                let (text, from) = (spelled.chars, spelled.from);
                 let glyphs = face.shape(&text, script, language, false);
-                Run { font, text, glyphs }
+                Run {
+                    font,
+                    text,
+                    from,
+                    glyphs,
+                }
             }
             SetIn::Standard(f) => {
                 let face = Face::liberation(f);
@@ -440,6 +479,7 @@ impl Setter {
                 Run {
                     font,
                     text: chars.to_vec(),
+                    from: (0..chars.len()).map(|i| (i, i + 1)).collect(),
                     glyphs,
                 }
             }
@@ -645,7 +685,7 @@ fn covers(font: SetIn, text: &str) -> bool {
     }
     match font {
         SetIn::Standard(_) => text.chars().all(|c| winansi_byte(c).is_some()),
-        SetIn::Face(f) => Face::of(f).is_ok_and(|face| face.spelled(text).1.is_empty()),
+        SetIn::Face(f) => Face::of(f).is_ok_and(|face| face.spelled(text).missing.is_empty()),
     }
 }
 
@@ -983,6 +1023,35 @@ impl Pdf {
             bail!("{}", embed::refusal(setter.asked, &missing));
         }
         let laid: Vec<Rc<Laid>> = lines.iter().map(|l| setter.lay(l)).collect();
+        let laid: Vec<&Laid> = laid.iter().map(|l| l.as_ref()).collect();
+        let mut pen = self.pen_laid(&laid, reuse)?;
+        // Lines with nothing to show still name a font: the standard one asked for.
+        if let (true, SetIn::Standard(f)) = (pen.fonts.is_empty(), setter.own()) {
+            let id = match pen.standard.iter().find(|(c, _)| *c == f) {
+                Some(&(_, id)) => id,
+                None => {
+                    let font = dictionary! {
+                        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => f.base_font(),
+                        "Encoding" => "WinAnsiEncoding",
+                    };
+                    let id = self.doc.add_object(font);
+                    pen.standard.push((f, id));
+                    id
+                }
+            };
+            pen.fonts.push(id);
+        }
+        Ok(pen)
+    }
+
+    /// A pen writing lines already set (`laid`), as they were set and measured: every
+    /// glyph they need embedded (each face's font object grown once), and the standard
+    /// fonts written as themselves added as font objects, or taken from `reuse`.
+    pub(crate) fn pen_laid(
+        &mut self,
+        laid: &[&Laid],
+        reuse: &[(FontChoice, ObjectId)],
+    ) -> Result<Pen> {
         // What each face must hold, each glyph and text once.
         let mut faces: Vec<Needs> = Vec::new();
         let mut wanted: HashSet<(FontChoice, u16, String)> = HashSet::new();
@@ -1025,24 +1094,8 @@ impl Pdf {
         }
         let mut fonts: Vec<ObjectId> = Vec::new();
         let mut out = Vec::with_capacity(laid.len());
-        for l in &laid {
+        for l in laid {
             out.push(shows(l, &placed, &standard, &mut fonts));
-        }
-        // Lines with nothing to show still name a font: the standard one asked for.
-        if let (true, SetIn::Standard(f)) = (fonts.is_empty(), setter.own()) {
-            let id = match standard.iter().find(|(c, _)| *c == f) {
-                Some(&(_, id)) => id,
-                None => {
-                    let font = dictionary! {
-                        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => f.base_font(),
-                        "Encoding" => "WinAnsiEncoding",
-                    };
-                    let id = self.doc.add_object(font);
-                    standard.push((f, id));
-                    id
-                }
-            };
-            fonts.push(id);
         }
         Ok(Pen {
             fonts,
@@ -1210,6 +1263,29 @@ mod tests {
         // "fi" stays two codes.
         let fi = s.lay("fi");
         assert_eq!(fi.runs[0].glyphs.len(), 2);
+    }
+
+    /// Each cluster a face draws maps to the characters typed it draws (S1-14): "ffi",
+    /// drawn as one ligature in Source Serif 4, to all three, and its width is the
+    /// ligature's.
+    #[test]
+    fn a_ligature_is_one_cluster_of_the_characters_it_draws() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let serif = dir.join("tests/data/fonts/SourceSerif4-Regular.otf");
+        let n = crate::add_font_files(&[serif.as_path()])[0];
+        let face = FontChoice {
+            family: Family::Installed(n),
+            bold: false,
+            italic: false,
+        };
+        let s = Setter::new(face, "office", None);
+        let laid = s.lay("office");
+        assert_eq!(laid.codes(), 4);
+        let clusters = laid.clusters();
+        let spans: Vec<(usize, usize)> = clusters.iter().map(|c| c.0).collect();
+        assert_eq!(spans, [(0, 1), (1, 4), (4, 5), (5, 6)]);
+        let total: f32 = clusters.iter().map(|c| c.1).sum();
+        assert!((total - laid.width(1000.0)).abs() < 1e-3, "{total}");
     }
 
     #[test]

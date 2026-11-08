@@ -3,15 +3,16 @@
 //! text state put back after it; the lines that keep their breaks left as they were.
 
 use crate::decorate::{carried, Decorated, Redraw};
-use crate::edit::{line_body, move_only, op, put_code, r, tj, Check, Following, Ink, Written};
+use crate::edit::Written;
+use crate::edit::{line_body, move_only, op, put_code, r, tj, Check, Extent, Following, Ink};
 use crate::edit::{PartFont, TextPart, Way};
 use crate::fonts::FontChoice;
-use crate::layout::{shown, Setter};
+use crate::layout::{shown, Laid};
 use crate::matrix::{self as mx, apply, mul, M};
-use crate::objects::{Obj, Parsed, Show};
+use crate::objects::{reads_as_space, Obj, Parsed, Show};
 use crate::para_frames::KeptFrame;
 use crate::paragraph::Align;
-use crate::rewrap::{away_pieces, decorations_of, ParagraphSetting, Planned, SetLine};
+use crate::rewrap::{decorations_of, LaidParagraph, ParagraphSetting, Planned, SetLine, Unit};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::Operation;
@@ -89,9 +90,12 @@ impl Pdf {
         align: Align,
         asked: Option<&[Decorated]>,
     ) -> Result<Vec<usize>> {
-        let set = setting.set_in(parts, edges, align);
-        if set.unchanged() && asked.is_none() {
+        let mut laid = setting.laid_in(parts, edges, align);
+        if laid.set.unchanged() && asked.is_none() {
             return Ok(Vec::new());
+        }
+        if let Some(why) = &laid.refused {
+            bail!("{why}");
         }
         let para = setting.paragraph();
         let (page, mut parsed) = self.load_edit(para.page)?;
@@ -127,16 +131,24 @@ impl Pdf {
             let last = parsed.objs[p].last;
             parsed.ops[last] = op("n", vec![]);
         }
-        let mut own = vec![true; set.lines.len()];
+        let chars: Vec<char> = parts.iter().flat_map(|p| p.text.chars()).collect();
+        let mut own = vec![true; laid.set.lines.len()];
         let mut lost = Vec::new();
+        let resources = self.page_resources(page)?;
         loop {
-            let (ops, checks) =
-                self.paragraph_ops(page, &parsed, setting, parts, &set.lines, &own)?;
+            let (ops, checks) = self.paragraph_ops(page, &parsed, setting, parts, &laid)?;
             let misread = self.misread(page, &parsed.inline, &ops, &checks)?;
-            if misread.is_empty() {
-                let chars: Vec<char> = parts.iter().flat_map(|p| p.text.chars()).collect();
+            // Lines that read as typed are where they were set, or written again (S1-14).
+            let misplaced = match misread.is_empty() {
+                true => {
+                    let want = extents(setting, parts, &laid, &chars, &checks, edges.1);
+                    self.misplaced(page, &parsed.inline, &ops, &want, 0.5)?
+                }
+                false => Vec::new(),
+            };
+            if misread.is_empty() && misplaced.is_empty() {
                 let lines = Set {
-                    lines: &set.lines,
+                    lines: &laid.set.lines,
                     chars: &chars,
                     checks: &checks,
                 };
@@ -146,12 +158,23 @@ impl Pdf {
                 self.keep_set_frame(page, setting, &lines, edges, align)?;
                 return Ok(lost);
             }
+            // The try is given up: the fonts it named go with it (PB-46).
+            self.put_resources(page, resources.clone())?;
             for n in misread {
                 if !own[n] {
                     bail!("a line of the edited paragraph doesn't read back as it was typed; nothing was changed");
                 }
                 own[n] = false;
                 lost.push(n);
+                setting.retry(&mut laid, parts, n)?;
+            }
+            for n in misplaced {
+                if !own[n] {
+                    bail!("a line of the edited paragraph doesn't sit where it was set; nothing was changed");
+                }
+                own[n] = false;
+                lost.push(n);
+                setting.retry(&mut laid, parts, n)?;
             }
         }
     }
@@ -265,8 +288,8 @@ impl Pdf {
         Ok((ops, 0))
     }
 
-    /// The page's operators with paragraph `setting` edited to `parts` set as `lines`, each
-    /// line's own letters in their fonts where `own` says ([`Pdf::edit_paragraph`]); and the
+    /// The page's operators with paragraph `setting` edited to `parts` laid out as `laid`
+    /// says ([`ParagraphSetting::laid_in`]), each line written as it was measured; and the
     /// lines written, to read back: each one's index, where it is, and what it should read.
     fn paragraph_ops(
         &mut self,
@@ -274,19 +297,11 @@ impl Pdf {
         parsed: &Parsed,
         setting: &ParagraphSetting,
         parts: &[TextPart],
-        lines: &[SetLine],
-        own: &[bool],
+        laid: &LaidParagraph,
     ) -> Result<(Vec<Operation>, Checks)> {
         let para = setting.paragraph();
         let chars: Vec<char> = parts.iter().flat_map(|p| p.text.chars()).collect();
-        // What each character is written as, a line not read back as it should be written
-        // all in the fonts its words go to.
-        let mut plan = setting.planned(parts);
-        for (_, l) in lines.iter().enumerate().filter(|(n, _)| !own[*n]) {
-            for pl in &mut plan[l.chars.0..l.chars.1] {
-                pl.kept = None;
-            }
-        }
+        let (lines, plan) = (&laid.set.lines, &laid.plan);
         let rows = para.rows.len();
         let written: Vec<usize> = (0..lines.len())
             .filter(|&n| lines[n].kept.is_none())
@@ -308,67 +323,38 @@ impl Pdf {
             (l.chars.0, end)
         };
         // The words going to another font, each font's in order, written by one pen a font
-        // with all of its text set as it was measured.
-        let away = away_pieces(&plan);
-        let setters = setting.setters(&chars, &away);
-        let mut words: Vec<(FontChoice, Vec<String>)> = Vec::new();
-        // For each written line, its stretches: kept ones (from, to) or a word (font, its
-        // place in that font's list), and what follows each word (its spaces).
+        // from their glyphs as they were measured.
+        let mut words: Vec<(FontChoice, Vec<&Laid>)> = Vec::new();
+        // For each written line, its stretches: kept ones (from, to), a word (its font and
+        // its place in that font's list), or a space between words.
         let mut stretches: Vec<Vec<Stretch>> = Vec::new();
         for &n in &written {
-            let (a, end) = content(&lines[n]);
             let mut line: Vec<Stretch> = Vec::new();
-            let mut j = a;
-            while j < end {
-                let pl = plan[j];
-                if pl.kept.is_some() {
-                    let mut k = j;
-                    while k < end && plan[k].kept.is_some() && plan[k].part == pl.part {
-                        k += 1;
+            for u in &laid.units[n] {
+                line.push(match u {
+                    Unit::Kept(a, b) => Stretch::Kept(*a, *b),
+                    Unit::Space(j, w) => Stretch::Space(*j, *w),
+                    Unit::Word {
+                        at, font, laid: g, ..
+                    } => {
+                        let list = match words.iter_mut().find(|(f, _)| f == font) {
+                            Some((_, list)) => list,
+                            None => {
+                                words.push((*font, Vec::new()));
+                                &mut words.last_mut().expect("pushed").1
+                            }
+                        };
+                        list.push(g);
+                        Stretch::Word(*at, *font, list.len() - 1)
                     }
-                    line.push(Stretch::Kept(j, k));
-                    j = k;
-                    continue;
-                }
-                let mut k = j;
-                while k < end
-                    && plan[k].kept.is_none()
-                    && plan[k].part == pl.part
-                    && !chars[k].is_whitespace()
-                {
-                    k += 1;
-                }
-                if k == j {
-                    // A space between words in another font: a move.
-                    line.push(Stretch::Space(j));
-                    j += 1;
-                    continue;
-                }
-                let mut word: String = (chars[j..k].iter()).filter(|&&c| c != '\u{AD}').collect();
-                if chars[k - 1] == '\u{AD}' && k == end {
-                    word.push('-');
-                }
-                let list = match words.iter_mut().find(|(f, _)| *f == pl.away) {
-                    Some((_, list)) => list,
-                    None => {
-                        words.push((pl.away, Vec::new()));
-                        &mut words.last_mut().expect("pushed").1
-                    }
-                };
-                list.push(word);
-                line.push(Stretch::Word(j, pl.away, list.len() - 1));
-                j = k;
+                });
             }
             stretches.push(line);
         }
         let mut pens = Vec::new();
         for (f, list) in &words {
-            let setter = match setters.iter().find(|(g, _)| g == f) {
-                Some((_, s)) => s,
-                None => bail!("no setter for a font words go to"),
-            };
-            let texts: Vec<&str> = list.iter().map(String::as_str).collect();
-            let (names, pen) = self.text_pen(page, setter, &texts)?;
+            let pen = self.pen_laid(list, &[])?;
+            let names = self.font_names(page, "LimareEd", pen.fonts())?;
             pens.push((*f, names, pen));
         }
         let (vd, _, _) = self.vis_down(page);
@@ -405,14 +391,8 @@ impl Pdf {
             let span = (t.spans.iter())
                 .find(|s| (s.runs.0..s.runs.1).any(|k| t.runs[k].op == show))
                 .expect("its part");
-            let parts_written = self.written_line(
-                setting,
-                parts,
-                (&plan, &chars),
-                l,
-                &stretches[w],
-                (&pens, &setters),
-            )?;
+            let parts_written =
+                self.written_line(setting, parts, (plan, &chars), l, &stretches[w], &pens)?;
             // The line in page space, then in the text object's.
             let (dx, dy) = t.dir;
             let (ox, oy) = apply(vd, l.x, l.baseline);
@@ -495,7 +475,7 @@ impl Pdf {
     /// Line `l` of an edit (`parts`, written as `plan` says, its characters `chars`) in its
     /// stretches, each as it is written: the kept ones with their own codes where they keep
     /// them, the words in other fonts by `pens` (each font's, with its fonts' names), the
-    /// spaces between those by `setters`' spaces.
+    /// spaces between those as wide as they were measured.
     fn written_line(
         &self,
         setting: &ParagraphSetting,
@@ -503,7 +483,7 @@ impl Pdf {
         (plan, chars): (&[Planned], &[char]),
         l: &SetLine,
         stretches: &[Stretch],
-        (pens, setters): (&[Pen], &[(FontChoice, Setter)]),
+        pens: &[Pen],
     ) -> Result<Vec<Written>> {
         let para = setting.paragraph();
         let end = {
@@ -532,14 +512,13 @@ impl Pdf {
                     let (i, _) = pl.kept.expect("kept");
                     let part = &para.parts[i];
                     let size = p.size.max(1.0) / part.em;
-                    let spacing = setting.spacing(p);
-                    let items =
-                        kept_items(setting, plan, chars, a..b, end, l.stretch, size, spacing);
-                    // A letter TeX's accent was drawn over, from another text object, keeps
-                    // the move back to it under the accent, as the measure does (PB-73).
+                    let shows = kept_items(setting, p, plan, chars, a..b, end, l.stretch, size);
+                    // A letter drawn next to the one before it, in another part (PB-75) or
+                    // from inside it in another text object (under TeX's accent, PB-73),
+                    // keeps the move to it as it was drawn, as the measure does.
                     let last = (out.last_mut()).and_then(|w| Some((w.size, w.shows.last_mut()?)));
                     if let (Some(d), Some((size, (spacing, show)))) =
-                        (under_accent(setting, parts, plan, chars, a), last)
+                        (to_neighbour(setting, parts, plan, chars, a), last)
                     {
                         let [tc, _, th] = *spacing;
                         let units = (size * th).max(1e-3);
@@ -552,7 +531,9 @@ impl Pdf {
                         paint: paint(p),
                         rise: p.rise,
                         flipped: setting.font(i).flipped(),
-                        shows: vec![(spacing, tj(items))],
+                        shows: (shows.into_iter())
+                            .map(|(spacing, items)| (spacing, tj(items)))
+                            .collect(),
                     });
                 }
                 Stretch::Word(a, f, k) => {
@@ -572,15 +553,11 @@ impl Pdf {
                         });
                     }
                 }
-                Stretch::Space(j) => {
-                    // A move at the end of what is written before it: a space in the font
-                    // the words go to, and the line's stretch.
-                    let p = &parts[plan[j].part];
-                    let [tc, _, th] = setting.spacing(p);
-                    let space = (setters.iter().find(|(g, _)| *g == plan[j].away))
-                        .map_or(0.25 * p.size, |(_, s)| s.width(" ", p.size));
+                Stretch::Space(j, w) => {
+                    // A move at the end of what is written before it: the space as it was
+                    // measured, and the line's stretch.
                     let stretch = if chars[j] == ' ' { l.stretch } else { 0.0 };
-                    let d = space * th + tc * th + stretch;
+                    let d = w + stretch;
                     if let Some(w) = out.last_mut() {
                         let units = (w.size * w.shows.last().map_or(1.0, |s| s.0[2])).max(1e-3);
                         if let Some((_, show)) = w.shows.last_mut() {
@@ -616,20 +593,23 @@ struct Set<'a> {
 
 /// A stretch of a line as it is written ([`Pdf::written_line`]): characters kept in their
 /// part's font (from, to), a word in another font (its first character, the font, and its
-/// place in that font's words), or a space between such words.
+/// place in that font's words), or a space between such words (the character, and its width
+/// as it was measured).
 #[derive(Clone, Copy, Debug)]
 enum Stretch {
     Kept(usize, usize),
     Word(usize, FontChoice, usize),
-    Space(usize),
+    Space(usize, f32),
 }
 
 /// How far from the end of the letter before it the stretch of kept letters starting at
 /// character `a` of an edit (`parts`, written as `plan` says, its characters `chars`) starts,
-/// in points as the measure sets it ([`ParagraphSetting::measure`]), when that letter is
-/// TeX's accent drawn over it from another text object ([`crate::Paragraph::accent_over`]), both
-/// kept in their own codes and still next to each other: the move back under the accent.
-fn under_accent(
+/// in points as the measure sets it ([`ParagraphSetting::measure`]), when the measure counted
+/// them as drawn next to each other, both kept in their own codes: the letter before drawn
+/// just before it in its text object, in another part (PB-75), or this one drawn from inside
+/// the one before, in another text object ([`crate::Paragraph::drawn_into`]): the move back
+/// under TeX's accent (PB-73), or into a "、"'s empty half.
+fn to_neighbour(
     setting: &ParagraphSetting,
     parts: &[TextPart],
     plan: &[Planned],
@@ -641,7 +621,11 @@ fn under_accent(
     let (before, pl) = (&plan[a.checked_sub(1)?], &plan[a]);
     let k = before.from?;
     let next = own(before) && own(pl) && pl.from == Some(k + 1);
-    if !next || chars[a].is_whitespace() || !para.accent_over(k) {
+    let letters = !(chars[a].is_whitespace() || chars[a - 1].is_whitespace());
+    if !next || !letters || chars[a - 1] == '\u{AD}' {
+        return None;
+    }
+    if !(para.neighbours(k) || para.drawn_into(k)) {
         return None;
     }
     let (i, _) = before.kept?;
@@ -658,26 +642,32 @@ fn push_items(show: &mut Operation, items: Vec<Object>) {
 }
 
 /// The strings and moves of characters `range` of an edit (`chars`, written as `plan`
-/// says, each kept in its part's font) in a line whose characters end at `end` (a soft
-/// hyphen there shows), its spaces stretched by `stretch` points: each character's own
-/// code where it keeps it, with what was drawn between it and its neighbour while that is
-/// still its neighbour; the font's code for one typed; a space its code, or a move where the
-/// font has none. `size` is the text size the show is written at, `spacing` its spacing.
+/// says, each kept in the font of its part `p`) in a line whose characters end at `end` (a
+/// soft hyphen there shows), its spaces stretched by `stretch` points, in shows, each with
+/// the spacing its characters are written with ([`ParagraphSetting::kept_spacing`]): each
+/// character's own code where it keeps it, with what was drawn between it and its neighbour
+/// while that is still its neighbour (what follows the one before at the end of its show,
+/// what comes before this one in its own; all of it opening a show of this one's where a
+/// number would read as a space at the end of the other); the font's code for one typed; a
+/// space its code, or a move where the font has none, at the end of the show before (or the
+/// start of the first), as no spacing applies to it. `size` is the text size the shows are
+/// written at.
+/// One show at least, in the part's spacing when it draws nothing.
 #[allow(clippy::too_many_arguments)]
 fn kept_items(
     setting: &ParagraphSetting,
+    p: &TextPart,
     plan: &[Planned],
     chars: &[char],
     range: std::ops::Range<usize>,
     end: usize,
     stretch: f32,
     size: f32,
-    spacing: [f32; 3],
-) -> Vec<Object> {
+) -> Vec<([f32; 3], Vec<Object>)> {
     let para = setting.paragraph();
-    let [tc, _, th] = spacing;
-    let units = (size * th).max(1e-3);
-    let mut items: Vec<Object> = Vec::new();
+    let mut shows: Vec<([f32; 3], Vec<Object>)> = Vec::new();
+    // Spaces written as moves before the first show, in points.
+    let mut lead: Vec<f32> = Vec::new();
     let mut last: Option<usize> = None;
     let code = |items: &mut Vec<Object>, bytes: &[u8]| {
         let format = match bytes.len() {
@@ -690,17 +680,20 @@ fn kept_items(
         let c = chars[j];
         let (i, way) = plan[j].kept.expect("kept");
         let font = setting.font(i);
+        let spacing = setting.kept_spacing(p, &plan[j]);
+        let [tc, _, th] = spacing;
         if c == '\u{AD}' {
             if j + 1 == end {
+                let items = show_with(&mut shows, spacing);
                 match (way, plan[j].from.and_then(|k| setting.drawn(k))) {
                     (Way::Own(_), Some(d)) => {
                         if let Ink::Code { bytes, format, .. } = &d.ink {
-                            put_code(&mut items, bytes, *format);
+                            put_code(items, bytes, *format);
                         }
                     }
                     _ => {
                         if let Ok(b) = font.code('-') {
-                            code(&mut items, &b);
+                            code(items, &b);
                         }
                     }
                 }
@@ -709,15 +702,22 @@ fn kept_items(
             continue;
         }
         if c.is_whitespace() {
+            let mut moves = Vec::new();
             match font.code(' ') {
-                Ok(b) => code(&mut items, &b),
-                Err(_) => {
-                    let d = setting.space_em() * size * para_em(setting, i) + tc * th;
-                    items.push(r(-d * 1000.0 / units));
-                }
+                Ok(b) => code(show_with(&mut shows, spacing), &b),
+                // A move draws no glyph its spacing applies to: it goes at the end of the show
+                // before, where it reads as a space after that show's letter.
+                Err(_) => moves.push(setting.space_em() * size * para_em(setting, i) + tc * th),
             }
             if stretch != 0.0 && c == ' ' {
-                items.push(r(-stretch * 1000.0 / units));
+                moves.push(stretch);
+            }
+            match shows.last_mut() {
+                Some((sp, items)) => {
+                    let units = (size * sp[2]).max(1e-3);
+                    items.extend(moves.into_iter().map(|d| r(-d * 1000.0 / units)));
+                }
+                None => lead.extend(moves),
             }
             last = None;
             continue;
@@ -727,15 +727,47 @@ fn kept_items(
                 let Some(d) = setting.drawn(o) else {
                     continue;
                 };
-                if o > 0 && last == Some(o - 1) && para.neighbours(o - 1) {
+                let next_to = o > 0 && last == Some(o - 1) && para.neighbours(o - 1);
+                // What was drawn after the letter before ends its show, and what comes before
+                // this one in its own show follows it when this one is written in the same:
+                // unless a number would then read as a space after that letter, as it didn't
+                // on the page (a gap between two shows reads as one from 0.18 em, a number
+                // inside one from 0.15). This letter then opens a show of its own with all of
+                // it in front, where no number reads as a space (PB-30).
+                let em = para_em(setting, i);
+                let apart = next_to
+                    && shows.last().is_some_and(|(sp, items)| {
+                        let mut more = d.after_last.clone();
+                        if *sp == spacing {
+                            more.extend(d.before.iter().cloned());
+                        }
+                        ends_in_space(items, &more, em)
+                    });
+                if apart {
+                    // What follows the letter before is in its show's units.
+                    let th = shows.last().map_or(spacing[2], |s| s.0[2]);
+                    let scale = th / spacing[2].max(1e-3);
+                    let scaled = |o: &Object| match o {
+                        Object::Integer(_) | Object::Real(_) => {
+                            r(o.as_float().unwrap_or(0.0) * scale)
+                        }
+                        _ => o.clone(),
+                    };
+                    let mut items: Vec<Object> = d.after_last.iter().map(scaled).collect();
+                    items.extend(d.before.iter().cloned());
+                    shows.push((spacing, items));
+                } else if let Some((_, items)) = shows.last_mut().filter(|_| next_to) {
                     items.extend(d.after_last.iter().cloned());
+                }
+                let items = show_with(&mut shows, spacing);
+                if next_to && !apart {
                     items.extend(d.before.iter().cloned());
                 }
                 match &d.ink {
                     Ink::Code {
                         bytes, format, n, ..
                     } => {
-                        put_code(&mut items, bytes, *format);
+                        put_code(items, bytes, *format);
                         last = Some(o + n - 1);
                     }
                     Ink::Move(x) => {
@@ -746,20 +778,97 @@ fn kept_items(
             }
             Way::Code => {
                 if let Ok(b) = font.code(c) {
-                    code(&mut items, &b);
+                    code(show_with(&mut shows, spacing), &b);
                 }
                 last = None;
             }
             Way::WithBefore | Way::Space | Way::Missing => {}
         }
     }
-    items
+    if shows.is_empty() {
+        shows.push((setting.spacing(p), Vec::new()));
+    }
+    // The moves before the first show open it, where they read as the gap before its
+    // letters.
+    let (sp, items) = &mut shows[0];
+    let units = (size * sp[2]).max(1e-3);
+    items.splice(0..0, lead.into_iter().map(|d| r(-d * 1000.0 / units)));
+    shows
+}
+
+/// Whether `more` written at the end of a show's `items` leaves a number there that reads
+/// as a space after its letters ([`reads_as_space`], in a font whose em is `em`): [`tj`]
+/// writes numbers next to each other as one.
+fn ends_in_space(items: &[Object], more: &[Object], em: f32) -> bool {
+    let number = |o: &Object| match o {
+        Object::Integer(_) | Object::Real(_) => o.as_float().ok(),
+        _ => None,
+    };
+    let mut text = items.iter().any(|o| number(o).is_none());
+    let mut run: f32 = items.iter().rev().map_while(number).sum();
+    for o in more {
+        match number(o) {
+            Some(x) => run += x,
+            None if text && reads_as_space(run, em) => return true,
+            None => (text, run) = (true, 0.0),
+        }
+    }
+    text && reads_as_space(run, em)
+}
+
+/// The items of the show in `shows` written with `spacing`: the last, or a new one after it.
+fn show_with(shows: &mut Vec<([f32; 3], Vec<Object>)>, spacing: [f32; 3]) -> &mut Vec<Object> {
+    if shows.last().is_none_or(|s| s.0 != spacing) {
+        shows.push((spacing, Vec::new()));
+    }
+    &mut shows.last_mut().expect("a show").1
 }
 
 /// The em of the paragraph's part `i` ([`crate::fonts::FontCtx::em`]): what a size in
 /// points is over the text size its shows are written at.
 fn para_em(setting: &ParagraphSetting, i: usize) -> f32 {
     setting.paragraph().parts.get(i).map_or(1.0, |p| p.em)
+}
+
+/// Where each line written (`checks`) of an edit (`parts`, laid out as `laid`, its characters
+/// `chars`) should sit ([`Pdf::misplaced`]): from where it was set, its ink as wide as it was
+/// set, less the character spacing after its last letter, which draws nothing; its box (with
+/// that spacing, as the frame was read from its lines' boxes) inside the frame's right edge
+/// `right` unless it was set wider than its frame. A line starting with a space isn't
+/// checked: its ink starts past where it does.
+fn extents(
+    setting: &ParagraphSetting,
+    parts: &[TextPart],
+    laid: &LaidParagraph,
+    chars: &[char],
+    checks: &Checks,
+    right: f32,
+) -> Vec<Extent> {
+    let mut out = Vec::new();
+    for &(n, check, _) in checks {
+        let l = &laid.set.lines[n];
+        let (a, mut end) = l.chars;
+        while end > a && chars[end - 1].is_whitespace() {
+            end -= 1;
+        }
+        if end == a || chars[a].is_whitespace() {
+            continue;
+        }
+        let gaps = chars[a..end].iter().filter(|&&c| c == ' ').count();
+        let pl = &laid.plan[end - 1];
+        let [tc, _, th] = setting.kept_spacing(&parts[pl.part], pl);
+        let ends = l.x + l.width + l.stretch * gaps as f32;
+        out.push(Extent {
+            n,
+            check,
+            x: Some(l.x),
+            end: Some(ends - tc * th),
+            right: (ends <= right + 1e-3).then_some(right - tc * th),
+            before: Vec::new(),
+            after: Vec::new(),
+        });
+    }
+    out
 }
 
 /// A matrix as an operator's operands (no "-0").
@@ -814,13 +923,14 @@ mod tests {
         parts[1].origins = (0..parts[1].text.chars().count())
             .map(|j| (j != k).then_some(from + j))
             .collect();
-        let set = setting.set(&parts);
-        let kept: Vec<Option<usize>> = set.lines.iter().map(|l| l.kept).collect();
+        let f = &para.frame;
+        let mut laid = setting.laid_in(&parts, (f.left, f.right), f.align);
+        let kept: Vec<Option<usize>> = laid.set.lines.iter().map(|l| l.kept).collect();
         assert_eq!(kept, [Some(0), None, Some(2), Some(3)]);
         let (id, parsed) = p.load_edit(0).unwrap();
-        let own = [true, false, true, true];
+        setting.retry(&mut laid, &parts, 1).unwrap();
         let (ops, checks) = p
-            .paragraph_ops(id, &parsed, &setting, &parts, &set.lines, &own)
+            .paragraph_ops(id, &parsed, &setting, &parts, &laid)
             .unwrap();
         let misread = p.misread(id, &parsed.inline, &ops, &checks).unwrap();
         assert!(misread.is_empty(), "{misread:?}");

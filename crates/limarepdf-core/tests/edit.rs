@@ -1,8 +1,9 @@
 use limarepdf_core::{
-    render, FontChoice, ImageWatermark, ObjectKind, PartFont, PathStyle, Pdf, Shape, TextEdit,
-    TextPart,
+    render, text_width, FontChoice, ImageWatermark, ObjectKind, PartFont, PathStyle, Pdf, Shape,
+    TextEdit, TextPart, TextSpan,
 };
 use lopdf::{dictionary, Dictionary, Object, Stream};
+use std::collections::BTreeSet;
 
 const W: u32 = 300;
 const H: u32 = 200;
@@ -1733,4 +1734,356 @@ fn added_text_keeps_the_whole_winansi_set() {
         "{:?}",
         o.iter().map(|x| x.text.clone()).collect::<Vec<_>>()
     );
+}
+
+/// "Big" in 40 points, then "small words" in 10, 3 points on.
+const BIG_SMALL: &str = "BT /F1 40 Tf 20 100 Td (Big) Tj /F1 10 Tf [-300 (small words)] TJ ET\n";
+
+/// `old` typed as `new`, in parts by `spans` (a line's or a paragraph's, their characters in
+/// `old`) as the editor makes them: the characters kept at either end in the part they were
+/// in, the typed ones in the part before them.
+fn typed(old: &str, spans: &[TextSpan], new: &str) -> Vec<TextPart> {
+    let (old, new): (Vec<char>, Vec<char>) = (old.chars().collect(), new.chars().collect());
+    let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let room = old.len().min(new.len()) - head;
+    let tail = (old.iter().rev().zip(new.iter().rev()))
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(room);
+    let mut parts: Vec<TextPart> = Vec::new();
+    let mut span = 0;
+    for (j, &c) in new.iter().enumerate() {
+        let origin = match j {
+            _ if j < head => Some(j),
+            _ if j >= new.len() - tail => Some(old.len() + j - new.len()),
+            _ => None,
+        };
+        if let Some(k) = origin {
+            let at = spans.iter().position(|s| s.chars.0 <= k && k < s.chars.1);
+            span = at.unwrap_or(span);
+        }
+        let s = &spans[span];
+        match parts.last_mut() {
+            Some(p) if p.font == PartFont::Span(span) => {
+                p.text.push(c);
+                p.origins.push(origin);
+            }
+            _ => parts.push(TextPart {
+                text: c.to_string(),
+                font: PartFont::Span(span),
+                size: s.font_size,
+                color: s.fill.unwrap_or([0.0; 3]),
+                rise: s.rise,
+                from: None,
+                origins: vec![origin],
+            }),
+        }
+    }
+    parts
+}
+
+/// How a test edits a line: as a line ([`Pdf::edit_text`]) or as the paragraph it is in
+/// ([`Pdf::edit_paragraph`]).
+#[derive(Clone, Copy, Debug)]
+enum Edit {
+    AsLine,
+    AsParagraph,
+}
+
+/// Page 0 with the first `from` in it typed as `to`, edited as `how` says.
+fn retyped(p: &mut Pdf, how: Edit, from: &str, to: &str) -> Result<(), String> {
+    let done = match how {
+        Edit::AsLine => {
+            let objs = p.page_objects(0).unwrap().into_iter();
+            let o = (objs.filter(|o| o.kind == ObjectKind::Text))
+                .find(|o| o.text.as_deref().is_some_and(|t| t.contains(from)))
+                .unwrap();
+            let old = o.text.clone().unwrap();
+            let e = TextEdit::in_parts(typed(&old, &o.spans, &old.replacen(from, to, 1)));
+            p.edit_text(0, o.id, &e)
+        }
+        Edit::AsParagraph => {
+            let words = p.document_words();
+            let blocks = p.page_blocks(0).unwrap();
+            let para = (blocks.iter())
+                .filter_map(|b| p.paragraph(0, b, &words).ok())
+                .find(|para| para.text.contains(from))
+                .unwrap();
+            let setting = p.paragraph_setting(&para).unwrap();
+            let parts = typed(&para.text, &para.spans, &para.text.replacen(from, to, 1));
+            p.edit_paragraph(&setting, &parts).map(|_| ())
+        }
+    };
+    done.map_err(|e| e.to_string())
+}
+
+/// Page 0's words, each with where it starts and ends across the page.
+fn words(p: &Pdf) -> Vec<(String, f32, f32)> {
+    let words = p.page_words(0).unwrap().into_iter();
+    words.map(|w| (w.text, w.bbox[0], w.bbox[2])).collect()
+}
+
+/// PB-30, PB-47: a line drawn in shows of different sizes with one word in it edited, as a
+/// line and as its paragraph, reads back as typed. Edited as a line, each word before the
+/// edited one stays where it was, the edited one starts where it did, and each after it
+/// moves by the change in the edited word's width. (A rewritten paragraph line sets its
+/// spaces anew, in its parts' fonts, so its words move.) A gap after a larger show was
+/// written in the next show's size, too small to read as a space (PB-30), and a gap a kept
+/// show opens with was written twice (PB-47).
+#[test]
+fn a_gap_between_shows_of_different_sizes_stays_as_it_was_drawn() {
+    let td = "BT /F1 40 Tf 20 100 Td (Big) Tj /F1 10 Tf 60.8 0 Td (small words) Tj ET\n";
+    let three =
+        "BT /F1 40 Tf 20 100 Td (Big) Tj /F1 10 Tf [-300 (small)] TJ /F1 12 Tf ( words) Tj ET\n";
+    let rising =
+        "BT /F1 12 Tf 20 100 Td (Big) Tj /F1 10 Tf [-300 (small)] TJ /F1 14 Tf ( words) Tj ET\n";
+    let smaller_first = "BT /F1 10 Tf 20 100 Td (small) Tj /F1 40 Tf [-75 (Big words)] TJ ET\n";
+    let one_size = "BT /F1 11 Tf 20 100 Td [(alpha)] TJ [-300 (beta)] TJ [( gamma)] TJ ET\n";
+    // What, the page, the word edited, what it is typed as, and its size.
+    let cases = [
+        (
+            "a TJ gap after a larger show",
+            BIG_SMALL,
+            "small",
+            "smell",
+            10.0,
+        ),
+        ("a Td gap after a larger show", td, "small", "smell", 10.0),
+        (
+            "a word made longer after a larger show",
+            BIG_SMALL,
+            "small",
+            "smaller",
+            10.0,
+        ),
+        (
+            "a gap a kept show opens with",
+            three,
+            "words",
+            "wards",
+            12.0,
+        ),
+        ("the same, the sizes rising", rising, "words", "wards", 14.0),
+        // Controls, right before the change too.
+        (
+            "a gap after a smaller show",
+            smaller_first,
+            "small",
+            "smell",
+            10.0,
+        ),
+        (
+            "a gap a kept show opens with, one size",
+            one_size,
+            "gamma",
+            "gimma",
+            11.0,
+        ),
+        ("the larger show edited", BIG_SMALL, "Big", "Bog", 40.0),
+    ];
+    let mut wrong = Vec::new();
+    for how in [Edit::AsLine, Edit::AsParagraph] {
+        for (what, content, from, to, size) in cases {
+            let case = format!("{what} ({how:?})");
+            let mut p = make(content);
+            let before = words(&p);
+            if let Err(e) = retyped(&mut p, how, from, to) {
+                wrong.push(format!("{case}: {e}"));
+                continue;
+            }
+            let after = words(&p);
+            let read: Vec<&str> = after.iter().map(|w| w.0.as_str()).collect();
+            let want: Vec<&str> = (before.iter())
+                .map(|w| if w.0 == from { to } else { w.0.as_str() })
+                .collect();
+            if read != want {
+                wrong.push(format!("{case}: read {read:?}"));
+            }
+            if read != want || matches!(how, Edit::AsParagraph) {
+                continue;
+            }
+            let k = before.iter().position(|w| w.0 == from).unwrap();
+            let grew = text_width(to, size) - text_width(from, size);
+            for (j, (b, a)) in before.iter().zip(&after).enumerate() {
+                let (moved, should) = (a.1 - b.1, if j > k { grew } else { 0.0 });
+                if (moved - should).abs() >= 0.05 {
+                    wrong.push(format!(
+                        "{case}: {:?} moved {moved:+.3}, not {should:+.3}",
+                        a.0
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A show that ends moving back over its letter, as issue1912.pdf's do, reads a space after
+/// it that isn't there to see: the next show starts 0.26 points inside the "g". With the
+/// word after it edited as a line, the gap written after the show read as none, joined to
+/// the move back (S1-14's line-edit probe). It reads back as typed, each word where it was.
+#[test]
+fn a_space_read_after_a_show_that_moves_back_stays_one() {
+    let page = "BT /F1 10 Tf 20 100 Td (Bi) Tj 8.89 0 Td [(g) 556] TJ \
+                /F1 12 Tf 5.3 0 Td (small words) Tj ET\n";
+    let mut p = make(page);
+    let before = words(&p);
+    let read = |w: &[(String, f32, f32)]| w.iter().map(|w| w.0.clone()).collect::<Vec<_>>();
+    assert_eq!(read(&before), ["Big", "small", "words"]);
+    retyped(&mut p, Edit::AsLine, "small", "smell").unwrap();
+    let after = words(&p);
+    assert_eq!(read(&after), ["Big", "smell", "words"]);
+    for (b, a) in before.iter().zip(&after) {
+        assert!(
+            (a.1 - b.1).abs() < 0.05,
+            "{:?} moved {:+.3}",
+            a.0,
+            a.1 - b.1
+        );
+    }
+}
+
+/// S1-14's line-edit probe: a line edit whose unchanged words would move is written again in
+/// the fonts its words go to, and that try is held to the same rule. Here the page starts
+/// "Hello" a point on from where "Big " ends, with a `Td` between parts that a part written
+/// anew can't keep. The edit keeps every word before the change where it was and moves
+/// those after it as one, or is refused with the page as it was. Before, the try in other
+/// fonts was looked at only in its parts kept whole, and "Hello" and "there" moved back the
+/// point (bug1753075.pdf's line 232 moved "www.itatennis.com." so).
+#[test]
+fn a_line_edit_written_again_still_keeps_its_words_or_is_refused() {
+    let pages = [
+        (
+            "a point's move into the part edited",
+            "BT /F1 10 Tf 20 100 Td (Big ) Tj /F1 12 Tf 18.23 0 Td (Hello there friend) Tj ET\n",
+        ),
+        (
+            "a point's move into a part kept whole",
+            "BT /F1 10 Tf 20 100 Td (Big ) Tj /F1 12 Tf 18.23 0 Td (Hello ) Tj \
+             /F1 10 Tf 30.672 0 Td (there friend) Tj ET\n",
+        ),
+        // Controls: a move inside a part is kept, and nothing moved on the page.
+        (
+            "a point's move in a line in one part",
+            "BT /F1 12 Tf 20 100 Td (Hello ) Tj 31.672 0 Td (there friend) Tj ET\n",
+        ),
+        (
+            "no move",
+            "BT /F1 10 Tf 20 100 Td (Big ) Tj /F1 12 Tf 17.23 0 Td (Hello there friend) Tj ET\n",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (what, content) in pages {
+        let mut p = make(content);
+        let before = words(&p);
+        let k = before.iter().position(|w| w.0 == "friend").unwrap();
+        let done = retyped(&mut p, Edit::AsLine, "friend", "fiend");
+        let after = words(&p);
+        if let Err(e) = done {
+            if after != before {
+                wrong.push(format!("{what}: refused ({e}) with the page changed"));
+            }
+            continue;
+        }
+        let read: Vec<&str> = after.iter().map(|w| w.0.as_str()).collect();
+        if read[..k] != before[..k].iter().map(|w| w.0.as_str()).collect::<Vec<_>>()[..] {
+            wrong.push(format!("{what}: read {read:?}"));
+            continue;
+        }
+        for (b, a) in before[..k].iter().zip(&after) {
+            if (a.1 - b.1).abs() > 0.5 {
+                wrong.push(format!("{what}: {:?} moved {:+.3}", a.0, a.1 - b.1));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// The dictionary `o` is, or refers to.
+fn resolved<'a>(p: &'a Pdf, o: &'a Object) -> &'a Dictionary {
+    match o {
+        Object::Reference(r) => p.doc.get_dictionary(*r).unwrap(),
+        o => o.as_dict().unwrap(),
+    }
+}
+
+/// The names of page 0's fonts: its `/Resources /Font` keys.
+fn font_names(p: &Pdf) -> BTreeSet<String> {
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    let resources = resolved(p, page.get(b"Resources").unwrap());
+    let fonts = resolved(p, resources.get(b"Font").unwrap());
+    (fonts.iter())
+        .map(|(k, _)| String::from_utf8_lossy(k).into_owned())
+        .collect()
+}
+
+/// The fonts page 0's content sets with `Tf`.
+fn fonts_set(p: &Pdf) -> BTreeSet<String> {
+    let content = (p.doc.get_and_decode_page_content(p.page_ids()[0])).unwrap();
+    (content.operations.iter())
+        .filter(|o| o.operator == "Tf")
+        .map(|o| String::from_utf8_lossy(o.operands[0].as_name().unwrap()).into_owned())
+        .collect()
+}
+
+/// "small words" in 10 points, in a `/F1` whose `/ToUnicode` map reads its "e" as "x": an
+/// "e" typed in a word kept in it is written as its ASCII code and misread.
+fn misreading_e() -> Pdf {
+    let mut p = make("BT /F1 10 Tf 20 100 Td (small words) Tj ET\n");
+    let map = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+               /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+               /CMapName /Adobe-Identity-UCS def /CMapType 2 def\n\
+               1 begincodespacerange <00> <FF> endcodespacerange\n\
+               2 beginbfrange <20> <64> <0020> <66> <7E> <0066> endbfrange\n\
+               1 beginbfchar <65> <0078> endbfchar\n\
+               endcmap CMapName currentdict /CMap defineresource pop end end\n";
+    let map = (p.doc).add_object(Stream::new(Dictionary::new(), map.as_bytes().to_vec()));
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    let resources = resolved(&p, page.get(b"Resources").unwrap());
+    let fonts = resolved(&p, resources.get(b"Font").unwrap());
+    let f1 = fonts.get(b"F1").unwrap().as_reference().unwrap();
+    p.doc.get_dictionary_mut(f1).unwrap().set("ToUnicode", map);
+    p
+}
+
+/// PB-46: an edit whose first try is misread, so that its line is written again in other
+/// fonts, leaves the page naming the fonts it named before and those its content sets: none
+/// from the try undone. The "Ω" typed goes to another font; on the first page the gap after
+/// "Big" is misread (PB-30), on the second the "e" typed in "werds" reads as "x".
+#[test]
+fn a_line_written_again_leaves_no_font_name_from_its_first_try() {
+    let mut wrong = Vec::new();
+    for how in [Edit::AsLine, Edit::AsParagraph] {
+        let pages = [
+            (
+                "after a larger show",
+                make(BIG_SMALL),
+                "small",
+                "sm\u{3A9}ll",
+            ),
+            (
+                "in a font that misreads",
+                misreading_e(),
+                "small words",
+                "sm\u{3A9}ll werds",
+            ),
+        ];
+        for (what, mut p, from, to) in pages {
+            let case = format!("{what} ({how:?})");
+            let mut want = font_names(&p);
+            if let Err(e) = retyped(&mut p, how, from, to) {
+                wrong.push(format!("{case}: {e}"));
+                continue;
+            }
+            want.extend(fonts_set(&p));
+            let named = font_names(&p);
+            if named != want {
+                let set = fonts_set(&p);
+                wrong.push(format!(
+                    "{case}: the page names {named:?}, its content sets {set:?}"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
