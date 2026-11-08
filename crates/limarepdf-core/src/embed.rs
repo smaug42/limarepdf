@@ -503,43 +503,63 @@ impl Face {
     }
 
     /// The characters `text` is written with in the face: put together (NFC) where the face
-    /// has the combined letter, else apart where it has the parts; and those it can't write,
-    /// each once, an emoji sequence whole ([`emoji_sequence`]).
-    pub(crate) fn spelled(&self, text: &str) -> (Vec<char>, String) {
-        let (mut out, mut missing) = (Vec::new(), String::new());
-        let text: String = text.nfc().collect();
-        for cluster in text.graphemes(true) {
-            if emoji_sequence(cluster) {
-                if !missing.contains(cluster) {
-                    missing.push_str(cluster);
+    /// has the combined letter, else apart where it has the parts, each with the characters
+    /// of `text` it came from; and those it can't write, each once, an emoji sequence whole
+    /// ([`emoji_sequence`]). Each of `text`'s graphemes is put together by itself (NFC
+    /// never joins two), so what comes of it maps to the whole grapheme.
+    pub(crate) fn spelled(&self, text: &str) -> Spelled {
+        let mut out = Spelled::default();
+        let mut at = 0;
+        for typed in text.graphemes(true) {
+            let from = (at, at + typed.chars().count());
+            at = from.1;
+            let cluster: String = typed.nfc().collect();
+            if emoji_sequence(&cluster) {
+                if !out.missing.contains(&cluster) {
+                    out.missing.push_str(&cluster);
                 }
                 continue;
             }
             for c in cluster.chars() {
                 if self.covers(c) {
-                    out.push(c);
+                    out.chars.push(c);
+                    out.from.push(from);
                     continue;
                 }
                 let parts: Vec<char> = c.to_string().nfd().collect();
                 if parts.len() > 1 && parts.iter().all(|&p| self.covers(p)) {
-                    out.extend(parts);
-                } else if !missing.contains(c) {
-                    missing.push(c);
+                    out.from.extend(parts.iter().map(|_| from));
+                    out.chars.extend(parts);
+                } else if !out.missing.contains(c) {
+                    out.missing.push(c);
                 }
             }
         }
-        (out, missing)
+        out
     }
 
     /// The characters `text` is written with in the face ([`Face::spelled`]), or those it
     /// can't write, when there are any.
     #[cfg(test)]
     fn spell(&self, text: &str) -> std::result::Result<Vec<char>, String> {
-        match self.spelled(text) {
-            (out, missing) if missing.is_empty() => Ok(out),
-            (_, missing) => Err(missing),
+        let s = self.spelled(text);
+        match s.missing.is_empty() {
+            true => Ok(s.chars),
+            false => Err(s.missing),
         }
     }
+}
+
+/// Text as a face writes it ([`Face::spelled`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Spelled {
+    /// The characters written.
+    pub chars: Vec<char>,
+    /// For each of them, the characters of the text it came from, from and to: its
+    /// grapheme's.
+    pub from: Vec<(usize, usize)>,
+    /// What can't be written, each once.
+    pub missing: String,
 }
 
 /// Whether LimarePDF can write `c` in `f`, or in a font it falls back to for it
@@ -1912,6 +1932,33 @@ mod tests {
         assert_eq!(apart.bytes, together.bytes);
         show(&mut p, &[(SANS, "Cafe\u{301}")]);
         assert!(reopened(&mut p).page_text(0).contains("Café"));
+    }
+
+    /// Each character written maps to the grapheme it came from (S1-14): a letter and the
+    /// accent typed after it, put together, to both; parts of a letter the face has only in
+    /// parts each to the letter; a character it can't write to nothing.
+    #[test]
+    fn what_is_spelled_maps_to_the_characters_typed() {
+        let face = Face::liberation(SANS);
+        let s = face.spelled("e\u{301}x");
+        assert_eq!(s.chars, ['é', 'x']);
+        assert_eq!(s.from, [(0, 2), (2, 3)]);
+        let parted = ('\u{C0}'..='\u{2FFF}')
+            .find(|&c| {
+                let parts: Vec<char> = c.to_string().nfd().collect();
+                let together = c.to_string().nfc().all(|n| !face.covers(n));
+                together && parts.len() > 1 && parts.iter().all(|&p| face.covers(p))
+            })
+            .unwrap();
+        let s = face.spelled(&format!("a{parted}"));
+        let n = s.chars.len();
+        assert!(n > 2, "{:?}", s.chars);
+        assert_eq!(s.from[0], (0, 1));
+        assert!(s.from[1..].iter().all(|&r| r == (1, 2)), "{:?}", s.from);
+        let s = face.spelled("a\u{2FFFE}b");
+        assert_eq!(s.chars, ['a', 'b']);
+        assert_eq!(s.from, [(0, 1), (2, 3)]);
+        assert_eq!(s.missing, "\u{2FFFE}");
     }
 
     #[test]

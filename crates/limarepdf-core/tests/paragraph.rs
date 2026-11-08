@@ -12,10 +12,12 @@ mod common;
 
 use common::saved::tools;
 use limarepdf_core::{
-    text_width, Align, Block, Detect, Doubt, Hidden, Hyphen, ObjectKind, PageObject, Paragraph,
-    ParagraphSetting, PartFont, Pdf, SetLine, SetParagraph, TextEdit, TextPart,
+    add_font_files, text_width, typeface, Align, Block, Detect, Doubt, Family, FontChoice, Hidden,
+    Hyphen, ObjectKind, PageObject, Paragraph, ParagraphSetting, PartFont, Pdf, SetLine,
+    SetParagraph, TextEdit, TextPart,
 };
 use lopdf::{dictionary, Dictionary, Object, Stream};
+use std::sync::OnceLock;
 
 /// A US Letter page drawing `content`, with Helvetica as `/F1` and Helvetica-Bold as `/F2`.
 fn letter(content: &str) -> Pdf {
@@ -2415,4 +2417,619 @@ fn cross_check_written_paragraphs_with_pdftotext() {
         let got = plain(&tools::pdftotext(&p.to_bytes().unwrap()));
         assert!(got.contains(&plain(&new)), "{what}: {got:?}");
     }
+}
+
+// ---- Lines as wide as they were set, inside their frame (S1-14: M-12, V-06, PB-75).
+
+const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/fonts/");
+const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/");
+
+/// The test font `name`, added to the computer's own as tests/text_pipeline.rs adds them.
+fn installed(name: &str) -> FontChoice {
+    static NUMBERS: OnceLock<Vec<u16>> = OnceLock::new();
+    let numbers = NUMBERS.get_or_init(|| {
+        let files = [
+            format!("{FONTS}SourceSerif4-Regular.otf"),
+            format!("{ASSETS}Caveat.ttf"),
+            format!("{FONTS}LimareEmojiTest.ttf"),
+            format!("{FONTS}LimareHanTest.ttf"),
+        ];
+        let paths: Vec<&std::path::Path> = files.iter().map(std::path::Path::new).collect();
+        add_font_files(&paths)
+    });
+    let n = (numbers.iter().copied())
+        .find(|&n| typeface(n).unwrap().name == name)
+        .unwrap_or_else(|| panic!("{name} among the test fonts"));
+    FontChoice {
+        family: Family::Installed(n),
+        bold: false,
+        italic: false,
+    }
+}
+
+/// A page whose only paragraph, "Old text" at x 20, is written again as `text` in `font` at
+/// 12 points between `edges`, aligned as `align` says: the page, how the text was set, and
+/// what the edit said.
+fn written_alone(
+    text: &str,
+    font: FontChoice,
+    edges: (f32, f32),
+    align: Align,
+) -> (Pdf, SetParagraph, Result<Vec<usize>, String>) {
+    let mut p = letter("BT /F1 12 Tf 20 700 Td (Old text) Tj ET\n");
+    let para = only_paragraph(&p);
+    let setting = p.paragraph_setting(&para).unwrap();
+    let parts = [TextPart {
+        text: text.into(),
+        font: PartFont::Choice(font),
+        size: 12.0,
+        color: [0.0; 3],
+        rise: 0.0,
+        from: None,
+        origins: Vec::new(),
+    }];
+    let set = setting.set_in(&parts, edges, align);
+    let done = p.edit_paragraph_in(&setting, &parts, edges, align);
+    (p, set, done.map_err(|e| e.to_string()))
+}
+
+/// How page 0's lines, written as `set` says, miss: a line past `edges` (when given), or not
+/// as wide as it was set, by where its last character ends or by its box.
+fn misfits(p: &Pdf, set: &SetParagraph, edges: Option<(f32, f32)>) -> Vec<String> {
+    let written = lines(p);
+    let mut out = Vec::new();
+    if written.len() != set.lines.len() {
+        let (w, s) = (written.len(), set.lines.len());
+        out.push(format!("{w} lines written for {s} set"));
+    }
+    for (k, (o, l)) in written.iter().zip(&set.lines).enumerate() {
+        let text = o.text.as_deref().unwrap_or("");
+        let (from, to) = (o.bbox[0], o.bbox[2]);
+        if let Some((left, right)) = edges {
+            if from < left - 0.5 || to > right + 0.5 {
+                out.push(format!("line {k} {text:?} drawn from {from:.2} to {to:.2}"));
+            }
+        }
+        let ends = o.stops.last().unwrap() - o.stops[0];
+        if (ends - l.width).abs() >= 0.05 {
+            out.push(format!(
+                "line {k} {text:?} ends {ends:.2} on, set {:.2}",
+                l.width
+            ));
+        }
+        if (to - from - l.width).abs() >= 0.6 {
+            let wide = to - from;
+            out.push(format!(
+                "line {k} {text:?} drawn {wide:.2} wide, set {:.2}",
+                l.width
+            ));
+        }
+    }
+    out
+}
+
+/// The texts [`lines_fit_their_frame_and_are_as_wide_as_set`] sets: a word wider than any
+/// frame, a long address with breaks inside it, and words in fonts the text falls back to.
+fn wide_texts() -> [(&'static str, String); 3] {
+    let url = "see https://example.com/a/very/long/path/to/some/resource?with=query&and=more here";
+    [
+        ("A × 100", "A".repeat(100)),
+        ("an address", url.into()),
+        ("other scripts", "Ωmega жёлтый 漢字日本語 mixed".into()),
+    ]
+}
+
+/// M-12: text set in a frame narrower than its words is broken inside them, and each line
+/// is written as wide as it was set, inside the frame, whichever way it is aligned. (The
+/// Chinese falls back to the test fonts, so every computer has a font for it.)
+#[test]
+fn lines_fit_their_frame_and_are_as_wide_as_set() {
+    installed("Limare Han Test");
+    let mut wrong = Vec::new();
+    for (what, text) in wide_texts() {
+        for room in [40.0, 100.0] {
+            for align in [Align::Left, Align::Centre, Align::Right] {
+                let edges = (20.0, 20.0 + room);
+                let (p, set, done) = written_alone(&text, FontChoice::default(), edges, align);
+                let case = format!("{what} in {room}, {align:?}");
+                match done {
+                    Ok(_) => (misfits(&p, &set, Some(edges)).into_iter())
+                        .for_each(|m| wrong.push(format!("{case}: {m}"))),
+                    Err(e) => wrong.push(format!("{case}: {e}")),
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// V-06: text in a font that shapes it (kerned pairs, words broken at their hyphens, letters
+/// with an accent typed after them, Chinese among Latin) fits its frame, each line as wide
+/// as it was set.
+#[test]
+fn shaped_lines_fit_their_frame_and_are_as_wide_as_set() {
+    let (serif, han) = (installed("Source Serif 4"), installed("Limare Han Test"));
+    let accents = "cafe\u{301} ".repeat(5);
+    let cases = [
+        ("kerning", "AVATAR To Te AVATAR To Te AVATAR", serif, 100.0),
+        ("hyphens", "AV-AV-AV-AV-AV-AV-AV-AV", serif, 40.0),
+        ("accents", accents.trim_end(), serif, 40.0),
+        (
+            "Chinese among Latin",
+            "Latin 漢字漢字漢字 and more 漢字",
+            han,
+            40.0,
+        ),
+        (
+            "Chinese among Latin",
+            "Latin 漢字漢字漢字 and more 漢字",
+            han,
+            100.0,
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (what, text, font, room) in cases {
+        let edges = (20.0, 20.0 + room);
+        let (p, set, done) = written_alone(text, font, edges, Align::Left);
+        let case = format!("{what} in {room}");
+        match done {
+            Ok(_) => (misfits(&p, &set, Some(edges)).into_iter())
+                .for_each(|m| wrong.push(format!("{case}: {m}"))),
+            Err(e) => wrong.push(format!("{case}: {e}")),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// V-06: a word wider than its frame breaks between the glyphs its font draws, never inside
+/// one: not inside a ligature (Source Serif 4 draws "ffi" as one), nor between a letter and
+/// the accent typed after it. Every line has something on it, fits, and is as wide as set.
+#[test]
+fn a_word_wider_than_its_frame_breaks_between_its_glyphs() {
+    let serif = installed("Source Serif 4");
+    let mut wrong = Vec::new();
+    let ffi = "ffi".repeat(11);
+    let cafe = "cafe\u{301}";
+    for (what, text, room) in [("ligatures", ffi.as_str(), 40.0), ("an accent", cafe, 15.0)] {
+        let edges = (20.0, 20.0 + room);
+        let (p, set, done) = written_alone(text, serif, edges, Align::Left);
+        if let Err(e) = done {
+            wrong.push(format!("{what}: {e}"));
+            continue;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        for (k, l) in set.lines.iter().enumerate() {
+            let (a, e) = l.chars;
+            let inside = match what {
+                "ligatures" => a % 3 != 0 || e % 3 != 0,
+                _ => chars.get(a) == Some(&'\u{301}'),
+            };
+            if inside || a == e || l.width <= 0.0 {
+                wrong.push(format!(
+                    "{what}: line {k} {:?} set {:.2} wide",
+                    l.chars, l.width
+                ));
+            }
+        }
+        (misfits(&p, &set, Some(edges)).into_iter())
+            .for_each(|m| wrong.push(format!("{what}: {m}")));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// Q4: a ligature wider than its frame is set alone on its line, past the frame's edge, and
+/// written as wide as it was set.
+#[test]
+fn a_ligature_wider_than_its_frame_is_set_alone() {
+    let ffi = "ffi".repeat(4);
+    let serif = installed("Source Serif 4");
+    let (p, set, done) = written_alone(&ffi, serif, (20.0, 28.0), Align::Left);
+    done.unwrap();
+    let each: Vec<(usize, usize)> = set.lines.iter().map(|l| l.chars).collect();
+    assert_eq!(each, [(0, 3), (3, 6), (6, 9), (9, 12)]);
+    let wrong = misfits(&p, &set, None);
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A character no font has is refused, as it was, and nothing is written.
+#[test]
+fn a_character_no_font_has_is_refused() {
+    let text = "abc \u{2FFFE} def";
+    let (p, _, done) = written_alone(text, FontChoice::default(), (20.0, 120.0), Align::Left);
+    let e = done.unwrap_err();
+    assert!(e.contains("No font"), "{e}");
+    assert_eq!(texts(&p), ["Old text"]);
+}
+
+/// Where the accent of [`accented_page`]'s accented line starts from the letter before it.
+fn letter_to_accent(p: &Pdf) -> f32 {
+    let drawn: Vec<(char, f32)> = (lines(p).iter())
+        .flat_map(|o| {
+            let x = o.baseline.unwrap().0;
+            let text = o.text.as_deref().unwrap_or("");
+            text.chars()
+                .zip(o.stops.iter().map(|s| x + s))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let k = (drawn.iter().position(|d| d.0 == '\u{A8}')).expect("the accent");
+    assert_eq!(drawn[k - 1].0, 'r', "{drawn:?}");
+    drawn[k].1 - drawn[k - 1].1
+}
+
+/// PB-75: a word typed before, inside or after [`accented_page`]'s "Pr¨ufung", whose accent
+/// is drawn over the "u" from a move after the "r", writes the line as wide as it was set:
+/// the move from the "r" to the accent is written as the measure counted it.
+#[test]
+fn a_line_with_an_accent_drawn_over_its_letter_is_as_wide_as_set() {
+    let was = letter_to_accent(&accented_page());
+    let mut wrong = Vec::new();
+    for to in ["big Pr\u{A8}ufung", "Pr\u{A8}ufungs", "Pr\u{A8}ufung big"] {
+        let mut p = accented_page();
+        let para = only_paragraph(&p);
+        let setting = p.paragraph_setting(&para).unwrap();
+        let new = para.text.replacen("Pr\u{A8}ufung", to, 1);
+        let parts = typed(&para, &new);
+        let set = setting.set(&parts);
+        p.edit_paragraph(&setting, &parts).unwrap();
+        let chars: Vec<char> = new.chars().collect();
+        let accented = |l: &&SetLine| chars[l.chars.0..l.chars.1].contains(&'\u{A8}');
+        let l = set.lines.iter().find(accented).unwrap();
+        let o = (lines(&p).into_iter())
+            .find(|o| o.text.as_deref().is_some_and(|t| t.contains('\u{A8}')))
+            .unwrap();
+        let wide = o.bbox[2] - o.bbox[0];
+        if (wide - l.width).abs() >= 0.3 {
+            wrong.push(format!("{to}: drawn {wide:.3} wide, set {:.3}", l.width));
+        }
+        let now = letter_to_accent(&p);
+        if (now - was).abs() >= 0.05 {
+            wrong.push(format!(
+                "{to}: the accent {now:.3} from the r, was {was:.3}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A ragged paragraph from [`TEXT`] whose second line is drawn in two shows, the second
+/// with -0.2 points of character spacing the first doesn't have, as Word draws a word it
+/// spaced to fit: one part of the paragraph, two spacings. The page and its lines.
+fn spaced_within_a_part() -> (Pdf, Vec<String>) {
+    let lines = wrap(TEXT, 300.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let shows = match k {
+            1 => {
+                let mid = l.len() / 2;
+                let at = mid + l[mid..].find(' ').unwrap() + 1;
+                format!("({}) Tj -0.2 Tc ({}) Tj", &l[..at], &l[at..])
+            }
+            _ => format!("({l}) Tj"),
+        };
+        content.push_str(&format!("BT /F1 11 Tf 72 {y} Td {shows} ET\n"));
+    }
+    (letter(&content), lines)
+}
+
+/// Where each character of page 0's line reading `text` starts, from where its first
+/// does, and where its last ends.
+fn letter_places(p: &Pdf, text: &str) -> Vec<f32> {
+    let o = (lines(p).into_iter())
+        .find(|o| o.text.as_deref() == Some(text))
+        .unwrap_or_else(|| panic!("a line reading {text:?}"));
+    o.stops.iter().map(|s| s - o.stops[0]).collect()
+}
+
+/// A part of a paragraph drawn in shows with different character spacing keeps each
+/// letter where it was from the others when the paragraph is realigned: each is written
+/// with its own show's spacing, as the measure counts it, so the line sits where it was
+/// set.
+#[test]
+fn letters_drawn_with_another_spacing_in_their_part_keep_it_when_realigned() {
+    let (p, lines) = spaced_within_a_part();
+    let was = letter_places(&p, &lines[1]);
+    for align in [Align::Centre, Align::Right] {
+        let para = only_paragraph(&p);
+        let setting = p.paragraph_setting(&para).unwrap();
+        let edges = (para.frame.left, para.frame.right);
+        let set = setting.set_in(&para.parts(), edges, align);
+        assert!(set.lines[1].kept.is_none(), "{align:?}: {:?}", set.lines[1]);
+        let mut q = p.clone();
+        let lost = (q.edit_paragraph_in(&setting, &para.parts(), edges, align)).unwrap();
+        assert!(lost.is_empty(), "{align:?}: {lost:?}");
+        assert_eq!(line_texts(&q), lines, "{align:?}");
+        let now = letter_places(&q, &lines[1]);
+        let off = (was.iter().zip(&now)).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(off < 0.05, "{align:?}: letters moved up to {off:.3}");
+        let (o, l) = (&lines_of(&q)[1], &set.lines[1]);
+        assert!(
+            near(o.baseline.unwrap(), (l.x, l.baseline)),
+            "{o:?} against {l:?}"
+        );
+    }
+}
+
+/// A ragged paragraph from [`TEXT`] whose second line draws "the" in two shows of its text
+/// object, "th" and "e", the second 0.165 em after the first ends: less than the 0.18 em
+/// that reads as a space between two shows, more than the 0.15 em a number inside one does
+/// (pdf.js's `issue12294-print`). The second show is moved to by `Td`, or with `lead` by a
+/// number opening it. The page and its lines.
+fn the_in_two_shows(lead: bool) -> (Pdf, Vec<String>) {
+    let lines = wrap(TEXT, 300.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let shows = match k {
+            1 => {
+                let at = l.find(" the ").expect("\"the\" on the second line") + 3;
+                let (a, b) = (&l[..at], &l[at..]);
+                match lead {
+                    true => format!("({a}) Tj [-165 ({b})] TJ"),
+                    false => {
+                        let to = text_width(a, 11.0) + 0.165 * 11.0;
+                        format!("({a}) Tj {to} 0 Td ({b}) Tj")
+                    }
+                }
+            }
+            _ => format!("({l}) Tj"),
+        };
+        content.push_str(&format!("BT /F1 11 Tf 72 {y} Td {shows} ET\n"));
+    }
+    (letter(&content), lines)
+}
+
+/// A word drawn in two shows a little apart, as [`the_in_two_shows`] draws "the", reads as
+/// one word when the paragraph is realigned, its letters where they were from each other:
+/// the gap is written opening the second show, where it reads as no space as it didn't on
+/// the page, not at the end of the first, where it would (PB-30, paragraph edits).
+#[test]
+fn a_word_drawn_in_two_shows_a_little_apart_reads_as_one_when_realigned() {
+    for lead in [false, true] {
+        let (p, lines) = the_in_two_shows(lead);
+        assert_eq!(line_texts(&p), lines, "lead {lead}: the page as drawn");
+        let was = letter_places(&p, &lines[1]);
+        for align in [Align::Centre, Align::Right] {
+            let para = only_paragraph(&p);
+            let setting = p.paragraph_setting(&para).unwrap();
+            let edges = (para.frame.left, para.frame.right);
+            let set = setting.set_in(&para.parts(), edges, align);
+            assert!(set.lines[1].kept.is_none(), "lead {lead}, {align:?}");
+            let mut q = p.clone();
+            let lost = (q.edit_paragraph_in(&setting, &para.parts(), edges, align)).unwrap();
+            assert!(lost.is_empty(), "lead {lead}, {align:?}: {lost:?}");
+            assert_eq!(line_texts(&q), lines, "lead {lead}, {align:?}");
+            let now = letter_places(&q, &lines[1]);
+            let off = (was.iter().zip(&now)).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            assert!(
+                off < 0.05,
+                "lead {lead}, {align:?}: letters moved up to {off:.3}"
+            );
+        }
+    }
+}
+
+/// A ragged paragraph from [`TEXT`] whose second line is drawn in two text objects, the
+/// second starting 1.5 points inside the last letter of the first, in the middle of a word:
+/// as pdf.js's `issue12402` draws each Chinese word after a "、" from inside the comma's
+/// empty half. The page and its lines.
+fn drawn_into_the_letter_before() -> (Pdf, Vec<String>) {
+    let lines = wrap(TEXT, 300.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        match k {
+            1 => {
+                let at = l.find(" the ").expect("\"the\" on the second line") + 3;
+                let (a, b) = (&l[..at], &l[at..]);
+                let to = 72.0 + text_width(a, 11.0) - 1.5;
+                content.push_str(&format!("BT /F1 11 Tf 72 {y} Td ({a}) Tj ET\n"));
+                content.push_str(&format!("BT /F1 11 Tf {to} {y} Td ({b}) Tj ET\n"));
+            }
+            _ => content.push_str(&format!("BT /F1 11 Tf 72 {y} Td ({l}) Tj ET\n")),
+        }
+    }
+    (letter(&content), lines)
+}
+
+/// Each line of `p`'s page, the text objects on one baseline read one after another: its
+/// text, and where each of its letters starts from its first.
+fn baseline_lines(p: &Pdf) -> Vec<(String, Vec<f32>)> {
+    let mut out: Vec<(f32, String, Vec<f32>)> = Vec::new();
+    for o in lines(p) {
+        let (x, y) = o.baseline.unwrap();
+        let text = o.text.unwrap_or_default();
+        let at = o.stops.iter().take(text.chars().count()).map(|s| x + s);
+        match out.last_mut().filter(|l| (l.0 - y).abs() < 0.01) {
+            Some(l) => {
+                l.1.push_str(&text);
+                l.2.extend(at);
+            }
+            None => out.push((y, text, at.collect())),
+        }
+    }
+    let from_first = |at: Vec<f32>| at.iter().map(|a| a - at[0]).collect();
+    out.into_iter()
+        .map(|(_, t, at)| (t, from_first(at)))
+        .collect()
+}
+
+/// A letter drawn from inside the one before it, in another text object, keeps the move
+/// back to it when the paragraph is realigned, as TeX's accent keeps its (PB-73): the
+/// measure counts it and the writer writes it, so the letters stay where they were from
+/// each other and the line is as wide as it was.
+#[test]
+fn a_letter_drawn_from_inside_the_one_before_keeps_its_place_when_realigned() {
+    let (p, lines) = drawn_into_the_letter_before();
+    let texts = |p: &Pdf| {
+        baseline_lines(p)
+            .into_iter()
+            .map(|l| l.0)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(&p), lines, "the page as drawn");
+    let was = baseline_lines(&p).swap_remove(1).1;
+    for align in [Align::Centre, Align::Right] {
+        let para = only_paragraph(&p);
+        let setting = p.paragraph_setting(&para).unwrap();
+        let edges = (para.frame.left, para.frame.right);
+        let mut q = p.clone();
+        let lost = (q.edit_paragraph_in(&setting, &para.parts(), edges, align)).unwrap();
+        assert!(lost.is_empty(), "{align:?}: {lost:?}");
+        assert_eq!(texts(&q), lines, "{align:?}");
+        let now = baseline_lines(&q).swap_remove(1).1;
+        assert_eq!(now.len(), was.len(), "{align:?}");
+        let off = (was.iter().zip(&now)).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(off < 0.05, "{align:?}: letters moved up to {off:.3}");
+    }
+}
+
+/// A ragged paragraph from [`TEXT`] drawn with -0.8 points of character spacing, as
+/// pdf.js's `3297` draws its title: each line's last letter ends 0.8 points past where the
+/// pen does, and its box with the pen. The page and its lines.
+fn tightly_spaced() -> (Pdf, Vec<String>) {
+    let lines = wrap(TEXT, 300.0, 11.0);
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        content.push_str(&format!("BT /F1 11 Tf -0.8 Tc 72 {y} Td ({l}) Tj ET\n"));
+    }
+    (letter(&content), lines)
+}
+
+/// A paragraph drawn with negative character spacing is right-aligned, and centred, in its
+/// frame as it was read: each line's box (where the pen ends) inside the frame's right edge,
+/// as its widest line's was, though its last letter ends past it; the frame doesn't move.
+#[test]
+fn a_tightly_spaced_paragraph_realigned_keeps_its_lines_boxes_in_its_frame() {
+    let (p, lines) = tightly_spaced();
+    let f0 = only_paragraph(&p).frame;
+    for align in [Align::Right, Align::Centre] {
+        let mut q = p.clone();
+        let para = only_paragraph(&q);
+        let setting = q.paragraph_setting(&para).unwrap();
+        let edges = (para.frame.left, para.frame.right);
+        let lost = (q.edit_paragraph_in(&setting, &para.parts(), edges, align)).unwrap();
+        assert!(lost.is_empty(), "{align:?}: {lost:?}");
+        assert_eq!(line_texts(&q), lines, "{align:?}");
+        for o in lines_of(&q) {
+            assert!(
+                o.bbox[2] <= f0.right + 0.5,
+                "{align:?}: {o:?} past {}",
+                f0.right
+            );
+        }
+        let f = only_paragraph(&q).frame;
+        let moved = (f.left - f0.left).abs().max((f.right - f0.right).abs());
+        assert!(moved < 0.5, "{align:?}: the frame moved {moved:.3}");
+    }
+}
+
+/// A paragraph in a Type 3 font of boxes with no space, each space drawn as a move, as TeX
+/// draws its fonts', whose second line draws its last word in a show with 0.5 points of
+/// character spacing the rest don't have, that show opening with the space before it. Each
+/// line sets its own spacing. The page and its lines.
+fn spaced_without_a_space() -> (Pdf, Vec<String>) {
+    let lines = [
+        "Stony Brook ton tony rook torn",
+        "knot Brook tony rook Stony",
+        "rook torn knot Brook tony ton",
+        "tony ton",
+    ];
+    let shows = |words: &[&str]| -> String {
+        let words: Vec<String> = words.iter().map(|w| format!("({w})")).collect();
+        words.join(" -333 ")
+    };
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 13.2 * k as f32;
+        let words: Vec<&str> = l.split(' ').collect();
+        let tj = match k {
+            1 => {
+                let (a, b) = words.split_at(4);
+                format!("[{}] TJ 0.5 Tc [-333 {}] TJ", shows(a), shows(b))
+            }
+            _ => format!("[{}] TJ", shows(&words)),
+        };
+        content.push_str(&format!("BT /T3 11 Tf 0 Tc 72 {y} Td {tj} ET\n"));
+    }
+    let s = 1.0 / 92.0;
+    let p = page_with(
+        |p| box_font(p, STONY_BROOK, [s, 0.0, 0.0, s], (0, 58)),
+        &content,
+    );
+    (p, lines.map(String::from).to_vec())
+}
+
+/// A paragraph whose font has no space keeps each letter where it was from the others when
+/// it is realigned, its words drawn with two spacings: the space before the spaced word is
+/// written as a move at the end of the show before it, where it reads as the space it was.
+/// (A space drawn inside a spaced show is still written that spacing wider, PB-124.)
+#[test]
+fn words_drawn_with_two_spacings_in_a_font_without_a_space_keep_their_places_when_realigned() {
+    let (p, lines) = spaced_without_a_space();
+    assert_eq!(line_texts(&p), lines, "the page as drawn");
+    let was = letter_places(&p, &lines[1]);
+    for align in [Align::Centre, Align::Right] {
+        let para = only_paragraph(&p);
+        let setting = p.paragraph_setting(&para).unwrap();
+        let edges = (para.frame.left, para.frame.right);
+        let set = setting.set_in(&para.parts(), edges, align);
+        assert!(set.lines[1].kept.is_none(), "{align:?}: {:?}", set.lines[1]);
+        let mut q = p.clone();
+        let lost = (q.edit_paragraph_in(&setting, &para.parts(), edges, align)).unwrap();
+        assert!(lost.is_empty(), "{align:?}: {lost:?}");
+        assert_eq!(line_texts(&q), lines, "{align:?}");
+        let now = letter_places(&q, &lines[1]);
+        let off = (was.iter().zip(&now)).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(off < 0.05, "{align:?}: letters moved up to {off:.3}");
+    }
+}
+
+/// The lines Poppler reads on page 1 of `bytes`: where each starts and ends across it.
+fn poppler_lines(bytes: &[u8]) -> Vec<(f32, f32)> {
+    let args = ["-bbox-layout", "-f", "1", "-l", "1", "{}", "-"];
+    let xml = tools::run("pdftotext", &args, bytes);
+    let at = |line: &str, key: &str| -> f32 {
+        let from = line.find(&format!("{key}=\"")).unwrap() + key.len() + 2;
+        let to = from + line[from..].find('"').unwrap();
+        line[from..to].parse().unwrap()
+    };
+    (xml.lines().map(str::trim))
+        .filter(|l| l.starts_with("<line "))
+        .map(|l| (at(l, "xMin"), at(l, "xMax")))
+        .collect()
+}
+
+/// [`lines_fit_their_frame_and_are_as_wide_as_set`]'s pages read by Poppler (`pdftotext
+/// -bbox-layout`): each line ends inside its frame and is as wide as it was set. Opt-in, as
+/// the cross-checks above.
+#[test]
+#[ignore]
+fn cross_check_line_extents_with_poppler() {
+    installed("Limare Han Test");
+    let mut wrong = Vec::new();
+    for (what, text) in wide_texts() {
+        for room in [40.0, 100.0] {
+            for align in [Align::Left, Align::Centre, Align::Right] {
+                let edges = (20.0, 20.0 + room);
+                let (mut p, set, done) = written_alone(&text, FontChoice::default(), edges, align);
+                done.unwrap();
+                let read = poppler_lines(&p.to_bytes().unwrap());
+                let case = format!("{what} in {room}, {align:?}");
+                let (r, s) = (read.len(), set.lines.len());
+                if r != s {
+                    wrong.push(format!("{case}: {r} lines read, {s} set"));
+                }
+                for (k, ((from, to), l)) in read.iter().zip(&set.lines).enumerate() {
+                    if *to > edges.1 + 0.5 || (to - from - l.width).abs() >= 0.6 {
+                        let w = l.width;
+                        wrong.push(format!("{case}: line {k} {from:.2} to {to:.2}, set {w:.2}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

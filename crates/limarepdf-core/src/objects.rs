@@ -344,6 +344,15 @@ fn n(o: &Object) -> Option<f32> {
     }
 }
 
+/// Whether spacing number `x` of a `TJ`, after a character of its show, reads as a space
+/// between words, in a font whose em is `em` thousandths of text space ([`Span::em`]): a
+/// big negative kern is a visual gap. Justified lines squeeze these to under 0.2 em;
+/// kerning between letters stays under about 0.14 em. A Type 3 font's em can be many
+/// thousandths of text space (PB-64).
+pub(crate) fn reads_as_space(x: f32, em: f32) -> bool {
+    x < -150.0 * em
+}
+
 fn nums(op: &Operation) -> Vec<f32> {
     op.operands.iter().filter_map(n).collect()
 }
@@ -658,12 +667,10 @@ impl Pdf {
                                 if let Some(x) = n(o) {
                                     let from = adv;
                                     adv -= x / 1000.0 * tfs * th;
-                                    // A big negative kern is a visual gap: a space between
-                                    // words. Justified lines squeeze these to under 0.2 em;
-                                    // kerning between letters stays under about 0.14 em.
-                                    // The number is in thousandths of text space, which a
-                                    // Type 3 font's em can be many of (PB-64).
-                                    if x < -150.0 * em && !text.ends_with(' ') && !text.is_empty() {
+                                    if reads_as_space(x, em)
+                                        && !text.ends_with(' ')
+                                        && !text.is_empty()
+                                    {
                                         text.push(' ');
                                         spans.push((from, adv));
                                     }
