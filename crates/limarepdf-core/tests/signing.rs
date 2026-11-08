@@ -858,6 +858,97 @@ fn allowed_edits_are_added_after_what_was_signed() {
     assert!(report(&b.bytes).signatures[0].changes_allowed());
 }
 
+/// [`form_doc`] with a signature field "Approver" and two more text fields in fonts LimarePDF
+/// can't write all text in: "City" in Helvetica with no `/Encoding` (ASCII only), and "Sub" in
+/// a subset TrueType font, as forms exported from Word or LibreOffice have (none).
+fn unwritable_fonts_doc() -> Vec<u8> {
+    let mut p = Pdf::from_bytes(&form_doc(&[("Approver", None)], false), None).unwrap();
+    let doc = &mut p.doc;
+    let page = doc.page_iter().next().unwrap();
+    let plain = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    let sub = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "TrueType", "BaseFont" => "ABCDEF+ArialMT",
+        "Encoding" => "WinAnsiEncoding", "FirstChar" => 32, "LastChar" => 255,
+        "Widths" => vec![Object::Integer(500); 224],
+    });
+    let mut refs: Vec<Object> = vec![];
+    for (name, font, y) in [("City", "Plain", 115), ("Sub", "Sub", 85)] {
+        refs.push(
+            doc.add_object(dictionary! {
+                "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx",
+                "T" => Object::string_literal(name), "V" => Object::string_literal(""),
+                "DA" => Object::string_literal(format!("/{font} 10 Tf 0 g")),
+                "Rect" => vec![20.into(), y.into(), 200.into(), (y + 20).into()],
+                "P" => page, "F" => 4,
+            })
+            .into(),
+        );
+    }
+    let annots = doc.get_dictionary_mut(page).unwrap().get_mut(b"Annots");
+    annots.unwrap().as_array_mut().unwrap().extend(refs.clone());
+    let form = doc.catalog_mut().unwrap().get_mut(b"AcroForm").unwrap();
+    let form = form.as_dict_mut().unwrap();
+    let fields = form.get_mut(b"Fields").unwrap().as_array_mut().unwrap();
+    fields.extend(refs);
+    let dr = form.get_mut(b"DR").unwrap().as_dict_mut().unwrap();
+    let fonts = dr.get_mut(b"Font").unwrap().as_dict_mut().unwrap();
+    fonts.set("Plain", plain);
+    fonts.set("Sub", sub);
+    p.snapshot().unwrap()
+}
+
+/// A fill on a signed form in a field whose own font can't write the text is still only a
+/// fill (D-16): the text is written in a standard font named in the appearance alone, and the
+/// field's font setting (`/DA`) and the form's fonts (`/DR`) stay as signed.
+#[test]
+fn a_fill_in_a_standard_font_is_only_a_fill_when_signed() {
+    let s = sign(&unwritable_fonts_doc(), &req(rsa(), field("Approver"))).bytes;
+    let form_fonts = |b: &[u8]| {
+        let p = Pdf::from_bytes(b, None).unwrap();
+        let get = |d: &Dictionary, k: &[u8]| -> Dictionary {
+            let o = p.doc.dereference(d.get(k).unwrap()).unwrap().1;
+            o.as_dict().unwrap().clone()
+        };
+        let form = get(p.doc.catalog().unwrap(), b"AcroForm");
+        format!("{:?}", get(&get(&form, b"DR"), b"Font"))
+    };
+    for (name, text, font) in [
+        ("City", "Montréal", "LimareHelvetica"),
+        ("Sub", "Jane Doe", "LimareHelvetica"),
+        ("Sub", "Montréal", "LimareHelvetica"),
+        // A control: the field's own font takes the text.
+        ("Name", "Montréal", "Helv"),
+    ] {
+        let a = save(&s, |p| {
+            p.set_field(name, FieldValue::Text(text.into())).unwrap();
+        });
+        assert!(a.disallowed.is_none(), "{name} {text}: {:?}", a.disallowed);
+        let rep = report(&a.bytes);
+        assert_eq!(rep.signatures[0].status, SigStatus::Valid, "{name} {text}");
+        let k = kinds(&rep, 0);
+        assert_eq!(k, [ChangeKind::FieldFilled(name.into())], "{name} {text}");
+        let da = |b: &[u8]| format!("{:?}", widget(b, name).get(b"DA").unwrap());
+        assert_eq!(da(&a.bytes), da(&s), "{name} {text}");
+        assert_eq!(form_fonts(&a.bytes), form_fonts(&s), "{name} {text}");
+        let p = Pdf::from_bytes(&a.bytes, None).unwrap();
+        let f = p.form_fields().into_iter().find(|f| f.name == name);
+        assert_eq!(f.unwrap().value, FieldValue::Text(text.into()));
+        // The appearance writes it in `font`, named in its own resources.
+        let w = widget(&a.bytes, name);
+        let ap = w.get(b"AP").unwrap().as_dict().unwrap().get(b"N").unwrap();
+        let ap = p.doc.get_object(ap.as_reference().unwrap()).unwrap();
+        let ap = ap.as_stream().unwrap();
+        let content = ap.decompressed_content().unwrap_or(ap.content.clone());
+        let content = String::from_utf8_lossy(&content);
+        assert!(content.contains(&format!("/{font} 10 Tf")), "{content}");
+        let res = ap.dict.get(b"Resources").unwrap().as_dict().unwrap();
+        let fonts = res.get(b"Font").unwrap().as_dict().unwrap();
+        assert!(fonts.has(font.as_bytes()), "{name} {text}: {fonts:?}");
+    }
+}
+
 #[test]
 fn disallowed_edits_are_named_before_saving() {
     let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;

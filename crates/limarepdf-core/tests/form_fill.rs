@@ -1,5 +1,9 @@
 //! Filling in made-up forms: values, appearances, fonts, checks and resets.
 
+mod common;
+
+use common::saved::Saved;
+use common::tool;
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{FieldValue, Pdf};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
@@ -64,6 +68,40 @@ fn form(p: &mut Pdf, fields: Vec<Dictionary>) -> Vec<ObjectId> {
     let form = p.doc.add_object(form);
     p.doc.catalog_mut().unwrap().set("AcroForm", form);
     ids
+}
+
+fn acro_form(p: &Pdf) -> ObjectId {
+    let form = p.doc.catalog().unwrap().get(b"AcroForm").unwrap();
+    form.as_reference().unwrap()
+}
+
+/// Adds the field `parent` to the form (made by [`form`]), with `kids` (its widgets, or fields
+/// that are their own widgets) on the first page: the kids' ids.
+fn family(p: &mut Pdf, parent: Dictionary, kids: Vec<Dictionary>) -> Vec<ObjectId> {
+    let parent = p.doc.add_object(parent);
+    let ids: Vec<ObjectId> = kids
+        .into_iter()
+        .map(|k| {
+            let w = dictionary! { "Type" => "Annot", "Subtype" => "Widget", "Parent" => parent };
+            p.doc.add_object(merge(w, k))
+        })
+        .collect();
+    let refs: Vec<Object> = ids.iter().map(|&i| i.into()).collect();
+    p.doc
+        .get_dictionary_mut(parent)
+        .unwrap()
+        .set("Kids", refs.clone());
+    let pg = p.page_ids()[0];
+    let annots = p.doc.get_dictionary_mut(pg).unwrap().get_mut(b"Annots");
+    annots.unwrap().as_array_mut().unwrap().extend(refs);
+    let form = acro_form(p);
+    let fields = p.doc.get_dictionary_mut(form).unwrap().get_mut(b"Fields");
+    fields.unwrap().as_array_mut().unwrap().push(parent.into());
+    ids
+}
+
+fn reopened(p: &mut Pdf) -> Pdf {
+    Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap()
 }
 
 fn value(p: &Pdf, name: &str) -> FieldValue {
@@ -476,6 +514,168 @@ fn resets_to_defaults() {
     p.reset_form().unwrap();
     assert_eq!(value(&p, "a"), FieldValue::Text("start".into()));
     assert_eq!(value(&p, "b"), FieldValue::Text(String::new()));
+}
+
+/// A value that can't be written in full is refused with nothing written (M-09): the value,
+/// the drawings and the form as they were, its XFA part too, which goes only when the value is
+/// written.
+#[test]
+fn a_value_that_cant_be_written_changes_nothing() {
+    // A text field with two widgets, the first or the second without a rectangle.
+    for broken in [0, 1] {
+        let mut p = page();
+        form(&mut p, vec![]);
+        let form = acro_form(&p);
+        p.doc
+            .get_dictionary_mut(form)
+            .unwrap()
+            .set("XFA", text("<xdp/>"));
+        let mut kids = vec![
+            dictionary! { "Rect" => rect(10.0, 150.0, 100.0, 20.0) },
+            dictionary! { "Rect" => rect(10.0, 100.0, 100.0, 20.0) },
+        ];
+        kids[broken].set("Rect", Object::Null);
+        let field = dictionary! { "FT" => "Tx", "T" => text("two"), "V" => text("old") };
+        let ids = family(&mut p, field, kids);
+        let before = p.state_before();
+        let e = p.set_field("two", FieldValue::Text("new".into()));
+        assert!(e.unwrap_err().to_string().contains("rectangle"));
+        assert_eq!(p.state_since(&before), [], "widget {broken} broken");
+        assert_eq!(value(&p, "two"), FieldValue::Text("old".into()));
+        // Mended, it is written, and the XFA part goes.
+        let r = rect(10.0, 100.0, 100.0, 20.0);
+        p.doc
+            .get_dictionary_mut(ids[broken])
+            .unwrap()
+            .set("Rect", r);
+        p.set_field("two", FieldValue::Text("new".into())).unwrap();
+        assert_eq!(value(&p, "two"), FieldValue::Text("new".into()));
+        assert!(!p.doc.get_dictionary(form).unwrap().has(b"XFA"));
+    }
+}
+
+/// A list box whose options hold a character no font has, set to the one that can be written,
+/// is refused with nothing written: the list shows them all.
+#[test]
+fn a_list_that_cant_be_drawn_changes_nothing() {
+    let mut p = page();
+    form(
+        &mut p,
+        vec![dictionary! { "FT" => "Ch", "T" => text("list"),
+        "Opt" => vec![text("a"), utf16("\u{2FFFE}")], "Rect" => rect(10.0, 60.0, 100.0, 60.0) }],
+    );
+    let before = p.state_before();
+    let e = p.set_field("list", FieldValue::Choice(vec!["a".into()]));
+    let e = e.unwrap_err().to_string();
+    assert!(e.contains("No font on this computer has"), "{e}");
+    assert_eq!(p.state_since(&before), []);
+    assert_eq!(value(&p, "list"), FieldValue::Choice(vec![]));
+}
+
+/// A reset whose second field of three can't be drawn resets none of them.
+#[test]
+fn a_reset_that_cant_be_drawn_changes_nothing() {
+    let mut p = page();
+    form(
+        &mut p,
+        vec![
+            dictionary! { "FT" => "Tx", "T" => text("a"), "V" => text("x"), "Rect" => rect(0.0, 0.0, 80.0, 20.0) },
+            dictionary! { "FT" => "Tx", "T" => text("b"), "V" => text("y"), "Rect" => Object::Null },
+            dictionary! { "FT" => "Tx", "T" => text("c"), "V" => text("z"), "Rect" => rect(0.0, 60.0, 80.0, 20.0) },
+        ],
+    );
+    let before = p.state_before();
+    assert!(p.reset_form().is_err());
+    assert_eq!(p.state_since(&before), []);
+    assert_eq!(value(&p, "a"), FieldValue::Text("x".into()));
+}
+
+/// A choice field under a parent holding "old", as its own widget.
+fn under_old(p: &mut Pdf, dv: Option<&str>) -> ObjectId {
+    form(p, vec![]);
+    let mut parent = dictionary! {
+        "FT" => "Ch", "Ff" => 1 << 17, "T" => text("p"), "V" => text("old"),
+        "Opt" => vec![text("old"), text("new")],
+    };
+    if let Some(dv) = dv {
+        parent.set("DV", text(dv));
+    }
+    let child =
+        dictionary! { "T" => text("c"), "Rect" => rect(10.0, 150.0, 100.0, 20.0), "F" => 4 };
+    family(p, parent, vec![child])[0]
+}
+
+/// A choice emptied under a parent field holding a value stays empty, rather than the
+/// parent's showing through (M-10).
+#[test]
+fn an_emptied_choice_stays_empty() {
+    let mut p = page();
+    under_old(&mut p, None);
+    assert_eq!(value(&p, "p.c"), FieldValue::Choice(vec!["old".into()]));
+    p.set_field("p.c", FieldValue::Choice(vec![])).unwrap();
+    assert_eq!(value(&p, "p.c"), FieldValue::Choice(vec![]));
+    let bytes = p.to_bytes().unwrap();
+    let q = Pdf::from_bytes(&bytes, None).unwrap();
+    assert_eq!(value(&q, "p.c"), FieldValue::Choice(vec![]));
+    // The saved file holds the child's own empty value, which the parent's can't show through.
+    let saved = Saved::new(bytes);
+    let fields = saved.fields();
+    let child = fields.iter().find(|f| f.name == "p.c").unwrap();
+    assert_eq!(child.values, ["/V []"]);
+    assert!(!child.appearance.contains("old"), "{}", child.appearance);
+}
+
+/// So does one reset to an empty default; one reset to a default it inherits takes it.
+#[test]
+fn a_choice_reset_to_an_empty_default_stays_empty() {
+    for (dv, want) in [(None, vec![]), (Some("new"), vec!["new".to_string()])] {
+        let mut p = page();
+        under_old(&mut p, dv);
+        p.reset_form().unwrap();
+        assert_eq!(value(&reopened(&mut p), "p.c"), FieldValue::Choice(want));
+    }
+}
+
+/// Poppler, drawing the field from its value, shows the emptied choice empty, and the parent's
+/// value when the child is left alone or set to it. Opt-in: needs `pdftoppm`.
+#[test]
+#[ignore]
+fn cross_check_cleared_choice_with_poppler() {
+    let dir = tool::Scratch::new("cleared");
+    let poppler = |set: Option<Vec<String>>, name: &str| {
+        let mut p = page();
+        under_old(&mut p, None);
+        if let Some(v) = set {
+            p.set_field("p.c", FieldValue::Choice(v)).unwrap();
+        }
+        let form = acro_form(&p);
+        p.doc
+            .get_dictionary_mut(form)
+            .unwrap()
+            .set("NeedAppearances", true);
+        let path = dir.join(format!("{name}.pdf"));
+        std::fs::write(&path, p.to_bytes().unwrap()).unwrap();
+        let stem = dir.join(name);
+        let ok = tool::output(
+            std::process::Command::new("pdftoppm")
+                .args(["-r", "72", "-singlefile", "-png"])
+                .arg(&path)
+                .arg(&stem),
+        )
+        .expect("pdftoppm")
+        .status
+        .success();
+        assert!(ok);
+        let img = image::open(stem.with_extension("png")).unwrap().to_rgb8();
+        // The field, 10 to 110 across and 30 to 50 down.
+        (30..50)
+            .flat_map(|y| (10..110).map(move |x| (x, y)))
+            .filter(|&(x, y)| img.get_pixel(x, y).0.iter().any(|&c| c < 160))
+            .count()
+    };
+    assert_eq!(poppler(Some(vec![]), "emptied"), 0);
+    assert!(poppler(None, "inherited") > 20);
+    assert!(poppler(Some(vec!["old".into()]), "set") > 20);
 }
 
 #[test]

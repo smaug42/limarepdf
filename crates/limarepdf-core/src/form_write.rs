@@ -20,14 +20,75 @@ const EMBEDDED: &[u8] = b"LimareEm";
 struct Picked {
     /// Its name in the appearance's resources.
     name: Vec<u8>,
-    /// The field's own font, written as it is, or the form's standard font; `None` for an
-    /// embedded face.
-    font: Option<ObjectId>,
+    /// The field's own font, written as it is, or the standard font that replaces it; `None`
+    /// for an embedded face.
+    font: Option<FontObj>,
     metrics: Metrics,
     /// Whether `/DA` should name it.
     replaced: bool,
     /// The font chosen, when it isn't the field's own.
     choice: FontChoice,
+}
+
+/// A font object an appearance names: one in the document, or one to add when the
+/// appearance is written ([`Pdf::font_object`]).
+enum FontObj {
+    Is(ObjectId),
+    /// Added to the form's resources too when `to_form`, unless one added since is there.
+    Add {
+        dict: Dictionary,
+        to_form: bool,
+    },
+}
+
+/// All a field's new value writes, worked out before anything is written
+/// ([`Pdf::stage_value`]), so that a value that can't be written changes nothing.
+struct Staged {
+    node: ObjectId,
+    /// The field's entries, each set, or removed when `None`.
+    entries: Vec<(&'static [u8], Option<Object>)>,
+    /// Checkbox widgets drawn for the first time, before their states are set.
+    checks: Vec<CheckDrawing>,
+    /// Button widgets' states (`/AS`).
+    states: Vec<(ObjectId, Vec<u8>)>,
+    drawings: Vec<Drawing>,
+}
+
+impl Staged {
+    /// Whether writing it can still fail part way: when text is set by the text pipeline,
+    /// which can embed glyphs, or a font is added to the form's resources.
+    fn can_fail(&self) -> bool {
+        let to_form = |f: &FontObj| matches!(f, FontObj::Add { to_form: true, .. });
+        let set = |d: &Drawing| matches!(d.picked.metrics, Metrics::Set(_));
+        (self.drawings.iter()).any(|d| set(d) || d.picked.font.as_ref().is_some_and(to_form))
+            || self.checks.iter().any(|c| to_form(&c.font))
+    }
+}
+
+/// A text or choice widget's appearance, to write ([`Pdf::stage_widget`]).
+struct Drawing {
+    /// The widget, and its field's object.
+    widget: ObjectId,
+    node: ObjectId,
+    look: Look,
+    matrix: Option<[f32; 6]>,
+    drawn: form_ap::Drawn,
+    picked: Picked,
+    /// The `/DA` naming the font that replaces the field's own.
+    da: Option<Object>,
+}
+
+/// A checkbox widget's appearances, on and off, to write ([`Pdf::stage_check`]).
+struct CheckDrawing {
+    widget: ObjectId,
+    look: Look,
+    matrix: Option<[f32; 6]>,
+    on: Vec<u8>,
+    off: Vec<u8>,
+    /// The on appearance's name.
+    state: String,
+    /// The form's ZapfDingbats.
+    font: FontObj,
 }
 
 impl Pdf {
@@ -46,22 +107,25 @@ impl Pdf {
             bail!("the field \"{name}\" is read-only");
         }
         let value = check_value(&field, value)?;
-        self.write_value(&field, &node, &value)?;
+        let staged = self.stage_value(&field, &node, &value)?;
+        self.commit_values(vec![staged])?;
         self.form_changed();
         Ok(())
     }
 
     /// Put every field back to its default value (`/DV`), or empty when it has none.
-    /// Read-only fields are left as they are.
+    /// Read-only fields are left as they are. When a field can't be reset, none is.
     pub fn reset_form(&mut self) -> Result<()> {
+        let mut staged = Vec::new();
         for (field, node) in self.form_nodes() {
             if field.read_only || matches!(field.kind, FieldKind::Button | FieldKind::Signature) {
                 continue;
             }
             let dv = self.value_of(&field.kind, node.dv.as_ref(), &node.opt, &node.widgets);
             let value = check_value(&field, dv).unwrap_or_else(|_| empty(&field.kind));
-            self.write_value(&field, &node, &value)?;
+            staged.push(self.stage_value(&field, &node, &value)?);
         }
+        self.commit_values(staged)?;
         self.form_changed();
         Ok(())
     }
@@ -296,14 +360,28 @@ impl Pdf {
         out
     }
 
-    fn write_value(&mut self, field: &Field, node: &Node, value: &FieldValue) -> Result<()> {
+    /// What writing `value` in the field changes: its value, its widgets' states and
+    /// drawings. Fails, having changed nothing, when it can't be written in full.
+    fn stage_value(&self, field: &Field, node: &Node, value: &FieldValue) -> Result<Staged> {
+        self.doc.get_dictionary(node.id)?;
+        for &w in &node.widgets {
+            self.doc.get_dictionary(w)?;
+        }
+        let mut s = Staged {
+            node: node.id,
+            entries: Vec::new(),
+            checks: Vec::new(),
+            states: Vec::new(),
+            drawings: Vec::new(),
+        };
+        let name = |n: &str| Some(Object::Name(n.as_bytes().to_vec()));
         match (&field.kind, value) {
             (FieldKind::Text { password, .. }, FieldValue::Text(t)) => {
                 // A password is never kept in the file. An empty string, not a missing
                 // /V, so that a parent's value doesn't show through.
                 let kept = if *password { "" } else { t.as_str() };
                 let v = Object::String(encode_text(kept), StringFormat::Literal);
-                self.doc.get_dictionary_mut(node.id)?.set("V", v);
+                s.entries.push((b"V", Some(v)));
             }
             (FieldKind::Check, FieldValue::Check(on)) => {
                 let on_name = node
@@ -311,19 +389,21 @@ impl Pdf {
                     .iter()
                     .find_map(|&w| self.on_state(w))
                     .unwrap_or_else(|| "Yes".into());
-                let v = if *on { on_name.as_str() } else { "Off" };
-                self.doc
-                    .get_dictionary_mut(node.id)?
-                    .set("V", Object::Name(v.as_bytes().to_vec()));
+                s.entries
+                    .push((b"V", name(if *on { &on_name } else { "Off" })));
                 for &w in &node.widgets {
-                    if !self.has_appearance(w) {
-                        self.draw_check(node, w, *on)?;
-                    }
-                    let state = self.on_state(w).filter(|s| *on && *s == on_name);
+                    // A widget without drawings gets them, its on state named as drawn.
+                    let state = if self.has_appearance(w) {
+                        self.on_state(w)
+                    } else {
+                        let check = self.stage_check(node, w)?;
+                        let state = check.state.clone();
+                        s.checks.push(check);
+                        Some(state)
+                    };
+                    let state = state.filter(|s| *on && *s == on_name);
                     let state = state.unwrap_or_else(|| "Off".into());
-                    self.doc
-                        .get_dictionary_mut(w)?
-                        .set("AS", Object::Name(state.into_bytes()));
+                    s.states.push((w, state.into_bytes()));
                 }
             }
             (FieldKind::Radio, FieldValue::Choice(chosen)) => {
@@ -340,30 +420,24 @@ impl Pdf {
                         .find(|s| button_export(s, &node.opt) == *t)
                         .cloned()
                 });
-                let v = on.clone().unwrap_or_else(|| "Off".into());
-                self.doc
-                    .get_dictionary_mut(node.id)?
-                    .set("V", Object::Name(v.into_bytes()));
-                for (w, s) in states {
-                    let state = match (&on, s) {
-                        (Some(on), Some(s)) if *on == s => s,
+                s.entries.push((b"V", name(on.as_deref().unwrap_or("Off"))));
+                for (w, st) in states {
+                    let state = match (&on, st) {
+                        (Some(on), Some(st)) if *on == st => st,
                         _ => "Off".into(),
                     };
-                    self.doc
-                        .get_dictionary_mut(w)?
-                        .set("AS", Object::Name(state.into_bytes()));
+                    s.states.push((w, state.into_bytes()));
                 }
             }
             (FieldKind::Choice { multi, .. }, FieldValue::Choice(chosen)) => {
                 let text = |s: &String| Object::String(encode_text(s), StringFormat::Literal);
-                let d = self.doc.get_dictionary_mut(node.id)?;
-                match chosen.as_slice() {
-                    [] => {
-                        d.remove(b"V");
-                    }
-                    [one] => d.set("V", text(one)),
-                    many => d.set("V", many.iter().map(text).collect::<Vec<_>>()),
-                }
+                // An empty list, not a missing /V, so that a parent's value doesn't show
+                // through.
+                let v = match chosen.as_slice() {
+                    [one] => text(one),
+                    many => Object::Array(many.iter().map(text).collect()),
+                };
+                s.entries.push((b"V", Some(v)));
                 // Multi-select lists also give the chosen options' positions.
                 let indices: Vec<Object> = node
                     .opt
@@ -372,20 +446,52 @@ impl Pdf {
                     .filter(|(_, o)| chosen.contains(&o.0))
                     .map(|(i, _)| Object::Integer(i as i64))
                     .collect();
-                if *multi && !indices.is_empty() {
-                    d.set("I", indices);
-                } else {
-                    d.remove(b"I");
-                }
+                let i = (*multi && !indices.is_empty()).then(|| Object::Array(indices));
+                s.entries.push((b"I", i));
             }
             _ => bail!("the value doesn't suit the field \"{}\"", field.name),
         }
         // A rich-text value would contradict the new plain one.
-        self.doc.get_dictionary_mut(node.id)?.remove(b"RV");
+        s.entries.push((b"RV", None));
         if is_text_like(&field.kind) {
             for &w in &node.widgets {
-                self.draw_widget(field, node, w, value)?;
+                s.drawings.push(self.stage_widget(field, node, w, value)?);
             }
+        }
+        Ok(s)
+    }
+
+    /// Write `staged` ([`Pdf::stage_value`]), all of it or, when a step fails, none: the
+    /// document is copied first when a step can fail ([`Staged::can_fail`]).
+    fn commit_values(&mut self, staged: Vec<Staged>) -> Result<()> {
+        let before = staged.iter().any(Staged::can_fail).then(|| self.before());
+        let put = staged.into_iter().try_for_each(|s| self.put_value(s));
+        if let (Err(_), Some(before)) = (&put, before) {
+            self.go_back(before);
+        }
+        put
+    }
+
+    fn put_value(&mut self, s: Staged) -> Result<()> {
+        let d = self.doc.get_dictionary_mut(s.node)?;
+        for (key, v) in s.entries {
+            match v {
+                Some(v) => d.set(key, v),
+                None => {
+                    d.remove(key);
+                }
+            }
+        }
+        for c in s.checks {
+            self.put_check(c)?;
+        }
+        for (w, state) in s.states {
+            self.doc
+                .get_dictionary_mut(w)?
+                .set("AS", Object::Name(state));
+        }
+        for d in s.drawings {
+            self.put_widget(d)?;
         }
         Ok(())
     }
@@ -419,6 +525,18 @@ impl Pdf {
         widget: ObjectId,
         value: &FieldValue,
     ) -> Result<()> {
+        let d = self.stage_widget(field, node, widget, value)?;
+        self.put_widget(d)
+    }
+
+    /// The drawing of a text field's or a choice's widget showing `value`, to write.
+    fn stage_widget(
+        &self,
+        field: &Field,
+        node: &Node,
+        widget: ObjectId,
+        value: &FieldValue,
+    ) -> Result<Drawing> {
         let shown_text = |export: &str| -> String {
             node.opt
                 .iter()
@@ -474,56 +592,102 @@ impl Pdf {
         };
         let da = self.widget_da(widget, node);
         let (font, size, color) = parse_da(&da);
-        let Picked {
-            name: font,
-            font: font_ref,
-            metrics,
-            replaced,
-            choice,
-        } = self.pick_font(font.as_deref(), &text)?;
-        if replaced {
-            // Keep /DA in step, so readers that redraw fields use the same font.
-            let da = encode_da(&font, size, color.as_ref());
-            let da = Object::String(da, StringFormat::Literal);
-            self.doc.get_dictionary_mut(node.id)?.set("DA", da.clone());
-            let w = self.doc.get_dictionary_mut(widget)?;
-            if w.has(b"DA") {
-                w.set("DA", da);
-            }
-        }
+        let picked = self.pick_font(font.as_deref(), &text)?;
+        // Keep /DA in step, so readers that redraw fields use the same font.
+        let da = picked.replaced.then(|| {
+            let da = encode_da(&picked.name, size, color.as_ref());
+            Object::String(da, StringFormat::Literal)
+        });
         let (mut look, matrix) = self.widget_look(widget)?;
-        look.font = font.clone();
+        look.font = picked.name.clone();
         look.size = size;
         look.color = color;
         look.q = self.widget_q(widget, node.q);
-        let drawn = form_ap::draw(&look, &body, &metrics);
-        let (content, mut fonts) = match &metrics {
+        let drawn = form_ap::draw(&look, &body, &picked.metrics);
+        Ok(Drawing {
+            widget,
+            node: node.id,
+            look,
+            matrix,
+            drawn,
+            picked,
+            da,
+        })
+    }
+
+    /// Write a widget's drawing ([`Pdf::stage_widget`]). Only setting text in the text
+    /// pipeline and adding a font to the form can fail, before the field's `/DA` is changed.
+    fn put_widget(&mut self, d: Drawing) -> Result<()> {
+        let Drawing {
+            widget,
+            node,
+            look,
+            matrix,
+            drawn,
+            picked,
+            da,
+        } = d;
+        let name = picked.name;
+        let font = picked.font.map(|f| self.font_object(&name, f));
+        let (content, mut fonts) = match &picked.metrics {
             Metrics::Bytes(_) => (drawn.bytes_content(), Dictionary::new()),
             Metrics::Set(setter) => {
                 let lines: Vec<&str> = drawn.lines.iter().map(|(s, ..)| s.as_str()).collect();
                 let reuse: Vec<(FontChoice, ObjectId)> =
-                    font_ref.iter().map(|&id| (choice, id)).collect();
+                    font.iter().map(|&(id, _)| (picked.choice, id)).collect();
                 let pen = self.pen_reusing(setter, &lines, &reuse)?;
-                let names = pen.names(&String::from_utf8_lossy(&font));
+                let names = pen.names(&String::from_utf8_lossy(&name));
                 let content = drawn.content(|i, _| pen.ops(i, drawn.size, 0.0, &names));
                 (content, pen.font_dict(&names))
             }
         };
+        if let Some((id, true)) = font {
+            self.add_dr_font(&name, id)?;
+        }
         // The font `/DA` names stays in the resources, though no text is in it.
-        if let Some(id) = font_ref.filter(|_| !fonts.has(&font)) {
-            fonts.set(font.clone(), id);
+        if let Some((id, _)) = font.filter(|_| !fonts.has(&name)) {
+            fonts.set(name, id);
         }
         let resources = dictionary! { "Font" => fonts };
         let ap = self.add_appearance(&look, matrix, resources, content);
         self.doc
             .get_dictionary_mut(widget)?
             .set("AP", dictionary! { "N" => ap });
+        if let Some(da) = da {
+            self.doc.get_dictionary_mut(node)?.set("DA", da.clone());
+            let w = self.doc.get_dictionary_mut(widget)?;
+            if w.has(b"DA") {
+                w.set("DA", da);
+            }
+        }
         Ok(())
+    }
+
+    /// The object of a font an appearance names ([`FontObj`]), and whether it is still to be
+    /// added to the form's resources.
+    fn font_object(&mut self, name: &[u8], f: FontObj) -> (ObjectId, bool) {
+        match f {
+            FontObj::Is(id) => (id, false),
+            FontObj::Add { dict, to_form } => match self.dr_font(name) {
+                Some(Object::Reference(id)) if to_form => (id, false),
+                _ => (self.doc.add_object(dict), to_form),
+            },
+        }
     }
 
     /// Draw a checkbox widget that has no appearances: a check mark (or the widget's own
     /// `/MK /CA` character) when on, and only the background and border when off.
     fn draw_check(&mut self, node: &Node, widget: ObjectId, on: bool) -> Result<()> {
+        let c = self.stage_check(node, widget)?;
+        let state = c.state.clone();
+        self.put_check(c)?;
+        let w = self.doc.get_dictionary_mut(widget)?;
+        w.set("AS", if on { state.as_str() } else { "Off" });
+        Ok(())
+    }
+
+    /// A checkbox widget's drawings ([`Pdf::draw_check`]), to write.
+    fn stage_check(&self, node: &Node, widget: ObjectId) -> Result<CheckDrawing> {
         let (mut look, matrix) = self.widget_look(widget)?;
         let da = self.widget_da(widget, node);
         let (_, size, color) = parse_da(&da);
@@ -538,23 +702,38 @@ impl Pdf {
             .and_then(|o| self.string_bytes(o))
             .and_then(|b| b.first().copied())
             .unwrap_or(CHECK);
-        let font_ref = self.dr_zapf()?;
         look.font = b"ZaDb".to_vec();
         look.size = size;
         look.color = color;
         let zapf = Metrics::Bytes(Box::new(std::array::from_fn(|c| {
             std14::symbolic_width("ZapfDingbats", c as u32).unwrap_or(0.0)
         })));
-        let resources = || dictionary! { "Font" => dictionary! { "ZaDb" => font_ref } };
-        let on_content = form_ap::draw(&look, &Body::Mark(mark), &zapf).bytes_content();
-        let off_content = form_ap::draw(&look, &Body::Empty, &zapf).bytes_content();
-        let on_ap = self.add_appearance(&look, matrix, resources(), on_content);
-        let off_ap = self.add_appearance(&look, matrix, resources(), off_content);
-        let state = self.on_state(widget).unwrap_or_else(|| "Yes".into());
-        let n = dictionary! { state.clone() => on_ap, "Off" => off_ap };
-        let w = self.doc.get_dictionary_mut(widget)?;
-        w.set("AP", dictionary! { "N" => n });
-        w.set("AS", if on { state.as_str() } else { "Off" });
+        let on = form_ap::draw(&look, &Body::Mark(mark), &zapf).bytes_content();
+        let off = form_ap::draw(&look, &Body::Empty, &zapf).bytes_content();
+        Ok(CheckDrawing {
+            widget,
+            look,
+            matrix,
+            on,
+            off,
+            state: self.on_state(widget).unwrap_or_else(|| "Yes".into()),
+            font: self.zapf(),
+        })
+    }
+
+    /// Write a checkbox widget's drawings ([`Pdf::stage_check`]); its state is left as it is.
+    fn put_check(&mut self, c: CheckDrawing) -> Result<()> {
+        let (font, add) = self.font_object(b"ZaDb", c.font);
+        if add {
+            self.add_dr_font(b"ZaDb", font)?;
+        }
+        let resources = || dictionary! { "Font" => dictionary! { "ZaDb" => font } };
+        let on = self.add_appearance(&c.look, c.matrix, resources(), c.on);
+        let off = self.add_appearance(&c.look, c.matrix, resources(), c.off);
+        let n = dictionary! { c.state => on, "Off" => off };
+        self.doc
+            .get_dictionary_mut(c.widget)?
+            .set("AP", dictionary! { "N" => n });
         Ok(())
     }
 
@@ -701,8 +880,10 @@ impl Pdf {
     /// else the closest standard font, added to the form's resources, or for characters
     /// the standard font lacks, its embedded face and the fonts it falls back to, named
     /// only in the appearance's own resources (`/DA` keeps the field's font: the Unicode
-    /// text design, question 8).
-    fn pick_font(&mut self, name: Option<&[u8]>, text: &str) -> Result<Picked> {
+    /// text design, question 8). In a signed document the standard font too is named only
+    /// in the appearance's resources, so that filling in a field changes only its value
+    /// and drawing, as a signature allows (D-16).
+    fn pick_font(&self, name: Option<&[u8]>, text: &str) -> Result<Picked> {
         let found = name.and_then(|n| Some((n.to_vec(), self.dr_font(n)?)));
         let mut base = String::from("Helvetica");
         if let Some((name, obj)) = &found {
@@ -714,11 +895,16 @@ impl Pdf {
             if let Some(dict) = dict {
                 let (own, nearest) = own_font(&self.doc, dict);
                 if own.takes(text) {
-                    let dict = dict.clone();
-                    let id = id.unwrap_or_else(|| self.doc.add_object(dict));
+                    let font = match id {
+                        Some(id) => FontObj::Is(id),
+                        None => FontObj::Add {
+                            dict: dict.clone(),
+                            to_form: false,
+                        },
+                    };
                     return Ok(Picked {
                         name: name.clone(),
-                        font: Some(id),
+                        font: Some(font),
                         metrics: Metrics::Bytes(own.widths),
                         replaced: false,
                         choice: FontChoice::default(),
@@ -744,42 +930,42 @@ impl Pdf {
         }
         let base = choice.base_font();
         let name = format!("Limare{}", base.replace('-', "")).into_bytes();
-        let id = match self.dr_font(&name) {
-            Some(Object::Reference(id)) => id,
-            _ => {
-                let font = dictionary! {
+        let signed = self.holds_signature();
+        let font = match self.dr_font(&name) {
+            Some(Object::Reference(id)) => FontObj::Is(id),
+            _ => FontObj::Add {
+                dict: dictionary! {
                     "Type" => "Font",
                     "Subtype" => "Type1",
                     "BaseFont" => base,
                     "Encoding" => "WinAnsiEncoding",
-                };
-                let id = self.doc.add_object(font);
-                self.add_dr_font(&name, id)?;
-                id
-            }
+                },
+                to_form: !signed,
+            },
         };
         Ok(Picked {
             name,
-            font: Some(id),
+            font: Some(font),
             metrics: Metrics::Set(setter),
-            replaced: true,
+            replaced: !signed,
             choice,
         })
     }
 
-    /// The form's ZapfDingbats font (`/ZaDb`), added when it has none.
-    fn dr_zapf(&mut self) -> Result<ObjectId> {
+    /// The form's ZapfDingbats font (`/ZaDb`), added to it when it has none.
+    fn zapf(&self) -> FontObj {
         match self.dr_font(b"ZaDb") {
-            Some(Object::Reference(id)) => Ok(id),
-            Some(Object::Dictionary(d)) => Ok(self.doc.add_object(d)),
-            _ => {
-                let font = dictionary! {
+            Some(Object::Reference(id)) => FontObj::Is(id),
+            Some(Object::Dictionary(dict)) => FontObj::Add {
+                dict,
+                to_form: false,
+            },
+            _ => FontObj::Add {
+                dict: dictionary! {
                     "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "ZapfDingbats",
-                };
-                let id = self.doc.add_object(font);
-                self.add_dr_font(b"ZaDb", id)?;
-                Ok(id)
-            }
+                },
+                to_form: true,
+            },
         }
     }
 

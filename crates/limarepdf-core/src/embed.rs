@@ -802,7 +802,7 @@ impl Pdf {
 
     /// Whether the document holds a signature dictionary (one with a `/ByteRange`), signed
     /// or being signed.
-    fn holds_signature(&self) -> bool {
+    pub(crate) fn holds_signature(&self) -> bool {
         self.doc
             .objects
             .values()
