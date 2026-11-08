@@ -427,7 +427,8 @@ available.
   most 100,000 parts, so a crafted list can't keep the app busy for hours; a name it gives up on is a destination
   that can't be followed.
 - `limarepdf-cli` never changes a command's input: an output naming the input, by any path or link to it, is
-  refused with nothing written, and the result is written whole or not at all. When
+  refused with nothing written, even with `--overwrite` (an `-o`, or a file `split`, `render` or `save-images`
+  names in `--out-dir`), and the result is written whole or not at all. When
   the command's own output can't be written (a full disk), it stops with an error and status 1, saying whether its
   file was already saved; a reader that stops early (`… | head`) stops it quietly ([details](../cli.md)).
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and

@@ -9,6 +9,11 @@
 
 ### Fixed
 
+- `limarepdf-cli split`, `render` and `save-images` no longer replace their input when one of the files they name
+  in `--out-dir` is a link to it. Before, `split in.pdf --every 1 --out-dir parts --overwrite`, with
+  `parts/in-002.pdf` a link to `in.pdf`, replaced `in.pdf` with that part, and `render` and `save-images` replaced
+  it with an image. Such a run is now refused with nothing written, with or without `--overwrite`, as an `-o`
+  naming the input is; so is a name that is a hard link to the input, except on Windows.
 - An edited paragraph with a word too long for its frame (a long web address, a word that goes to another font,
   letters joined in a ligature) is now written as wide as it was laid out, so its lines stay inside the frame.
   Before, the line holding the word's first letter was laid out as if it held the whole word, and the next line as
