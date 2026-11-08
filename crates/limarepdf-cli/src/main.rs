@@ -2733,9 +2733,14 @@ fn not_an_input(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
 }
 
 /// A command writing several files never replaces one silently (BUG-05): with anything at
-/// one of `files` already, it is refused before anything is written, unless `overwrite`.
-fn not_taken(files: &[PathBuf], overwrite: bool) -> Result<()> {
+/// one of `files` already, it is refused before anything is written, unless `overwrite`. One
+/// of `files` that is one of the `inputs`, by any path or link to it, is refused first, with
+/// or without `overwrite`, as the input is never changed (A-02).
+fn not_taken(inputs: &[impl AsRef<Path>], files: &[PathBuf], overwrite: bool) -> Result<()> {
     const SHOWN: usize = 5;
+    for file in files {
+        not_an_input(inputs, file)?;
+    }
     let taken = limarepdf_core::existing(files);
     if overwrite || taken.is_empty() {
         return Ok(());
@@ -3157,7 +3162,7 @@ fn run(cmd: Cmd) -> Result<()> {
             };
             let name = |n, title: Option<&str>| out_dir.join(part_file_name(&stem, n, title));
             // Asked first, so that nothing is written when the document can't be split.
-            not_taken(&p.split_files(by, name)?, overwrite)?;
+            not_taken(&[&input], &p.split_files(by, name)?, overwrite)?;
             std::fs::create_dir_all(&out_dir)?;
             let n = saved(p.split(by, name))?;
             out!("split into {n} files in {}", out_dir.display());
@@ -4391,7 +4396,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 .iter()
                 .map(|n| out_dir.join(n))
                 .collect();
-            not_taken(&files, overwrite)?;
+            not_taken(&[&input], &files, overwrite)?;
             let t = std::time::Instant::now();
             let mut missing = std::collections::BTreeSet::new();
             let written =
@@ -4439,7 +4444,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 return Ok(());
             }
             let files: Vec<PathBuf> = names.iter().map(|n| out_dir.join(n)).collect();
-            not_taken(&files, overwrite)?;
+            not_taken(&[&input], &files, overwrite)?;
             let done = saved(pdf.save_all_pictures(&out_dir, &stem))?;
             out!(
                 "saved {} picture(s) to {}",

@@ -8,8 +8,9 @@ adding comments, and Fill and sign are in the app only: from the command line, p
 `limarepdf-cli <command> --help`.
 
 Commands that change a document take the input file first and write the result to `-o out.pdf`; the input is
-never changed: an `-o` that names the input, by any path or link to it, is refused with nothing written (on
-Windows a hard link to the input isn't recognised, and gets a file of its own instead). The result is written
+never changed: an `-o` that names the input, by any path or link to it, is refused with nothing written, and so
+are `split`, `render` and `save-images` when one of the files they name in `--out-dir` is the input, even with
+`--overwrite` (on Windows a hard link to the input isn't recognised, and gets a file of its own instead). The result is written
 whole or not at all: it goes to a new file that is then put in place in one step, so a name that is a hard link
 to another file gets a file of its own, and the other file keeps its bytes. Add `--password` to open a protected
 input. Every command but `encrypt` writes its output without a password, so protect it again with
@@ -50,7 +51,7 @@ with the status it would have had otherwise.
 | `limarepdf-cli text in.pdf --pages 1-2` | Print the text of pages |
 | `limarepdf-cli search in.pdf "invoice"` | Find text: one line a match, `page 3: …the words around it…`, then the count ("1 match", "12 matches", "No matches"); `--boxes` also prints where each match is on its page (`page 3 [x0 y0 x1 y1]`, points from the top left), a phrase running on to the next page on both. `--match-case`: capital and small letters must be as typed ("Walrus" doesn't find "walrus"); `--whole-words`: whole words only ("walrus" doesn't find "walruses"; [details](reading-and-finding.md#find-words)) |
 | `limarepdf-cli objects in.pdf --pages 1` | List the editable objects (text lines, images, paths) with their boxes; OCR text is marked "(hidden)", and a line in more than one font, size or colour shows its first part's, marked "mixed" |
-| `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG. Images already there aren't replaced, and nothing is written, unless you add `--overwrite`. Filled form fields are drawn as the app draws them; a warning names any it can't draw, which come out empty, and another says what else the images lack (a picture it can't read, a font that isn't installed), as the app's notice does. A page past 65,280 pixels a side, or 268 million in all, at that resolution refuses the whole run; so does a file LimarePDF can't open ([details](export-and-printing.md#pages-as-images)) |
+| `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG. Images already there aren't replaced, and nothing is written, unless you add `--overwrite`; an image name that is a link to the input is refused even then. Filled form fields are drawn as the app draws them; a warning names any it can't draw, which come out empty, and another says what else the images lack (a picture it can't read, a font that isn't installed), as the app's notice does. A page past 65,280 pixels a side, or 268 million in all, at that resolution refuses the whole run; so does a file LimarePDF can't open ([details](export-and-printing.md#pages-as-images)) |
 | `limarepdf-cli annot list in.pdf` | List the annotations (comments, notes, highlights, drawings): number, page, type, author, date and comment, and which one a reply answers. `--pages 2-3` for some pages; links and form fields are left out |
 | `limarepdf-cli annot list in.pdf --json` | The same as a JSON array, with each annotation's colour, opacity and box on the page (points from the top left) |
 | `limarepdf-cli form list in.pdf` | List the form fields: name, kind, value, pages, and whether each is required or read-only, with a choice's options |
@@ -130,7 +131,8 @@ tags above those) lose their alternative text. A form nested more than 32 deep m
 the pages they keep; `delete` keeps every bookmark, without a destination when its page went. `split` writes each
 file as soon as its part is made (several at once, one per core); if one can't be written, the error says how many
 files already were. When a file is already at one of the parts' names, `split` writes nothing and lists those
-files; add `--overwrite` to replace them. `render` does the same for its images.
+files; add `--overwrite` to replace them. `render` does the same for its images. `--overwrite` never replaces the
+input: a part's name that is a link to the input is refused, with nothing written.
 
 ### Page labels
 
@@ -174,7 +176,7 @@ Bookmarks are numbered from 1 in the order `list` shows them, each followed by t
 | `limarepdf-cli insert-images in.pdf -o out.pdf --after 2 --images a.png b.jpg` | Insert images as pages after page N |
 | `limarepdf-cli optimize-scans in.pdf -o out.pdf --mode auto --max-dpi 200 --quality 75` | Shrink and clean up scanned pages; also `--no-deskew`, `--no-despeckle` |
 | `limarepdf-cli reduce in.pdf -o out.pdf --quality web` | Make the file smaller, as Word's Compress Pictures does: pictures above the quality's resolution scaled down and saved again (`hd` 330 pixels per inch, `print` 220, the default, `web` 150, `email` 96; `high-fidelity` keeps them as they are). Says what was made smaller, what was left and why, and the sizes before and after. Also `--pages`, `--jpeg-quality`. Refuses a signed document |
-| `limarepdf-cli save-images in.pdf --out-dir pictures` | Save every picture the pages show, as `in-page-003-image-2.jpg` and so on: a JPEG shown upright as it is, any other picture, or one turned or flipped, as a PNG as it shows. A picture shown on several pages is saved once. Writes nothing when files of those names are there, unless `--overwrite` |
+| `limarepdf-cli save-images in.pdf --out-dir pictures` | Save every picture the pages show, as `in-page-003-image-2.jpg` and so on: a JPEG shown upright as it is, any other picture, or one turned or flipped, as a PNG as it shows. A picture shown on several pages is saved once. Writes nothing when files of those names are there, unless `--overwrite`, and nothing, even with it, when one of those names is a link to the input |
 | `limarepdf-cli ocr in.pdf -o out.pdf --pages all` | Add a searchable text layer to pages without text (Latin script) |
 
 See [Scans and OCR](scanning-and-ocr.md) for what these do.
