@@ -237,6 +237,57 @@ fn contents(b: &[u8]) -> ObjectId {
         .unwrap()
 }
 
+/// A viewer navigation action, harmless, never run.
+fn next_page() -> Dictionary {
+    dictionary! { "S" => "Named", "N" => "NextPage" }
+}
+
+/// Widget entries running `next_page()` when the widget's page opens.
+fn on_open() -> Dictionary {
+    dictionary! { "AA" => dictionary! { "PO" => next_page() } }
+}
+
+/// Entries for a new widget, made with any objects they need.
+type Entries = fn(&mut Document) -> Dictionary;
+
+/// `b` with an empty, invisible signature field `Extra` added as the full audit's probe adds
+/// it: one widget, or (`kid`) a field with the widget as its kid. `extra` makes entries for
+/// the widget (an action, say), adding any objects they need.
+fn extra_field(b: &[u8], kid: bool, extra: impl FnOnce(&mut Document) -> Dictionary) -> Vec<u8> {
+    edit(b, |prev, new| {
+        let mut widget = dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "P" => page(prev),
+            "Rect" => vec![0.into(), 0.into(), 0.into(), 0.into()],
+        };
+        widget.extend(&extra(new));
+        let mut field = dictionary! { "FT" => "Sig", "T" => Object::string_literal("Extra") };
+        let top = if kid {
+            let top = new.new_object_id();
+            widget.set("Parent", top);
+            let w = new.add_object(widget);
+            add_annot(prev, new, w);
+            field.set("Kids", vec![Object::from(w)]);
+            new.set_object(top, Object::Dictionary(field));
+            top
+        } else {
+            widget.extend(&field);
+            let w = new.add_object(widget);
+            add_annot(prev, new, w);
+            w
+        };
+        let r = root(prev);
+        let mut c = dict(prev, r);
+        // A file not yet signed may have no form.
+        let mut form = (c.get(b"AcroForm").and_then(Object::as_dict).cloned()).unwrap_or_default();
+        let mut fields =
+            (form.get(b"Fields").and_then(Object::as_array).cloned()).unwrap_or_default();
+        fields.push(top.into());
+        form.set("Fields", fields);
+        c.set("AcroForm", form);
+        new.set_object(r, Object::Dictionary(c));
+    })
+}
+
 // ---------------------------------------------------------------- allowed changes
 
 #[test]
@@ -592,6 +643,116 @@ fn actions_and_scripts_are_refused() {
         add_annot(prev, new, id);
     });
     assert_refused(&link, &ChangeKind::AnnotationChanged);
+}
+
+/// What a signature made in each way allows: an ordinary one, and certifications allowing
+/// form filling and signing (P2), and comments too (P3).
+fn signed_three_ways() -> [(Vec<u8>, &'static str); 3] {
+    [
+        (approve(&base_pdf()), "an ordinary signature"),
+        (certify(&base_pdf(), 2), "P2"),
+        (certify(&base_pdf(), 3), "P3"),
+    ]
+}
+
+#[test]
+fn a_new_signature_field_s_actions_are_refused() {
+    // The ways a new signature field can carry an action (A-03).
+    let actions: [(&str, bool, Entries); 7] = [
+        ("/AA", false, |_| on_open()),
+        ("/A", false, |_| dictionary! { "A" => next_page() }),
+        ("/AA an object of its own", false, |new| {
+            dictionary! { "AA" => new.add_object(dictionary! { "PO" => next_page() }) }
+        }),
+        ("an action in /AA an object of its own", false, |new| {
+            dictionary! { "AA" => dictionary! { "PO" => new.add_object(next_page()) } }
+        }),
+        ("/A with /Next to a script", false, |new| {
+            let js = new.add_object(dictionary! {
+                "S" => "JavaScript", "JS" => Object::string_literal("app.alert(1)"),
+            });
+            let mut a = next_page();
+            a.set("Next", js);
+            dictionary! { "A" => a }
+        }),
+        ("/AA on a kid", true, |_| on_open()),
+        ("/A on a kid", true, |_| dictionary! { "A" => next_page() }),
+    ];
+    let added = (ChangeKind::SignatureFieldAdded("Extra".into()), None);
+    let mut wrong = Vec::new();
+    for (signed, after) in signed_three_ways() {
+        // Without an action, allowed as before; a null one is none.
+        let none: [(&str, Entries); 2] = [
+            ("no action", |_| Dictionary::new()),
+            ("/AA null", |_| dictionary! { "AA" => Object::Null }),
+        ];
+        for ((what, make), kid) in none.into_iter().flat_map(|n| [(n, false), (n, true)]) {
+            let b = extra_field(&signed, kid, make);
+            let got = changes(&b);
+            if got != [added.clone()] || !report(&b).all_ok() {
+                wrong.push(format!("{what} (kid {kid}) after {after}: {got:?}"));
+            }
+        }
+        for (what, kid, make) in actions {
+            let b = extra_field(&signed, kid, make);
+            let got = changes(&b);
+            let want = [(ChangeKind::Actions, Some(Refusal::Never)), added.clone()];
+            if got != want || report(&b).all_ok() {
+                wrong.push(format!("{what} after {after}: {got:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn a_signature_field_signed_as_it_is_added_with_an_action_is_refused() {
+    let mut wrong = Vec::new();
+    for (signed, after) in signed_three_ways() {
+        for action in [false, true] {
+            let f = Field {
+                name: "Signature2",
+                invisible: true,
+                widget: if action { on_open() } else { Dictionary::new() },
+                ..Field::default()
+            };
+            let b = sign(&signed, &id("p256"), &f, &Cms::default());
+            let got = changes(&b);
+            let mut want = vec![(ChangeKind::Signed("Signature2".into()), None)];
+            if action {
+                want.insert(0, (ChangeKind::Actions, Some(Refusal::Never)));
+            }
+            if got != want || report(&b).all_ok() == action {
+                wrong.push(format!("action {action} after {after}: {got:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn signing_an_existing_field_while_adding_an_action_is_refused() {
+    let f = Field {
+        name: "Extra",
+        existing: true,
+        widget: on_open(),
+        ..Field::default()
+    };
+    // In the version the first signature signed: a changed field.
+    let before = approve(&extra_field(&base_pdf(), false, |_| Dictionary::new()));
+    let b = sign(&before, &id("p256"), &f, &Cms::default());
+    let got = changes(&b);
+    assert!(got.iter().any(|(_, r)| r.is_some()), "{got:#?}");
+    assert!(!report(&b).all_ok());
+    // Added after it: a new field to the first signature, its action that field's.
+    let after = extra_field(&approve(&base_pdf()), false, |_| Dictionary::new());
+    let b = sign(&after, &id("p256"), &f, &Cms::default());
+    let want = vec![
+        (ChangeKind::Actions, Some(Refusal::Never)),
+        (ChangeKind::Signed("Extra".into()), None),
+    ];
+    assert_eq!(changes(&b), want);
+    assert!(!report(&b).all_ok());
 }
 
 #[test]

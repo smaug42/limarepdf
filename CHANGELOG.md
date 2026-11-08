@@ -9,6 +9,11 @@
 
 ### Fixed
 
+- A signature field added after a document is signed, with an action on it or on its widget, is no longer an
+  allowed change, whether the field is left empty or signed as it is added. Before, an invisible signature field
+  whose action runs when its page opens, added after a certification that allows form filling and signing, was
+  reported as allowed, and the certification as unbroken. The action is now reported as "actions or scripts added
+  or changed", never allowed after signing, beside the field's own line.
 - `limarepdf-cli split`, `render` and `save-images` no longer replace their input when one of the files they name
   in `--out-dir` is a link to it. Before, `split in.pdf --every 1 --out-dir parts --overwrite`, with
   `parts/in-002.pdf` a link to `in.pdf`, replaced `in.pdf` with that part, and `render` and `save-images` replaced
