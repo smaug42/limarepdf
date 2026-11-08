@@ -2151,6 +2151,16 @@ impl Judge<'_> {
         id
     }
 
+    /// Whether the newer version's field or widget `id` has an action (`/A` or `/AA`, not null).
+    fn acts(&self, id: ObjectId) -> bool {
+        let d = self.new.dict_of(id);
+        [&b"A"[..], b"AA"].into_iter().any(|k| {
+            (d.and_then(|d| d.get(k).ok()))
+                .and_then(|o| self.new.resolve(o))
+                .is_some_and(|o| !matches!(o, Object::Null))
+        })
+    }
+
     /// Fields added, removed or signed.
     fn fields(&mut self) {
         for (id, f) in &self.or.fields {
@@ -2180,17 +2190,20 @@ impl Judge<'_> {
                         self.push(never(ChangeKind::FieldChanged(name), None));
                     }
                     None if f.sig => {
-                        // The whole new field: whether anything in it is signed or shows.
-                        let tree: Vec<&FieldInfo> = self
+                        // The whole new field: whether anything in it is signed, shows or acts.
+                        let tree: Vec<(&ObjectId, &FieldInfo)> = self
                             .nr
                             .fields
                             .iter()
                             .filter(|(i, _)| self.field_root(**i) == *id)
-                            .map(|(_, f)| f)
                             .collect();
-                        let visible = tree.iter().any(|f| f.visible);
-                        match tree.iter().find(|f| f.signed) {
-                            Some(s) => self.push(sign_seen(s, Some(visible))),
+                        let visible = tree.iter().any(|(_, f)| f.visible);
+                        if let Some((i, _)) = tree.iter().find(|(i, _)| self.acts(**i)) {
+                            let page = self.nr.annots.get(*i).copied();
+                            self.push(never(ChangeKind::Actions, page));
+                        }
+                        match tree.iter().find(|(_, f)| f.signed) {
+                            Some((_, s)) => self.push(sign_seen(s, Some(visible))),
                             None => self.push(seen(
                                 ChangeKind::SignatureFieldAdded(f.name.clone()),
                                 None,

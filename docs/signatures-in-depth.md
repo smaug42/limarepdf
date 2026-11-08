@@ -561,7 +561,7 @@ document can be altered, so LimarePDF compares each version with the next and ju
 | Form field filled in | allowed | allowed | allowed | not allowed |
 | Form field made read-only (signing a field that locks it) | allowed | allowed | allowed | not allowed |
 | Signed in an empty signature field | allowed | allowed | allowed | not allowed |
-| Signature field added (signed or not) | allowed | only if invisible | only if invisible | not allowed |
+| Signature field added (signed or not, without actions) | allowed | only if invisible | only if invisible | not allowed |
 | Comment added, changed or removed | allowed | not allowed | allowed | not allowed |
 | Form settings for filling in (fonts) | allowed | allowed | allowed | not allowed |
 | Document timestamp, validation data | allowed | allowed | allowed | allowed (a timestamp only if invisible) |
@@ -587,7 +587,9 @@ Every object that differs is judged by each part it plays in the newer version: 
 field's value or appearance, a signature, the document's structure. A change is allowed only when every one of
 those parts allows it. So an object that is both page content and, say, a comment's appearance can't be changed
 as "just a comment". Pointers from one structure to another (a bookmark to a page, a tag to an annotation) don't
-count as parts.
+count as parts. A signature field added with an action on it or on its widget (one run when its page opens, say)
+is refused for the action, even where adding the field is allowed: the field is listed as added beside the refused
+action.
 
 LimarePDF reads the later additions with its own strict reader rather than the lenient one it uses to open files, and
 refuses as malformed:

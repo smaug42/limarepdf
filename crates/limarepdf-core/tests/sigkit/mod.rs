@@ -796,6 +796,8 @@ pub struct Field {
     pub invisible: bool,
     /// Sign the existing empty signature field of this name instead of adding one.
     pub existing: bool,
+    /// Entries added to the field signed (an action, say).
+    pub widget: Dictionary,
 }
 
 impl Default for Field {
@@ -814,6 +816,7 @@ impl Default for Field {
             cert: None,
             invisible: false,
             existing: false,
+            widget: Dictionary::new(),
         }
     }
 }
@@ -878,6 +881,7 @@ pub fn sign_with(input: &[u8], f: &Field, make: impl FnOnce(&[&[u8]]) -> Vec<u8>
     if let Some((id, mut d)) = existing {
         // Sign the empty field already in the document.
         d.set("V", sig_obj);
+        d.extend(&f.widget);
         new.set_object(id, Object::Dictionary(d));
         let mut out = Vec::new();
         inc.save_to(&mut out).unwrap();
@@ -898,7 +902,9 @@ pub fn sign_with(input: &[u8], f: &Field, make: impl FnOnce(&[&[u8]]) -> Vec<u8>
             "P" => page_id,
         }
     };
-    let mut ids = vec![new.add_object(field(f.name, sig_obj.clone()))];
+    let mut signed = field(f.name, sig_obj.clone());
+    signed.extend(&f.widget);
+    let mut ids = vec![new.add_object(signed)];
     if let Some(other) = f.share_with {
         ids.push(new.add_object(field(other, sig_obj.clone())));
     }
