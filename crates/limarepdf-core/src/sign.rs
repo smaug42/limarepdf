@@ -975,6 +975,9 @@ impl Pdf {
 
     /// Draw every fill-and-sign item into its page, so it can no longer be moved or
     /// removed as a comment. Other annotations stay. Returns how many were drawn in.
+    /// Refused, with nothing changed, when a shown item can't be placed (no `/Rect`, or no
+    /// drawing with a box, as after the file was changed elsewhere), rather than remove it
+    /// undrawn; keeping it would leave it movable (PB-112).
     pub fn finish_signing(&mut self) -> Result<usize> {
         fn which(_: &Pdf, d: &Dictionary) -> Flat {
             if is_sign_item(d) {
@@ -983,8 +986,21 @@ impl Pdf {
                 Flat::Keep
             }
         }
+        let pages = self.page_ids();
+        for (i, &page) in pages.iter().enumerate() {
+            if self
+                .plan_page(page, which, true)?
+                .is_some_and(|p| p.holds())
+            {
+                bail!(
+                    "LimarePDF can't draw the fill-and-sign item on page {}, so it would be lost; \
+                     nothing was changed",
+                    i + 1
+                );
+            }
+        }
         let mut drawn = 0;
-        for page in self.page_ids() {
+        for page in pages {
             drawn +=
                 self.flatten_page(page, which, None, "LimareSign", &mut HashSet::new(), None)?;
         }

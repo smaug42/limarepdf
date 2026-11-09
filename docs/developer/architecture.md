@@ -1122,7 +1122,9 @@ Undo needs nothing of its own: the history compares the whole document.
 Fill-and-sign signatures (`crates/limarepdf-core/src/sign.rs`) are stamp annotations whose artwork LimarePDF draws once:
 pen strokes smoothed into curves, typed names as the glyph outlines of a bundled handwriting font (read with the
 `skrifa` crate, so no font goes into the PDF), or a picture with its paper made transparent. Finish signing
-flattens just those annotations. Counting and locking them (`Pdf::sign_items`, `lock_sign_items`) walk every
+flattens just those annotations, after looking at every page without changing it (`Pdf::plan_page`), so an item
+it can't place (no `/Rect`, or no drawing with a box) is refused with nothing changed, not removed undrawn
+(PB-112). Counting and locking them (`Pdf::sign_items`, `lock_sign_items`) walk every
 annotation a page lists (`all_annot_refs`, PB-02), not the 10,000 the app shows, as removal does; so does
 finding an annotation's page when it has no `/P` (`annot_page`). The app's saved signatures and the Create
 signature window are in `crates/limarepdf-gui/src/signing.rs`; every preview button is a white card that the

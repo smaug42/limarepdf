@@ -762,6 +762,76 @@ fn fill_and_sign_items_past_the_annotations_shown_are_counted_and_locked() {
     assert!(flags.and_then(Object::as_i64).unwrap_or(0) & 128 != 0);
 }
 
+/// PB-112: a fill-and-sign item whose drawing has lost its box (the file changed in another
+/// app after it was put down) can't be drawn in, so Finish signing, and Sign digitally, which
+/// finishes first, refuse with nothing changed rather than remove it undrawn.
+#[test]
+fn fill_and_sign_items_that_cannot_be_drawn_in_are_refused_not_removed() {
+    // A signature on each of two pages; with `broken`, page 2's drawing without its box.
+    let two_pages = |broken: bool| {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 300.0, 200.0).unwrap();
+        p.insert_blank(1, 300.0, 200.0).unwrap();
+        let mut drawings = Vec::new();
+        for (page, text) in [(0, "Jane Doe"), (1, "J. Doe")] {
+            let art = SignArt::Typed {
+                text,
+                style: SignStyle::Caveat,
+            };
+            let s = Stamp::Signature {
+                art,
+                role: SignRole::Signature,
+                color: InkColor::Blue,
+                date: false,
+            };
+            let id = p
+                .add_stamp(page, &s, StampPlace::Centre(150.0, 100.0), "Jane")
+                .unwrap();
+            let ap = p.doc.get_dictionary(id).unwrap().get(b"AP").unwrap();
+            drawings.push(
+                ap.as_dict()
+                    .unwrap()
+                    .get(b"N")
+                    .unwrap()
+                    .as_reference()
+                    .unwrap(),
+            );
+        }
+        assert_ne!(drawings[0], drawings[1]);
+        if broken {
+            let s = p.doc.get_object_mut(drawings[1]).unwrap();
+            assert!(s.as_stream_mut().unwrap().dict.remove(b"BBox").is_some());
+        }
+        p.snapshot().unwrap()
+    };
+    let refused = "LimarePDF can't draw the fill-and-sign item on page 2, so it would be lost; \
+                   nothing was changed";
+    let bytes = two_pages(true);
+    let mut p = Pdf::from_bytes(&bytes, None).unwrap();
+    assert_eq!(p.sign_items(), 2);
+    let before = p.state_before();
+    let finished = p.finish_signing().map_err(|e| format!("{e:#}"));
+    let signed = sign_document(&bytes, None, &req(rsa(), new_box(0)))
+        .map(|s| s.finished_items)
+        .map_err(|e| format!("{e:#}"));
+    // Finish signing's result and the items left; Sign digitally's, nothing signed.
+    let refusal = Err(refused.to_string());
+    assert_eq!(
+        (finished, p.sign_items(), signed),
+        (refusal.clone(), 2, refusal)
+    );
+    assert_eq!(p.state_since(&before), []);
+    // Control: with their drawings, both are drawn in, on both paths.
+    let bytes = two_pages(false);
+    let mut p = Pdf::from_bytes(&bytes, None).unwrap();
+    assert_eq!(p.finish_signing().unwrap(), 2);
+    assert_eq!(p.sign_items(), 0);
+    let s = sign_document(&bytes, None, &req(rsa(), new_box(0))).unwrap();
+    assert_eq!(s.finished_items, 2);
+    newest_is_good(&s.bytes, rsa());
+    assert_eq!(Pdf::from_bytes(&s.bytes, None).unwrap().sign_items(), 0);
+}
+
 #[test]
 fn fields_are_drawn_before_signing_when_the_form_asks_readers_to() {
     let doc = form_doc(&[("Approver", None)], true);

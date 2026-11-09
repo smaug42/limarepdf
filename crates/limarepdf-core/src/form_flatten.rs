@@ -45,6 +45,11 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
+    /// Whether a shown annotation to draw can't be placed (planned with `hold`).
+    pub(crate) fn holds(&self) -> bool {
+        !self.held.is_empty()
+    }
+
     /// Keep the popups and replies of the annotations held, and theirs: they are its
     /// comment. Each annotation is looked at once, however often the page lists it; a step
     /// is charged to `work` for each, and for each entry that goes with it.
