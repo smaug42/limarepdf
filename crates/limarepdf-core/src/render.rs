@@ -325,9 +325,9 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    /// What couldn't be drawn in the renders since the last call. hayro caches fonts and
-    /// pictures across pages, so each is reported once per renderer, on the first page
-    /// that uses it.
+    /// What couldn't be drawn in the renders since the last call. hayro keeps the fonts it
+    /// has read from page to page, so a font is reported once per renderer, on the first
+    /// page that uses it; a picture is decoded each time it's drawn, and reported each time.
     pub fn take_missing(&self) -> BTreeSet<Missing> {
         std::mem::take(&mut *self.missing.lock().unwrap_or_else(|e| e.into_inner()))
     }

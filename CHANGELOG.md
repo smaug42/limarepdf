@@ -9,6 +9,11 @@
 
 ### Fixed
 
+- Remove blank pages (and `limarepdf-cli remove-blank`) no longer deletes a page because something on it couldn't
+  be drawn. Before, a page whose only content was a picture that can't be read, or text in a font LimarePDF can't
+  use or in a language no installed font has, was drawn as an empty page, counted blank and deleted, the picture or
+  text with it. Such a page is now kept, as it may not be blank. Text drawn with an installed font like the one
+  asked for counts as drawn, as before.
 - Redaction no longer reports success while the saved file still holds removed content through something the
   removed content pointed to. A blacked-out picture kept its alternate versions (copies some files carry for
   printing or other screens), which hold the pixels as they were; it is now written without them. Alternative text

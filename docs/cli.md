@@ -115,7 +115,7 @@ warning: 2 annotation(s) LimarePDF can't draw were left as they were (pages 3, 7
 | --- | --- |
 | `limarepdf-cli extract in.pdf -o out.pdf --pages 1-3,7` | Keep only the listed pages |
 | `limarepdf-cli delete in.pdf -o out.pdf --pages 2` | Delete pages |
-| `limarepdf-cli remove-blank in.pdf -o out.pdf` | Delete pages that look blank and list them. `--tolerance` is the percent of a page that may differ from its background: 0.05 by default (specks or a page number), 0 for nothing at all |
+| `limarepdf-cli remove-blank in.pdf -o out.pdf` | Delete pages that look blank and list them. A page with a picture that can't be read, or text in a font it can't use or a language no installed font has, is kept. `--tolerance` is the percent of a page that may differ from its background: 0.05 by default (specks or a page number), 0 for nothing at all |
 | `limarepdf-cli rotate in.pdf -o out.pdf --pages all --degrees 90` | Rotate clockwise by 90, 180 or 270 |
 | `limarepdf-cli reorder in.pdf -o out.pdf --order 3,1,2` | Put all pages in a new order |
 | `limarepdf-cli insert-blank in.pdf -o out.pdf --after 0` | Insert a blank page after page N (0 = at the start) |
