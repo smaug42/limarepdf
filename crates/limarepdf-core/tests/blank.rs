@@ -2,6 +2,7 @@
 
 use image::{DynamicImage, GrayImage, Luma};
 use limarepdf_core::{FontChoice, ImageImport, Pdf, BLANK_TOLERANCE};
+use lopdf::{dictionary, Dictionary, ObjectId, Stream};
 
 fn png(img: GrayImage) -> Vec<u8> {
     let mut out = Vec::new();
@@ -80,4 +81,93 @@ fn keeps_a_document_that_is_all_blank() {
     p.insert_blank(1, 612.0, 792.0).unwrap();
     assert!(p.remove_blank_pages(BLANK_TOLERANCE).is_err());
     assert_eq!(p.page_count(), 2);
+}
+
+/// A picture that can't be decoded: three bytes marked as a JPEG.
+fn broken_picture(p: &mut Pdf) -> ObjectId {
+    p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 2,
+            "Height" => 1,
+            "BitsPerComponent" => 8,
+            "ColorSpace" => "DeviceRGB",
+            "Filter" => "DCTDecode",
+        },
+        vec![0, 1, 2],
+    ))
+}
+
+/// Gives page `page` the content `content` and the resources `resources`.
+fn draw(p: &mut Pdf, page: usize, content: &str, resources: Dictionary) {
+    let s = p
+        .doc
+        .add_object(Stream::new(Dictionary::new(), content.as_bytes().to_vec()));
+    let id = p.page_ids()[page];
+    let d = p.doc.get_dictionary_mut(id).unwrap();
+    d.set("Contents", s);
+    d.set("Resources", resources);
+}
+
+/// Shows picture `im` on page `page`.
+fn show(p: &mut Pdf, page: usize, im: ObjectId) {
+    draw(
+        p,
+        page,
+        "q 150 0 0 100 0 0 cm /Im Do Q",
+        dictionary! { "XObject" => dictionary! { "Im" => im } },
+    );
+}
+
+#[test]
+fn keeps_a_page_whose_picture_cant_be_read() {
+    // The audit's pages (A-04): a picture that can't be decoded, drawn as nothing, and a black square.
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    p.insert_blank(1, 300.0, 200.0).unwrap();
+    let im = broken_picture(&mut p);
+    show(&mut p, 0, im);
+    draw(&mut p, 1, "0 0 0 rg 30 30 100 100 re f", Dictionary::new());
+    assert!(p.blank_pages(BLANK_TOLERANCE).unwrap().is_empty());
+    assert!(p.remove_blank_pages(BLANK_TOLERANCE).unwrap().is_empty());
+    let q = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    assert_eq!(q.page_count(), 2);
+    let pictures = q.doc.get_page_images(q.page_ids()[0]).unwrap();
+    assert_eq!(pictures.len(), 1);
+    assert_eq!(
+        pictures[0].content,
+        [0, 1, 2],
+        "the picture's bytes are kept"
+    );
+}
+
+#[test]
+fn a_picture_that_cant_be_read_among_blank_pages() {
+    // Pages: 0 text, 1 empty, 2 a page number only, 3 a blank scan, 4 a scan with text, 5 a picture that can't be
+    // decoded.
+    let mut p = mixed();
+    p.insert_blank(5, 612.0, 792.0).unwrap();
+    let im = broken_picture(&mut p);
+    show(&mut p, 5, im);
+    assert_eq!(p.blank_pages(BLANK_TOLERANCE).unwrap(), vec![1, 2, 3]);
+    assert_eq!(p.blank_pages(0.0).unwrap(), vec![1]);
+    assert_eq!(
+        p.remove_blank_pages(BLANK_TOLERANCE).unwrap(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(p.page_count(), 3);
+}
+
+#[test]
+fn every_page_showing_a_picture_that_cant_be_read_is_kept() {
+    // Pages 0 and 1 show the same picture, which can't be decoded; page 2 is empty.
+    let mut p = Pdf::new();
+    for i in 0..3 {
+        p.insert_blank(i, 300.0, 200.0).unwrap();
+    }
+    let im = broken_picture(&mut p);
+    show(&mut p, 0, im);
+    show(&mut p, 1, im);
+    assert_eq!(p.blank_pages(BLANK_TOLERANCE).unwrap(), vec![2]);
 }

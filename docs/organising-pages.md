@@ -179,7 +179,10 @@ anything: **Replace** replaces them, **Cancel** writes no files at all.
 
 **Pages > Delete ▾ > Remove blank pages** (or ☰ > Pages > Remove blank pages, or the command search) deletes every
 page that is one even colour, give or take scanner specks, faint show-through or a lone page number, and lists the
-pages it removed. Undo brings them back. A document whose pages are all blank is left alone.
+pages it removed. Undo brings them back. A document whose pages are all blank is left alone. A page with something
+on it that LimarePDF couldn't draw is kept, as it may not be blank: a picture that can't be read, or text in a font
+LimarePDF can't use or in a language no installed font has. Text drawn with an installed font like the one asked
+for counts as drawn.
 
 ## Crop pages
 
