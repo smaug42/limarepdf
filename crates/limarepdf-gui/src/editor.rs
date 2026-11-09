@@ -241,26 +241,39 @@ enum Kept {
     Objects(Box<Group>),
 }
 
-/// Typing put back after its change failed ([`Editor::settle_kept`]), as it was then: new
-/// text, a note's or text box's text, or the selected object's line and look.
+/// Typing put back after its change failed ([`Editor::settle_kept`]), as it was then, with
+/// all its change is made with: new text, where it starts and how it is aligned; a note's or
+/// text box's text, and a new text box's style; the selected object's line and look.
 enum NotKept {
-    Text(Styled),
-    Writing(String),
+    Text(Styled, (f32, f32), TextAlign),
+    Writing(String, Option<TextStyle>),
     Object((usize, usize), Styled, Look),
-    /// A paragraph's page and the line it was opened from, its text and its frame's edges.
-    Paragraph((usize, usize), Styled, (f32, f32)),
+    /// A paragraph's page and the line it was opened from, its text, and its frame's edges
+    /// and alignment (PB-132).
+    Paragraph((usize, usize), Styled, ((f32, f32), TextAlign)),
 }
 
 impl NotKept {
-    fn of(held: &Held) -> Option<Self> {
+    /// `held`'s, a new text box's style being `box_style`.
+    fn of(held: &Held, box_style: TextStyle) -> Option<Self> {
         match &held.0 {
-            Kept::Text(a) => Some(Self::Text(a.text.clone())),
-            Kept::Writing(w) => Some(Self::Writing(w.text.clone())),
+            Kept::Text(a) => Some(Self::Text(a.text.clone(), a.at, a.align)),
+            Kept::Writing(w) => Some(Self::Writing(w.text.clone(), added_with(w, box_style))),
             Kept::Object(o) => Some(Self::Object(o.0.key, o.0.text.clone(), o.0.look())),
-            Kept::Paragraph(p) => Some(Self::Paragraph((p.page, p.line), p.text.clone(), p.edges)),
+            Kept::Paragraph(p) => {
+                let frame = (p.edges, p.align);
+                Some(Self::Paragraph((p.page, p.line), p.text.clone(), frame))
+            }
             _ => None,
         }
     }
+}
+
+/// The style a new text box is added with, the Text box tool's (`box_style`, taken when its
+/// change is made); none for a note, or a text box on the page, whose typing changes only
+/// its text.
+fn added_with(w: &Writing, box_style: TextStyle) -> Option<TextStyle> {
+    (w.id.is_none() && !w.note).then_some(box_style)
 }
 
 /// What had the keyboard on the page when F6 took it to another region of the window
@@ -2482,19 +2495,21 @@ impl Editor {
     /// Whether `piece` is typing put back after its change failed, unchanged since.
     fn refused_again(&self, piece: Typed) -> bool {
         match (&self.not_kept, piece) {
-            (Some(NotKept::Text(t)), Typed::Text) => {
-                self.adding.as_ref().is_some_and(|a| a.text.same_as(t))
+            (Some(NotKept::Text(t, at, align)), Typed::Text) => {
+                let same = |a: &PageText| a.text.same_as(t) && a.at == *at && a.align == *align;
+                self.adding.as_ref().is_some_and(same)
             }
-            (Some(NotKept::Writing(t)), Typed::Writing) => {
-                self.writing.as_ref().is_some_and(|w| w.text == *t)
+            (Some(NotKept::Writing(t, style)), Typed::Writing) => {
+                let same = |w: &Writing| w.text == *t && added_with(w, self.box_style) == *style;
+                self.writing.as_ref().is_some_and(same)
             }
             (Some(NotKept::Object(key, t, look)), Typed::Object) => {
                 let same = |i: &Insp| i.key == *key && i.text.same_as(t) && i.look().same_as(look);
                 self.insp.as_ref().is_some_and(same)
             }
-            (Some(NotKept::Paragraph(key, t, edges)), Typed::Paragraph) => {
+            (Some(NotKept::Paragraph(key, t, frame)), Typed::Paragraph) => {
                 let same = |p: &ParaEdit| {
-                    (p.page, p.line) == *key && p.text.same_as(t) && p.edges == *edges
+                    (p.page, p.line) == *key && p.text.same_as(t) && (p.edges, p.align) == *frame
                 };
                 self.para.as_ref().is_some_and(same)
             }
@@ -2512,7 +2527,7 @@ impl Editor {
             match failed.iter().find(|(f, _)| *f == at) {
                 None => self.done(held),
                 Some((_, false)) => {
-                    self.not_kept = NotKept::of(&held);
+                    self.not_kept = NotKept::of(&held, self.box_style);
                     self.put_back(held);
                     self.refocus_typing();
                 }
@@ -7499,6 +7514,163 @@ mod tests {
             ed.actions.clear();
             ed.settle_kept(&[]);
             assert!(!ed.pending() && !ed.left_out, "{piece:?}");
+        }
+    }
+
+    /// PB-132: a paragraph whose change failed comes back as new text does (BUG-41): aligned
+    /// anew, it is tried again as aligned; ended again as it was, or aligned away and back,
+    /// it is left out.
+    #[test]
+    fn a_paragraph_whose_change_failed_is_tried_again_aligned_anew() {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let prose = "The harbour was quiet that morning, and the fishing boats sat low in the \
+            water while gulls argued over the nets drying along the wall. Nobody on the quay \
+            was in a hurry; the tide would turn when it turned.";
+        // 12-point Helvetica lines about 330 points wide, 15 points apart.
+        let mut lines: Vec<String> = Vec::new();
+        for word in prose.split(' ') {
+            match lines.last_mut() {
+                Some(l) if limarepdf_core::text_width(&format!("{l} {word}"), 12.0) <= 330.0 => {
+                    l.push(' ');
+                    l.push_str(word);
+                }
+                _ => lines.push(word.to_string()),
+            }
+        }
+        let font = FontChoice::default();
+        for (i, l) in lines.iter().enumerate() {
+            let at = (72.0, 100.0 + 15.0 * i as f32);
+            pdf.add_text(0, at, l, font, 12.0, [0.0; 3]).unwrap();
+        }
+        use TextAlign::{Centre, Left};
+        // What is done to it once it is back, and whether it is then tried again.
+        let cases: [(&str, &[TextAlign], bool); 3] = [
+            ("as it was", &[], false),
+            ("centred", &[Centre], true),
+            ("centred and back", &[Centre, Left], false),
+        ];
+        for (case, aligns, tried) in cases {
+            let mut ed = Editor::default();
+            ed.objects(&pdf, 0);
+            assert!(ed.start_paragraph(&pdf, 0, 0, Pick::Chars(0, 0)), "{case}");
+            let pe = ed.para.as_mut().unwrap();
+            assert_eq!(pe.align, Left, "{case}");
+            let typed = format!("{} Seals.", pe.text.text());
+            pe.text.sync(&typed, None);
+            // Its change failed: back to go on with.
+            ed.end_paragraph(true);
+            assert_eq!(ed.actions.len(), 1, "{case}");
+            ed.actions.clear();
+            ed.settle_kept(&[(0, false)]);
+            assert!(ed.editing_paragraph() && !ed.left_out, "{case}: not back");
+            for &a in aligns {
+                ed.align_text(&pdf, a);
+            }
+            ed.end_paragraph(true);
+            let again = match ed.actions.as_slice() {
+                [] => None,
+                [Action::EditParagraph(.., (_, align))] => Some(*align),
+                a => panic!("{case}: {} changes", a.len()),
+            };
+            assert_eq!(again, tried.then_some(Centre), "{case}");
+            assert_eq!(ed.left_out, !tried, "{case}");
+        }
+    }
+
+    /// S1-30, PB-132's sibling: new text whose change failed and came back is tried again
+    /// once moved by its outline or aligned anew, added where it now is and as aligned;
+    /// aligned away and back, it is left out.
+    #[test]
+    fn new_text_whose_change_failed_is_tried_again_moved_or_aligned() {
+        let look = page_text::Look {
+            font: FontChoice::default(),
+            size: 12.0,
+            color: [0.0; 3],
+            underline: false,
+            strike: false,
+        };
+        let pdf = limarepdf_core::Pdf::new();
+        use TextAlign::{Centre, Left};
+        type Case<'a> = (&'a str, Option<(f32, f32)>, &'a [TextAlign]);
+        type Added = Option<((f32, f32), TextAlign)>;
+        // What is done to it once it is back, and where and how it is then added, if it is.
+        let cases: [(Case, Added); 4] = [
+            (("as it was", None, &[]), None),
+            (
+                ("moved", Some((150.0, 200.0)), &[]),
+                Some(((150.0, 200.0), Left)),
+            ),
+            (("centred", None, &[Centre]), Some(((100.0, 100.0), Centre))),
+            (("centred and back", None, &[Centre, Left]), None),
+        ];
+        for ((case, to, aligns), want) in cases {
+            let mut ed = Editor::default();
+            let mut a = PageText::new(egui::Id::NULL, 0, (100.0, 100.0), look, Left);
+            a.text.sync("Seal", None);
+            ed.adding = Some(a);
+            // Its change failed: back to go on with.
+            ed.finish_adding();
+            assert_eq!(ed.actions.len(), 1, "{case}");
+            ed.actions.clear();
+            ed.settle_kept(&[(0, false)]);
+            assert!(ed.pending() && !ed.left_out, "{case}: not back");
+            if let (Some(to), Some(a)) = (to, ed.adding.as_mut()) {
+                a.at = to;
+            }
+            for &al in aligns {
+                ed.align_text(&pdf, al);
+            }
+            ed.finish_adding();
+            let again = match ed.actions.as_slice() {
+                [] => None,
+                [Action::AddText(0, at, _, align)] => Some((*at, *align)),
+                a => panic!("{case}: {} changes", a.len()),
+            };
+            assert_eq!(again, want, "{case}");
+            assert_eq!(ed.left_out, want.is_none(), "{case}");
+        }
+    }
+
+    /// S1-30, checked with PB-132: a new text box whose change failed and came back is
+    /// tried again once the Text box tool's style it is added with changes (aligned, or
+    /// sized); aligned away and back, it is left out.
+    #[test]
+    fn a_new_text_box_whose_change_failed_is_tried_again_restyled() {
+        let pdf = limarepdf_core::Pdf::new();
+        use TextAlign::{Centre, Left};
+        // What is done to it once it is back, and whether it is then tried again.
+        let cases: [(&str, &[TextAlign], Option<f32>, bool); 4] = [
+            ("as it was", &[], None, false),
+            ("centred", &[Centre], None, true),
+            ("sized", &[], Some(20.0), true),
+            ("centred and back", &[Centre, Left], None, false),
+        ];
+        for (case, aligns, size, tried) in cases {
+            let mut ed = Editor::default();
+            let mut w = Writing::new(0, false, [100.0, 100.0, 300.0, 140.0], 12.0);
+            w.text = "Seal".into();
+            ed.writing = Some(w);
+            // Its change failed: back to go on with.
+            ed.finish_writing();
+            assert_eq!(ed.actions.len(), 1, "{case}");
+            ed.actions.clear();
+            ed.settle_kept(&[(0, false)]);
+            assert!(ed.pending() && !ed.left_out, "{case}: not back");
+            for &al in aligns {
+                ed.align_text(&pdf, al);
+            }
+            if let Some(s) = size {
+                ed.box_style.size = s;
+            }
+            ed.finish_writing();
+            let again = match ed.actions.as_slice() {
+                [] => false,
+                [Action::AddTextBox(0, ..)] => true,
+                a => panic!("{case}: {} changes", a.len()),
+            };
+            assert_eq!(again, tried, "{case}");
+            assert_eq!(ed.left_out, !tried, "{case}");
         }
     }
 

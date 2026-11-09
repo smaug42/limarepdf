@@ -1005,3 +1005,116 @@ fn replace_all_says_a_paragraph_grown_over_the_line_below() {
     let over = "2 of them would run past the page's edge or over other text, on page 1.";
     assert_eq!(r.said()[1], over);
 }
+
+/// What [`retried_tab`]'s paragraph has typed after its last word: a line of its own, with
+/// letters its font misreads.
+const GROWN: &str = "zigzag puzzles amaze";
+
+/// A tab of a Letter page with four lines of 12-point text as one paragraph, centred on 306
+/// points across or, `right`, ending at 456, in a Helvetica whose letters are all `em`
+/// thousandths of its size wide and which reads a "z" written in it as "x"; a small box
+/// under where [`GROWN`], written again in Helvetica's own widths, starts on the line below;
+/// and "they had seen it" in Helvetica well below. With the read tool. Returns the
+/// paragraph's lines.
+fn retried_tab(app: &mut App, ctx: &egui::Context, em: i64, right: bool) -> Vec<String> {
+    use lopdf::{dictionary, Dictionary, Object, Stream};
+    let lines = [
+        "The harbour was quiet that morning and the",
+        "fishing boats sat low in the water while gulls",
+        "argued over the nets drying along the wall",
+        "and the old men who mended the nets had seen",
+    ];
+    let at = |w: f32| if right { 456.0 - w } else { 306.0 - w / 2.0 };
+    let wide = |s: &str| s.len() as f32 * em as f32 * 0.012;
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let y = 700.0 - 15.0 * k as f32;
+        content.push_str(&format!(
+            "BT /F1 12 Tf {} {y} Td ({l}) Tj ET\n",
+            at(wide(l))
+        ));
+    }
+    let start = at(limarepdf_core::text_width(GROWN, 12.0));
+    if wide(GROWN) < limarepdf_core::text_width(GROWN, 12.0) {
+        // Wider written again: the box is all left of where the line was set.
+        assert!(start + 7.0 < at(wide(GROWN)) - 0.5, "{start}");
+    }
+    content.push_str(&format!("{} 638 6 6 re f\n", start + 1.0));
+    content.push_str("BT /F2 12 Tf 72 400 Td (they had seen it) Tj ET\n");
+    let mut pdf = Pdf::new();
+    pdf.insert_blank(0, 612.0, 792.0).unwrap();
+    let map = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+               /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+               /CMapName /Adobe-Identity-UCS def /CMapType 2 def\n\
+               1 begincodespacerange <00> <FF> endcodespacerange\n\
+               2 beginbfrange <20> <79> <0020> <7B> <7E> <007B> endbfrange\n\
+               1 beginbfchar <7A> <0078> endbfchar\n\
+               endcmap CMapName currentdict /CMap defineresource pop end end\n";
+    let map = (pdf.doc).add_object(Stream::new(Dictionary::new(), map.as_bytes().to_vec()));
+    let widths: Vec<Object> = (32..=126).map(|_| Object::Integer(em)).collect();
+    let f1 = pdf.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding", "FirstChar" => 32, "LastChar" => 126,
+        "Widths" => widths, "ToUnicode" => map,
+    });
+    let f2 = pdf.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let s = (pdf.doc).add_object(Stream::new(Dictionary::new(), content.into_bytes()));
+    let page = pdf.page_ids()[0];
+    let d = pdf.doc.get_dictionary_mut(page).unwrap();
+    d.set("Contents", s);
+    let fonts = dictionary! { "F1" => f1, "F2" => f2 };
+    d.set("Resources", dictionary! { "Font" => fonts });
+    assert!(app.add_tab(ctx, pdf, None, None, false));
+    app.act(ctx, Act::Tool(Tool::Read));
+    lines.map(String::from).to_vec()
+}
+
+/// PB-131: a centred or right-aligned paragraph's line that Replace all writes again in
+/// other widths, after it didn't read back as typed, starts where it is written, not where
+/// it was set: what it then runs over is said in the review, Replace where it fits leaves
+/// the paragraph as it was, and Undo puts the page back. Written again narrower, the line
+/// stays inside where it was set, and is judged as before.
+#[test]
+fn replace_all_judges_a_line_written_again_where_it_starts() {
+    let with = format!("seen {GROWN}");
+    let mut wrong = Vec::new();
+    for (case, em, right) in [
+        ("centred, wider", 400, false),
+        ("right-aligned, wider", 400, true),
+        ("centred, narrower", 700, false),
+        ("right-aligned, narrower", 700, true),
+    ] {
+        let (ctx, mut app) = new_app();
+        let lines = retried_tab(&mut app, &ctx, em, right);
+        click_band(&mut app, &ctx, "Paragraph");
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Replace);
+        ty.frame(&mut app, vec![]);
+        app.tabs[0].query = "seen".into();
+        app.tabs[0].replace.with = with.clone();
+        app.tabs[0].find_step(1);
+        let before = content(&app.tabs[0].pdf);
+        let r = super::replace::review(&mut app, &ty);
+        if (r.replaced, r.over, r.fits) != (2, 1, true) {
+            let said = (r.replaced, r.over, r.fits);
+            wrong.push(format!("{case}: reviewed (replaced, over, fits) {said:?}"));
+            continue;
+        }
+        click(&mut app, &ctx, "Replace where it fits");
+        let mut want = lines.clone();
+        want.push(format!("they had {with} it"));
+        let now = line_texts(&app.tabs[0].pdf, 0);
+        if now != want {
+            wrong.push(format!("{case}: where it fits left {now:?}"));
+        }
+        app.act(&ctx, Act::Undo);
+        if content(&app.tabs[0].pdf) != before {
+            wrong.push(format!("{case}: Undo didn't put the page back"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
