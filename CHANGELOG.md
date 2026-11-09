@@ -9,6 +9,16 @@
 
 ### Fixed
 
+- Replace all judges a paragraph's lines where they are written. A line of a centred or right-aligned paragraph
+  that doesn't read back as typed in the paragraph's own font is written again in the font its words go to, and
+  may then be wider and start further left. Before, such a line was judged where it was first set, so what it ran
+  over at its new start (a shape, a picture or other text) wasn't counted in the review, and **Replace where it
+  fits** wrote it over that anyway. It is now counted with the matches that would run over, so some replacements
+  that **Replace where it fits** made before are now left as they are.
+- Typing that came back after its change failed is tried again when only its alignment, its place or its new text
+  box's style was changed. Before, a paragraph realigned, new text moved by its outline or realigned, or a new
+  text box restyled with the Text box tool counted as ended again unchanged: it was left out, and the change made
+  to it was lost. Ended again with nothing changed, or aligned away and back, it is still left out.
 - Finish signing no longer removes an item put down with Fill and sign that it can't draw in. Before, a signature
   or other item whose drawing or place on the page was lost (as when the file was changed in another app after the
   item was put down) was removed without being drawn, so the finished copy, or the digitally signed one, had no

@@ -1267,6 +1267,7 @@ impl Tab {
                     let edit = |pdf: &mut Pdf| {
                         lost = !pdf
                             .edit_paragraph_decorated(&setting, &parts, edges, align, &decos)?
+                            .0
                             .is_empty();
                         Ok(())
                     };

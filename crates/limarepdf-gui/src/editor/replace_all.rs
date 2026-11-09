@@ -322,7 +322,7 @@ struct Done {
 }
 
 /// Where a change's text is written: from where a line started, or on a paragraph's lines
-/// written anew.
+/// written anew, each where its writer put it.
 enum Written {
     Line(Box<PageObject>),
     Paragraph(Vec<SetLine>),
@@ -482,7 +482,7 @@ fn paragraph(
     let orig = text.clone();
     let put_at = put(&mut text, &ranges, &job.with, &spaced);
     let parts = text.parts();
-    let set = setting.set(&parts);
+    let mut set = setting.set(&parts);
     let mut lost = false;
     let mut other_font = 0;
     if !text.same_as(&orig) && !set.unchanged() {
@@ -502,7 +502,10 @@ fn paragraph(
         let f = &setting.paragraph().frame;
         let (edges, decos) = ((f.left, f.right), text.decorations());
         let align = f.align;
-        lost = !(pdf.edit_paragraph_decorated(setting, &parts, edges, align, &decos)?).is_empty();
+        let (gone, lines) = pdf.edit_paragraph_decorated(setting, &parts, edges, align, &decos)?;
+        lost = !gone.is_empty();
+        // Each line where it is written: one written again may start elsewhere (PB-131).
+        set.lines = lines;
     }
     let old = (pp.blocks[k].lines.iter().map(|l| l.bbox)).reduce(union);
     let written = set.lines.into_iter().filter(|l| l.kept.is_none()).collect();
@@ -707,7 +710,8 @@ fn judge(
         kept[i] = true;
     }
     // Each line written anew to the change that wrote it: a paragraph's line where it was
-    // set, else the line edited starting nearest before it on its baseline.
+    // written (written again, where that put it), else the line edited starting nearest
+    // before it on its baseline.
     let mut owner: Vec<Option<usize>> = vec![None; after.len()];
     for (i, n) in after.iter().enumerate() {
         if kept[i] || n.kind != ObjectKind::Text {

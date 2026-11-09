@@ -50,7 +50,7 @@ impl Pdf {
         edges: (f32, f32),
     ) -> Result<Vec<usize>> {
         let align = setting.paragraph().frame.align;
-        self.paragraph_with(setting, parts, edges, align, None)
+        Ok(self.paragraph_with(setting, parts, edges, align, None)?.0)
     }
 
     /// [`Pdf::edit_paragraph_between`] with the paragraph aligned as `align` says, as
@@ -62,11 +62,14 @@ impl Pdf {
         edges: (f32, f32),
         align: Align,
     ) -> Result<Vec<usize>> {
-        self.paragraph_with(setting, parts, edges, align, None)
+        Ok(self.paragraph_with(setting, parts, edges, align, None)?.0)
     }
 
     /// [`Pdf::edit_paragraph_in`] with the paragraph's underlines and strike-throughs as
-    /// given (over the text of `parts`), in place of its lines' old ones.
+    /// given (over the text of `parts`), in place of its lines' old ones. Returns the lines
+    /// written in another font, as [`Pdf::edit_paragraph`] does, and every line as it is
+    /// written: one written again starts and is as wide as it is then, not as it was set
+    /// (PB-131).
     pub fn edit_paragraph_decorated(
         &mut self,
         setting: &ParagraphSetting,
@@ -74,14 +77,14 @@ impl Pdf {
         edges: (f32, f32),
         align: Align,
         decorations: &[Decorated],
-    ) -> Result<Vec<usize>> {
+    ) -> Result<(Vec<usize>, Vec<SetLine>)> {
         self.paragraph_with(setting, parts, edges, align, Some(decorations))
     }
 
     /// A paragraph edited ([`Pdf::edit_paragraph_in`]) between its frame's edges, aligned
     /// as given, its lines' decorations drawn again for its new text: as `asked`, else
     /// carried with their characters ([`crate::decorate::carried`]), each line's stretch
-    /// where the line is written.
+    /// where the line is written. Returns its lines as written, too.
     fn paragraph_with(
         &mut self,
         setting: &ParagraphSetting,
@@ -89,10 +92,10 @@ impl Pdf {
         edges: (f32, f32),
         align: Align,
         asked: Option<&[Decorated]>,
-    ) -> Result<Vec<usize>> {
+    ) -> Result<(Vec<usize>, Vec<SetLine>)> {
         let mut laid = setting.laid_in(parts, edges, align);
         if laid.set.unchanged() && asked.is_none() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), laid.set.lines));
         }
         if let Some(why) = &laid.refused {
             bail!("{why}");
@@ -156,7 +159,7 @@ impl Pdf {
                     self.paragraph_decorated(page, &parsed, setting, &lines, &want, ops)?;
                 self.commit(page, ops, depth, &parsed.inline)?;
                 self.keep_set_frame(page, setting, &lines, edges, align)?;
-                return Ok(lost);
+                return Ok((lost, laid.set.lines));
             }
             // The try is given up: the fonts it named go with it (PB-46).
             self.put_resources(page, resources.clone())?;

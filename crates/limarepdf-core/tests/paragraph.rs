@@ -3033,3 +3033,86 @@ fn cross_check_line_extents_with_poppler() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// A page of four lines of 12-point text as one paragraph, centred on 306 points across or,
+/// `right`, ending at 456, in a Helvetica whose letters are all `em` thousandths of its size
+/// wide and which reads a "z" written in it as "x".
+fn misreading_z(em: i64, right: bool) -> Pdf {
+    let lines = [
+        "The harbour was quiet that morning and the",
+        "fishing boats sat low in the water while gulls",
+        "argued over the nets drying along the wall",
+        "and the old men who mended the nets had seen",
+    ];
+    let mut content = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        let w = l.len() as f32 * em as f32 * 0.012;
+        let x = if right { 456.0 - w } else { 306.0 - w / 2.0 };
+        let y = 700.0 - 15.0 * k as f32;
+        content.push_str(&format!("BT /F1 12 Tf {x} {y} Td ({l}) Tj ET\n"));
+    }
+    let mut p = Pdf::new();
+    p.insert_blank(0, 612.0, 792.0).unwrap();
+    let map = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+               /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+               /CMapName /Adobe-Identity-UCS def /CMapType 2 def\n\
+               1 begincodespacerange <00> <FF> endcodespacerange\n\
+               2 beginbfrange <20> <79> <0020> <7B> <7E> <007B> endbfrange\n\
+               1 beginbfchar <7A> <0078> endbfchar\n\
+               endcmap CMapName currentdict /CMap defineresource pop end end\n";
+    let map = (p.doc).add_object(Stream::new(Dictionary::new(), map.as_bytes().to_vec()));
+    let widths: Vec<Object> = (32..=126).map(|_| Object::Integer(em)).collect();
+    let f1 = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding", "FirstChar" => 32, "LastChar" => 126,
+        "Widths" => widths, "ToUnicode" => map,
+    });
+    let s = (p.doc).add_object(Stream::new(Dictionary::new(), content.into_bytes()));
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set("Contents", s);
+    d.set(
+        "Resources",
+        dictionary! { "Font" => dictionary! { "F1" => f1 } },
+    );
+    p
+}
+
+/// PB-131: a paragraph's line written again in Helvetica's own widths, after it didn't read
+/// back as typed, is returned where it is written: centred or right-aligned, it starts left
+/// of where it was set when it is written wider, right of it when narrower.
+#[test]
+fn a_line_written_again_is_returned_where_it_is_written() {
+    let mut wrong = Vec::new();
+    for (em, wider) in [(400, true), (700, false)] {
+        for right in [false, true] {
+            let case = format!("{em} wide, right-aligned {right}");
+            let mut p = misreading_z(em, right);
+            let para = only_paragraph(&p);
+            let want = if right { Align::Right } else { Align::Centre };
+            assert_eq!(para.frame.align, want, "{case}");
+            let setting = p.paragraph_setting(&para).unwrap();
+            let parts = typed(&para, &format!("{} zigzag puzzles amaze", para.text));
+            let set = setting.set(&parts);
+            let f = &para.frame;
+            let (lost, lines) =
+                (p.edit_paragraph_decorated(&setting, &parts, (f.left, f.right), f.align, &[]))
+                    .unwrap();
+            assert_eq!(lost, [4], "{case}");
+            let moved = set.lines[4].x - lines[4].x;
+            if (moved > 0.5) != wider || moved.abs() <= 0.5 {
+                wrong.push(format!(
+                    "{case}: written {moved:.2} left of where it was set"
+                ));
+            }
+            let objs = lines_of(&p);
+            for l in lines.iter().filter(|l| l.kept.is_none()) {
+                let on = |o: &PageObject| near(o.baseline.unwrap(), (l.x, l.baseline));
+                if !objs.iter().any(on) {
+                    wrong.push(format!("{case}: no line starts where {l:?} is"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
