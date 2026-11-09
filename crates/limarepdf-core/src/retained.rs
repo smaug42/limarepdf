@@ -9,30 +9,46 @@
 //!   Dictionaries shared with what didn't change are edited where they are, for those
 //!   entries only. Every change is worked out before any is made.
 //! * An original that a drawing left as it was still draws is kept for it, unchanged, and
-//!   the pages drawing it are reported.
+//!   the pages drawing it are reported. The appearances of the annotations removed, and the
+//!   pictures and forms they draw, count as originals, and so do an original picture's soft
+//!   mask, mask and alternate versions: they go with it, or are kept with it, and a picture
+//!   still drawn that shares one is kept and reported as an original is.
 //! * What a drawing that can't be read may use is neither removed nor kept quietly: the
 //!   check after redacting fails, naming the page.
 //! * Last, the file is followed from its trailer as saving keeps it, and a route still
 //!   reaching anything removed (the tag tree, private application data, any other part of
-//!   the file) fails the check, saying which.
+//!   the file) fails the check, saying which. Removed with what held them: alternative text
+//!   stored as an object of its own that no property still in the file holds, and what an
+//!   annotation removed held as objects of its own that no annotation still listed holds.
 
-use crate::reach::{self, Reach};
+use crate::reach::{self, Reach, ALT};
 use crate::Pdf;
 use lopdf::{Dictionary, Document, Object, ObjectId};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// What redaction took out of the pages, to be looked for in the rest of the file.
 #[derive(Default)]
 pub(crate) struct Removed {
-    /// The originals of the pictures and forms replaced or removed under a mark.
+    /// The originals of the pictures and forms replaced or removed under a mark, and those
+    /// the appearances of the annotations removed draw.
     pub xobjects: HashSet<ObjectId>,
     /// The alternative text taken off marked content.
     pub alts: HashSet<String>,
+    /// The alternative text taken off marked content and tag-tree elements that was an
+    /// object of its own.
+    pub texts: HashSet<ObjectId>,
+    /// The properties alternative text was taken off that were objects of their own.
+    pub properties: HashSet<ObjectId>,
     /// What the redacted pages no longer hold: their content before redacting, their
     /// thumbnails and what their private application data pointed at.
     pub pages: HashSet<ObjectId>,
     /// The annotations removed, with the replies to them and their popups.
     pub annots: HashSet<ObjectId>,
+    /// The appearances of the annotations removed.
+    pub looks: HashSet<ObjectId>,
+    /// What the annotations removed held as objects of their own (see
+    /// [`Pdf::annot_holds`]).
+    pub held: HashSet<ObjectId>,
 }
 
 /// What [`Pdf::clear_retained`] found.
@@ -210,6 +226,89 @@ impl Props {
     fn is_empty(&self) -> bool {
         self.refs.is_empty() && self.direct.is_empty()
     }
+
+    /// The alternative text the properties hold as objects of their own.
+    fn alt_refs(&self, doc: &Document) -> HashSet<ObjectId> {
+        let refs = (self.refs.iter()).filter_map(|id| doc.get_dictionary(*id).ok());
+        let direct = self.direct.iter().filter_map(|o| o.as_dict().ok());
+        refs.chain(direct).flat_map(alt_refs).collect()
+    }
+}
+
+/// The alternative text in `d` stored as objects of their own.
+pub(crate) fn alt_refs(d: &Dictionary) -> Vec<ObjectId> {
+    (ALT.iter())
+        .filter_map(|k| d.get(k).and_then(|o| o.as_reference()).ok())
+        .collect()
+}
+
+/// The parts of picture `id` that are pictures of their own: its soft mask, its mask (not a
+/// colour-key one) and its alternate versions.
+fn parts(doc: &Document, id: ObjectId) -> Vec<ObjectId> {
+    let Ok(s) = doc.get_object(id).and_then(|o| o.as_stream()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ObjectId> = ([&b"SMask"[..], b"Mask"].iter())
+        .filter_map(|k| s.dict.get(k).and_then(|o| o.as_reference()).ok())
+        .collect();
+    let alternates = (s.dict.get(b"Alternates").ok())
+        .and_then(|o| doc.dereference(o).ok())
+        .and_then(|(_, o)| o.as_array().ok());
+    for a in alternates.into_iter().flatten() {
+        let d = doc.dereference(a).ok().and_then(|(_, o)| o.as_dict().ok());
+        out.extend(d.and_then(|d| d.get(b"Image").and_then(|o| o.as_reference()).ok()));
+    }
+    out.retain(|id| doc.get_object(*id).is_ok_and(|o| o.as_stream().is_ok()));
+    out
+}
+
+/// The parts, at any depth, of the pictures `drawn`, with the pictures holding each.
+fn part_holders(doc: &Document, drawn: &HashSet<ObjectId>) -> HashMap<ObjectId, Vec<ObjectId>> {
+    let mut out: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    for &x in drawn {
+        let mut seen = HashSet::from([x]);
+        let mut todo = parts(doc, x);
+        while let Some(p) = todo.pop() {
+            if seen.insert(p) {
+                out.entry(p).or_default().push(x);
+                todo.extend(parts(doc, p));
+            }
+        }
+    }
+    out
+}
+
+/// The parts, at any depth, of the `originals` nothing `drawn` draws, which go with them. A
+/// part drawn itself, or a part of a picture drawn, is kept: it, or that picture, is added
+/// to `originals`.
+fn parts_gone(
+    doc: &Document,
+    originals: &mut HashSet<ObjectId>,
+    drawn: &HashSet<ObjectId>,
+) -> HashSet<ObjectId> {
+    let mut gone = HashSet::new();
+    let mut holders = None;
+    let mut todo: Vec<ObjectId> = (originals.iter())
+        .filter(|x| !drawn.contains(*x))
+        .flat_map(|&x| parts(doc, x))
+        .collect();
+    while let Some(p) = todo.pop() {
+        if originals.contains(&p) || gone.contains(&p) {
+            continue;
+        }
+        if drawn.contains(&p) {
+            originals.insert(p);
+            continue;
+        }
+        let holders = holders.get_or_insert_with(|| part_holders(doc, drawn));
+        if let Some(by) = holders.get(&p) {
+            originals.extend(by);
+            continue;
+        }
+        gone.insert(p);
+        todo.extend(parts(doc, p));
+    }
+    gone
 }
 
 /// The references in `o` itself, not following them.
@@ -299,6 +398,17 @@ impl Pdf {
         out
     }
 
+    /// What annotation `d` holds as objects of their own, besides its appearances: `/AP`
+    /// and its dictionaries of appearances by state, its text and its rich text.
+    pub(crate) fn annot_holds(&self, d: &Dictionary) -> Vec<ObjectId> {
+        let mut out = self.appearances_of(d).1;
+        out.extend(
+            ([&b"Contents"[..], b"RC"].iter())
+                .filter_map(|k| d.get(k).and_then(|o| o.as_reference()).ok()),
+        );
+        out
+    }
+
     /// After redacting: take what `removed` left in the file and nothing draws or uses any
     /// more out of every resource dictionary, as `reach` (a walk after the change) found,
     /// then look for anything removed that the file still keeps another way.
@@ -306,9 +416,10 @@ impl Pdf {
         let n = self.page_count();
         let nodes = &reach.nodes;
         let certain = reach.certain(n);
-        // Drawn or used by a drawing certainly drawn whose content can be read.
+        // Drawn or used by a drawing certainly drawn whose content can be read; an
+        // annotation's appearance is drawn whether or not it can be read.
         let sure = |i: usize| certain[i] && !nodes[i].unread;
-        let mut sure_x = HashSet::new();
+        let mut sure_x: HashSet<ObjectId> = reach.looks.keys().copied().collect();
         let (mut sure_props, mut any_props) = (Props::default(), Props::default());
         for (i, node) in nodes.iter().enumerate() {
             for p in &node.properties {
@@ -321,18 +432,27 @@ impl Pdf {
                 sure_x.extend(node.xobjects.iter().copied());
             }
         }
-        let originals = &removed.xobjects;
+        let drawn: HashSet<ObjectId> = (reach.drawn.iter())
+            .chain(reach.looks.keys())
+            .copied()
+            .collect();
+        let mut originals: HashSet<ObjectId> =
+            removed.xobjects.union(&removed.looks).copied().collect();
+        let parts = parts_gone(&self.doc, &mut originals, &drawn);
         let kept: HashSet<ObjectId> = (originals.iter())
             .filter(|x| sure_x.contains(*x))
             .copied()
             .collect();
         let unsure: HashSet<ObjectId> = (originals.iter())
-            .filter(|x| reach.drawn.contains(*x) && !sure_x.contains(*x))
+            .filter(|x| drawn.contains(*x) && !sure_x.contains(*x))
             .copied()
             .collect();
-        let unused = |x: &ObjectId| originals.contains(x) && !reach.drawn.contains(x);
-        let mut targets: HashSet<ObjectId> =
-            originals.iter().filter(|x| unused(x)).copied().collect();
+        let unused =
+            |x: &ObjectId| parts.contains(x) || (originals.contains(x) && !drawn.contains(x));
+        let mut targets: HashSet<ObjectId> = (originals.iter().chain(&parts))
+            .filter(|x| unused(x))
+            .copied()
+            .collect();
 
         // Worked out first, changing nothing: the entries to remove, and where.
         let (xmaps, pmaps) = maps(&self.doc);
@@ -350,13 +470,15 @@ impl Pdf {
             }
         }
         let mut unsure_props = Props::default();
+        let mut texts = removed.texts.clone();
         for m in pmaps.into_iter().filter(|_| !removed.alts.is_empty()) {
             let Some(d) = m.get(&self.doc) else {
                 continue;
             };
             let mut gone = Vec::new();
             for (k, v) in d.iter() {
-                let alt = reach::alt_texts(Some(&self.doc), &self.resolved_dict(Some(v)));
+                let prop = self.resolved_dict(Some(v));
+                let alt = reach::alt_texts(Some(&self.doc), &prop);
                 if !alt.iter().any(|a| removed.alts.contains(a)) || sure_props.has(v) {
                     continue;
                 }
@@ -366,6 +488,7 @@ impl Pdf {
                 }
                 gone.push(k.clone());
                 targets.extend(v.as_reference().ok());
+                texts.extend(alt_refs(&prop));
             }
             if !gone.is_empty() {
                 edits.push((m, gone));
@@ -378,10 +501,15 @@ impl Pdf {
                     || nodes[i].properties.iter().any(|p| unsure_props.has(p))
             }));
         }
+        let kept_looks: HashSet<usize> = (reach.looks.iter())
+            .filter(|(id, _)| kept.contains(*id))
+            .map(|(_, &i)| i)
+            .collect();
         let pictures = match kept.is_empty() {
             true => Vec::new(),
             false => reach.pages_certainly_drawing(n, |i| {
-                !nodes[i].unread && nodes[i].xobjects.iter().any(|x| kept.contains(x))
+                kept_looks.contains(&i)
+                    || (!nodes[i].unread && nodes[i].xobjects.iter().any(|x| kept.contains(x)))
             }),
         };
 
@@ -399,6 +527,18 @@ impl Pdf {
             .collect();
         targets.extend(removed.pages.iter().filter(|id| !contents.contains(id)));
         targets.extend(&removed.annots);
+        let still = any_props.alt_refs(&self.doc);
+        targets.extend(texts.iter().filter(|id| !still.contains(id)));
+        let used = |id: &&ObjectId| any_props.has(&Object::Reference(**id));
+        targets.extend(removed.properties.iter().filter(|id| !used(id)));
+        if !removed.held.is_empty() {
+            let listed: HashSet<ObjectId> = (self.page_ids().into_iter())
+                .flat_map(|p| self.all_annot_refs(p))
+                .filter_map(|a| self.doc.get_dictionary(a).ok())
+                .flat_map(|d| self.annot_holds(d))
+                .collect();
+            targets.extend(removed.held.iter().filter(|id| !listed.contains(id)));
+        }
         targets.retain(|id| self.doc.objects.contains_key(id));
         let left = (ROUTES.iter().zip(routes_to(&self.doc, &targets)))
             .filter(|(_, found)| *found)

@@ -74,17 +74,19 @@ For each area:
 - **Pictures**, scanned pages included: the pixels under the area are blacked out in the picture itself, which is
   then saved again (JPEG pictures as JPEG at about their own quality, black-and-white scans as CCITT, others without
   loss). Pixels only partly under the area are blacked out too. A picture's transparency (soft mask) is cut the same
-  way. A picture shared with other pages or drawn elsewhere on the page is copied first, so only the covered copy
-  changes. Pictures LimarePDF can't read (JPEG 2000, JBIG2, CMYK JPEG, some unusual formats) are removed whole, and the
-  report counts them.
+  way. The blacked-out picture keeps none of its alternate versions (copies some files carry for printing or for
+  other screens), since they hold the pixels as they were. A picture shared with other pages or drawn elsewhere on
+  the page is copied first, so only the covered copy changes. Pictures LimarePDF can't read (JPEG 2000, JBIG2,
+  CMYK JPEG, some unusual formats) are removed whole, and the report counts them.
 - **Drawings**: the parts of a drawing mostly under the area are removed. Lines and fills that only cross the
   area's edge (a table border, a coloured background) are kept but cut out of the area. Colour gradients are cut
   out the same way.
 - **Grouped content** that several pages share (a logo, a header) is redacted inside, on this page only; other pages
   keep it as it was.
 - **Comments, links and form fields** touching the area are removed, with the replies to them. A removed field loses
-  its value. All of a page's are checked, also on a page with more than the 10,000 the app shows, and so are all
-  of its redaction marks when they are applied.
+  its value. A removed comment's drawings (in each of its states) and its text go with it, unless a comment that
+  stays uses them too: then they stay for it. All of a page's are checked, also on a page with more than the
+  10,000 the app shows, and so are all of its redaction marks when they are applied.
 - **Alternative text** that accessibility tools and copying use, on content that lost anything, and on every tag
   above it, however many there are. This includes alternative text kept apart from the content, in the lists of
   named properties that pages, the pages above them (which pass theirs down) and grouped content carry: a name
@@ -94,16 +96,20 @@ For each area:
 
 Pictures and grouped content that nothing draws any more are left out of the saved file: also those only other
 grouped content, a pattern, a soft mask or a Type 3 font listed, and a redacted group's original, which its
-redacted copy replaces where the mark was. Every list of resources in the document stops listing them, also a
-list other pages share and one nothing draws with; the rest of each list stays as it was.
+redacted copy replaces where the mark was. A redacted picture's original goes with its soft mask, mask and
+alternate versions, and a removed comment with the drawings it showed and the pictures and grouped content they
+draw. Every list of resources in the document stops listing them, also a list other pages share and one nothing
+draws with; the rest of each list stays as it was.
 
 The marks change only what they cover. Content outside them that still draws an original picture or group that
 redaction changed (on another page, in a comment's drawing in any of its states, in a pattern, or in grouped
 content drawn with the page's pictures) keeps drawing the original, unchanged, and the report says so for each
 such page, once: "An original picture affected by redaction is still drawn elsewhere on page 2 and may retain
-the removed content." The original keeps what the marks covered, since it wasn't marked; redact it there too if
-that matters. Grouped content that uses the page's pictures and properties rather than its own keeps what it
-needs.
+the removed content." The same holds for the parts of an original picture still in use (an alternate version
+drawn as a picture of its own, a soft mask or mask that a picture still drawn shares) and for a removed comment's
+drawing that a comment that stays shows: they stay, and the report names the page that draws them. The original
+keeps what the marks covered, since it wasn't marked; redact it there too if that matters. Grouped content that
+uses the page's pictures and properties rather than its own keeps what it needs.
 
 If a drawing that may use something removed can't be read, LimarePDF can't tell whether it does, so it removes
 nothing for it and the check afterwards fails, changing nothing ("a drawing on page 3 couldn't be read, so
@@ -122,13 +128,15 @@ When it is done, LimarePDF reads the redacted pages again and checks that no tex
 each picture there to check that its pixels under the areas are blacked out. If anything is left, the app changes
 nothing and says what it found, and `limarepdf-cli redact` lists it and doesn't write the file.
 
-It then follows everything the saved file would keep, from its start, and checks that nothing redaction removed
-(the pages' old content, a redacted picture's or group's original, alternative text taken off, removed comments,
-links and fields, the pages' thumbnails and private data) is still kept another way: through the tag tree,
-through private application data, or through any other part of the file. LimarePDF doesn't cut those ways, so
-when one is found the app changes nothing and says which ("removed content may still be in the file, through
-the tag tree"), and `limarepdf-cli redact` doesn't write the file. In a tagged document the tags point at links
-and comments too, so removing one they point at refuses this way.
+It then follows everything the saved file would keep, from its start, and checks that nothing redaction removed is
+still kept another way. What it removed includes the pages' old content, a redacted picture's or group's original
+(a picture's with its soft mask, mask and alternate versions), alternative text taken off (also text stored apart
+from what held it, and a property stored apart that held it), removed comments, links and fields (a comment with
+what it showed and the text it held), and the pages' thumbnails and private data. The other ways are the tag tree,
+private application data and any other part of the file. LimarePDF doesn't cut them, so when one is found the app
+changes nothing and says which ("removed content may still be in the file, through the tag tree"), and
+`limarepdf-cli redact` doesn't write the file. In a tagged document the tags point at links and comments too, so
+removing one they point at refuses this way.
 
 It then looks for the removed text, and the removed alternative text, elsewhere in the document: on any page, in
 the alternative text of what each page draws ("alternative text on page 2"), in bookmarks, comments, form fields
@@ -223,6 +231,9 @@ of the file aren't kept in it.
 - A picture drawn at an angle (not a quarter turn) is blacked out over a rectangle in the picture that holds the
   whole area, so a little more than the area can go black.
 - Saving a JPEG picture again loses a little quality across the whole picture.
+- A blacked-out picture keeps the picture's own XMP metadata, which can hold a title, a caption or a small preview
+  of the picture as it was; redaction doesn't check it. **Remove hidden information** removes it (Document
+  information and XMP metadata).
 - The removed text can still be in bookmarks, comments, file attachments or metadata; the check warns about the
   places it can search.
 - Redaction marks can't be moved or resized; delete one and mark again.

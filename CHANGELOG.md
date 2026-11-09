@@ -9,6 +9,17 @@
 
 ### Fixed
 
+- Redaction no longer reports success while the saved file still holds removed content through something the
+  removed content pointed to. A blacked-out picture kept its alternate versions (copies some files carry for
+  printing or other screens), which hold the pixels as they were; it is now written without them. Alternative text
+  stored apart from the property or tag it was taken off (or a property stored apart that held it), a removed
+  comment's drawings and the text it held, and a redacted picture's original soft mask, mask and alternate versions
+  stayed in the saved file, unreported, when private application data or another part of the file still pointed
+  at them. Such a redaction is now refused, changing nothing, with the way named ("removed content may still be in
+  the file, through another part of the file"), so some files that redacted before are now refused. What something
+  kept still uses stays for it: an alternate version or a comment's drawing still drawn, or a mask that a picture
+  still drawn shares, is kept and its page named in the report, as an original picture still drawn is; a comment's
+  text that a comment staying shares is kept for it.
 - A signature field added after a document is signed, with an action on it or on its widget, is no longer an
   allowed change, whether the field is left empty or signed as it is added. Before, an invisible signature field
   whose action runs when its page opens, added after a certification that allows form filling and signing, was

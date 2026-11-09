@@ -2899,3 +2899,587 @@ fn cross_check_what_redaction_keeps_for_drawings_left_as_they_are_with_poppler()
         assert_eq!(is + removed, was, "{case}: poppler reads on page 1");
     }
 }
+
+// What the objects redaction removes point to (S1-26, A-01): alternative text and a removed
+// comment's text stored as objects of their own, a removed comment's appearances and the
+// pictures they draw, and a blacked-out picture's original soft mask and alternate version.
+// Each goes with what held it; a route still reaching one is refused, as a route reaching
+// what held it is.
+
+/// A second reference to something redaction removed.
+#[derive(Clone, Copy, Debug)]
+enum Route {
+    /// A key of the catalog's own.
+    Catalog,
+    /// Page 2's private application data.
+    PrivateData,
+    /// Another tag-tree element's alternative text.
+    TagTree,
+}
+
+impl Route {
+    const ALL: [Route; 3] = [Route::Catalog, Route::PrivateData, Route::TagTree];
+
+    /// What the refusal calls the route.
+    fn says(self) -> &'static str {
+        match self {
+            Route::Catalog => "another part of the file",
+            Route::PrivateData => "private application data",
+            Route::TagTree => "the tag tree",
+        }
+    }
+
+    /// Points at `target` this way.
+    fn point_at(self, p: &mut Pdf, target: ObjectId) {
+        match self {
+            Route::Catalog => p.doc.catalog_mut().unwrap().set("ZzPrivate", target),
+            Route::PrivateData => {
+                let piece = dictionary! { "Editor" => dictionary! { "Private" => target } };
+                let page = p.page_ids()[1];
+                (p.doc.get_dictionary_mut(page).unwrap()).set("PieceInfo", piece);
+            }
+            Route::TagTree => tag_with_alt(p, target),
+        }
+    }
+}
+
+/// A tag-tree element of its own whose alternative text is `text`; the tree is made when the
+/// file has none.
+fn tag_with_alt(p: &mut Pdf, text: ObjectId) {
+    let root = match p.doc.catalog().unwrap().get(b"StructTreeRoot") {
+        Ok(o) => o.as_reference().unwrap(),
+        Err(_) => {
+            let k: Vec<Object> = Vec::new();
+            let root = (p.doc).add_object(dictionary! { "Type" => "StructTreeRoot", "K" => k });
+            let c = p.doc.catalog_mut().unwrap();
+            c.set("StructTreeRoot", root);
+            c.set("MarkInfo", dictionary! { "Marked" => true });
+            root
+        }
+    };
+    let elem = p.doc.add_object(dictionary! {
+        "Type" => "StructElem", "S" => "Figure", "P" => root, "ActualText" => text,
+    });
+    let d = p.doc.get_dictionary_mut(root).unwrap();
+    let k = d.get_mut(b"K").unwrap().as_array_mut().unwrap();
+    k.push(Object::Reference(elem));
+}
+
+/// A case: what it is, the document, its marks and the route still reaching what they remove.
+type Routed = (String, Pdf, Marks, Route);
+
+/// Redacts each case, which the check afterwards must refuse, naming its route. Panics
+/// listing every case it didn't refuse, with what it said.
+fn all_refused(cases: Vec<Routed>) {
+    let mut not = Vec::new();
+    for (what, mut p, marks, route) in cases {
+        let why = format!(
+            "removed content may still be in the file, through {}",
+            route.says()
+        );
+        let rep = p.redact(&marks).unwrap();
+        if !rep.left.contains(&why) {
+            not.push(format!("{what}, through {}: {:?}", route.says(), rep.left));
+        }
+    }
+    assert!(not.is_empty(), "not refused:\n{}", not.join("\n"));
+}
+
+/// Where the alternative text a mark takes off is held.
+#[derive(Clone, Copy, Debug)]
+enum AltIn {
+    /// A property written in the page's `/Properties`.
+    DirectProperty,
+    /// A property stored as an object of its own.
+    PropertyObject,
+    /// A property stored as an object of its own, the text written in it.
+    TextInPropertyObject,
+    /// The tag-tree element of the marked content.
+    TagTree,
+}
+
+/// What page 2 has (besides the tag tree's text, a property only).
+#[derive(Clone, Copy, PartialEq)]
+enum Two {
+    /// "Two", nothing marked.
+    Text,
+    /// "Other", marked with a property of its own holding the same text, written as page 1's.
+    OwnProperty,
+    /// "Other", marked with page 1's property itself.
+    SameProperty,
+}
+
+/// Page 1 marks "Zebra" with alternative text, "IndirectAltSecretZebra", held as `held`
+/// says, and says "Kept"; page 2 has what `two` says. The text is stored as an object of
+/// its own, or written in the property for `TextInPropertyObject`. The document, what holds
+/// the text as an object of its own (the text, or that property) and the marks.
+fn indirect_alt(held: AltIn, two: Two) -> (Pdf, ObjectId, Marks) {
+    let span = match held {
+        AltIn::TagTree => "/P <</MCID 0>> BDC",
+        _ => "/Span /P1 BDC",
+    };
+    let one = format!(
+        "{span} BT /F1 20 Tf 30 100 Td (Zebra) Tj ET EMC BT /F1 20 Tf 30 40 Td (Kept) Tj ET"
+    );
+    let second = match two {
+        Two::Text => "BT /F1 20 Tf 30 100 Td (Two) Tj ET",
+        _ => "/Span /P1 BDC BT /F1 20 Tf 30 100 Td (Other) Tj ET EMC",
+    };
+    let mut p = make(&[&one, second]);
+    let text = Object::string_literal("IndirectAltSecretZebra");
+    let page = p.page_ids()[0];
+    let holder = match held {
+        AltIn::TagTree => {
+            let secret = p.doc.add_object(text);
+            let root = p.doc.new_object_id();
+            let elem = p.doc.add_object(dictionary! {
+                "Type" => "StructElem", "S" => "Span", "P" => root, "Pg" => page, "K" => 0,
+                "ActualText" => secret,
+            });
+            let nums = vec![Object::Integer(0), vec![Object::Reference(elem)].into()];
+            p.doc.objects.insert(
+                root,
+                dictionary! {
+                    "Type" => "StructTreeRoot", "K" => vec![Object::Reference(elem)],
+                    "ParentTree" => dictionary! { "Nums" => nums },
+                }
+                .into(),
+            );
+            (p.doc.get_dictionary_mut(page).unwrap()).set("StructParents", 0);
+            let c = p.doc.catalog_mut().unwrap();
+            c.set("StructTreeRoot", root);
+            c.set("MarkInfo", dictionary! { "Marked" => true });
+            secret
+        }
+        _ => {
+            let secret = match held {
+                AltIn::TextInPropertyObject => None,
+                _ => Some(p.doc.add_object(text.clone())),
+            };
+            let mut prop = || -> Object {
+                let alt = secret.map_or(text.clone(), Object::from);
+                let prop = dictionary! { "ActualText" => alt };
+                match held {
+                    AltIn::DirectProperty => prop.into(),
+                    _ => p.doc.add_object(prop).into(),
+                }
+            };
+            let first = prop();
+            let props = match two {
+                Two::Text => vec![first.clone()],
+                Two::OwnProperty => vec![first.clone(), prop()],
+                Two::SameProperty => vec![first.clone(), first.clone()],
+            };
+            for (page, prop) in props.into_iter().enumerate() {
+                add_res(
+                    &mut p,
+                    page,
+                    dictionary! { "Properties" => dictionary! { "P1" => prop } },
+                );
+            }
+            secret.unwrap_or_else(|| first.as_reference().unwrap())
+        }
+    };
+    let marks = marks_on(&p, 0, "zebra");
+    (p, holder, marks)
+}
+
+const ALT_IN: [AltIn; 4] = [
+    AltIn::DirectProperty,
+    AltIn::PropertyObject,
+    AltIn::TextInPropertyObject,
+    AltIn::TagTree,
+];
+
+/// Alternative text a mark takes off, stored as an object of its own and held by a property
+/// written in the page's resources, by one stored as an object of its own or by the tag
+/// tree, or written in a property stored as an object of its own, while a key of the
+/// catalog, page 2's private data or another tag-tree element still points at what holds it
+/// as an object of its own.
+#[test]
+fn removed_alternative_text_something_else_points_at_is_refused() {
+    let mut cases = Vec::new();
+    for held in ALT_IN {
+        for route in Route::ALL {
+            let (mut p, holder, marks) = indirect_alt(held, Two::Text);
+            route.point_at(&mut p, holder);
+            cases.push((format!("{held:?}"), p, marks, route));
+        }
+    }
+    all_refused(cases);
+}
+
+/// The controls: with nothing else pointing at it, the text goes with what held it.
+#[test]
+fn removed_alternative_text_stored_as_an_object_of_its_own_goes() {
+    for held in ALT_IN {
+        let (mut p, _, marks) = indirect_alt(held, Two::Text);
+        let gone = ["IndirectAltSecretZebra", "Zebra"];
+        redacted(&mut p, &marks, &gone, &["Kept", "Two"]);
+    }
+}
+
+/// The control: page 2's property holds the same text, so the text stays for page 2, and the
+/// report says where the removed alternative text still is. (A property written in the
+/// resources is told apart by what it says, so page 1's, the same as page 2's, stays too.)
+#[test]
+fn removed_alternative_text_a_property_page_2_uses_holds_is_kept_and_reported() {
+    for held in [
+        AltIn::DirectProperty,
+        AltIn::PropertyObject,
+        AltIn::TextInPropertyObject,
+    ] {
+        kept_for_page_2(held, Two::OwnProperty);
+    }
+}
+
+/// The control: page 2 uses page 1's property itself, so the property stays for page 2,
+/// and the report says where the removed alternative text still is.
+#[test]
+fn removed_alternative_text_in_the_property_page_2_uses_too_is_kept_and_reported() {
+    for held in [AltIn::PropertyObject, AltIn::TextInPropertyObject] {
+        kept_for_page_2(held, Two::SameProperty);
+    }
+}
+
+/// Redacts page 1's "Zebra" in `indirect_alt(held, two)`, checking that the alternative
+/// text is kept and reported as on page 2.
+fn kept_for_page_2(held: AltIn, two: Two) {
+    let (mut p, _, marks) = indirect_alt(held, two);
+    let kept = ["IndirectAltSecretZebra", "Other", "Kept"];
+    let (rep, _) = redacted(&mut p, &marks, &[], &kept);
+    assert!(
+        rep.elsewhere
+            .iter()
+            .any(|(q, places)| q == "indirectaltsecretzebra"
+                && places.iter().any(|w| w == "alternative text on page 2")),
+        "{held:?}: {:?}",
+        rep.elsewhere
+    );
+}
+
+/// What a removed comment holds as an object of its own.
+#[derive(Clone, Copy, Debug)]
+enum Held {
+    /// Its appearance (`/AP /N`).
+    Normal,
+    /// Its appearance in the state shown (`/AP /N /On`, `/AS /On`).
+    ByState,
+    /// Its dictionary of appearances by state.
+    StateObject,
+    /// Its `/AP`.
+    ApObject,
+    /// Its appearance while pressed (`/AP /D`).
+    Down,
+    /// Its text (`/Contents`).
+    Contents,
+    /// Its rich text (`/RC`).
+    RichText,
+    /// The picture its appearance draws.
+    Picture,
+}
+
+const HELD: [Held; 8] = [
+    Held::Normal,
+    Held::ByState,
+    Held::StateObject,
+    Held::ApObject,
+    Held::Down,
+    Held::Contents,
+    Held::RichText,
+    Held::Picture,
+];
+
+/// Page 1 says "Zebra" and "Kept", with a square comment over "Zebra": its appearance, held
+/// as `held` says, draws "AppearanceSecretZebra" with page 1's font and a picture
+/// "AppearancePictureSecretZebra", neither showing (the text invisible, the picture clipped
+/// to nothing), and its text "CommentSecretZebra" and rich text "RichSecretZebra" are objects
+/// of their own. Page 2 says "Two". The document, the object `held` names and the marks.
+fn annotated(held: Held) -> (Pdf, ObjectId, Marks) {
+    let mut p = make(&[
+        "BT /F1 20 Tf 30 100 Td (Zebra) Tj ET BT /F1 20 Tf 30 40 Td (Kept) Tj ET",
+        "BT /F1 20 Tf 30 100 Td (Two) Tj ET",
+    ]);
+    let page = p.page_ids()[0];
+    let font = helvetica_of(&p);
+    let picture = marked_picture(&mut p, "AppearancePictureSecretZebra");
+    let mut look = |content: &str| {
+        let bbox: Vec<Object> = [0, 0, 92, 25].into_iter().map(Object::Integer).collect();
+        let res = dictionary! {
+            "Font" => dictionary! { "F1" => font.clone() },
+            "XObject" => dictionary! { "Im" => picture },
+        };
+        let d = dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox, "Resources" => res };
+        p.doc
+            .add_object(Stream::new(d, content.as_bytes().to_vec()))
+    };
+    let secret = look(
+        "BT 3 Tr /F1 10 Tf 2 8 Td (AppearanceSecretZebra) Tj ET \
+         q 0 0 0 0 re W n 92 0 0 25 0 0 cm /Im Do Q",
+    );
+    let other = look("");
+    let states = dictionary! { "On" => secret, "Off" => other };
+    let (state_object, ap_object) = (
+        p.doc.add_object(states.clone()),
+        p.doc.add_object(dictionary! { "N" => secret }),
+    );
+    let ap: Object = match held {
+        Held::ByState => dictionary! { "N" => states }.into(),
+        Held::StateObject => dictionary! { "N" => state_object }.into(),
+        Held::ApObject => ap_object.into(),
+        Held::Down => dictionary! { "N" => other, "D" => secret }.into(),
+        _ => dictionary! { "N" => secret }.into(),
+    };
+    let contents = (p.doc).add_object(Object::string_literal("CommentSecretZebra"));
+    let rich = (p.doc).add_object(Object::string_literal("RichSecretZebra"));
+    let rect: Vec<Object> = [28, 95, 120, 120]
+        .into_iter()
+        .map(Object::Integer)
+        .collect();
+    let mut annot = dictionary! {
+        "Type" => "Annot", "Subtype" => "Square", "Rect" => rect, "P" => page, "AP" => ap,
+        "Contents" => contents, "RC" => rich,
+    };
+    if matches!(held, Held::ByState | Held::StateObject) {
+        annot.set("AS", "On");
+    }
+    let annot = p.doc.add_object(annot);
+    (p.doc.get_dictionary_mut(page).unwrap()).set("Annots", vec![Object::Reference(annot)]);
+    let target = match held {
+        Held::StateObject => state_object,
+        Held::ApObject => ap_object,
+        Held::Contents => contents,
+        Held::RichText => rich,
+        Held::Picture => picture,
+        _ => secret,
+    };
+    let marks = marks_on(&p, 0, "zebra");
+    (p, target, marks)
+}
+
+/// Adds to page 1, away from the mark, `annot` (without `/Rect`) over [200, 10, 292, 35].
+fn add_annot_away(p: &mut Pdf, mut annot: Dictionary) {
+    let page = p.page_ids()[0];
+    let rect: Vec<Object> = [200, 10, 292, 35]
+        .into_iter()
+        .map(Object::Integer)
+        .collect();
+    annot.set("Rect", rect);
+    annot.set("P", page);
+    let id = p.doc.add_object(annot);
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let list = d.get_mut(b"Annots").unwrap().as_array_mut().unwrap();
+    list.push(Object::Reference(id));
+}
+
+/// A removed comment's appearance (shown, in the state shown, while pressed), its dictionary
+/// of appearances by state, its `/AP`, its text, its rich text and the picture its
+/// appearance draws, each an object of its own, which page 2's private data still points
+/// at; and its appearance, which a key of the catalog does.
+#[test]
+fn what_a_removed_comment_held_that_something_else_points_at_is_refused() {
+    let mut cases = Vec::new();
+    for held in HELD {
+        let (mut p, target, marks) = annotated(held);
+        Route::PrivateData.point_at(&mut p, target);
+        cases.push((format!("{held:?}"), p, marks, Route::PrivateData));
+    }
+    let (mut p, target, marks) = annotated(Held::Normal);
+    Route::Catalog.point_at(&mut p, target);
+    cases.push(("Normal".to_string(), p, marks, Route::Catalog));
+    all_refused(cases);
+}
+
+/// The controls: with nothing else pointing at them, what the comment held goes with it,
+/// and page 1's font, which its appearance used too, stays.
+#[test]
+fn what_a_removed_comment_held_goes_with_it() {
+    let gone = [
+        "AppearanceSecretZebra",
+        "AppearancePictureSecretZebra",
+        "CommentSecretZebra",
+        "RichSecretZebra",
+        "Zebra",
+    ];
+    for held in HELD {
+        let (mut p, _, marks) = annotated(held);
+        let (rep, back) = redacted(&mut p, &marks, &gone, &["Kept", "Two"]);
+        assert!(
+            rep.pictures_elsewhere.is_empty(),
+            "{held:?}: {:?}",
+            rep.pictures_elsewhere
+        );
+        let page = back.doc.get_dictionary(back.page_ids()[0]).unwrap();
+        let res = dict_at(&back, page.get(b"Resources").ok());
+        let fonts = dict_at(&back, res.get(b"Font").ok());
+        let font = dict_at(&back, fonts.get(b"F1").ok());
+        let name = font.get(b"BaseFont").and_then(|o| o.as_name()).ok();
+        assert_eq!(name, Some(&b"Helvetica"[..]), "{held:?}");
+    }
+}
+
+/// The control: a comment away from the mark shows the same appearance, so the appearance
+/// and its picture stay for that comment, and the report says page 1 still draws them.
+#[test]
+fn a_removed_comment_s_appearance_a_comment_that_stays_shows_is_kept_and_reported() {
+    let (mut p, look, marks) = annotated(Held::Normal);
+    add_annot_away(
+        &mut p,
+        dictionary! { "Type" => "Annot", "Subtype" => "Square", "AP" => dictionary! { "N" => look } },
+    );
+    let gone = ["CommentSecretZebra", "RichSecretZebra"];
+    let kept = [
+        "AppearanceSecretZebra",
+        "AppearancePictureSecretZebra",
+        "Kept",
+    ];
+    let (rep, _) = redacted(&mut p, &marks, &gone, &kept);
+    assert_eq!(rep.pictures_elsewhere, [0]);
+    assert_eq!(rep.picture_notices(), [notice(1)]);
+}
+
+/// The control: a comment away from the mark has the same text object, so the text stays for
+/// that comment.
+#[test]
+fn a_removed_comment_s_text_a_comment_that_stays_has_is_kept() {
+    let (mut p, text, marks) = annotated(Held::Contents);
+    add_annot_away(
+        &mut p,
+        dictionary! { "Type" => "Annot", "Subtype" => "Text", "Contents" => text },
+    );
+    let gone = ["AppearanceSecretZebra", "RichSecretZebra"];
+    redacted(&mut p, &marks, &gone, &["CommentSecretZebra", "Kept"]);
+}
+
+/// The audit's picture: a red pixel and a blue one.
+const RED_BLUE: [u8; 6] = [255, 0, 0, 0, 0, 255];
+/// Its soft mask's samples.
+const MASK: [u8; 2] = [200, 100];
+
+/// A picture two pixels wide and one high: `samples` in `space`.
+fn two_pixels(p: &mut Pdf, space: &str, samples: &[u8]) -> ObjectId {
+    p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 2, "Height" => 1,
+            "ColorSpace" => space, "BitsPerComponent" => 8,
+        },
+        samples.to_vec(),
+    ))
+}
+
+/// Page 1 draws the audit's picture, 150 by 100 pt, which has an alternate version of the
+/// same pixels and a soft mask; the mark covers its red pixel. Page 2 draws `page_2`. The
+/// document, (the alternate version, the soft mask) and the marks.
+fn picture_with_parts(page_2: &str) -> (Pdf, (ObjectId, ObjectId), Marks) {
+    let mut p = make(&["q 150 0 0 100 0 0 cm /Im Do Q", page_2]);
+    let alternate = two_pixels(&mut p, "DeviceRGB", &RED_BLUE);
+    let mask = two_pixels(&mut p, "DeviceGray", &MASK);
+    let original = two_pixels(&mut p, "DeviceRGB", &RED_BLUE);
+    let alternates = vec![Object::Dictionary(
+        dictionary! { "Image" => alternate, "DefaultForPrinting" => true },
+    )];
+    let s = p
+        .doc
+        .get_object_mut(original)
+        .unwrap()
+        .as_stream_mut()
+        .unwrap();
+    s.dict.set("Alternates", alternates);
+    s.dict.set("SMask", mask);
+    add_res(
+        &mut p,
+        0,
+        dictionary! { "XObject" => dictionary! { "Im" => original } },
+    );
+    (p, (alternate, mask), vec![(0, [0.0, 100.0, 75.0, 200.0])])
+}
+
+/// The samples of every picture in the saved file, and how many of its pictures list
+/// alternate versions.
+fn samples_and_alternates(p: &mut Pdf) -> (Vec<Vec<u8>>, usize) {
+    let samples = (pictures(p).into_iter()).map(|(_, _, s)| s).collect();
+    let alternates = (Saved::of(p).doc.objects.values())
+        .filter(|o| o.as_stream().is_ok_and(|s| s.dict.has(b"Alternates")))
+        .count();
+    (samples, alternates)
+}
+
+/// The audit's case: the blacked-out picture is written without the alternate version and
+/// with its soft mask cut, so nothing in the saved file holds the original pixels.
+#[test]
+fn a_blacked_out_picture_s_alternate_version_and_soft_mask_go() {
+    let (mut p, _, marks) = picture_with_parts("BT /F1 20 Tf 30 100 Td (Two) Tj ET");
+    let (rep, _) = redacted(&mut p, &marks, &[], &["Two"]);
+    assert_eq!(rep.pages[0].images_cut, 1, "{:?}", rep.pages[0]);
+    let (samples, alternates) = samples_and_alternates(&mut p);
+    let original = samples.iter().any(|s| *s == RED_BLUE || *s == MASK);
+    assert!(!original && alternates == 0, "{samples:?}, {alternates}");
+    let report = (&rep.left, &rep.elsewhere, &rep.pictures_elsewhere);
+    assert!(
+        report.0.is_empty() && report.1.is_empty() && report.2.is_empty(),
+        "{report:?}"
+    );
+}
+
+/// The control: page 2 draws the alternate version itself, so it stays for page 2, and the
+/// report says page 2 still draws an original.
+#[test]
+fn a_blacked_out_picture_s_alternate_version_page_2_draws_is_kept_and_reported() {
+    let (mut p, (alternate, _), marks) = picture_with_parts("q 150 0 0 100 0 0 cm /Alt Do Q");
+    add_res(
+        &mut p,
+        1,
+        dictionary! { "XObject" => dictionary! { "Alt" => alternate } },
+    );
+    let (rep, _) = redacted(&mut p, &marks, &[], &[]);
+    let (samples, alternates) = samples_and_alternates(&mut p);
+    assert!(
+        samples.contains(&RED_BLUE.to_vec()) && alternates == 0,
+        "{samples:?}, {alternates}"
+    );
+    assert_eq!(rep.pictures_elsewhere, [1]);
+    assert_eq!(rep.picture_notices(), [notice(2)]);
+}
+
+/// The control (the user's answer of 2026-11-08, Q1 (a)): page 2 draws another picture with
+/// the same soft mask, so the mask stays for that picture, and the report says page 2 still
+/// draws an original.
+#[test]
+fn a_blacked_out_picture_s_soft_mask_a_picture_page_2_draws_shares_is_kept_and_reported() {
+    let (mut p, (_, mask), marks) = picture_with_parts("q 150 0 0 100 0 0 cm /Green Do Q");
+    let green = two_pixels(&mut p, "DeviceRGB", &[0, 255, 0, 0, 255, 0]);
+    let s = p
+        .doc
+        .get_object_mut(green)
+        .unwrap()
+        .as_stream_mut()
+        .unwrap();
+    s.dict.set("SMask", mask);
+    add_res(
+        &mut p,
+        1,
+        dictionary! { "XObject" => dictionary! { "Green" => green } },
+    );
+    let (rep, _) = redacted(&mut p, &marks, &[], &[]);
+    let (samples, _) = samples_and_alternates(&mut p);
+    assert!(
+        samples.contains(&MASK.to_vec()) && !samples.contains(&RED_BLUE.to_vec()),
+        "{samples:?}"
+    );
+    assert_eq!(rep.pictures_elsewhere, [1]);
+    assert_eq!(rep.picture_notices(), [notice(2)]);
+}
+
+/// The blacked-out picture's alternate version or its original soft mask, which page 2's
+/// private data still points at.
+#[test]
+fn a_blacked_out_picture_s_alternate_version_or_soft_mask_something_else_points_at_is_refused() {
+    let mut cases = Vec::new();
+    for (what, alternate) in [("the alternate version", true), ("the soft mask", false)] {
+        let (mut p, parts, marks) = picture_with_parts("BT /F1 20 Tf 30 100 Td (Two) Tj ET");
+        let target = if alternate { parts.0 } else { parts.1 };
+        Route::PrivateData.point_at(&mut p, target);
+        cases.push((what.to_string(), p, marks, Route::PrivateData));
+    }
+    all_refused(cases);
+}

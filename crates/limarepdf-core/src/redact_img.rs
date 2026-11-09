@@ -380,10 +380,10 @@ pub(crate) fn black_out(
         }
         masks.push((key, encode(ms, mp)?));
     }
-    Ok(Some(Cut {
-        image: encode(s, px)?,
-        masks,
-    }))
+    let mut image = encode(s, px)?;
+    // Its alternate versions hold the pixels blacked out.
+    image.dict.remove(b"Alternates");
+    Ok(Some(Cut { image, masks }))
 }
 
 /// Whether picture `s`, drawn with `ctm`, has nothing but zero samples under `areas`.
