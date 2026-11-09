@@ -9,6 +9,19 @@
 
 ### Fixed
 
+- Finish signing no longer removes an item put down with Fill and sign that it can't draw in. Before, a signature
+  or other item whose drawing or place on the page was lost (as when the file was changed in another app after the
+  item was put down) was removed without being drawn, so the finished copy, or the digitally signed one, had no
+  mark where it was, and nothing said so. Finish signing, and signing digitally (which finishes them first), now
+  change nothing and name the page ("LimarePDF can't draw the fill-and-sign item on page 2, so it would be lost;
+  nothing was changed").
+- Flatten annotations (and `limarepdf-cli annot flatten`) looks at each comment, pop-up and reply once, however
+  often a page lists it, when finding the pop-ups and replies to keep with a comment it can't draw. Before, a
+  comment listed many times on a page, or a reply listed many times with replies of its own, was looked at again
+  each time, so the work grew with the square of the page's list, and a page built that way could keep flattening
+  busy for a long time. A document still too complex to go through is now refused before anything is changed ("the
+  document is too complex: finding the pop-ups and replies to keep would take more than 4194304 steps, so nothing
+  was changed"). What is drawn, kept and removed is as before.
 - Remove blank pages (and `limarepdf-cli remove-blank`) no longer deletes a page because something on it couldn't
   be drawn. Before, a page whose only content was a picture that can't be read, or text in a font LimarePDF can't
   use or in a language no installed font has, was drawn as an empty page, counted blank and deleted, the picture or

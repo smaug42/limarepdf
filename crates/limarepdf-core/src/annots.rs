@@ -4,7 +4,7 @@
 
 use crate::annot_ap::{drawable, DRAWN};
 use crate::doc::decode_text;
-use crate::form_flatten::Flat;
+use crate::form_flatten::{self, Flat};
 use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::{Align, Pdf, Result};
@@ -435,7 +435,9 @@ impl Pdf {
     /// place or make) is left as it was, with its popup and replies, and counted in
     /// [`Flattened::kept`] (S1-05). Refused, with nothing changed, when one to draw is a
     /// text box whose text its font can't write ([`Pdf::box_unwritable`]), rather than draw
-    /// `?` into the page for good (BUG-39).
+    /// `?` into the page for good (BUG-39), and when finding those popups and replies is too
+    /// complex ([`crate::TooComplex`]): each is looked at once, however often a page lists
+    /// it, within one budget for all the pages (A-06).
     pub fn flatten_annotations(&mut self, pages: Option<&[usize]>) -> Result<Flattened> {
         let ids = self.page_ids();
         let pages = self.page_list(pages)?;
@@ -448,6 +450,16 @@ impl Pdf {
                     i + 1,
                     crate::embed::box_refusal(&chars)
                 );
+            }
+        }
+        // What goes with the annotations kept, found on every page before anything is
+        // changed, with one budget: each page's walk below finds no more.
+        {
+            let mut work = form_flatten::work();
+            for &page in &on {
+                if let Some(mut plan) = self.plan_page(page, flat_annot, true)? {
+                    plan.walk(&mut work)?;
+                }
             }
         }
         // File attachments stay annotations, so they keep having no drawing.

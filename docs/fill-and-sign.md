@@ -113,6 +113,10 @@ into the pages as they look,
 after asking, so they can no longer be moved or removed as comments. Undo brings them back until you close the
 document. Other comments and stamps are left alone.
 
+If an item can't be drawn in, because the file was changed in another app after it was put down and its drawing
+or its place on the page was lost, Finish signing changes nothing and names the page, rather than remove the item
+without drawing it. Signing the document digitally, which finishes them first, is refused the same way.
+
 Saving without finishing keeps them movable, and the notice comes back when the document is opened again.
 
 ## From the command line

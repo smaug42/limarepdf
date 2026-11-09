@@ -6,7 +6,7 @@ mod common;
 
 use common::saved::{tools, Saved};
 use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
-use limarepdf_core::{Hidden, Pdf};
+use limarepdf_core::{budget_seam, Hidden, Pdf, TooComplex};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
 /// How many annotations of a page LimarePDF shows.
@@ -76,6 +76,19 @@ fn push(p: &mut Pdf, d: Dictionary) -> ObjectId {
     let mut list = annots(p);
     list.push(id.into());
     set_annots(p, list);
+    id
+}
+
+/// Adds `d` to the end of page `i`'s (zero-based) annotations.
+fn push_on(p: &mut Pdf, i: usize, d: Dictionary) -> ObjectId {
+    let id = add(p, d);
+    let pg = p.page_ids()[i];
+    let pd = p.doc.get_dictionary_mut(pg).unwrap();
+    let mut list = pd
+        .get(b"Annots")
+        .map_or(Vec::new(), |a| a.as_array().unwrap().clone());
+    list.push(id.into());
+    pd.set("Annots", list);
     id
 }
 
@@ -433,6 +446,198 @@ fn flattening_keeps_what_it_cannot_draw_with_its_popup_and_reply() {
         let content = s.doc.get_page_content(page);
         assert!(String::from_utf8_lossy(&content).contains(" Do"));
     }
+}
+
+/// A drawing without the box that places it on the page: flattening can't draw a mark
+/// drawn by it, and keeps the mark.
+fn unboxed_drawing(p: &mut Pdf) -> ObjectId {
+    p.doc.add_object(Stream::new(
+        dictionary! { "Type" => "XObject", "Subtype" => "Form" },
+        b"0 0 1 rg 0 0 50 50 re f".to_vec(),
+    ))
+}
+
+/// A reply at `r` saying `text` to annotation `to`.
+fn reply(r: [i64; 4], text: &str, to: ObjectId) -> Dictionary {
+    let mut d = note(r, text);
+    d.set("IRT", to);
+    d
+}
+
+/// The popup of annotation `parent`.
+fn popup(parent: ObjectId) -> Dictionary {
+    dictionary! {
+        "Type" => "Annot", "Subtype" => "Popup", "Rect" => rect([150, 100, 250, 150]),
+        "Parent" => parent,
+    }
+}
+
+/// The saved file's annotation entries on page `i` (zero-based), as object IDs.
+fn entries(s: &Saved, i: u32) -> Vec<ObjectId> {
+    let page = s.doc.get_pages()[&(i + 1)];
+    let Ok(list) = s.doc.get_dictionary(page).unwrap().get(b"Annots") else {
+        return Vec::new();
+    };
+    let list = list.as_array().unwrap();
+    list.iter().map(|a| a.as_reference().unwrap()).collect()
+}
+
+/// What annotation `id` of the saved file points to with `key`.
+fn points_to(s: &Saved, id: ObjectId, key: &[u8]) -> ObjectId {
+    let d = s.doc.get_dictionary(id).unwrap();
+    d.get(key).and_then(|o| o.as_reference()).unwrap()
+}
+
+/// A-06: a mark flattening can't draw, listed 40 times, with 40 replies: the mark and each
+/// reply are looked at once (1 + 2 × 40 steps), in the check before anything changes and
+/// again on the page, and every entry stays. Each listing of the mark cost it and its
+/// replies again: 40 × (1 + 40) + 40 = 1,680 steps.
+#[test]
+fn flattening_looks_once_at_a_kept_mark_listed_many_times() {
+    const N: usize = 40;
+    const K: usize = 40;
+    let mut p = page("");
+    let unboxed = unboxed_drawing(&mut p);
+    let mut mark = square([100, 100, 150, 150], unboxed);
+    mark.set("Contents", Object::string_literal("MARKER-UNBOXED"));
+    let mark = add(&mut p, mark);
+    let mut list: Vec<Object> = vec![mark.into(); N];
+    for k in 0..K {
+        let r = reply([100, 100, 110, 110], &format!("MARKER-REPLY-{k}"), mark);
+        list.push(add(&mut p, r).into());
+    }
+    set_annots(&mut p, list);
+
+    let (done, taken) = budget_seam::with_limit(u64::MAX, || p.flatten_annotations(None));
+    // The check before anything changes, then the page's own walk.
+    let steps = 1 + 2 * K as u64;
+    assert_eq!(taken, [steps, steps]);
+    let done = done.unwrap();
+    assert_eq!((done.drawn, done.kept), (0, vec![0; N]));
+    let s = Saved::of(&mut p);
+    let ids = entries(&s, 0);
+    assert_eq!(ids.len(), N + K);
+    assert!(ids[..N].iter().all(|&id| id == ids[0]));
+    assert!(ids[N..]
+        .iter()
+        .all(|&id| points_to(&s, id, b"IRT") == ids[0]));
+}
+
+/// A-06: a reply listed 40 times, with its popup listed 40 times and 40 replies of its
+/// own, to a mark flattening can't draw: each is looked at once (5 + 2 × 40 + 2 × 40
+/// steps), and every entry stays. Each listing of the reply cost its popup and replies
+/// again: 3 + 3 × 40 + 40² + 40 × 40 + 40 = 3,363 steps, which looking once at each mark
+/// kept wouldn't have stopped.
+#[test]
+fn flattening_looks_once_at_a_reply_listed_many_times() {
+    const K: usize = 40;
+    const J: usize = 40;
+    let mut p = page("");
+    let unboxed = unboxed_drawing(&mut p);
+    let mark = add(&mut p, square([100, 100, 150, 150], unboxed));
+    let mark_popup = add(&mut p, popup(mark));
+    p.doc
+        .get_dictionary_mut(mark)
+        .unwrap()
+        .set("Popup", mark_popup);
+    let answer = add(&mut p, reply([100, 100, 110, 110], "MARKER-REPLY", mark));
+    let answer_popup = add(&mut p, popup(answer));
+    p.doc
+        .get_dictionary_mut(answer)
+        .unwrap()
+        .set("Popup", answer_popup);
+    let mut list: Vec<Object> = vec![mark.into(), mark_popup.into()];
+    list.extend(vec![Object::from(answer); K]);
+    list.extend(vec![Object::from(answer_popup); K]);
+    for j in 0..J {
+        let r = reply([100, 100, 110, 110], &format!("MARKER-ANSWER-{j}"), answer);
+        list.push(add(&mut p, r).into());
+    }
+    set_annots(&mut p, list);
+
+    let (done, taken) = budget_seam::with_limit(u64::MAX, || p.flatten_annotations(None));
+    let steps = 5 + 2 * (K + J) as u64;
+    assert_eq!(taken, [steps, steps]);
+    let done = done.unwrap();
+    assert_eq!((done.drawn, done.kept), (0, vec![0]));
+    let s = Saved::of(&mut p);
+    let ids = entries(&s, 0);
+    assert_eq!(ids.len(), 2 + 2 * K + J);
+    assert_eq!(points_to(&s, ids[1], b"Parent"), ids[0]);
+    assert!(ids[2..2 + K]
+        .iter()
+        .all(|&id| points_to(&s, id, b"IRT") == ids[0]));
+    assert!(ids[2 + K..2 + 2 * K]
+        .iter()
+        .all(|&id| points_to(&s, id, b"Parent") == ids[2]));
+    assert!(ids[2 + 2 * K..]
+        .iter()
+        .all(|&id| points_to(&s, id, b"IRT") == ids[2]));
+}
+
+/// Three pages: page 1 with a mark flattening draws, a comment it gives a drawing to first
+/// and a mark it can't draw with a reply; page 2 with a mark it draws; page 3 with a mark it
+/// can't draw and 10 replies.
+fn three_pages() -> Pdf {
+    let mut p = page("");
+    p.insert_blank(1, 300.0, 200.0).unwrap();
+    p.insert_blank(2, 300.0, 200.0).unwrap();
+    let ap = square_drawing(&mut p);
+    let unboxed = unboxed_drawing(&mut p);
+    push_on(&mut p, 0, square([20, 20, 25, 25], ap));
+    push_on(&mut p, 0, note([40, 40, 60, 60], "MARKER-NOTE"));
+    let mark = push_on(&mut p, 0, square([100, 100, 150, 150], unboxed));
+    push_on(&mut p, 0, reply([100, 100, 110, 110], "MARKER-REPLY", mark));
+    push_on(&mut p, 1, square([20, 20, 25, 25], ap));
+    let mark = push_on(&mut p, 2, square([100, 100, 150, 150], unboxed));
+    for k in 0..10 {
+        let r = reply([100, 100, 110, 110], &format!("MARKER-REPLY-{k}"), mark);
+        push_on(&mut p, 2, r);
+    }
+    p
+}
+
+/// A-06: the walk is charged before anything changes, for every page being flattened, so
+/// running out anywhere, on page 3 too, refuses with nothing changed: page 1's comment not
+/// given a drawing, pages 1 and 2 not flattened. With exactly the steps the walk takes,
+/// every page is flattened, and each page's own walk then takes no more.
+#[test]
+fn flattening_too_complex_on_a_later_page_changes_nothing() {
+    // Page 1's comment without a drawing (1 step) and kept mark with its reply (3), page
+    // 3's kept mark with its replies (21).
+    let needed = 1 + 3 + 21;
+    let mut p = three_pages();
+    let before = p.state_before();
+    // Every budget short of it, not only one step short.
+    for limit in 0..needed {
+        let (got, taken) = budget_seam::with_limit(limit, || p.flatten_annotations(None));
+        let e = got.map(|d| (d.drawn, d.kept)).unwrap_err();
+        assert!(e.downcast_ref::<TooComplex>().is_some(), "{limit}: {e:#}");
+        assert_eq!(p.state_since(&before), [], "{limit}");
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "the document is too complex: finding the pop-ups and replies to keep would \
+                 take more than {limit} steps, so nothing was changed"
+            )
+        );
+        assert_eq!(taken, [limit]);
+    }
+
+    let (got, taken) = budget_seam::with_limit(needed, || p.flatten_annotations(None));
+    let done = got.unwrap();
+    // Page 1's comment has its drawing by then: its walk is the kept mark's alone.
+    assert_eq!(taken, [needed, 3, 0, 21]);
+    assert_eq!((done.drawn, done.kept), (3, vec![0, 2]));
+
+    // The control: with the usual budget, the same.
+    let mut p = three_pages();
+    let done = p.flatten_annotations(None).unwrap();
+    assert_eq!((done.drawn, done.kept), (3, vec![0, 2]));
+    let s = Saved::of(&mut p);
+    assert_eq!(entries(&s, 0).len(), 2);
+    assert!(entries(&s, 1).is_empty());
+    assert_eq!(entries(&s, 2).len(), 11);
 }
 
 /// Paper the size of [`page`] with no margins: a sheet is its page as it is.
