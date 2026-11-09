@@ -2,6 +2,7 @@
 //! removing the fields.
 
 use crate::annots::NO_VIEW;
+use crate::budget::{self, TooComplex, Work};
 use crate::forms::{FieldValue, Reach};
 use crate::matrix::{self as mx, M};
 use crate::{quoted_list, Pdf, Result};
@@ -14,6 +15,63 @@ const HIDDEN: i64 = 1 << 1;
 /// Annotation flag (`/F`) for an annotation that is printed.
 const PRINT: i64 = 1 << 2;
 const MAX_DEPTH: usize = 32;
+
+/// The steps finding what goes with the annotations kept may take: one for each annotation
+/// looked at and one for each popup or reply followed, about two for each annotation entry.
+/// As a drawing walk's ([`crate::reach::STEPS`]): about two million entries across the pages
+/// flattened, where the busiest test pages have about 10,000.
+const STEPS: u64 = 1 << 22;
+
+/// What the walk's refusal says it was doing.
+const WHAT: &str = "finding the pop-ups and replies to keep";
+
+/// The budget for finding what goes with the annotations kept, across the pages flattened.
+pub(crate) fn work() -> Work {
+    Work::new(WHAT, budget::limit(STEPS))
+}
+
+/// What flattening one page does with its annotations ([`Pdf::plan_page`]).
+pub(crate) struct Plan {
+    /// The page's `/Annots` entries.
+    annots: Vec<Object>,
+    /// Which entries stay on the page.
+    keep: Vec<bool>,
+    /// The drawings to draw in, each with the matrix that puts it on the page.
+    shown: Vec<(ObjectId, M)>,
+    /// The unplaced annotations kept, one for each entry.
+    held: Vec<ObjectId>,
+    /// The entries that go with each annotation: its popup, and the replies to it.
+    goes_with: HashMap<ObjectId, Vec<usize>>,
+}
+
+impl Plan {
+    /// Keep the popups and replies of the annotations held, and theirs: they are its
+    /// comment. Each annotation is looked at once, however often the page lists it; a step
+    /// is charged to `work` for each, and for each entry that goes with it.
+    pub(crate) fn walk(&mut self, work: &mut Work) -> std::result::Result<(), TooComplex> {
+        let mut seen = HashSet::new();
+        let mut todo: Vec<ObjectId> = self
+            .held
+            .iter()
+            .copied()
+            .filter(|&id| seen.insert(id))
+            .collect();
+        while let Some(id) = todo.pop() {
+            work.take(1)?;
+            for &i in self.goes_with.get(&id).into_iter().flatten() {
+                work.take(1)?;
+                self.keep[i] = true;
+                todo.extend(
+                    self.annots[i]
+                        .as_reference()
+                        .ok()
+                        .filter(|&to| seen.insert(to)),
+                );
+            }
+        }
+        Ok(())
+    }
+}
 
 /// What flattening a page does with one of its annotations.
 pub(crate) enum Flat {
@@ -241,7 +299,8 @@ impl Pdf {
     /// `removed`. Appearances without resources get `dr`; the drawings are named from
     /// `prefix` in the page's resources. With `unplaced`, a shown annotation to draw that
     /// can't be placed on the page (no `/Rect`, or no drawing with a box) stays as it was,
-    /// with its popup and replies, rather than go undrawn, and is added to `unplaced`.
+    /// with its popup and replies, rather than go undrawn, and is added to `unplaced`. That
+    /// walk has no limit: [`Pdf::flatten_annotations`] has walked the page first.
     pub(crate) fn flatten_page(
         &mut self,
         page: ObjectId,
@@ -249,71 +308,21 @@ impl Pdf {
         dr: Option<&Object>,
         prefix: &str,
         removed: &mut HashSet<ObjectId>,
-        mut unplaced: Option<&mut Vec<ObjectId>>,
+        unplaced: Option<&mut Vec<ObjectId>>,
     ) -> Result<usize> {
-        let Some(annots) = self
-            .doc
-            .get_dictionary(page)?
-            .get(b"Annots")
-            .ok()
-            .and_then(|o| self.doc.dereference(o).ok())
-            .and_then(|(_, o)| o.as_array().ok())
-            .cloned()
-        else {
+        let Some(mut plan) = self.plan_page(page, which, unplaced.is_some())? else {
             return Ok(0);
         };
-        let mut keep = vec![false; annots.len()];
-        let mut shown = Vec::new();
-        // The unplaced annotations kept, and what each dropped one goes with (a popup's
-        // annotation, the one a reply answers), to keep those that go with a kept one.
-        let mut held = Vec::new();
-        let mut goes_with: HashMap<ObjectId, Vec<usize>> = HashMap::new();
-        for (i, a) in annots.iter().enumerate() {
-            let found = a
-                .as_reference()
-                .ok()
-                .and_then(|id| Some((id, self.doc.get_dictionary(id).ok()?)));
-            let Some((id, d)) = found else {
-                keep[i] = true;
-                continue;
-            };
-            match which(self, d) {
-                Flat::Keep => keep[i] = true,
-                Flat::Drop if unplaced.is_some() => {
-                    let popup = d.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Popup");
-                    let key: &[u8] = if popup { b"Parent" } else { b"IRT" };
-                    if let Ok(to) = d.get(key).and_then(|o| o.as_reference()) {
-                        goes_with.entry(to).or_default().push(i);
-                    }
-                }
-                Flat::Drop => {}
-                Flat::Draw => match self.placement(d) {
-                    Some(p) => shown.push(p),
-                    None if unplaced.is_some() => {
-                        let flags = d.get(b"F").ok().and_then(|o| self.int_value(o));
-                        // Hidden ones still go undrawn: nothing shown is lost.
-                        if flags.unwrap_or(0) & (HIDDEN | NO_VIEW) == 0 {
-                            keep[i] = true;
-                            held.push(id);
-                        }
-                    }
-                    None => {}
-                },
-            }
+        if let Some(list) = unplaced {
+            plan.walk(&mut Work::new(WHAT, u64::MAX))?;
+            list.extend(&plan.held);
         }
-        // Its popup and replies, and theirs, are its comment.
-        let mut todo = held.clone();
-        while let Some(id) = todo.pop() {
-            for &i in goes_with.get(&id).into_iter().flatten() {
-                if !keep[i] {
-                    keep[i] = true;
-                    todo.extend(annots[i].as_reference().ok());
-                }
-            }
-        }
-        if let Some(list) = unplaced.as_mut() {
-            list.extend(&held);
-        }
+        let Plan {
+            annots,
+            keep,
+            shown,
+            ..
+        } = plan;
         let mut kept = Vec::new();
         for (a, &k) in annots.iter().zip(&keep) {
             match (k, a.as_reference()) {
@@ -363,6 +372,74 @@ impl Pdf {
             self.wrap_contents(page, None, Some(content))?;
         }
         Ok(shown.len())
+    }
+
+    /// What flattening `page` does with its annotations as `which` says, changing nothing:
+    /// `None` when it has none. With `hold`, a shown annotation to draw that can't be placed
+    /// is held, and what goes with each annotation is noted, for [`Plan::walk`].
+    pub(crate) fn plan_page(
+        &self,
+        page: ObjectId,
+        which: fn(&Pdf, &Dictionary) -> Flat,
+        hold: bool,
+    ) -> Result<Option<Plan>> {
+        let Some(annots) = self
+            .doc
+            .get_dictionary(page)?
+            .get(b"Annots")
+            .ok()
+            .and_then(|o| self.doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_array().ok())
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let mut keep = vec![false; annots.len()];
+        let mut shown = Vec::new();
+        // The unplaced annotations kept, and what each dropped one goes with (a popup's
+        // annotation, the one a reply answers), to keep those that go with a kept one.
+        let mut held = Vec::new();
+        let mut goes_with: HashMap<ObjectId, Vec<usize>> = HashMap::new();
+        for (i, a) in annots.iter().enumerate() {
+            let found = a
+                .as_reference()
+                .ok()
+                .and_then(|id| Some((id, self.doc.get_dictionary(id).ok()?)));
+            let Some((id, d)) = found else {
+                keep[i] = true;
+                continue;
+            };
+            match which(self, d) {
+                Flat::Keep => keep[i] = true,
+                Flat::Drop if hold => {
+                    let popup = d.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Popup");
+                    let key: &[u8] = if popup { b"Parent" } else { b"IRT" };
+                    if let Ok(to) = d.get(key).and_then(|o| o.as_reference()) {
+                        goes_with.entry(to).or_default().push(i);
+                    }
+                }
+                Flat::Drop => {}
+                Flat::Draw => match self.placement(d) {
+                    Some(p) => shown.push(p),
+                    None if hold => {
+                        let flags = d.get(b"F").ok().and_then(|o| self.int_value(o));
+                        // Hidden ones still go undrawn: nothing shown is lost.
+                        if flags.unwrap_or(0) & (HIDDEN | NO_VIEW) == 0 {
+                            keep[i] = true;
+                            held.push(id);
+                        }
+                    }
+                    None => {}
+                },
+            }
+        }
+        Ok(Some(Plan {
+            annots,
+            keep,
+            shown,
+            held,
+            goes_with,
+        }))
     }
 
     /// The drawing of an annotation as it looks now: its normal appearance, or for one with
