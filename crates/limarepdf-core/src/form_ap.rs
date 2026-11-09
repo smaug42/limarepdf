@@ -3,7 +3,7 @@
 //! the file, the text written by a pen made for the lines laid out (`layout.rs`).
 
 use crate::fonts::{winansi_byte, winansi_bytes};
-use crate::layout::{break_lines, break_ranges, shown, Setter};
+use crate::layout::{break_lines, break_ranges, grapheme_ends, shown, Setter};
 use crate::{Align, FontChoice};
 use lopdf::content::{Content, Operation};
 use lopdf::{Object, StringFormat};
@@ -48,7 +48,16 @@ impl Metrics {
     /// `text` in lines no wider than `max` at `size`, broken as every wrapper breaks them
     /// (`layout.rs`).
     pub(crate) fn lines(&self, text: &str, max: f32, size: f32) -> Vec<String> {
-        break_lines(text, max, |l| self.text_width(l, size))
+        break_lines(text, max, |l| self.text_width(l, size), |w| self.ends(w))
+    }
+
+    /// Where a line may end inside `word` ([`Setter::ends`]): written without shaping, after
+    /// any of its grapheme clusters.
+    fn ends(&self, word: &str) -> Vec<usize> {
+        match self {
+            Metrics::Bytes(_) => grapheme_ends(word),
+            Metrics::Set(set) => set.ends(word),
+        }
     }
 }
 
@@ -412,7 +421,14 @@ fn wrapped(look: &Look, text: &str, m: &Metrics) -> (f32, Vec<Range<usize>>) {
     let inset = look.inset();
     let iw = (look.w - 2.0 * inset).max(0.0);
     let ih = (look.h - 2.0 * inset).max(0.0);
-    let lines = |size: f32| break_ranges(text, iw - 2.0 * PAD, |l| m.text_width(l, size));
+    let lines = |size: f32| {
+        break_ranges(
+            text,
+            iw - 2.0 * PAD,
+            |l| m.text_width(l, size),
+            |w| m.ends(w),
+        )
+    };
     let size = auto(look.size, || {
         let mut s = AUTO_MAX;
         while s > AUTO_MIN && lines(s).len() as f32 * LEADING * s > ih - 2.0 * PAD {

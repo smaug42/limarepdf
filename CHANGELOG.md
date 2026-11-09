@@ -9,6 +9,14 @@
 
 ### Fixed
 
+- A very long word (a long value with no spaces, such as a web address or a code) is broken into lines quickly in
+  a narrow form field, in a digital signature's text, and when selected text is printed or saved. Before, the time
+  grew far faster than the word's length: a word of 1,000 letters in a box ten letters wide took about an eighth
+  of a second each time, more in a field whose text is sized automatically (up to 22 sizes are tried), and form
+  fields are drawn again whenever a document opens. It now takes a fraction of a millisecond. Such a word is broken
+  only where a font draws one letter apart from the next, never inside a ligature such as "ffi". What LimarePDF
+  keeps of the text it lays out, and of the fonts it finds for each word, now has a limit, so laying out a great
+  deal of text no longer takes more and more memory.
 - Replace all judges a paragraph's lines where they are written. A line of a centred or right-aligned paragraph
   that doesn't read back as typed in the paragraph's own font is written again in the font its words go to, and
   may then be wider and start further left. Before, such a line was judged where it was first set, so what it ran

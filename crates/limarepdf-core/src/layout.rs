@@ -23,8 +23,10 @@ use crate::{std14, Family, FontChoice, Pdf, Result};
 use anyhow::bail;
 use lopdf::content::Operation;
 use lopdf::{dictionary, Object, ObjectId, StringFormat};
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -118,18 +120,68 @@ pub(crate) struct Setter {
     language: Option<harfrust::Language>,
     /// Which of Chinese, Japanese and Korean the text is, when something says so.
     cjk: Option<Language>,
-    laid: RefCell<HashMap<String, Rc<Laid>>>,
+    /// What it set, by the text: each line tried while breaking among them.
+    laid: RefCell<Kept<String, Rc<Laid>, LAID_MOST, LAID_CHARS>>,
 }
 
 /// The font each word went to, by the font asked, whether that is written as itself, the
 /// language for Chinese, Japanese and Korean, and the word; kept while the installed
 /// families stay as they are (their count).
-type Units = (usize, HashMap<UnitKey, Option<SetIn>>);
+type Units = (usize, Kept<UnitKey, Option<SetIn>, UNITS_MOST, UNITS_BYTES>);
 
 /// What a word's font is kept by ([`Units`]).
 type UnitKey = (FontChoice, bool, Option<Language>, String);
 
 static UNITS: LazyLock<Mutex<Units>> = LazyLock::new(Mutex::default);
+
+/// The most words [`UNITS`] keeps, and the most bytes of their text.
+const UNITS_MOST: usize = 1 << 16;
+const UNITS_BYTES: usize = 4 << 20;
+
+/// The most texts a [`Setter`] keeps set, and the most characters among them.
+const LAID_MOST: usize = 1 << 12;
+const LAID_CHARS: usize = 1 << 20;
+
+/// What is kept to use again, at most `MOST` entries and `SIZE` among them (M-08): emptied
+/// before one more would pass either, as the streams found fine are (`unfillable.rs`'s
+/// `Checked`). An entry bigger than `SIZE` alone isn't kept.
+struct Kept<K, V, const MOST: usize, const SIZE: usize> {
+    map: HashMap<K, V>,
+    /// What the entries kept hold, as [`Kept::keep`] was told.
+    size: usize,
+}
+
+impl<K, V, const MOST: usize, const SIZE: usize> Default for Kept<K, V, MOST, SIZE> {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+            size: 0,
+        }
+    }
+}
+
+impl<K: Eq + Hash, V, const MOST: usize, const SIZE: usize> Kept<K, V, MOST, SIZE> {
+    fn get<Q: Eq + Hash + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
+        self.map.get(key)
+    }
+
+    /// Keeps `value` by `key`, `size` being what it holds.
+    fn keep(&mut self, key: K, value: V, size: usize) {
+        if size > SIZE {
+            return;
+        }
+        if self.map.len() >= MOST || self.size + size > SIZE {
+            self.map.clear();
+            self.size = 0;
+        }
+        if self.map.insert(key, value).is_none() {
+            self.size += size;
+        }
+    }
+}
 
 impl Setter {
     /// A setter for text in `f`, `text` being all it will set (whether a standard font is
@@ -176,7 +228,8 @@ impl Setter {
             return Rc::clone(l);
         }
         let laid = Rc::new(self.lay_anew(text));
-        (self.laid.borrow_mut()).insert(text.to_string(), Rc::clone(&laid));
+        let size = text.chars().count();
+        (self.laid.borrow_mut()).keep(text.to_string(), Rc::clone(&laid), size);
         laid
     }
 
@@ -253,7 +306,7 @@ impl Setter {
         {
             let mut units = UNITS.lock().unwrap_or_else(|e| e.into_inner());
             if units.0 != count {
-                *units = (count, HashMap::new());
+                *units = (count, Kept::default());
             }
             if let Some(f) = units.1.get(&key) {
                 return *f;
@@ -261,7 +314,7 @@ impl Setter {
         }
         let found = self.find_font(unit);
         let mut units = UNITS.lock().unwrap_or_else(|e| e.into_inner());
-        units.1.insert(key, found);
+        units.1.keep(key, found, unit.len());
         found
     }
 
@@ -420,10 +473,30 @@ impl Setter {
     /// 4.6): at its line breaks, then where Unicode's line-breaking rule (UAX #14) allows
     /// (after spaces and hyphens, between ideographs, never before closing punctuation
     /// or small kana), each line taking what fits; a word wider than a line is broken
-    /// between characters. Spaces at a line's end aren't counted, and are left out. A soft
-    /// hyphen shows as a hyphen at a line's end, and nowhere else.
+    /// between its glyphs' clusters ([`Setter::ends`]). Spaces at a line's end aren't counted,
+    /// and are left out. A soft hyphen shows as a hyphen at a line's end, and nowhere else.
     pub(crate) fn lines(&self, text: &str, width: f32, size: f32) -> Vec<String> {
-        break_lines(text, width, |line| self.width(line, size))
+        break_lines(text, width, |line| self.width(line, size), |w| self.ends(w))
+    }
+
+    /// Where a line may end inside `word` when it is broken between its characters (S1-14's
+    /// legal boundaries): after each of its grapheme clusters that no cluster of its glyphs,
+    /// the word set whole, runs across. In bytes, in order, the last its end.
+    pub(crate) fn ends(&self, word: &str) -> Vec<usize> {
+        let n = word.chars().count();
+        let mut inside = vec![false; n + 1];
+        for ((a, b), _) in self.lay(word).clusters() {
+            inside[a + 1..b].fill(true);
+        }
+        let mut out = Vec::new();
+        let mut k = 0;
+        for (i, g) in word.grapheme_indices(true) {
+            k += g.chars().count();
+            if !inside[k] {
+                out.push(i + g.len());
+            }
+        }
+        out
     }
 
     /// A stretch of the text in one font and one script, set, its characters mapped to
@@ -725,10 +798,23 @@ fn system_language() -> Option<Language> {
 }
 
 /// `text` broken into lines no wider than `width` as `measure` measures a line as it shows
-/// ([`Setter::lines`]).
-pub(crate) fn break_lines(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
-    (break_ranges(text, width, measure).into_iter())
+/// ([`Setter::lines`]), a word wider than a line where `ends` lets it end ([`Setter::ends`]).
+pub(crate) fn break_lines(
+    text: &str,
+    width: f32,
+    measure: impl Fn(&str) -> f32,
+    ends: impl Fn(&str) -> Vec<usize>,
+) -> Vec<String> {
+    (break_ranges(text, width, measure, ends).into_iter())
         .map(|line| shown(&text[line]))
+        .collect()
+}
+
+/// The ends of `word`'s grapheme clusters, in bytes: where a line may end inside a word
+/// written without shaping ([`Setter::ends`]).
+pub(crate) fn grapheme_ends(word: &str) -> Vec<usize> {
+    (word.grapheme_indices(true))
+        .map(|(i, g)| i + g.len())
         .collect()
 }
 
@@ -738,6 +824,7 @@ pub(crate) fn break_ranges(
     text: &str,
     width: f32,
     measure: impl Fn(&str) -> f32,
+    ends: impl Fn(&str) -> Vec<usize>,
 ) -> Vec<Range<usize>> {
     let fits = |line: &Range<usize>| measure(&shown(&text[line.clone()])) <= width + 1e-3;
     let mut out = Vec::new();
@@ -755,26 +842,55 @@ pub(crate) fn break_ranges(
                 out.push(line.clone());
                 line = line.end..end;
             }
-            // A word wider than a line of its own is broken where it fills one.
-            while !fits(&line) {
-                // Where each cluster of the line ends.
-                let ends: Vec<usize> = (text[line.clone()].grapheme_indices(true))
-                    .map(|(i, c)| line.start + i + c.len())
+            // A word wider than a line of its own is broken where it fills one, where `ends`
+            // lets it: each line takes the clusters that fit ([`fitting`]), or one.
+            if !fits(&line) {
+                let all: Vec<usize> = (ends(&text[line.clone()]).into_iter())
+                    .map(|e| line.start + e)
                     .collect();
-                let mut n = ends.len().saturating_sub(1);
-                while n > 1 && !fits(&(line.start..ends[n - 1])) {
-                    n -= 1;
+                // The whole line doesn't fit, so its end isn't tried at first.
+                let mut tried = all.len().saturating_sub(1);
+                let mut from = 0;
+                while from < tried {
+                    let n = fitting(fits, line.start, &all[from..tried]).max(1);
+                    if from + n == all.len() {
+                        break;
+                    }
+                    out.push(line.start..all[from + n - 1]);
+                    line.start = all[from + n - 1];
+                    from += n;
+                    tried = all.len();
                 }
-                if n == 0 {
-                    break;
-                }
-                out.push(line.start..ends[n - 1]);
-                line = ends[n - 1]..line.end;
             }
         }
         out.push(line);
     }
     out
+}
+
+/// How many of `ends` fit, a line from `start` ending at each in turn: those that fit come
+/// first, as a line gets wider with each cluster it gains. It tries the 1st, 2nd, 4th, 8th…
+/// until one doesn't fit, then halves the range between the last that does and the first
+/// that doesn't, so a word broken over many lines is measured a few times a line, not once
+/// for each of its characters (M-08).
+fn fitting(fits: impl Fn(&Range<usize>) -> bool, start: usize, ends: &[usize]) -> usize {
+    let (mut lo, mut hi) = (0, ends.len() + 1);
+    while lo < ends.len() {
+        let n = (2 * lo).clamp(1, ends.len());
+        if !fits(&(start..ends[n - 1])) {
+            hi = n;
+            break;
+        }
+        lo = n;
+    }
+    while lo + 1 < hi {
+        let n = (lo + hi) / 2;
+        match fits(&(start..ends[n - 1])) {
+            true => lo = n,
+            false => hi = n,
+        }
+    }
+    lo
 }
 
 /// `text`'s paragraphs, as it is split at its line breaks (`\r\n`, `\n`, `\r`, and Unicode's
@@ -1180,6 +1296,7 @@ fn shows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     const SANS: FontChoice = FontChoice {
         family: Family::Helvetica,
@@ -1213,7 +1330,8 @@ mod tests {
     #[test]
     fn each_line_is_found_in_the_text_as_typed() {
         let s = Setter::new(SANS, "", None);
-        let ranges = |text: &str, w: f32| break_ranges(text, w, |l| s.width(l, 12.0));
+        let ranges =
+            |text: &str, w: f32| break_ranges(text, w, |l| s.width(l, 12.0), |w| s.ends(w));
         let w = s.width("aaaa bbbb", 12.0) + 0.01;
         let text = "aaaa bbbb    cccc\r\n\ndd\u{AD}ee";
         let got = ranges(text, w);
@@ -1227,6 +1345,220 @@ mod tests {
         let text = "abcdefg\n";
         let got: Vec<&str> = ranges(text, w).into_iter().map(|r| &text[r]).collect();
         assert_eq!(got, ["abc", "def", "g", ""]);
+    }
+
+    /// How many words [`UNITS`] keeps, and the bytes of their text.
+    fn units_kept() -> (usize, usize) {
+        let units = UNITS.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            units.1.map.len(),
+            units.1.map.keys().map(|k| k.3.len()).sum(),
+        )
+    }
+
+    /// How many texts `s` keeps set, and their characters.
+    fn laid_kept(s: &Setter) -> (usize, usize) {
+        let laid = s.laid.borrow();
+        (
+            laid.map.len(),
+            laid.map.keys().map(|t| t.chars().count()).sum(),
+        )
+    }
+
+    /// What is kept is emptied before one more entry would pass either limit, and an entry
+    /// bigger than the size limit alone isn't kept (M-08).
+    #[test]
+    fn what_is_kept_starts_again_at_its_limits() {
+        let mut kept: Kept<&str, u8, 3, 10> = Kept::default();
+        let size = |k: &Kept<&str, u8, 3, 10>| (k.map.len(), k.size);
+        kept.keep("a", 1, 2);
+        kept.keep("b", 2, 2);
+        kept.keep("b", 3, 2);
+        assert_eq!((size(&kept), kept.get("b")), ((2, 4), Some(&3)));
+        kept.keep("c", 4, 2);
+        kept.keep("d", 5, 2);
+        assert_eq!((size(&kept), kept.get("a")), ((1, 2), None));
+        kept.keep("e", 6, 9);
+        assert_eq!((size(&kept), kept.get("d")), ((1, 9), None));
+        kept.keep("f", 7, 11);
+        assert_eq!((size(&kept), kept.get("e")), ((1, 9), Some(&6)));
+    }
+
+    /// A word wider than its box is broken in a few measures a line, not one for each of its
+    /// characters (M-08): the measures and the characters they measure grow with its length
+    /// times the logarithm of it, not with its square.
+    #[test]
+    fn a_long_word_is_measured_a_few_times_a_line() {
+        let mut over = Vec::new();
+        for n in [200, 400, 800] {
+            let text = "a".repeat(n);
+            let (calls, chars) = (Cell::new(0), Cell::new(0));
+            let measure = |l: &str| {
+                calls.set(calls.get() + 1);
+                chars.set(chars.get() + l.len());
+                l.len() as f32
+            };
+            let lines = break_ranges(&text, 10.0, measure, grapheme_ends);
+            assert_eq!(lines.len(), n / 10);
+            assert!(lines.iter().all(|l| l.len() == 10), "{lines:?}");
+            let most = 2.0 * n as f64 * (n as f64).log2();
+            let (calls, chars) = (calls.get(), chars.get());
+            let row = format!(
+                "{n} letters: {calls} measures of {chars} characters, at most {most:.0} each"
+            );
+            eprintln!("{row}");
+            if calls as f64 > most || chars as f64 > most {
+                over.push(row);
+            }
+        }
+        assert!(over.is_empty(), "{over:#?}");
+    }
+
+    /// The fonts found for words are kept to use again, but no more than the limits allow,
+    /// however many words are set (M-08).
+    #[test]
+    fn the_fonts_found_for_words_are_kept_within_limits() {
+        let words: Vec<String> = (0..70_000).map(|i| format!("w{i}")).collect();
+        let text = words.join(" ");
+        Setter::new(SANS, &text, None).lay(&text);
+        let (n, bytes) = units_kept();
+        assert!(
+            n <= UNITS_MOST && bytes <= UNITS_BYTES,
+            "{n} words, {bytes} bytes"
+        );
+    }
+
+    /// A setter keeps what it set to set again, within limits (M-08).
+    #[test]
+    fn a_setter_keeps_what_it_set_within_limits() {
+        let s = Setter::new(SANS, "", None);
+        for i in 0..5_000 {
+            s.lay(&format!("text {i}"));
+        }
+        let (n, chars) = laid_kept(&s);
+        assert!(
+            n <= LAID_MOST && chars <= LAID_CHARS,
+            "{n} texts, {chars} characters"
+        );
+    }
+
+    /// A word wider than its box breaks between the clusters of its glyphs, never inside one
+    /// (S1-14's legal boundaries): "ffiffi" in Source Serif 4 is two "ffi" ligatures, each
+    /// alone on its line in a box narrower than one.
+    #[test]
+    fn a_long_word_breaks_only_between_its_glyph_clusters() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let serif = dir.join("tests/data/fonts/SourceSerif4-Regular.otf");
+        let n = crate::add_font_files(&[serif.as_path()])[0];
+        let face = FontChoice {
+            family: Family::Installed(n),
+            bold: false,
+            italic: false,
+        };
+        let s = Setter::new(face, "ffiffi", None);
+        let clusters = s.lay("ffiffi").clusters();
+        let spans: Vec<(usize, usize)> = clusters.iter().map(|c| c.0).collect();
+        assert_eq!(spans, [(0, 3), (3, 6)]);
+        let w = s.width("ffi", 12.0) * 0.8;
+        assert_eq!(s.lines("ffiffi", w, 12.0), ["ffi", "ffi"]);
+    }
+
+    /// [`break_ranges`] as it was before S1-15 (`260a7b7`), a long word shrunk a grapheme at
+    /// a time: the lines the search must still find.
+    fn one_at_a_time(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<Range<usize>> {
+        let fits = |line: &Range<usize>| measure(&shown(&text[line.clone()])) <= width + 1e-3;
+        let mut out = Vec::new();
+        for para in paragraphs(text) {
+            let mut line = para.start..para.start;
+            for (at, _) in unicode_linebreak::linebreaks(&text[para.clone()]) {
+                let end = para.start + at;
+                if end == line.end {
+                    continue;
+                }
+                let joined = line.start..end;
+                if line.is_empty() || fits(&joined) {
+                    line = joined;
+                } else {
+                    out.push(line.clone());
+                    line = line.end..end;
+                }
+                while !fits(&line) {
+                    let ends: Vec<usize> = (text[line.clone()].grapheme_indices(true))
+                        .map(|(i, c)| line.start + i + c.len())
+                        .collect();
+                    let mut n = ends.len().saturating_sub(1);
+                    while n > 1 && !fits(&(line.start..ends[n - 1])) {
+                        n -= 1;
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                    out.push(line.start..ends[n - 1]);
+                    line = ends[n - 1]..line.end;
+                }
+            }
+            out.push(line);
+        }
+        out
+    }
+
+    /// Text broken as it was before S1-15 is broken the same: words, long ones among them,
+    /// accents, Greek and Cyrillic, hyphens, soft hyphens, spaces and line breaks, in boxes
+    /// from narrower than nothing to wide; measured as Helvetica's bundled face sets them,
+    /// and (quicker, so more of them) at so many points a character.
+    #[test]
+    fn long_words_break_where_they_did() {
+        let (xy, m) = ("xy".repeat(7), "m".repeat(22));
+        let pieces = [
+            "a", "bo", "W", "é", "e\u{301}", "Ωλ", "жё", "-", "\u{AD}", " ", "  ", "\n", &xy, &m,
+        ];
+        let mut seed: u64 = 15;
+        let mut next = |n: usize| {
+            seed = (seed.wrapping_mul(6364136223846793005)).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % n
+        };
+        let quick = |l: &str| l.chars().map(|c| (c as u32 % 7 + 1) as f32).sum::<f32>();
+        for round in 0..600 {
+            let text: String = (0..next(30)).map(|_| pieces[next(pieces.len())]).collect();
+            let s = Setter::new(SANS, &text, None);
+            let set = |l: &str| s.width(l, 12.0);
+            for w in [-1.0, 0.0, 3.0, 7.5, 12.0, 20.0, 35.0, 60.0, 100.0, 200.0] {
+                assert_eq!(
+                    break_ranges(&text, w, quick, grapheme_ends),
+                    one_at_a_time(&text, w, quick),
+                    "{text:?} in {w}, quickly"
+                );
+                if round % 30 == 0 {
+                    assert_eq!(
+                        break_ranges(&text, w, set, |word| s.ends(word)),
+                        one_at_a_time(&text, w, set),
+                        "{text:?} in {w} points"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Breaking a word of 1,000 letters in a box ten letters wide within 20 ms (M-08), as a
+    /// long value in a narrow form field is broken when a document opens. Opt-in, in a
+    /// release build: `cargo test --release -p limarepdf-core --lib -- --ignored speed_of`.
+    #[test]
+    #[ignore]
+    fn speed_of_a_long_word() {
+        let text: String = "abcdefghij".chars().cycle().take(1000).collect();
+        let w = Setter::new(SANS, "", None).width("abcdefghij", 12.0) + 0.01;
+        let mut times = Vec::new();
+        for _ in 0..5 {
+            let s = Setter::new(SANS, &text, None);
+            let t = std::time::Instant::now();
+            let lines = s.lines(&text, w, 12.0);
+            times.push(t.elapsed());
+            assert!(lines.len() >= 100, "{}", lines.len());
+        }
+        times.sort();
+        let (median, most) = (times[times.len() / 2], times[times.len() - 1]);
+        eprintln!("1,000 letters: median {median:?}, slowest {most:?}");
+        assert!(median < std::time::Duration::from_millis(20), "{median:?}");
     }
 
     #[test]
