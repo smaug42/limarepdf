@@ -32,7 +32,7 @@ use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::span_boxes;
 use crate::reach::{self, Decoded, Reach, Uses};
 use crate::redact_img::{black_out, inline_stream, is_clear};
-use crate::retained::{references_in, Removed};
+use crate::retained::{alt_refs, references_in, Removed};
 use crate::trees::{self, Lookup};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -289,6 +289,10 @@ struct Redactor<'a> {
     mcids: HashSet<i64>,
     /// The alternative text taken off marked content.
     alts: Vec<String>,
+    /// Of that, what was an object of its own.
+    texts: Vec<ObjectId>,
+    /// The properties it was taken off that were objects of their own.
+    properties: Vec<ObjectId>,
     /// What drawings' content uses, kept from the walk before redacting.
     uses: Decoded,
     /// A drawing kept inside a changed one couldn't be read, so the changed one's copy
@@ -307,6 +311,8 @@ impl<'a> Redactor<'a> {
             dropped: HashSet::new(),
             mcids: HashSet::new(),
             alts: Vec::new(),
+            texts: Vec::new(),
+            properties: Vec::new(),
             uses,
             unread: false,
             out: PageRedaction::default(),
@@ -1135,6 +1141,10 @@ impl<'a> Redactor<'a> {
         }
         self.alts
             .extend(reach::alt_texts(Some(&self.pdf.doc), &dict));
+        self.texts.extend(alt_refs(&dict));
+        if let Some(Object::Name(n)) = b.operands.get(1) {
+            (self.properties).extend(props.get(n).ok().and_then(|o| o.as_reference().ok()));
+        }
         let mut d = dict;
         for k in reach::ALT {
             d.remove(k);
@@ -1241,10 +1251,11 @@ impl Pdf {
         if widgets {
             self.value_nodes()?;
         }
-        // Drawings too complex to follow are refused now, not halfway through.
+        // Drawings too complex to follow are refused now, not halfway through: every
+        // annotation's appearances too, so those written into `/Annots` get objects first.
+        self.own_direct_annots()?;
         let mut uses = Decoded::new();
         self.reach(&mut reach::work(), &mut uses)?;
-        self.own_direct_annots()?;
         let mut report = RedactReport::default();
         let mut removed = Removed::default();
         let (mut alts, mut unread, mut added_all) = (Vec::new(), Vec::new(), 0);
@@ -1263,6 +1274,8 @@ impl Pdf {
                 dropped: gone,
                 mcids,
                 alts: alt,
+                texts: alt_objects,
+                properties: alt_props,
                 uses: kept,
                 unread: not_read,
                 mut out,
@@ -1272,6 +1285,8 @@ impl Pdf {
             // Redacting adds objects but changes none in place, so what was read stays.
             uses = kept;
             alts.extend(alt);
+            removed.texts.extend(alt_objects);
+            removed.properties.extend(alt_props);
             if not_read {
                 unread.push(p);
             }
@@ -1303,7 +1318,7 @@ impl Pdf {
                     .pages
                     .extend(pd.remove(k).iter().flat_map(references_in));
             }
-            self.strip_struct_alt(&struct_parents[&p], &mcids);
+            (removed.texts).extend(self.strip_struct_alt(&struct_parents[&p], &mcids));
             let (annots, annots_gone) = self.redact_annots(page, &areas)?;
             removed.annots.extend(annots_gone);
             out.annots = annots;
@@ -1313,6 +1328,19 @@ impl Pdf {
             report.pages.push(out);
         }
         removed.alts.extend(alts.iter().cloned());
+        let mut looks = Vec::new();
+        for &id in &removed.annots {
+            let Ok(d) = self.doc.get_dictionary(id) else {
+                continue;
+            };
+            looks.extend(self.appearances_of(d).0);
+            removed.held.extend(self.annot_holds(d));
+        }
+        // Every annotation removed was listed on its page, so the walk before redacting
+        // followed these appearances, unchanged since, within this budget.
+        let drawn = self.drawn_by(&looks, &mut reach::work(), &mut uses)?;
+        removed.xobjects.extend(drawn);
+        removed.looks.extend(looks);
         let reach = self.reach(&mut reach::work_after(added_all), &mut uses)?;
         let retained = self.clear_retained(&removed, &reach);
         report.left = self.check_left(&by_page);
@@ -1470,9 +1498,11 @@ impl Pdf {
 
     /// Take the alternative text off the structure elements of the page's marked content
     /// `mcids`, and off every element above them. `list` is the page's [`Pdf::struct_parents`].
-    fn strip_struct_alt(&mut self, list: &[Object], mcids: &HashSet<i64>) {
+    /// Returns the text taken off that was an object of its own.
+    fn strip_struct_alt(&mut self, list: &[Object], mcids: &HashSet<i64>) -> Vec<ObjectId> {
         // Each element is visited once, so the walk up ends without a limit on its length.
         let mut elems = HashSet::new();
+        let mut out = Vec::new();
         for &mcid in mcids {
             let mut cur = usize::try_from(mcid)
                 .ok()
@@ -1486,11 +1516,14 @@ impl Pdf {
                     break;
                 }
                 for k in [&b"ActualText"[..], b"Alt", b"E"] {
-                    d.remove(k);
+                    if let Some(Object::Reference(id)) = d.remove(k) {
+                        out.push(id);
+                    }
                 }
                 cur = d.get(b"P").and_then(|o| o.as_reference()).ok();
             }
         }
+        out
     }
 
     /// Of the pictures and forms `dropped`, take those nothing draws any more (as `reach`,

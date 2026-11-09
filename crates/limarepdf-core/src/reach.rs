@@ -150,6 +150,8 @@ pub(crate) struct Reach {
     pub drawn: HashSet<ObjectId>,
     /// The annotations' appearances: (the page's node, the appearance's node).
     pub appearances: Vec<(usize, usize)>,
+    /// The annotations' appearances by stream, with their nodes.
+    pub looks: HashMap<ObjectId, usize>,
 }
 
 /// A drawing [`Pdf::reach`] reached.
@@ -275,19 +277,33 @@ impl Pdf {
             .clone()
     }
 
+    /// The appearances of annotation `annot`, a drawing for each of `/AP`'s looks and
+    /// states, and the dictionaries holding them that are objects of their own: `/AP` and
+    /// its dictionaries of drawings by state.
+    pub(crate) fn appearances_of(&self, annot: &Dictionary) -> (Vec<ObjectId>, Vec<ObjectId>) {
+        let (mut looks, mut held) = (Vec::new(), Vec::new());
+        let Ok(ap) = annot.get(b"AP") else {
+            return (looks, held);
+        };
+        held.extend(ap.as_reference().ok());
+        for (_, look) in self.resolved_dict(Some(ap)).iter() {
+            // A drawing, or a dictionary of drawings by state.
+            match self.doc.dereference(look) {
+                Ok((id, Object::Dictionary(states))) => {
+                    held.extend(id);
+                    looks.extend(states.iter().filter_map(|(_, s)| s.as_reference().ok()));
+                }
+                _ => looks.extend(look.as_reference().ok()),
+            }
+        }
+        (looks, held)
+    }
+
     /// Follow every drawing the pages reach, charging `work`; `cache` keeps what each
     /// drawing's content uses, for a later walk while those streams are unchanged.
     pub(crate) fn reach(&self, work: &mut Work, cache: &mut Decoded) -> Result<Reach, TooComplex> {
         let pages = self.page_ids();
-        let mut w = Walk {
-            pdf: self,
-            work,
-            cache,
-            reach: Reach::default(),
-            seen: HashMap::new(),
-            held: HashSet::new(),
-            todo: Vec::new(),
-        };
+        let mut w = Walk::new(self, work, cache);
         w.reach.nodes.resize_with(pages.len(), Node::default);
         let no_resources = Rc::new(Dictionary::new());
         for (i, &page) in pages.iter().enumerate() {
@@ -308,28 +324,51 @@ impl Pdf {
             w.todo.push((i, uses, Rc::new(res)));
             for annot in self.all_annot_refs(page) {
                 w.work.take(1)?;
-                let ap = (self.doc.get_dictionary(annot).ok())
-                    .and_then(|d| d.get(b"AP").ok())
-                    .map(|o| self.resolved_dict(Some(o)));
-                for (_, look) in ap.iter().flat_map(|ap| ap.iter()) {
-                    // A drawing, or a dictionary of drawings by state.
-                    let ids: Vec<ObjectId> = match self.doc.dereference(look) {
-                        Ok((_, Object::Dictionary(states))) => (states.iter())
-                            .filter_map(|(_, s)| s.as_reference().ok())
-                            .collect(),
-                        _ => look.as_reference().ok().into_iter().collect(),
-                    };
-                    for id in ids {
-                        if let Some(n) = w.drawing(id, &no_resources)? {
-                            w.reach.nodes[i].draws.push(n);
-                            w.reach.appearances.push((i, n));
-                        }
+                let looks = (self.doc.get_dictionary(annot).ok())
+                    .map(|d| self.appearances_of(d).0)
+                    .unwrap_or_default();
+                for id in looks {
+                    if let Some(n) = w.drawing(id, &no_resources)? {
+                        w.reach.nodes[i].draws.push(n);
+                        w.reach.appearances.push((i, n));
+                        w.reach.looks.insert(id, n);
                     }
                 }
             }
             w.run()?;
         }
         Ok(w.reach)
+    }
+
+    /// The pictures and forms drawings `ids` draw (`Do`), at any depth, each drawn as an
+    /// appearance is, with no resources but its own.
+    pub(crate) fn drawn_by(
+        &self,
+        ids: &[ObjectId],
+        work: &mut Work,
+        cache: &mut Decoded,
+    ) -> Result<HashSet<ObjectId>, TooComplex> {
+        let mut w = Walk::new(self, work, cache);
+        let no_resources = Rc::new(Dictionary::new());
+        for &id in ids {
+            w.drawing(id, &no_resources)?;
+        }
+        w.run()?;
+        Ok(w.reach.drawn)
+    }
+}
+
+impl<'a> Walk<'a> {
+    fn new(pdf: &'a Pdf, work: &'a mut Work, cache: &'a mut Decoded) -> Self {
+        Walk {
+            pdf,
+            work,
+            cache,
+            reach: Reach::default(),
+            seen: HashMap::new(),
+            held: HashSet::new(),
+            todo: Vec::new(),
+        }
     }
 }
 
