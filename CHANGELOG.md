@@ -9,6 +9,12 @@
 
 ### Fixed
 
+- A form field whose own font can't write its value is written in Helvetica, Times or Courier even when the form
+  already holds another font under the name LimarePDF gives that font. Before, the value could be drawn in the
+  other font (Greek letters or symbols in place of the text) with no message, or that font could be replaced in the
+  form, so other fields using it changed font. The other font is now left as it is, and LimarePDF's goes under a
+  name of its own. The same for a checkbox's mark, which could be drawn as a "4" in place of a check mark. Fields
+  drawn wrongly before are drawn right when next filled.
 - A very long word (a long value with no spaces, such as a web address or a code) is broken into lines quickly in
   a narrow form field, in a digital signature's text, and when selected text is printed or saved. Before, the time
   grew far faster than the word's length: a word of 1,000 letters in a box ten letters wide took about an eighth

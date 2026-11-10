@@ -1,6 +1,7 @@
 //! Writing form values, and the appearance streams that show them.
 
 use crate::doc::encode_text;
+use crate::edit::numbered;
 use crate::embed::{cant_write, unwritable};
 use crate::fonts::{FontChoice, FontCtx};
 use crate::form_ap::{self, Body, Border, BoxSetting, Look, Metrics, OwnFont};
@@ -664,12 +665,17 @@ impl Pdf {
     }
 
     /// The object of a font an appearance names ([`FontObj`]), and whether it is still to be
-    /// added to the form's resources.
+    /// added to the form's resources: one already there under its name is used only when
+    /// it is the same font (one an earlier widget of the same change added).
     fn font_object(&mut self, name: &[u8], f: FontObj) -> (ObjectId, bool) {
         match f {
             FontObj::Is(id) => (id, false),
             FontObj::Add { dict, to_form } => match self.dr_font(name) {
-                Some(Object::Reference(id)) if to_form => (id, false),
+                Some(Object::Reference(id))
+                    if to_form && self.doc.get_dictionary(id).is_ok_and(|d| *d == dict) =>
+                {
+                    (id, false)
+                }
                 _ => (self.doc.add_object(dict), to_form),
             },
         }
@@ -929,22 +935,15 @@ impl Pdf {
             });
         }
         let base = choice.base_font();
-        let name = format!("Limare{}", base.replace('-', "")).into_bytes();
+        let prefix = format!("Limare{}", base.replace('-', ""));
         let signed = self.holds_signature();
-        let font = match self.dr_font(&name) {
-            Some(Object::Reference(id)) => FontObj::Is(id),
-            _ => FontObj::Add {
-                dict: dictionary! {
-                    "Type" => "Font",
-                    "Subtype" => "Type1",
-                    "BaseFont" => base,
-                    "Encoding" => "WinAnsiEncoding",
-                },
-                to_form: !signed,
-            },
-        };
+        // Its name, or the first numbered one, that is free or holds this font (A-05).
+        let (name, font) = std::iter::once(prefix.clone())
+            .chain(numbered(&prefix))
+            .find_map(|n| Some((n.clone(), self.standard_under(n.as_bytes(), base, !signed)?)))
+            .ok_or_else(|| anyhow!("no free name for {base} in the form's fonts"))?;
         Ok(Picked {
-            name,
+            name: name.into_bytes(),
             font: Some(font),
             metrics: Metrics::Set(setter),
             replaced: !signed,
@@ -952,20 +951,36 @@ impl Pdf {
         })
     }
 
-    /// The form's ZapfDingbats font (`/ZaDb`), added to it when it has none.
+    /// The form's ZapfDingbats font (`/ZaDb`), added to it when it has none. When `/ZaDb` is
+    /// another font, the check mark's drawing has a ZapfDingbats of its own (A-05).
     fn zapf(&self) -> FontObj {
-        match self.dr_font(b"ZaDb") {
-            Some(Object::Reference(id)) => FontObj::Is(id),
-            Some(Object::Dictionary(dict)) => FontObj::Add {
+        let base = "ZapfDingbats";
+        self.standard_under(b"ZaDb", base, true)
+            .unwrap_or_else(|| FontObj::Add {
+                dict: standard_font(base),
+                to_form: false,
+            })
+    }
+
+    /// The standard font `base` under `name` in the form's fonts, when the name is free or
+    /// holds exactly that font ([`is_standard`]), and `None` when it holds another: a font
+    /// is never used for its name alone (A-05). A free name's font is added to the form's
+    /// fonts too when `to_form`.
+    fn standard_under(&self, name: &[u8], base: &str, to_form: bool) -> Option<FontObj> {
+        match self.dr_font(name) {
+            None | Some(Object::Null) => Some(FontObj::Add {
+                dict: standard_font(base),
+                to_form,
+            }),
+            Some(Object::Reference(id)) => {
+                let dict = self.doc.get_dictionary(id).ok()?;
+                is_standard(dict, base).then_some(FontObj::Is(id))
+            }
+            Some(Object::Dictionary(dict)) => is_standard(&dict, base).then_some(FontObj::Add {
                 dict,
                 to_form: false,
-            },
-            _ => FontObj::Add {
-                dict: dictionary! {
-                    "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "ZapfDingbats",
-                },
-                to_form: true,
-            },
+            }),
+            Some(_) => None,
         }
     }
 
@@ -1020,6 +1035,27 @@ fn own_font(doc: &Document, dict: &Dictionary) -> (OwnFont, String) {
         reusable: ctx.reusable(),
     };
     (own, ctx.base.clone())
+}
+
+/// The standard font `base` as LimarePDF adds it to a form: in the Windows Latin encoding,
+/// but for ZapfDingbats, which has its own.
+fn standard_font(base: &str) -> Dictionary {
+    let mut font = dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => base };
+    if base != "ZapfDingbats" {
+        font.set("Encoding", "WinAnsiEncoding");
+    }
+    font
+}
+
+/// Whether `dict` is exactly [`standard_font`]`(base)`, which may leave out `/Type` and have
+/// the old `/Name`: not embedded, and no encoding, widths or text mapping of its own (S1-31).
+fn is_standard(dict: &Dictionary, base: &str) -> bool {
+    let mut font = dict.clone();
+    font.remove(b"Name");
+    if !font.has(b"Type") {
+        font.set("Type", "Font");
+    }
+    font == standard_font(base)
 }
 
 /// Text, choice and list fields are drawn by LimarePDF; buttons have drawings of their own.
