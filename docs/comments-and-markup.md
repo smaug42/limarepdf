@@ -72,14 +72,15 @@ More about notes and text boxes:
   characters no installed font has can't be typed or pasted, on the page or in the inspector, and a note at the
   caret says so ([details](content-editing.md#add-text)). A note's comment takes any character, emoji included.
 - A text box wraps its lines as you type where they are written in the PDF, inside its border and margin. One
-  made by another app with a cloudy border, a callout line or inner margins of its own can wrap a little
-  differently while you type.
+  made by another app is typed in where its text is written: inside its own inner margins (a callout's box) and
+  cloudy border, at the size its style gives. One whose text runs up or down the page as it is shown is typed in
+  upright, over the middle of the box, and turns back with the box when you finish.
 - **Edit > Alignment** (or Ctrl+L, Ctrl+E, Ctrl+R) aligns a text box's lines left, centred or right, while you
   type in it or with it selected, as one change Undo takes back ([Align text](content-editing.md#align-text)). A
   PDF text box can't keep justified text, so Justify is greyed. A new text box takes the alignment the last one
   had, and its lines show aligned as you type, as they are written.
-- When you finish a text box, it grows downward to fit its text, keeping its width. It stops at the bottom of the
-  page, and never shrinks (resize it by dragging its handles).
+- When you finish a text box, it grows downward to fit its text inside its margins and cloudy border, keeping its
+  width. It stops at the bottom of the page, and never shrinks (resize it by dragging its handles).
 - The Text box tool can be kept on to add several in a row (see [Keep tool active](gui.md#keep-tool-active)). The
   Note tool can't, so after each note the read tool is back to select, move or open notes.
 

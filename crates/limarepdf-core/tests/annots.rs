@@ -7,8 +7,8 @@ mod tool;
 
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
-    Align, AnnotKind, DateStyle, InkColor, LinkTarget, Mark, Pdf, Shape, ShapeLook, SignArt,
-    SignRole, SignStyle, Stamp, StampColor, StampKind, StampPlace, Unfollowed,
+    Align, AnnotKind, BoxSetting, DateStyle, InkColor, LinkTarget, Mark, Pdf, Shape, ShapeLook,
+    SignArt, SignRole, SignStyle, Stamp, StampColor, StampKind, StampPlace, Unfollowed,
 };
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 
@@ -771,6 +771,146 @@ fn a_text_box_reads_upright_on_a_turned_page() {
     assert_eq!(p.flatten_annotations(None).unwrap().drawn, 1);
     assert!(p.annotations().is_empty());
     assert_eq!(ink(&mut p, [10, 100, 190, 140]), before);
+}
+
+/// A text box's drawing as written: the clip its text is set in, its text's size, and each
+/// line's baseline and what it shows (each line starts with a `Tm`).
+fn written(p: &Pdf, id: ObjectId) -> ([f32; 4], f32, Vec<(f32, String)>) {
+    let d = p.doc.get_dictionary(id).unwrap();
+    let ap = d.get(b"AP").unwrap().as_dict().unwrap();
+    let s = p
+        .doc
+        .get_object(ap.get(b"N").unwrap().as_reference().unwrap());
+    let s = s.unwrap().as_stream().unwrap();
+    let content = s.decompressed_content().unwrap_or(s.content.clone());
+    let ops = lopdf::content::Content::decode(&content)
+        .unwrap()
+        .operations;
+    let f = |o: &Object| o.as_float().unwrap();
+    let (mut re, mut clip, mut size) = ([0.0; 4], None, 0.0);
+    let mut lines: Vec<(f32, String)> = Vec::new();
+    for o in &ops {
+        match o.operator.as_str() {
+            "re" => re = [0, 1, 2, 3].map(|i| f(&o.operands[i])),
+            "W" => clip = clip.or(Some([re[0], re[1], re[0] + re[2], re[1] + re[3]])),
+            "Tf" => size = f(&o.operands[1]),
+            "Tm" => lines.push((f(&o.operands[5]), String::new())),
+            "Tj" | "TJ" => {
+                let mut strings = o.operands.clone();
+                if let Ok(a) = o.operands[0].as_array() {
+                    strings = a.clone();
+                }
+                for s in strings {
+                    if let (Ok(b), Some(l)) = (s.as_str(), lines.last_mut()) {
+                        l.1.push_str(&String::from_utf8_lossy(b));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (clip.expect("a clip"), size, lines)
+}
+
+/// PB-146: a text box another app wrote grows to fit what is typed in it as its text is set:
+/// inside its `/RD` margins, inside a cloudy border's bumps, and at the size its `/DS` style
+/// gives. Each line, its letters' tails too, ends up inside the clip its text is drawn in.
+#[test]
+fn a_text_box_grows_to_fit_its_text_inside_its_margins_and_clouds() {
+    let long = "many words in a row ".repeat(3);
+    let style =
+        dictionary! { "DA" => text("/Helv 0 Tf 0 g"), "DS" => text("font: 18pt Helvetica") };
+    let mut out = Vec::new();
+    for (what, extra) in [
+        ("margins", dictionary! { "RD" => nums(&[12.0; 4]) }),
+        (
+            "a cloud",
+            dictionary! { "BE" => dictionary! { "S" => "C", "I" => 1 } },
+        ),
+        ("a style's size", style),
+    ] {
+        let mut p = page();
+        let mut d = dictionary! {
+            "Contents" => text("x"),
+            "DA" => text("/Helv 12 Tf 0 g"),
+            "BS" => dictionary! { "W" => 1 },
+        };
+        for (k, v) in extra {
+            d.set(k, v);
+        }
+        let id = add(&mut p, 0, "FreeText", [20.0, 150.0, 140.0, 190.0], d);
+        p.set_annotation(id, None, 1.0, long.trim_end()).unwrap();
+        let (clip, size, lines) = written(&p, id);
+        assert!(lines.len() > 2, "{what}: {lines:?}");
+        let low = lines.iter().map(|l| l.0).fold(f32::MAX, f32::min);
+        if low - 0.25 * size < clip[1] - 0.01 {
+            out.push(format!(
+                "{what}: the last line at {low}, size {size}, the clip {clip:?}"
+            ));
+        }
+    }
+    assert!(out.is_empty(), "{out:#?}");
+}
+
+/// PB-146: the inspector gives a text box's size as it is drawn: from its `/DS` style when
+/// its `/DA` gives none.
+#[test]
+fn a_text_box_s_size_comes_from_its_style_when_its_appearance_string_gives_none() {
+    let mut p = page();
+    let d = dictionary! {
+        "Contents" => text("MMMM"),
+        "DA" => text("/Helv 0 Tf 0 g"),
+        "DS" => text("font: 18pt Helvetica"),
+    };
+    let id = add(&mut p, 0, "FreeText", [20.0, 100.0, 280.0, 140.0], d);
+    p.set_annotation(id, None, 1.0, "MMMM MMMM").unwrap();
+    assert_eq!(written(&p, id).1, 18.0, "drawn");
+    let style = p.annotations()[0].text_style;
+    assert_eq!(style.map(|s| s.size), Some(18.0), "the inspector's");
+}
+
+/// A text box LimarePDF wrote is typed in as a new one is ([`BoxSetting::text_box`]): its
+/// setting as it is drawn ([`Pdf::text_box_setting`]) breaks and places its lines alike, in
+/// its whole box, upright, on an upright page and on a turned one.
+#[test]
+fn a_text_box_limarepdf_wrote_is_set_as_a_new_one_is() {
+    let text = "The walrus and the carpenter were walking close at hand";
+    for turn in [0, 90] {
+        let mut p = page();
+        if turn != 0 {
+            p.rotate_pages(&[0], turn).unwrap();
+        }
+        let style = limarepdf_core::TextStyle {
+            size: 14.0,
+            border: 1.5,
+            align: Align::Centre,
+            ..Default::default()
+        };
+        let id = (p.add_text_box(0, [10.0, 20.0, 150.0, 120.0], text, &style, "")).unwrap();
+        let b = p.annotations()[0].bbox;
+        let new = BoxSetting::text_box(b[2] - b[0], 1.5, 14.0).aligned(Align::Centre);
+        let s = p.text_box_setting(id).expect("a text box's setting");
+        assert!(s.upright, "{turn}");
+        let (size, lines) = s.set.placed(text, None);
+        let (new_size, new_lines) = new.placed(text, None);
+        assert!(lines.len() > 1, "{turn}: {lines:?}");
+        assert_eq!(size, new_size, "{turn}");
+        assert_eq!(s.set.margin(), new.margin(), "{turn}");
+        for ((r, x), (nr, nx)) in lines.iter().zip(&new_lines) {
+            assert!(
+                r == nr && (x - nx).abs() < 0.01,
+                "{turn}: {lines:?} {new_lines:?}"
+            );
+        }
+        assert_eq!(lines.len(), new_lines.len(), "{turn}");
+        let (w, h) = (b[2] - b[0], b[3] - b[1]);
+        let off = (0..4).map(|i| (s.area[i] - b[i]).abs()).fold(0.0, f32::max);
+        assert!(off < 0.01, "{turn}: {:?} {b:?}", s.area);
+        assert!(
+            (s.width - w).abs() < 0.01 && (s.height - h).abs() < 0.01,
+            "{turn}"
+        );
+    }
 }
 
 #[test]

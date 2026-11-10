@@ -96,12 +96,29 @@ impl Pdf {
     /// line's underlines and strike-throughs with it: what the app shows under text being
     /// edited, so its old lines don't show through (ENH-21). The page keeps its boxes, turn, resources and transparency group, and the
     /// document's optional content settings (a hidden layer stays hidden); its comments and
-    /// fields that have looks of their own are drawn as the app's pages draw them (PB-76;
-    /// sticky notes, which the app draws over the page itself, left out). Only
-    /// what the page's content, resources and annotations' looks use is copied, so it costs
-    /// as much in a long document as in a short one. The document itself is not changed.
+    /// fields are drawn as the app's pages draw them ([`Pdf::app_snapshot`], PB-76; sticky
+    /// notes, which the app draws over the page itself, left out): comments without a look
+    /// of their own get LimarePDF's, and so do a signed document's fields. Only what the
+    /// page's content, resources and annotations' looks use is copied, so it costs as much
+    /// in a long document as in a short one, unless a field on the page of a signed
+    /// document has no look of its own: the page then comes from a copy of the document
+    /// with its fields drawn. The document itself is not changed.
     pub fn page_without(&self, page_index: usize, ids: &[usize]) -> Result<Vec<u8>> {
         let page = self.page_id_at(page_index)?;
+        let on_page: HashSet<ObjectId> = self.all_annot_refs(page).into_iter().collect();
+        let undrawn = self.signature_count() > 0
+            && (self.appearances_to_draw(self.form_nodes()).iter())
+                .any(|(_, _, widgets)| widgets.iter().any(|w| on_page.contains(w)));
+        if undrawn {
+            let mut copy = self.clone();
+            copy.refresh_appearances();
+            return copy.page_alone(page, ids);
+        }
+        self.page_alone(page, ids)
+    }
+
+    /// [`Pdf::page_without`] for the page with object `page`, its fields drawn as they are.
+    fn page_alone(&self, page: ObjectId, ids: &[usize]) -> Result<Vec<u8>> {
         let parsed = self.parse_page_of(page)?;
         let mut ops = Self::without_objects(&parsed, &Self::with_decorations(&parsed, ids))?;
         ops.extend((0..parsed.depth_left).map(|_| Operation::new("Q", vec![])));
@@ -122,7 +139,8 @@ impl Pdf {
         let layers = (self.doc.catalog().ok())
             .and_then(|c| c.get(b"OCProperties").ok())
             .cloned();
-        let annots = self.drawn_annots(page);
+        let missing: HashSet<ObjectId> = self.missing_appearances(&[page]).into_iter().collect();
+        let annots = self.drawn_annots(page, &missing);
         // Objects keep their numbers, so what refers to them still does.
         let mut out = Document::with_version("1.7");
         let roots = [&res, &group, &layers];
@@ -154,22 +172,39 @@ impl Pdf {
         if let Some(layers) = layers {
             catalog.set("OCProperties", layers);
         }
+        // Text is set for the document's language.
+        if let Some(lang) = self.language() {
+            catalog.set("Lang", Object::string_literal(lang));
+        }
         let catalog = out.add_object(catalog);
         out.trailer.set("Root", catalog);
+        // Those without a look of their own get LimarePDF's, as the app's pages draw them.
+        let undrawn: Vec<ObjectId> = (annots.iter().map(|(id, _)| *id))
+            .filter(|id| missing.contains(id))
+            .collect();
+        let mut out = if undrawn.is_empty() {
+            out
+        } else {
+            let mut alone = Pdf {
+                doc: out,
+                ..Pdf::new()
+            };
+            alone.draw_annotations(&undrawn);
+            alone.doc
+        };
         crate::unfillable::leave_out(&mut out);
         let mut bytes = Vec::new();
         out.save_to(&mut bytes)?;
         Ok(bytes)
     }
 
-    /// Copy into `out` the objects `roots` refer to, and those they refer to in turn, with
-    /// their numbers; never a page or the page tree, which a picture or a font can name.
     /// The annotations on `page` that the app's pages draw ([`Pdf::app_snapshot`]), each
-    /// with its number, for a page alone: those with a look of their own, not hidden or
-    /// kept from view, and not sticky notes (the app draws those over the page itself).
-    /// Each is cut from what reaches the rest of the document: its page, its field's other
-    /// parts and value, its pop-up, the comment it replies to, its actions.
-    fn drawn_annots(&self, page: ObjectId) -> Vec<(ObjectId, Object)> {
+    /// with its number, for a page alone: those with a look of their own or `missing` one
+    /// LimarePDF draws, not hidden or kept from view, and not sticky notes (the app draws
+    /// those over the page itself). Each is cut from what reaches the rest of the document:
+    /// its page, its field's other parts and value, its pop-up, the comment it replies to,
+    /// its actions.
+    fn drawn_annots(&self, page: ObjectId, missing: &HashSet<ObjectId>) -> Vec<(ObjectId, Object)> {
         const REACHING: [&[u8]; 9] = [
             b"P", b"Parent", b"Kids", b"Popup", b"IRT", b"A", b"AA", b"Dest", b"V",
         ];
@@ -188,7 +223,8 @@ impl Pdf {
             };
             let flags = d.get(b"F").ok().and_then(|f| self.num(f)).unwrap_or(0.0) as i64;
             let sub = d.get(b"Subtype").and_then(|o| o.as_name()).unwrap_or(b"");
-            if flags & (2 | 32) != 0 || matches!(sub, b"Text" | b"Popup") || !d.has(b"AP") {
+            let looks = d.has(b"AP") || missing.contains(&id);
+            if flags & (2 | 32) != 0 || matches!(sub, b"Text" | b"Popup") || !looks {
                 continue;
             }
             let mut d = d.clone();
@@ -200,6 +236,8 @@ impl Pdf {
         out
     }
 
+    /// Copy into `out` the objects `roots` refer to, and those they refer to in turn, with
+    /// their numbers; never a page or the page tree, which a picture or a font can name.
     fn copy_used<'a>(&self, roots: impl IntoIterator<Item = &'a Object>, out: &mut Document) {
         let mut stack: Vec<&Object> = roots.into_iter().collect();
         while let Some(o) = stack.pop() {

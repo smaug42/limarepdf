@@ -4,6 +4,7 @@
 
 use super::*;
 use limarepdf_core::BoxSetting;
+use lopdf::{dictionary, Dictionary, Object, ObjectId};
 use std::time::{Duration, Instant};
 
 /// A frame of the window 1400 points wide with `events`, timed as [`Typist::frame`] times
@@ -377,6 +378,170 @@ fn an_open_text_box_follows_its_inspector_s_changes() {
     let want: Vec<String> = lines.into_iter().map(|r| text[r].to_string()).collect();
     let got = settled_rows(&mut app, &ty, text, &want);
     assert_eq!(got, Some(want));
+}
+
+/// A text box another app wrote with `extra` entries, on a 612 × 792 page, from 72 to 272
+/// across and 480 to 640 up: `text` in Helvetica 12 with a border 1 wide, and no drawing of
+/// its own.
+fn another_apps_box(text: &str, extra: Dictionary) -> (Pdf, ObjectId) {
+    let mut pdf = Pdf::new();
+    pdf.insert_blank(0, 612.0, 792.0).unwrap();
+    let rect: Vec<Object> = [72, 480, 272, 640].map(Object::from).into();
+    let mut d = dictionary! {
+        "Type" => "Annot", "Subtype" => "FreeText", "Rect" => rect,
+        "Contents" => Object::string_literal(text),
+        "DA" => Object::string_literal("/Helv 12 Tf 0 g"),
+        "BS" => dictionary! { "W" => 1 },
+    };
+    for (k, v) in extra {
+        d.set(k, v);
+    }
+    let id = pdf.doc.add_object(d);
+    let page = pdf.page_ids()[0];
+    let annots = vec![Object::Reference(id)];
+    pdf.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", annots);
+    (pdf, id)
+}
+
+/// The lines of text box `id` as the app's pages draw it: what each line of its drawing
+/// shows (each starts with a `Tm`).
+fn written_lines(pdf: &Pdf, id: ObjectId) -> Vec<String> {
+    let shown = Pdf::from_bytes(&pdf.clone().app_snapshot().unwrap(), None).unwrap();
+    let d = shown.doc.get_dictionary(id).unwrap();
+    let ap = shown.doc.dereference(d.get(b"AP").unwrap()).unwrap().1;
+    let n = ap
+        .as_dict()
+        .unwrap()
+        .get(b"N")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let s = shown.doc.get_object(n).unwrap().as_stream().unwrap();
+    let content = s.decompressed_content().unwrap_or(s.content.clone());
+    let mut lines: Vec<String> = Vec::new();
+    for o in lopdf::content::Content::decode(&content)
+        .unwrap()
+        .operations
+    {
+        let shows = match o.operator.as_str() {
+            "Tm" => {
+                lines.push(String::new());
+                continue;
+            }
+            "Tj" => o.operands,
+            "TJ" => o.operands[0].as_array().cloned().unwrap_or_default(),
+            _ => continue,
+        };
+        for s in shows {
+            if let (Ok(b), Some(l)) = (s.as_str(), lines.last_mut()) {
+                l.push_str(&String::from_utf8_lossy(b));
+            }
+        }
+    }
+    lines
+}
+
+/// Where the control with the keyboard is on the screen.
+fn focused_bounds(tree: &egui::accesskit::TreeUpdate) -> Option<egui::Rect> {
+    let (_, n) = tree.nodes.iter().find(|(id, _)| *id == tree.focus)?;
+    let b = n.bounds()?;
+    let at = |x: f64, y: f64| egui::pos2(x as f32, y as f32);
+    Some(egui::Rect::from_min_max(at(b.x0, b.y0), at(b.x1, b.y1)))
+}
+
+/// The rows drawn for `text`, each without the spaces it ends with (as its line is
+/// written), once they are `want`, else after a minute.
+fn settled_shown_rows(
+    app: &mut App,
+    ty: &Typist,
+    text: &str,
+    want: &[String],
+) -> Option<Vec<String>> {
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        let rows = rows_of(&shapes(app, ty, vec![]), text);
+        let got: Option<Vec<String>> =
+            rows.map(|rows| rows.iter().map(|r| r.trim_end().to_string()).collect());
+        if got.as_deref() == Some(want) || Instant::now() > until {
+            return got;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// PB-60: a text box another app wrote is typed in as LimarePDF writes it: inside its `/RD`
+/// margins, inside a cloudy border's bumps, at the size its `/DS` style gives, and, turned
+/// against its page, upright, as wide and as high as its text is written and centred over
+/// it (drawn turned again once kept). The typing box's rows are the lines its drawing
+/// shows, and it sits where they are written.
+#[test]
+fn a_text_box_another_app_wrote_is_typed_in_as_it_is_written() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let ty = Typist::new(&ctx);
+    let text = "The walrus and the carpenter were walking close at hand they wept like \
+                anything to see such quantities of sand";
+    let margins = dictionary! { "RD" => vec![12.into(), 12.into(), 12.into(), 12.into()] };
+    let cloud = dictionary! { "BE" => dictionary! { "S" => "C", "I" => 2 } };
+    let style = dictionary! {
+        "DA" => Object::string_literal("/Helv 0 Tf 0 g"),
+        "DS" => Object::string_literal("font: 18pt Helvetica"),
+    };
+    let turned = dictionary! { "Rotate" => 90 };
+    let mut out = Vec::new();
+    for (what, extra) in [
+        ("margins", margins),
+        ("a cloud", cloud),
+        ("a style's size", style),
+        ("turned", turned),
+    ] {
+        let (pdf, id) = another_apps_box(text, extra);
+        let want = written_lines(&pdf, id);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let t = &mut app.tabs[0];
+        t.ed.annots(&t.pdf, 0);
+        t.ed.selection = Selection::Annot { page: 0, id };
+        t.ed.write_selected();
+        let (min, k) = ty.page(&mut app);
+        let got = settled_shown_rows(&mut app, &ty, text, &want);
+        if got.as_ref() != Some(&want) {
+            out.push(format!("{what}: typed {got:?}, written {want:?}"));
+        }
+        // Where its lines are written, from its box as shown (in points, y down): inside the
+        // margins (12) or the bumps (half the border and 9.5); turned, its sides swapped
+        // about its middle.
+        let b = app.tabs[0].pdf.annotations()[0].bbox;
+        let inset = |n: f32| [b[0] + n, b[1] + n, b[2] - n, b[3] - n];
+        let (x, y, w, h) = (
+            (b[0] + b[2]) / 2.0,
+            (b[1] + b[3]) / 2.0,
+            b[3] - b[1],
+            b[2] - b[0],
+        );
+        let area = match what {
+            "margins" => inset(12.0),
+            "a cloud" => inset(10.0),
+            "turned" => [x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0],
+            _ => b,
+        };
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let written = egui::Rect::from_min_max(at(area[0], area[1]), at(area[2], area[3]));
+        let typed = focused_bounds(&ty.pause(&mut app));
+        let near = |r: egui::Rect| {
+            (r.min - written.min).length() < 1.0 && (r.max - written.max).length() < 1.0
+        };
+        if !typed.is_some_and(near) {
+            out.push(format!(
+                "{what}: typed in {typed:?}, written in {written:?}"
+            ));
+        }
+    }
+    assert!(out.is_empty(), "{out:#?}");
 }
 
 /// A line LimarePDF wrote, opened for editing, shows its words as they are on the page: a

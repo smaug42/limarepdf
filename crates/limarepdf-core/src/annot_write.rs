@@ -8,7 +8,6 @@ use crate::annots::NO_VIEW;
 use crate::doc::encode_text;
 use crate::embed::check_writable;
 use crate::form_ap::{lines_height, nums, Metrics};
-use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::overlay::utc_now;
 use crate::{AnnotKind, FontChoice, Pdf, Result, Shape, ShapeLook, TextStyle};
@@ -415,7 +414,7 @@ impl Pdf {
     }
 
     /// The page an annotation is on: its `/P`, else the page that lists it.
-    fn annot_page(&self, id: ObjectId) -> Result<ObjectId> {
+    pub(crate) fn annot_page(&self, id: ObjectId) -> Result<ObjectId> {
         let d = self.doc.get_dictionary(id)?;
         match d.get(b"P").and_then(|o| o.as_reference()) {
             Ok(p) => Ok(p),
@@ -515,49 +514,46 @@ impl Pdf {
         Ok(())
     }
 
-    /// Make a text box tall enough for its text: it grows downward as the page is shown,
-    /// keeping its width, and stops at the page's edge. It never shrinks. Not drawn here.
+    /// Make a text box tall enough for its text, as it is set inside the box's `/RD` margins
+    /// and cloudy border: it grows downward as the page is shown, keeping its width, and
+    /// stops at the page's edge. It never shrinks. Not drawn here.
     fn fit_text_box(&mut self, id: ObjectId) -> Result<()> {
         let d = self.doc.get_dictionary(id)?;
         let rect = self
             .rect(d.get(b"Rect")?)
             .ok_or_else(|| anyhow!("the annotation has no box"))?;
-        let text = self.box_text(d);
-        let da = d
-            .get(b"DA")
-            .ok()
-            .and_then(|o| self.string_bytes(o))
-            .unwrap_or_default();
-        let size = Some(parse_da(&da).1).filter(|&s| s > 0.0).unwrap_or(12.0);
-        let border = self.border(d).0;
-        let turn = d
-            .get(b"Rotate")
-            .ok()
-            .and_then(|o| self.int_value(o))
-            .unwrap_or(0)
-            .rem_euclid(360);
-        let pb = self.page_box(self.annot_page(id)?);
-        let sideways = matches!(turn, 90 | 270);
-        let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
-        let (w, h) = if sideways { (h, w) } else { (w, h) };
         if d.get(b"Subtype").and_then(Object::as_name).ok() != Some(b"FreeText") {
             bail!("the annotation isn't a text box");
         }
+        let text = self.box_text(d);
+        let pb = self.page_box(self.annot_page(id)?);
         let m = Metrics::Set(self.setter(FontChoice::default(), &text));
-        let need = lines_height(&text, w, size, border, &m);
-        if need <= h + 0.01 {
-            return Ok(());
-        }
-        let grow = need - h;
-        // Down the page as shown: down, right, up or left in the page's own space.
         let mut r = rect;
-        match turn {
-            90 => r[2] = (r[2] + grow).min(pb[2]).max(r[2]),
-            180 => r[3] = (r[3] + grow).min(pb[3]).max(r[3]),
-            270 => r[0] = (r[0] - grow).max(pb[0]).min(r[0]),
-            _ => r[1] = (r[1] - grow).max(pb[1]).min(r[1]),
+        // Growing can make room for margins or a cloud the box had none for, which take
+        // some of it back: measure again.
+        for _ in 0..3 {
+            let g = self.box_geometry(d, r);
+            let look = g.look(None);
+            let need = lines_height(&text, look.w, g.size, look.inset(), &m);
+            if need <= look.h + 0.01 {
+                break;
+            }
+            let grow = need - look.h;
+            // Down the page as shown: down, right, up or left in the page's own space.
+            let was = r;
+            match g.turn {
+                90 => r[2] = (r[2] + grow).min(pb[2]).max(r[2]),
+                180 => r[3] = (r[3] + grow).min(pb[3]).max(r[3]),
+                270 => r[0] = (r[0] - grow).max(pb[0]).min(r[0]),
+                _ => r[1] = (r[1] - grow).max(pb[1]).min(r[1]),
+            }
+            if r == was {
+                break;
+            }
         }
-        self.doc.get_dictionary_mut(id)?.set("Rect", nums(&r));
+        if r != rect {
+            self.doc.get_dictionary_mut(id)?.set("Rect", nums(&r));
+        }
         Ok(())
     }
 

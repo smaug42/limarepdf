@@ -9,6 +9,17 @@
 
 ### Fixed
 
+- A text box another app made is typed in where its text is written: inside its own inner margins (a callout's
+  box, say) and cloudy border, at the size its style gives when its appearance string gives none. Before, it was
+  typed in as a plain 12-point box filling its whole rectangle, so its lines broke in other places while you typed
+  and moved when you finished. A text box turned against the page is typed in upright over its middle, as wide and
+  as high as its text is written, and turns back when you finish.
+- A text box another app made grows to fit its text inside its inner margins and cloudy border, at its style's
+  size, when you finish typing in it. Before, it grew as a plain 12-point box, so its last lines could be cut off.
+  The inspector shows such a box's size from its style, not 12.
+- A comment another app saved without a drawing of its own no longer disappears from the page while you edit the
+  text under it, and neither does a form field without one in a signed document. Before, it was left out of the
+  page drawn under the text being edited until you finished.
 - Optimise scanned pages keeps the resolution you choose (200 dpi by default) both across and down the page. Before,
   only the scan's width was measured. A scan drawn narrower or wider than its own shape, or turned, could be made
   smaller than that the other way: a 600 × 1200-pixel scan drawn 2 inches wide and 12 tall came out at 200 dpi

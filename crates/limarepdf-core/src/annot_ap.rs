@@ -6,7 +6,7 @@
 
 use crate::embed;
 use crate::form_ap::{
-    self, encode, fill_color, nums, op, stroke_color, Body, Border, Look, Metrics,
+    self, encode, fill_color, nums, op, stroke_color, Body, Border, BoxSetting, Look, Metrics,
 };
 use crate::form_write::parse_da;
 use crate::layout::Setter;
@@ -77,6 +77,73 @@ struct Drawing {
     text: Option<Typeset>,
     /// Turns the drawing to fit `/Rect`, for text boxes on turned pages.
     matrix: Option<[f32; 6]>,
+}
+
+/// How a text box sets its text ([`Pdf::text_box_setting`]): to lay text out while it is
+/// typed as it will be written.
+#[derive(Clone, Debug)]
+pub struct TextBoxSetting {
+    /// How its lines are set ([`BoxSetting::lines`]).
+    pub set: BoxSetting,
+    /// The box its text is set in, inside its margins (`/RD`) and cloudy border, as the page
+    /// is shown: in points from the page's top left corner, y down.
+    pub area: [f32; 4],
+    /// That box's width and height as its text reads: `area`'s, swapped when its text runs
+    /// up or down the page as it is shown.
+    pub width: f32,
+    pub height: f32,
+    /// Whether its text reads upright as the page is shown.
+    pub upright: bool,
+}
+
+/// Where and how a text box sets its text ([`Pdf::box_geometry`]), in its drawing's own
+/// space, in which the text reads upright.
+pub(crate) struct BoxGeometry {
+    /// The drawing's width and height, and the matrix that turns it to fit `/Rect`.
+    pub w: f32,
+    pub h: f32,
+    pub matrix: Option<[f32; 6]>,
+    /// `/Rotate`: 0, 90, 180 or 270.
+    pub turn: i64,
+    /// From the drawing's own space to the page's, and back.
+    pub to_page: mx::M,
+    pub to_own: mx::M,
+    /// The box the text is set in: inside `/RD`, and inside a cloudy border's bumps.
+    pub text: [f32; 4],
+    /// A cloudy border's bump radius, and whether the box has room for it drawn.
+    pub cloud: Option<f32>,
+    pub clouded: bool,
+    /// The border's width and dash pattern.
+    pub bw: f32,
+    pub dash: Option<Vec<f32>>,
+    /// The text's size and colour (from `/DA`, else `/DS`), and the colour's numbers.
+    pub size: f32,
+    pub color: Option<Operation>,
+    pub text_rgb: Vec<f32>,
+    /// Alignment (`/Q`).
+    pub q: i64,
+}
+
+impl BoxGeometry {
+    /// How the text is laid out in its box, on the background `bg`.
+    pub(crate) fn look(&self, bg: Option<Vec<f32>>) -> Look {
+        let tb = self.text;
+        Look {
+            w: tb[2] - tb[0],
+            h: tb[3] - tb[1],
+            // A cloudy border and its background are drawn around the box instead.
+            bg: if self.cloud.is_some() { None } else { bg },
+            border: (self.bw > 0.0 && self.cloud.is_none()).then(|| Border {
+                color: self.text_rgb.clone(),
+                width: self.bw,
+                style: if self.dash.is_some() { b'D' } else { b'S' },
+            }),
+            font: FONT.as_bytes().to_vec(),
+            size: self.size,
+            color: self.color.clone(),
+            q: self.q,
+        }
+    }
 }
 
 /// Text a drawing shows, written when the drawing is put in the file
@@ -436,11 +503,9 @@ impl Pdf {
         (i > 0.05).then_some(CLOUD * i)
     }
 
-    /// A text box: its `/Contents` in Helvetica (or its embedded face, and the fonts it falls
-    /// back to), with the size and colour from `/DA` (or the `/DS` style string), on the
-    /// `/C` background with a border, which may be cloudy. A callout (`/CL`) is a line from
-    /// what the box points at to the box, whose place in `/Rect` `/RD` then gives.
-    fn free_text(&self, d: &Dictionary, rect: [f32; 4], alpha: f32) -> Drawing {
+    /// Where and how a text box whose box is `rect` sets its text, as [`Self::free_text`]
+    /// draws it.
+    pub(crate) fn box_geometry(&self, d: &Dictionary, rect: [f32; 4]) -> BoxGeometry {
         // `/Rotate` (as Acrobat writes it) turns the text with its page, so it reads
         // upright as the page is shown.
         let turn = d
@@ -462,7 +527,7 @@ impl Pdf {
         let to_page = mx::mul(m, mx::translate(rect[0] - b[0], rect[1] - b[1]));
         let to_own = mx::inv(to_page).unwrap_or(mx::ID);
         let inner = self.inner(d, rect);
-        let tb = mx::transform_rect(to_own, inner);
+        let mut tb = mx::transform_rect(to_own, inner);
         let da = d
             .get(b"DA")
             .ok()
@@ -491,18 +556,81 @@ impl Pdf {
             })
             .unwrap_or_else(|| vec![0.0]);
         let (bw, dash) = self.border(d);
+        let cloud = self.cloud_radius(d);
+        let mut clouded = false;
+        if let Some(c) = cloud {
+            let h = bw / 2.0 + if inner == rect { c } else { 0.0 };
+            let r = [tb[0] + h, tb[1] + h, tb[2] - h, tb[3] - h];
+            if r[2] > r[0] && r[3] > r[1] {
+                // The text keeps inside the bumps.
+                tb = r;
+                clouded = true;
+            }
+        }
+        BoxGeometry {
+            w,
+            h,
+            matrix,
+            turn,
+            to_page,
+            to_own,
+            text: tb,
+            cloud,
+            clouded,
+            bw,
+            dash,
+            size,
+            color,
+            text_rgb,
+            q: d.get(b"Q")
+                .ok()
+                .and_then(|o| self.int_value(o))
+                .unwrap_or(0),
+        }
+    }
+
+    /// How text box `id` sets its text, as it is drawn: `None` when it isn't a text box on a
+    /// page.
+    pub fn text_box_setting(&self, id: (u32, u16)) -> Option<TextBoxSetting> {
+        let d = self.doc.get_dictionary(id).ok()?;
+        if d.get(b"Subtype").and_then(Object::as_name).ok() != Some(b"FreeText") {
+            return None;
+        }
+        let rect = self.rect(d.get(b"Rect").ok()?)?;
+        let g = self.box_geometry(d, rect);
+        let to_vis = mx::inv(self.vis_down(self.annot_page(id).ok()?).0)?;
+        let shown = mx::mul(g.to_page, to_vis);
+        // Its own x along the page as shown, its own y up it.
+        let upright =
+            shown[0] > 0.0 && shown[3] < 0.0 && shown[1].abs() < 1e-4 && shown[2].abs() < 1e-4;
+        let look = g.look(None);
+        Some(TextBoxSetting {
+            area: mx::transform_rect(shown, g.text),
+            width: look.w,
+            height: look.h,
+            upright,
+            set: BoxSetting::field(look, None, FontChoice::default()),
+        })
+    }
+
+    /// A text box: its `/Contents` in Helvetica (or its embedded face, and the fonts it falls
+    /// back to), with the size and colour from `/DA` (or the `/DS` style string), on the
+    /// `/C` background with a border, which may be cloudy. A callout (`/CL`) is a line from
+    /// what the box points at to the box, whose place in `/Rect` `/RD` then gives.
+    fn free_text(&self, d: &Dictionary, rect: [f32; 4], alpha: f32) -> Drawing {
+        let g = self.box_geometry(d, rect);
         let bg = self.colour(d, b"C");
         let mut ops = Vec::new();
         if let Some(p) = self.points(d.get(b"CL").ok()).filter(|p| p.len() >= 2) {
             let p: Vec<(f32, f32)> = p
                 .iter()
                 .take(3)
-                .map(|&(x, y)| mx::apply(to_own, x, y))
+                .map(|&(x, y)| mx::apply(g.to_own, x, y))
                 .collect();
             let pen = Pen {
-                c: Some(text_rgb.clone()),
+                c: Some(g.text_rgb.clone()),
                 ic: self.colour(d, b"IC"),
-                w: if bw > 0.0 { bw } else { 1.0 },
+                w: if g.bw > 0.0 { g.bw } else { 1.0 },
                 dash: None,
             };
             polyline(&mut ops, &p);
@@ -511,43 +639,24 @@ impl Pdf {
                 line_end(&mut ops, end, p[0], p[1], &pen);
             }
         }
-        let cloud = self.cloud_radius(d);
-        let mut tb = tb;
-        if let Some(c) = cloud {
-            let h = bw / 2.0 + if inner == rect { c } else { 0.0 };
-            let r = [tb[0] + h, tb[1] + h, tb[2] - h, tb[3] - h];
-            if r[2] > r[0] && r[3] > r[1] {
-                // The text keeps inside the bumps.
-                tb = r;
-                let corners = [(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])];
-                cloud_path(&mut ops, &corners, c);
-                let pen = Pen {
-                    c: Some(text_rgb.clone()),
-                    ic: bg.clone(),
-                    w: bw,
-                    dash: dash.clone(),
-                };
-                pen.paint(&mut ops, true);
-            }
+        let tb = g.text;
+        if let (Some(c), true) = (g.cloud, g.clouded) {
+            let corners = [
+                (tb[0], tb[1]),
+                (tb[2], tb[1]),
+                (tb[2], tb[3]),
+                (tb[0], tb[3]),
+            ];
+            cloud_path(&mut ops, &corners, c);
+            let pen = Pen {
+                c: Some(g.text_rgb.clone()),
+                ic: bg.clone(),
+                w: g.bw,
+                dash: g.dash.clone(),
+            };
+            pen.paint(&mut ops, true);
         }
-        let look = Look {
-            w: tb[2] - tb[0],
-            h: tb[3] - tb[1],
-            // A cloudy border and its background are drawn above instead.
-            bg: if cloud.is_some() { None } else { bg },
-            border: (bw > 0.0 && cloud.is_none()).then(|| Border {
-                color: text_rgb,
-                width: bw,
-                style: if dash.is_some() { b'D' } else { b'S' },
-            }),
-            font: FONT.as_bytes().to_vec(),
-            size,
-            color,
-            q: d.get(b"Q")
-                .ok()
-                .and_then(|o| self.int_value(o))
-                .unwrap_or(0),
-        };
+        let look = g.look(bg);
         let text = self.box_text(d);
         let m = Metrics::Set(self.setter(FontChoice::default(), &text));
         let drawn = form_ap::draw(&look, &Body::Lines(&text), &m);
@@ -558,14 +667,14 @@ impl Pdf {
         content.extend(format!("\nq 1 0 0 1 {} {} cm\n", tb[0], tb[1]).into_bytes());
         Drawing {
             content: with_gs(content, alpha, false),
-            bbox: [0.0, 0.0, w, h],
+            bbox: [0.0, 0.0, g.w, g.h],
             gs: gs_dict(alpha, false),
             text: Some(Typeset {
                 setter,
                 words: Words::Box(drawn),
                 after: b"\nQ\n".to_vec(),
             }),
-            matrix,
+            matrix: g.matrix,
         }
     }
 

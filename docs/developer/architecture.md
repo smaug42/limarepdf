@@ -528,8 +528,9 @@ as written (PB-59, batch 49's stage 3): `BoxSetting::placed` gives each line's s
 `form_ap::draw` aligns it (`align` over `shown`'s width, one `Metrics` for both), and `moved_rows` moves each row
 by it, leaving the galley's `rect` as laid out: a right-aligned row's trailing space hangs past the side, and a
 galley widened by it would be centred in the field by `Ui::put`, moving every row (found in the stage, 2 px).
-`writing_ui` (text boxes, with `Writing::border` and `Writing::align` from the box's `TextStyle`, its setting
-`aligned`) and `fields.rs`'s `text_box` (multi-line fields; the field's `BoxSetting` from `Pdf::field_setting`,
+`writing_ui` (text boxes: an existing one's setting and area from `Pdf::text_box_setting`, a new one's
+`BoxSetting::text_box` with `Writing::border` and `Writing::align` from the box's `TextStyle`, `aligned`) and
+`fields.rs`'s `text_box` (multi-line fields; the field's `BoxSetting` from `Pdf::field_setting`,
 which sets `/Q` as the writer does, `widget_q`, kept in `Edit::Text`'s `set`, a `OnceCell` read when the box is
 first drawn) use it; single-line fields and passwords lay out on one line, a single-line field (not a comb) placed
 by `TextEdit::align` from `Widget::align` (centred, or at the right less the 2-pixel margin, where the writer puts
@@ -839,7 +840,13 @@ bytes; `draw`'s `Body::Lines` uses the same `wrapped`), `placed(text, lang)` (th
 `BoxSetting::text_box(width, border, size)` (Helvetica; `.aligned(align)` sets its `/Q`) or
 `Pdf::field_setting(name, widget)` (read only: the
 field's own font as `pick_font` keeps it, its widths unkerned, else the standard font nearest; `OwnFont` and
-`form_write::own_font` shared with `pick_font`; `Widget::id` names the widget). Core's other public text API:
+`form_write::own_font` shared with `pick_font`; `Widget::id` names the widget). An existing text box's is
+`Pdf::text_box_setting(id)` (PB-60, S1-18), a `TextBoxSetting`: its `BoxSetting`, the area its text is set in as
+shown (in the page's displayed points), that area's own width and height, and whether it is upright as shown.
+It comes from `annot_ap`'s `BoxGeometry` (`box_geometry`: the turn, `/RD` or a cloud's inset, `/DA` else `/DS`
+for the size and colour, the border), which `free_text` draws from and `fit_text_box` grows by (PB-146), so the
+three can't differ; a box not upright as shown is typed in upright at its text's size, centred over the area.
+Core's other public text API:
 `fallbacks(f, text)` (the words set in another font, and the font: what the inspector names), `set_in(f, text,
 lang)` (each stretch's characters and font as it is set, a `SetIn`: a standard font as itself or in its embedded
 face; `None` for what no font writes: what the typing box draws and decorates, `SetIn::lines`),
@@ -2867,12 +2874,14 @@ form XObject, and per inline image.
   or NoView, not sticky notes, which the app draws over the page itself, as `app_snapshot` leaves them out), each
   under its own number, cut from what reaches the rest of the document (`/P`, `/Parent`, `/Kids`, `/Popup`,
   `/IRT`, `/A`, `/AA`, `/Dest`, `/V`), their appearances copied by `copy_used`. A comment without an appearance,
-  which `app_snapshot` draws for the page (`draw_annotations`), isn't drawn here, so it is hidden with the old
-  text while typing; a form field's appearance is copied as it stands, not refreshed as `app_snapshot` refreshes
-  fields in a signed document. It never walks the page tree beyond finding
+  which `app_snapshot` draws for the page, is drawn into the page alone (`draw_annotations` on the new document,
+  PB-76, S1-18); when a field on the page of a signed document has no appearance, the page alone is made from a
+  copy of the document with its fields drawn (`refresh_appearances`), as `app_snapshot` draws them, so the
+  document itself is never given a drawing. It never walks the page tree beyond finding
   the page (`extract` goes through every page), so it costs per page: 3.4 ms on big.pdf's pages, about 1 ms on
   corpus pages with large pictures, 68 ms on the heaviest corpus page, less than deleting one object there
-  (performance.md); it runs on the window's thread when editing starts, once for the text edited (the tab's
+  (performance.md), except on a signed document's page with an undrawn field, where it copies the document and
+  draws its undrawn fields first (not measured); it runs on the window's thread when editing starts, once for the text edited (the tab's
   `Backdrop`, keyed by page, objects, box and the document's revision). A thread of its own (`backdrop::draw`)
   draws the box's part of it at the scale the page is shown at (its tiles' at a high zoom; at most 4,096 pixels a
   side, stretched past that) and in its colours (`render_region_in`, as the page worker draws tiles); the editor

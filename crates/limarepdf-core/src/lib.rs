@@ -93,6 +93,7 @@ mod typefaces;
 mod unfillable;
 mod viewprefs;
 
+pub use annot_ap::TextBoxSetting;
 pub use annots::{Annot, AnnotKind, Flattened, ShapeLook, TextStyle, MAX_ANNOTS};
 #[cfg(any(test, feature = "test-seams"))]
 pub use atomic::{commit_seam, sync_seam};

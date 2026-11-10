@@ -632,7 +632,7 @@ impl Pdf {
                 .ok()
                 .and_then(|o| self.string_bytes(o))
                 .unwrap_or_default();
-            let (_, size, color) = parse_da(&da);
+            let (_, _, color) = parse_da(&da);
             let color: Vec<f32> = color
                 .map(|o| {
                     o.operands
@@ -643,7 +643,8 @@ impl Pdf {
                 .unwrap_or_default();
             let q = d.get(b"Q").ok().and_then(|o| self.int_value(o));
             TextStyle {
-                size: if size > 0.0 { size } else { 12.0 },
+                // As it is drawn: from `/DA`, else `/DS`.
+                size: self.box_geometry(d, rect).size,
                 color: rgb(&color),
                 fill: self.colour(d, b"C").map(|c| rgb(&c)),
                 border: self.border(d).0,
