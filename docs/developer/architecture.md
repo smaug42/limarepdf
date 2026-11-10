@@ -841,7 +841,8 @@ bytes; `draw`'s `Body::Lines` uses the same `wrapped`), `placed(text, lang)` (th
 field's own font as `pick_font` keeps it, its widths unkerned, else the standard font nearest; `OwnFont` and
 `form_write::own_font` shared with `pick_font`; `Widget::id` names the widget). Core's other public text API:
 `fallbacks(f, text)` (the words set in another font, and the font: what the inspector names), `set_in(f, text,
-lang)` (each stretch's characters and font, `None` for what no font writes: what the typing box draws),
+lang)` (each stretch's characters and font as it is set, a `SetIn`: a standard font as itself or in its embedded
+face; `None` for what no font writes: what the typing box draws and decorates, `SetIn::lines`),
 `fallback_faces(samples)` (the installed faces those characters go to: the interface's fallback),
 `warm_fallbacks()`, `Pdf::language`, and `Field::font` (the standard font nearest a field's `/DA` font, Helvetica
 when it names none; `forms.rs`'s `da_font`).
@@ -2726,7 +2727,10 @@ form XObject, and per inline image.
   `decorate::straight` makes it a band (`Straight`: centre line and thickness in user space) when it is filled
   rectangles (an `re`, or four corners, any way round) in a row of one thickness with gaps under a quarter of its
   length (macOS breaks an underline around descenders; a dotted line is half gaps), or one stroked segment without
-  a dash. The page's own content's bands are kept apart (`Painted`: the path's first operator, the band, its colour,
+  a dash, as thick as its round pen is across it as drawn (`lw |det ctm| / |ctm u|` for a segment along unit `u`;
+  S1-16, M-13: the pen's width was projected onto the drawn normal, so a band under a scaled, turned or slanted
+  transform was read thinner, half as thick at twice the size). The page's own content's bands are kept apart
+  (`Painted`: the path's first operator, the band, its colour,
   and `InkAt`, the operators that set its colour, so no ink is copied while a page is read). `decorate::read` runs
   at the end of `parse_content` for the page's own content (not a form's), lines and other drawings kept in
   64-point cells (`Grid`) so a page of many objects isn't read pair by pair. A box over 4,096 cells (a page-wide
@@ -2755,8 +2759,12 @@ form XObject, and per inline image.
   no jump of 2 em between neighbours, in their colour within 0.02. Then no other drawing may meet its ends (but a
   band under the same line's text, and a fill reaching past both ends behind it), no other line's box overlap it,
   and no text sit centred under it within its ends less than 0.6 em below while narrower than it or within 0.1 em
-  of it (a fraction's denominator; a justified paragraph's next line is as wide as its underline). Two bands of one
-  kind over the same characters are one `Decoration` with two bands (a double underline). `Parsed::decorations`
+  of it (a fraction's denominator; a justified paragraph's next line is as wide as its underline). Nor may it be
+  one of three or more bands in a row evenly spaced, those near it of its thickness (within a tenth), level with
+  the line and along the band, their gaps within a tenth of each other, each wider than the band and narrower than
+  an em: a music staff's lines (`evenly_spaced`; S1-16, PB-101: a staff drawn in pieces, one under a label such as
+  "Violin I", was read as the label's underline and strike-throughs, and carried with it when it was edited). Two
+  bands of one kind over the same characters are one `Decoration` with two bands (a double underline). `Parsed::decorations`
   holds them by line; `PageObject::decorations` gives a line its own (kind, characters, `Look`: bands in ems of
   the characters' size and the ink, and the paths' ids), `PageObject::decorates` a path its line. The rule's
   numbers come from producer samples and the corpus check in the design note (469 decorations in 65 files).
@@ -2782,9 +2790,14 @@ form XObject, and per inline image.
   line's own matrix, and `delete_objects` and `page_without` take them with it (`Pdf::with_decorations`). Redaction
   treats them as any drawing: one crossing a mark is cut out of it. Where a font puts its bands is public for the
   typing box (stage 4b): `LineFont::lines` (a line's part's, from the program bytes `OwnFont` holds, so none is read
-  twice) and `decoration_lines` for a `FontChoice` (a standard font's AFM underline and look-alike strike-out; an
-  installed face's own `post` underline and the look-alike strike-out of the standard font its PostScript name is
-  nearest, since `subsetter` keeps no `OS/2` in what it writes), each read once (a cache by font).
+  twice) and `SetIn::lines` for text as it is set (`set_in` gives each stretch's `SetIn`: a standard font written
+  as itself has its AFM underline and look-alike strike-out; an embedded face, a standard font's bundled Liberation
+  one or an installed one, its own `post` underline and the look-alike strike-out of the standard font its
+  PostScript name is nearest, since `subsetter` keeps no `OS/2` in what it writes), each read once (a cache by
+  `SetIn`). Both it and `font_lines` fill in what a program doesn't say by one rule (`lines_given`).
+  `decoration_lines(f)` is `SetIn::of(f)`'s: `f` as it is written when it can write all of its text. (S1-16,
+  PB-102: the typing box took a `FontChoice` alone, so words a standard font writes in its face, as it does all
+  its text when some of it isn't WinAnsi, were drawn with the AFM underline, 0.042 em above the face's.)
 - **Underline and Strikethrough in the app** (NEW-07, batch 46's stage 4b). `styled::CharStyle` has `underline` and
   `strike`, each a `Deco`: none, `Font` (at its font's place, in its colour) or `Read(k)`, the look of the text's
   decoration `k` as read (`Styled::looks`, filled by `Styled::of` from `PageObject::decorations` and by
@@ -2811,13 +2824,14 @@ form XObject, and per inline image.
   selected apart from it: `Editor::hit_where` takes a click on one for its line (`PageObject::decorates`), and
   `select_all_objects` and the selection rectangle (`inside_rect`) leave them out. While typing, `page_text::Run::place` is
   where the font a run is written in puts its bands (`Place::Own`, the line's own font's, though the run is drawn in
-  another; `Place::Set`, a standard font or installed face, read when a band is drawn), `char_bands` gives each
+  another; `Place::Set`, a stretch's `SetIn` from `set_in`, read when a band is drawn), `char_bands` gives each
   character its bands in pixels (`Styled::drawn_decos`), and `band_rects` places them on the galley: along each
   row from its first character that isn't a space to its last, from a stretch's first glyph's pen (the advances
   before it, plus a justified line's stretch after each space, `ParaStyle::bands`) to its last's end, on that
   glyph's baseline (`pos.y`, a raised run's own), painted after the galley by `field` and `paragraph_field`
   (egui's `TextFormat::underline` sits at the line box's bottom). `bands_are_drawn_where_they_are_written`
-  checks them against the bands written, within 0.13 px at 2 px a point.
+  checks them against the bands written, within 0.13 px at 2 px a point; two more (S1-16, PB-102) check words a
+  standard font writes in its face, new text and a kept line's new words, within 0.02 em.
 - **The page under text being edited** (ENH-21, batch 45's 3b-1; `tab/backdrop.rs`, `excerpt.rs`). A line drawn
   in place, or a paragraph, being edited asks for the page drawn without its text objects
   (`Editor::backdrop_wanted`: the page, the objects, the box the editor hides). Core's

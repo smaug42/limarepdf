@@ -1128,6 +1128,51 @@ fn pen_strokes_are_simplified_and_join_one_drawing() {
     assert!(p.add_ink(0, &[vec![]], [0.0; 3], 1.0, "").is_err());
 }
 
+/// A pen stroke that goes out and comes back along itself is kept, and drawn, to where it
+/// turned (M-11).
+#[test]
+fn a_pen_stroke_that_doubles_back_keeps_its_far_end() {
+    let mut p = page();
+    let stroke = vec![(20.0, 50.0), (120.0, 50.0), (21.0, 50.0)];
+    p.add_ink(0, &[stroke], [0.0; 3], 2.0, "").unwrap();
+    let a = &p.annotations()[0];
+    let right = a.paths[0].iter().fold(f32::MIN, |m, q| m.max(q.0));
+    assert!(right > 119.0, "{:?}", a.paths);
+    assert!(a.bbox[2] > 119.0, "{:?}", a.bbox);
+    assert!(
+        ink(&mut p, [100, 47, 119, 53]).1 > 20,
+        "drawn to where it turned"
+    );
+}
+
+/// A drawn signature whose stroke doubles back keeps its whole width (M-11): it is as wide
+/// as it was drawn, and drawn to its far end.
+#[test]
+fn a_drawn_signature_that_doubles_back_keeps_its_width() {
+    let strokes = vec![
+        vec![(0.0, 0.0), (100.0, 0.0), (1.0, 0.0)],
+        vec![(0.0, -20.0), (0.0, 20.0)],
+    ];
+    let sig = Stamp::Signature {
+        art: SignArt::Drawn {
+            strokes: &strokes,
+            width: 3.0,
+        },
+        role: SignRole::Signature,
+        color: InkColor::Black,
+        date: false,
+    };
+    // As drawn, 103 by 43 with the pen's width.
+    let (w, h) = sig.size("").unwrap();
+    assert!(w / h > 2.0, "{w} by {h}");
+    let mut p = page();
+    p.add_stamp(0, &sig, StampPlace::Centre(150.0, 100.0), "")
+        .unwrap();
+    let r = (150.0 + w / 2.0) as usize;
+    let far = ink(&mut p, [r - (w / 5.0) as usize, 90, r, 110]).1;
+    assert!(far > 5, "the far end drawn ({w} by {h})");
+}
+
 #[test]
 fn a_drawing_turns_about_its_middle() {
     let mut p = page();

@@ -8,6 +8,7 @@ use crate::budget::{TooComplex, Work};
 use crate::colour::Paint;
 use crate::edit::{op, r, Check};
 use crate::fonts::FontChoice;
+use crate::layout::SetIn;
 use crate::matrix::{self as mx, apply, M};
 use crate::objects::{Obj, ObjectKind, Parsed, TextData};
 use crate::own_encoding::MAX_PROGRAM;
@@ -237,14 +238,14 @@ pub(crate) fn straight(
             if len < 1e-6 || lw <= 0.0 {
                 return None;
             }
-            // The pen's width across the segment as drawn.
-            let (nx, ny) = ((y0 - y1) / len, (x1 - x0) / len);
-            let n = (ctm[0] * nx + ctm[2] * ny, ctm[1] * nx + ctm[3] * ny);
-            let across = ((b.0 - a.0) * n.1 - (b.1 - a.1) * n.0).abs() / len;
+            // The pen's width across the segment as drawn: a round pen `lw` across, drawn by
+            // `ctm`, is lw |det ctm| / |ctm u| across a segment along unit u.
+            let det = (ctm[0] * ctm[3] - ctm[1] * ctm[2]).abs();
+            let src = (x1 - x0).hypot(y1 - y0);
             Some(Straight {
                 a,
                 b,
-                width: lw * across,
+                width: lw * det * src / len,
             })
         }
         _ => None,
@@ -789,11 +790,32 @@ impl Lite {
     }
 }
 
+/// Whether a band at height `v`, among `vs` (the heights of the bands like it near it, its
+/// own aside), is one of three or more in a row evenly spaced (their gaps within a tenth of
+/// each other), each gap wider than `width` and narrower than `em`: a staff's lines rather
+/// than a decoration (PB-101). Heights within half `width` of each other are one line drawn
+/// twice.
+fn evenly_spaced(vs: &mut Vec<f32>, v: f32, width: f32, em: f32) -> bool {
+    vs.push(v);
+    vs.sort_by(f32::total_cmp);
+    vs.dedup_by(|a, b| *a - *b < width / 2.0);
+    let Some(i) = vs.iter().position(|x| (x - v).abs() < width / 2.0) else {
+        return false;
+    };
+    let spaced =
+        |g: f32, h: f32| g.min(h) > width && g.max(h) < em && (g - h).abs() <= 0.1 * g.max(h);
+    (i.saturating_sub(2)..=i).any(|j| match vs.get(j..j + 3) {
+        Some(&[a, b, c]) => spaced(b - a, c - b),
+        _ => false,
+    })
+}
+
 /// The decorations of the page's own lines among `objs` (the page's objects as parsed, in
 /// user space), each with its line's index: a painted band is one when it fits a line
 /// ([`fits`], the closest fitting line taking it), meets no other drawing at its ends
-/// (bands under the same line's text and a fill behind it aside), and no other text's box
-/// overlaps it or sits centred under it within its ends (a fraction's denominator).
+/// (bands under the same line's text and a fill behind it aside), no other text's box
+/// overlaps it or sits centred under it within its ends (a fraction's denominator), and it
+/// is not one of a staff's lines ([`evenly_spaced`]).
 /// `form_text` is the text inside forms the page draws, which counts as other text. Two
 /// bands of one kind over the same characters are one decoration (a double underline).
 /// The cells its grids touch are steps of the page's `work` (S1-07), and so is the rest of
@@ -980,6 +1002,22 @@ pub(crate) fn read(
         if crowded {
             continue;
         }
+        // Bands of its thickness near it, level with this line and along the band: three or
+        // more evenly spaced are a staff's lines.
+        let like_it = |t: &Straight| {
+            let ((ua, va), (ub, vb)) = (l.frame.at(t.a), l.frame.at(t.b));
+            let along = ua.max(ub).min(f.along.1) - ua.min(ub).max(f.along.0);
+            let alike = (t.width - st.width).abs() <= 0.1 * st.width.max(t.width) + 0.01;
+            (alike && (va - vb).abs() <= 0.05 * s && along > 0.0).then_some((va + vb) / 2.0)
+        };
+        let mut like = (others.near(grown(bb, 2.0 * s + d), work)?.into_iter())
+            .filter(|&q| q != pi)
+            .filter_map(|q| straight_of.get(&q).and_then(like_it))
+            .collect();
+        let own = (l.frame.at(st.a).1 + l.frame.at(st.b).1) / 2.0;
+        if evenly_spaced(&mut like, own, st.width, s) {
+            continue;
+        }
         let look = Look {
             bands: vec![(f.v / s, st.width / s)],
             ink: ink.paint(ops),
@@ -1112,13 +1150,20 @@ pub(crate) fn lines_of(doc: &Document, font: &Dictionary, program: Option<&[u8]>
         Some(data) => program_lines(data),
         None => read().as_deref().map_or((None, None), program_lines),
     };
+    // The nearest standard font by name, which reads no installed fonts (a line's fonts are
+    // read as it is selected).
+    lines_given(under, strike, FontChoice::from_name(&base))
+}
+
+/// A font's underline and strike-out from what its program says of them (`under`,
+/// `strike`): the standard fonts' underline where it says none, and the strike-out of its
+/// look-alike `alike`'s Liberation face, else [`FontLines::STANDARD`]'s. What LimarePDF
+/// writes ([`font_lines`]) and what it draws for text to be written ([`SetIn::lines`]) are
+/// both given so.
+fn lines_given(under: Option<Band>, strike: Option<Band>, alike: FontChoice) -> FontLines {
     FontLines {
         under: under.unwrap_or(STANDARD.under),
-        // The nearest standard font by name, which reads no installed fonts (a line's fonts
-        // are read as it is selected).
-        strike: strike
-            .or_else(|| alike_strike(FontChoice::from_name(&base)))
-            .unwrap_or(STANDARD.strike),
+        strike: (strike.or_else(|| alike_strike(alike))).unwrap_or(STANDARD.strike),
     }
 }
 
@@ -1128,33 +1173,40 @@ fn alike_strike(f: FontChoice) -> Option<Band> {
     (crate::embed::bundled_face(face).map(program_lines)).and_then(|(_, s)| s)
 }
 
-/// The underline and strike-out LimarePDF draws for text set in `f` (a standard font, or an
-/// installed family's face), as for the font it is written in ([`font_lines`]): a standard
-/// font's AFM underline and its Liberation look-alike's strike-out; an installed face's own
-/// underline (`post`) and the strike-out of the standard font its name is nearest, as the
-/// face's subset keeps no `OS/2` table. Read once for each font.
-pub fn decoration_lines(f: FontChoice) -> FontLines {
-    static READ: std::sync::Mutex<Vec<(FontChoice, FontLines)>> = std::sync::Mutex::new(Vec::new());
-    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, lines)) = read.iter().find(|(g, _)| *g == f) {
-        return *lines;
-    }
-    let face = (!f.is_standard())
-        .then(|| crate::embed::Face::of(f).ok())
-        .flatten();
-    let (under, alike) = match face {
-        Some(face) => {
-            let (data, index) = face.file();
-            (face_lines(data, index).0, FontChoice::from_name(face.ps()))
+impl SetIn {
+    /// The underline and strike-out LimarePDF draws for text set so, as for the font it is
+    /// written in ([`font_lines`]): a standard font written as itself, nothing embedded, has
+    /// its AFM underline and its Liberation look-alike's strike-out; an embedded face (a
+    /// standard font's bundled one, or an installed family's) its own underline (`post`)
+    /// and the strike-out of the standard font its name is nearest, as its subset keeps no
+    /// `OS/2` table. Read once for each.
+    pub fn lines(self) -> FontLines {
+        static READ: std::sync::Mutex<Vec<(SetIn, FontLines)>> = std::sync::Mutex::new(Vec::new());
+        let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, lines)) = read.iter().find(|(s, _)| *s == self) {
+            return *lines;
         }
-        None => (None, f),
-    };
-    let lines = FontLines {
-        under: under.unwrap_or(STANDARD.under),
-        strike: alike_strike(alike).unwrap_or(STANDARD.strike),
-    };
-    read.push((f, lines));
-    lines
+        let face = match self {
+            SetIn::Standard(_) => None,
+            SetIn::Face(f) => crate::embed::Face::of(f).ok(),
+        };
+        let lines = match face {
+            Some(face) => {
+                let (data, index) = face.file();
+                let alike = FontChoice::from_name(face.ps());
+                lines_given(face_lines(data, index).0, None, alike)
+            }
+            None => lines_given(None, None, self.choice()),
+        };
+        read.push((self, lines));
+        lines
+    }
+}
+
+/// The underline and strike-out LimarePDF draws for text `f` writes all of
+/// ([`SetIn::of`]): a standard font's as itself, an installed family's face's.
+pub fn decoration_lines(f: FontChoice) -> FontLines {
+    SetIn::of(f).lines()
 }
 
 /// The decorations of a line's new text carried from its old ones `old` by where each new
@@ -1611,6 +1663,23 @@ mod tests {
         assert_eq!((e.unwrap_err().limit, looked, work.taken()), (2, 2, 2));
     }
 
+    /// Three or more bands evenly spaced are a staff's lines, a band at its foot, middle or
+    /// head, a line drawn twice among them or not; two alone, uneven gaps, gaps of an em,
+    /// bands touching, and a band past the staff aren't (PB-101).
+    #[test]
+    fn three_or_more_bands_evenly_spaced_are_a_staff() {
+        let staff = |vs: &[f32], v: f32| evenly_spaced(&mut vs.to_vec(), v, 0.45, 12.0);
+        assert!(staff(&[2.2, 4.7, 7.2, 9.7], -0.3));
+        assert!(staff(&[-0.3, 2.2, 7.2, 9.7], 4.7));
+        assert!(staff(&[-0.3, 2.2, 4.7, 7.2], 9.7));
+        assert!(staff(&[2.2, 2.2, 4.7], -0.3));
+        assert!(!staff(&[2.2], -0.3));
+        assert!(!staff(&[2.2, 5.2], -0.3));
+        assert!(!staff(&[12.0, 24.0], 0.0));
+        assert!(!staff(&[0.4, 0.8], 0.0));
+        assert!(!staff(&[-0.3, 2.2, 4.7], 12.0));
+    }
+
     const LINE: &str = "This has an underlined phrase in it.";
 
     /// How many of each thing [`read`] meets on the pages below: one and more, to many.
@@ -1677,14 +1746,16 @@ mod tests {
     }
 
     /// `d` filled bands under the whole of [`LINE`] at 12 at (72, 700), from 4.6 below its
-    /// baseline to 0.4 below, drawn lowest first.
+    /// baseline to 0.4 below, drawn lowest first: the gaps between them two and three parts
+    /// in turn, so they are not a staff's lines ([`evenly_spaced`]).
     fn bands_under(d: usize) -> String {
         let (x0, x1) = ends(12.0);
         let mut c = line(12.0, 700.0) + "0 0 0 rg\n";
+        let at = |i: usize| (5 * (i / 2) + 2 * (i % 2)) as f32;
         for i in 0..d {
             let v = match d {
                 1 => -1.4,
-                _ => -4.6 + 4.2 * i as f32 / (d - 1) as f32,
+                _ => -4.6 + 4.2 * at(i) / at(d - 1),
             };
             c += &format!("{x0} {} {} 0.06 re f\n", 700.0 + v - 0.03, x1 - x0);
         }
