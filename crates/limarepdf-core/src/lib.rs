@@ -123,7 +123,7 @@ pub use ids::{
 };
 pub use imgs::{image_dimensions, picture_preview, ImageImport, PicturesTooLarge};
 pub use labels::{LabelRange, LabelStyle};
-pub use layout::{fallback_faces, fallbacks, set_in, warm_fallbacks};
+pub use layout::{fallback_faces, fallbacks, set_in, warm_fallbacks, SetIn};
 pub use links::{email_link, web_link, Link, LinkId, LinkTarget, Unfollowed};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord, TextSpan};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};

@@ -36,7 +36,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// The font a stretch of text is set in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum SetIn {
+pub enum SetIn {
     /// A standard font itself, nothing embedded: each character its WinAnsi code, kerned
     /// as its bundled face kerns it.
     Standard(FontChoice),
@@ -45,8 +45,17 @@ pub(crate) enum SetIn {
 }
 
 impl SetIn {
+    /// `f` as it is written when it can write all it sets: a standard font as itself, an
+    /// installed family's face embedded.
+    pub fn of(f: FontChoice) -> SetIn {
+        match f.is_standard() {
+            true => SetIn::Standard(f),
+            false => SetIn::Face(f),
+        }
+    }
+
     /// The font chosen, standard or installed.
-    pub(crate) fn choice(self) -> FontChoice {
+    pub fn choice(self) -> FontChoice {
         match self {
             SetIn::Standard(f) | SetIn::Face(f) => f,
         }
@@ -617,17 +626,17 @@ pub fn warm_fallbacks() {
 
 /// `text` in the stretches LimarePDF writes it in when it is set in `f`, in a document whose
 /// language is `lang` (its `/Lang`, [`Pdf::language`]): each stretch's characters (from,
-/// to) and its font, `f` or one it falls back to ([`fallbacks`]), `None` for what no font
-/// can write; in order, neighbours in one font joined. The typing box draws each stretch in
-/// its font, as it will be written.
+/// to) and its font, `f` or one it falls back to ([`fallbacks`]), as itself or in its
+/// embedded face, `None` for what no font can write; in order, neighbours in one font
+/// joined. The typing box draws each stretch in its font, and decorates it as the font is
+/// written ([`SetIn::lines`]).
 pub fn set_in(
     f: FontChoice,
     text: &str,
     lang: Option<&str>,
-) -> Vec<((usize, usize), Option<FontChoice>)> {
-    let mut out: Vec<((usize, usize), Option<FontChoice>)> = Vec::new();
+) -> Vec<((usize, usize), Option<SetIn>)> {
+    let mut out: Vec<((usize, usize), Option<SetIn>)> = Vec::new();
     for ((a, b), font) in Setter::new(f, text, lang).pieces(text) {
-        let font = font.map(SetIn::choice);
         match out.last_mut() {
             Some((r, last)) if *last == font => r.1 = b,
             _ => out.push(((a, b), font)),

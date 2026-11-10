@@ -16,7 +16,7 @@ use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind,
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
     emoji_sequence, unwritten_script, writable, BoxSetting, DecoKind, FontChoice, FontLines,
-    LineFont, ObjectKind, PartFont, SetLine, TextPart,
+    LineFont, ObjectKind, PartFont, SetIn, SetLine, TextPart,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -778,16 +778,16 @@ pub struct Run {
 pub enum Place {
     /// A line's own font's ([`LineFont::lines`]).
     Own(FontLines),
-    /// A standard font's, or an installed family's face's
-    /// ([`limarepdf_core::decoration_lines`]).
-    Set(FontChoice),
+    /// A standard font's as itself or in its embedded face, or an installed family's
+    /// face's ([`SetIn::lines`]).
+    Set(SetIn),
 }
 
 impl Place {
     fn lines(self) -> FontLines {
         match self {
             Place::Own(lines) => lines,
-            Place::Set(f) => limarepdf_core::decoration_lines(f),
+            Place::Set(s) => s.lines(),
         }
     }
 }
@@ -937,8 +937,8 @@ pub fn runs(
         // drawn in another.
         let place = match *wanted {
             Wanted::Kept(_, Some(font)) => Place::Own(font.lines()),
-            Wanted::Kept(name, None) => Place::Set(crate::editor::font_of(name)),
-            Wanted::Standard(f) => Place::Set(f),
+            Wanted::Kept(name, None) => Place::Set(SetIn::of(crate::editor::font_of(name))),
+            Wanted::Standard(f) => Place::Set(SetIn::of(f)),
         };
         // A part kept in a font whose own glyphs can't be drawn (one LimarePDF wrote, which
         // grows as text is added, say) is drawn in the installed family it is from, else its
@@ -951,15 +951,16 @@ pub fn runs(
         };
         match wanted {
             // What can't be written goes as it is typed: drawn in the font asked for. Words
-            // set in another font are written, and decorated, in it.
+            // set in another font are written, and decorated, in it; a standard font's in
+            // its embedded face (when it can't write all it sets as itself), as that face.
             Wanted::Standard(f) if n > 0 => {
                 for ((a, b), set) in limarepdf_core::set_in(f, &p.text, lang) {
-                    let set = set.unwrap_or(f);
+                    let set = set.unwrap_or(SetIn::of(f));
                     let place = match place {
                         Place::Set(_) => Place::Set(set),
                         own => own,
                     };
-                    out.push(run(b - a, Wanted::Standard(set), place));
+                    out.push(run(b - a, Wanted::Standard(set.choice()), place));
                 }
             }
             wanted => out.push(run(n, wanted, place)),
@@ -2763,6 +2764,71 @@ mod tests {
         }
     }
 
+    /// `s` written at (20, 40) on a page, and read back: the page, and each band's box (each
+    /// path's), in pixels at `k` from the line's start and its baseline, left to right.
+    fn written_bands(s: &Styled, k: f32) -> (limarepdf_core::Pdf, Vec<[f32; 4]>) {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 600.0, 200.0).unwrap();
+        (pdf.add_text_decorated(0, (20.0, 40.0), &s.parts(), &s.decorations())).unwrap();
+        let back = limarepdf_core::Pdf::from_bytes(&pdf.to_bytes().unwrap(), None).unwrap();
+        let mut bands: Vec<[f32; 4]> = (back.page_objects(0).unwrap().into_iter())
+            .filter(|o| o.kind == ObjectKind::Path)
+            .map(|o| o.bbox)
+            .map(|b| [b[0] - 20.0, b[1] - 40.0, b[2] - 20.0, b[3] - 40.0].map(|v| v * k))
+            .collect();
+        bands.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        (back, bands)
+    }
+
+    /// The runs the typing box draws `parts` in at `k` pixels a point, once their faces have
+    /// loaded (`loaded`, of each one's family's name, in order), within a minute.
+    fn loaded_runs(
+        ctx: &egui::Context,
+        parts: &[(TextPart, Wanted)],
+        k: f32,
+        loaded: impl Fn(&[&str]) -> bool,
+    ) -> Vec<Run> {
+        let done = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let runs = runs(ctx, parts, k, |_| Color32::BLACK, None);
+            let names: Option<Vec<&str>> = (runs.iter())
+                .map(|r| match &r.font.family {
+                    egui::FontFamily::Name(n) => Some(&**n),
+                    _ => None,
+                })
+                .collect();
+            let all = names.is_some_and(|n| loaded(&n));
+            if all || std::time::Instant::now() > done {
+                assert!(all, "{runs:?}");
+                return runs;
+            }
+            ctx.run_ui(Default::default(), |_| {})
+                .textures_delta
+                .clear();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The bands the typing box draws over `s` (its text `text`) in `runs`: each one's box,
+    /// in pixels from the line's start and the baseline of the glyph under its middle, in the
+    /// order drawn. (A band goes on its glyphs' baseline, and egui may lay a run in another
+    /// face a pixel off the line's: `parts_of_a_line_share_its_baseline`.)
+    fn drawn_bands(ctx: &egui::Context, s: &Styled, text: &str, runs: &[Run]) -> Vec<[f32; 4]> {
+        let (g, _) = galley(ctx, text, runs);
+        let bands = char_bands(runs, &s.drawn_decos(), &|_| Color32::BLACK);
+        let row = &g.rows[0];
+        let baseline = |x: f32| {
+            let under = (row.glyphs.iter()).rfind(|gl| row.pos.x + gl.pos.x <= x);
+            row.pos.y + under.unwrap_or(&row.glyphs[0]).pos.y
+        };
+        (band_rects(&g, Pos2::ZERO, &bands, &[]).into_iter())
+            .map(|(r, _)| {
+                let y = baseline(r.center().x);
+                [r.min.x, r.min.y - y, r.max.x, r.max.y - y]
+            })
+            .collect()
+    }
+
     /// Underlines and strike-throughs are drawn while typing where they are written
     /// (NEW-07's acceptance, 10): at 2 pixels a point, each band's ends, top and bottom within
     /// 0.13 px of the band core writes, in Helvetica (its AFM place, drawn in its Liberation
@@ -2784,45 +2850,18 @@ mod tests {
             let mut s = Styled::plain(text, look);
             s.switch_deco((0, 6), DecoKind::Underline);
             s.switch_deco((11, 17), DecoKind::Strike);
-            // Written at (20, 40), read back: each band's box, in pixels from the line's
-            // start and its baseline, left to right.
-            let mut pdf = limarepdf_core::Pdf::new();
-            pdf.insert_blank(0, 600.0, 200.0).unwrap();
-            (pdf.add_text_decorated(0, (20.0, 40.0), &s.parts(), &s.decorations())).unwrap();
-            let back = limarepdf_core::Pdf::from_bytes(&pdf.to_bytes().unwrap(), None).unwrap();
-            let mut want: Vec<[f32; 4]> = (back.page_objects(0).unwrap().into_iter())
-                .filter(|o| o.kind == ObjectKind::Path)
-                .map(|o| o.bbox)
-                .map(|b| [b[0] - 20.0, b[1] - 40.0, b[2] - 20.0, b[3] - 40.0].map(|v| v * k))
-                .collect();
-            want.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            let (_, want) = written_bands(&s, k);
             // Drawn, once the face has loaded, as the typing box draws it.
             let parts: Vec<(TextPart, Wanted)> = (s.parts().into_iter())
                 .map(|p| (p, Wanted::Standard(f)))
                 .collect();
-            let done = std::time::Instant::now() + std::time::Duration::from_secs(60);
-            let runs = loop {
-                let runs = runs(&ctx, &parts, k, |_| Color32::BLACK, None);
-                let loaded = (runs.iter()).all(|r| match &r.font.family {
-                    egui::FontFamily::Name(n) if f.is_standard() => &**n == "Liberation Sans",
-                    egui::FontFamily::Name(n) => n.starts_with("file "),
-                    _ => false,
-                });
-                if loaded || std::time::Instant::now() > done {
-                    assert!(loaded, "{runs:?}");
-                    break runs;
-                }
-                ctx.run_ui(Default::default(), |_| {})
-                    .textures_delta
-                    .clear();
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            };
-            let (g, _) = galley(&ctx, text, &runs);
-            let bands = char_bands(&runs, &s.drawn_decos(), &|_| Color32::BLACK);
-            let baseline = g.rows[0].pos.y + g.rows[0].glyphs[0].pos.y;
-            let got: Vec<[f32; 4]> = (band_rects(&g, Pos2::ZERO, &bands, &[]).into_iter())
-                .map(|(r, _)| [r.min.x, r.min.y - baseline, r.max.x, r.max.y - baseline])
-                .collect();
+            let runs = loaded_runs(&ctx, &parts, k, |names| {
+                (names.iter()).all(|n| match f.is_standard() {
+                    true => *n == "Liberation Sans",
+                    false => n.starts_with("file "),
+                })
+            });
+            let got = drawn_bands(&ctx, &s, text, &runs);
             assert_eq!(got.len(), 2, "{} {got:?}", f.family_name());
             assert_eq!(want.len(), 2, "{} {want:?}", f.family_name());
             for (g, w) in got.iter().zip(&want) {
@@ -2831,6 +2870,141 @@ mod tests {
                 assert!(off <= 0.13, "{name}: drawn {g:?}, written {w:?}");
             }
         }
+    }
+
+    /// Bands over text a standard font is written in its embedded face are drawn while typing
+    /// where they are written (PB-102): "Ωmega test" in Helvetica, all of it written in
+    /// Helvetica's Liberation face (WinAnsi has no Ω, and a standard font is written as
+    /// itself only when all its text is WinAnsi), underlined and struck through. Each band
+    /// written, and the band of its kind drawn over its middle, are within 0.02 em top and
+    /// bottom.
+    #[test]
+    fn bands_over_text_written_in_a_standard_fonts_face_are_drawn_where_they_are_written() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
+        let k = 2.0;
+        let text = "Ωmega test";
+        let f = FontChoice::default();
+        let look = CharStyle {
+            font: f,
+            ..CharStyle::default()
+        };
+        let em = look.size * k;
+        let mut s = Styled::plain(text, look);
+        s.switch_deco((0, 10), DecoKind::Underline);
+        s.switch_deco((0, 10), DecoKind::Strike);
+        let (back, want) = written_bands(&s, k);
+        // Written as it should be first: all of it in the Liberation face.
+        let line = (back.page_objects(0).unwrap().into_iter())
+            .find(|o| o.kind == ObjectKind::Text)
+            .unwrap();
+        let fonts: Vec<_> = (line.spans.iter())
+            .map(|p| (p.chars, p.font_name.as_str()))
+            .collect();
+        let as_planned =
+            fonts.len() == 1 && fonts[0].0 == (0, 10) && fonts[0].1.ends_with("+LiberationSans");
+        assert!(as_planned, "{fonts:?}");
+        let parts: Vec<(TextPart, Wanted)> = (s.parts().into_iter())
+            .map(|p| (p, Wanted::Standard(f)))
+            .collect();
+        let runs = loaded_runs(&ctx, &parts, k, |n| {
+            n.iter().all(|n| *n == "Liberation Sans")
+        });
+        let got = drawn_bands(&ctx, &s, text, &runs);
+        let off = bands_off(&want, &got, em);
+        let ok = off.len() == 2 && off.iter().all(|o| o.0 <= 0.02);
+        assert!(ok, "off by (ems), written, drawn: {off:#?}");
+    }
+
+    /// Each band of `want` (written), against the band of its kind in `got` (drawn) over its
+    /// middle: how far apart their tops and bottoms are, at most, in ems of `em` pixels,
+    /// and the two.
+    fn bands_off(want: &[[f32; 4]], got: &[[f32; 4]], em: f32) -> Vec<(f32, [f32; 4], [f32; 4])> {
+        let under = |b: &[f32; 4]| b[1] + b[3] > 0.0;
+        let mut off = Vec::new();
+        for w in want {
+            let mid = (w[0] + w[2]) / 2.0;
+            let g = (got.iter())
+                .find(|g| under(g) == under(w) && g[0] <= mid && mid <= g[2])
+                .unwrap_or_else(|| panic!("nothing drawn over {w:?}: {got:?}"));
+            let by = (g[1] - w[1]).abs().max((g[3] - w[3]).abs()) / em;
+            off.push((by, *w, *g));
+        }
+        off
+    }
+
+    /// Bands over a line kept in its own font, edited, are drawn while typing where they are
+    /// written (PB-102): a line in Helvetica, "Walrus ends", edited to "Walrus Ωmega 漢字
+    /// ends", all of it underlined and struck through. "Walrus" and "ends" keep the line's
+    /// Helvetica; "Ωmega 漢字" can't, and goes to Helvetica set anew: "Ωmega" in its
+    /// Liberation face, "漢字" in a face with Han. Each band written, and the band of its kind
+    /// drawn over its middle, are within 0.02 em top and bottom.
+    #[test]
+    fn bands_over_a_kept_lines_new_words_are_drawn_where_they_are_written() {
+        crate::font_list::test_family("Limare Han Test");
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
+        let k = 2.0;
+        let size = 14.0;
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 600.0, 200.0).unwrap();
+        let f = FontChoice::default();
+        (pdf.add_text(0, (20.0, 40.0), "Walrus ends", f, size, [0.0; 3])).unwrap();
+        let line = |pdf: &limarepdf_core::Pdf| {
+            (pdf.page_objects(0).unwrap().into_iter())
+                .find(|o| o.kind == ObjectKind::Text)
+                .unwrap()
+        };
+        let o = line(&pdf);
+        let fonts = pdf.line_fonts(0, o.id).unwrap();
+        let text = "Walrus Ωmega 漢字 ends";
+        let mut s = Styled::of(&o, crate::editor::font_of);
+        assert!(s.sync(text, Some(15)));
+        let n = text.chars().count();
+        s.switch_deco((0, n), DecoKind::Underline);
+        s.switch_deco((0, n), DecoKind::Strike);
+        let change = crate::editor::text_change(&s, &o);
+        (pdf.edit_texts_decorated(0, &[(o.id, change, s.decorations())])).unwrap();
+        let back = limarepdf_core::Pdf::from_bytes(&pdf.to_bytes().unwrap(), None).unwrap();
+        // Written as it should be first: "Ωmega" in the Liberation face, "漢字" in a face of
+        // its own (an installed one with Han, else the test's), the rest in Helvetica.
+        let edited = line(&back);
+        let fonts_written: Vec<_> = (edited.spans.iter())
+            .map(|p| (p.chars, p.font_name.as_str()))
+            .collect();
+        let font_at = |c: usize| {
+            (fonts_written.iter())
+                .find(|(r, _)| r.0 <= c && c < r.1)
+                .map_or("", |p| p.1)
+        };
+        let as_planned = font_at(0) == "Helvetica"
+            && font_at(8).ends_with("+LiberationSans")
+            && !["", "Helvetica"].contains(&font_at(13))
+            && !font_at(13).ends_with("+LiberationSans")
+            && font_at(17) == "Helvetica";
+        assert!(as_planned, "{fonts_written:?}");
+        // Each band's box, in pixels from the line's start and its baseline.
+        let mut want: Vec<[f32; 4]> = (back.page_objects(0).unwrap().into_iter())
+            .filter(|o| o.kind == ObjectKind::Path)
+            .map(|o| o.bbox)
+            .map(|b| [b[0] - 20.0, b[1] - 40.0, b[2] - 20.0, b[3] - 40.0].map(|v| v * k))
+            .collect();
+        want.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        // Drawn as the line being edited is drawn, once the Han face has loaded.
+        let parts = crate::editor::drawn_pieces(&o, &fonts, &s);
+        let runs = loaded_runs(&ctx, &parts, k, |n| {
+            n.iter().any(|n| n.starts_with("file "))
+        });
+        let got = drawn_bands(&ctx, &s, text, &runs);
+        let off = bands_off(&want, &got, size * k);
+        let ok = off.len() >= 4 && off.iter().all(|o| o.0 <= 0.02);
+        assert!(ok, "off by (ems), written, drawn: {off:#?}");
     }
 
     /// A band read from the page is drawn in its own look and colour (as the page shows it),

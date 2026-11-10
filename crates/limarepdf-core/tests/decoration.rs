@@ -345,6 +345,73 @@ fn a_band_on_the_baseline_is_left_alone() {
     none_read(&content, "a band on the baseline");
 }
 
+/// "Violin I" over a music staff's five lines, 0.45 points thick and 2.5 apart, stroked one
+/// by one from `from` to `to` along the page, the lowest 0.3 points under the label's
+/// baseline: where an underline would be, and the next two where a double strike-through
+/// would (PB-101).
+fn staff(from: f32, to: f32) -> String {
+    let mut c = shown("Violin I") + "0 0 0 RG 0.45 w\n";
+    for k in 0..5 {
+        let y = Y - 0.3 + 2.5 * k as f32;
+        c += &format!("{from} {y} m {to} {y} l S\n");
+    }
+    c
+}
+
+#[test]
+fn a_staff_under_a_label_is_left_alone() {
+    none_read(&staff(36.0, 576.0), "a staff across the page");
+    let (x0, x1) = span("Violin I", "Violin I");
+    none_read(&staff(x0, x1), "a staff's pieces exactly under the label");
+}
+
+/// The staff's pieces exactly under "Violin I", the label edited to "Vln. I": shorter, so the
+/// staff's right end, at `x` (displayed, the staff between 82.3 and 92.3 down), is clear of
+/// it.
+fn a_staff_with_its_label_edited() -> (Pdf, f32) {
+    let (x0, x1) = span("Violin I", "Violin I");
+    let mut p = page(&staff(x0, x1));
+    let id = lines(&p)[0].id;
+    p.edit_text(0, id, &same_text("Vln. I")).unwrap();
+    (p, x1 - 1.5)
+}
+
+/// Editing or moving the label leaves the staff's pieces under it where they are, as they
+/// were drawn: none carried with the words (PB-101).
+#[test]
+fn editing_or_moving_a_label_leaves_its_staff_alone() {
+    let (x0, x1) = span("Violin I", "Violin I");
+    let drawn = |p: &Pdf| -> Vec<_> { painted(p).iter().map(|o| (o.bbox, o.has_fill)).collect() };
+    let was = drawn(&page(&staff(x0, x1)));
+    assert_eq!(was.len(), 5);
+    let same = |p: &Pdf, what: &str| {
+        let now = drawn(p);
+        let ok = now.len() == 5
+            && (now.iter().zip(&was))
+                .all(|((a, fa), (b, fb))| fa == fb && (0..4).all(|i| near(a[i], b[i], 0.01)));
+        assert!(ok, "{what}: {was:?} became {now:?}");
+    };
+    let (mut p, x) = a_staff_with_its_label_edited();
+    same(&p, "edited");
+    // All five lines still drawn at the staff's end.
+    assert_eq!(crossed(&column(&mut p, x, (80.0, 95.0))), 5);
+    let mut p = page(&staff(x0, x1));
+    let l = lines(&p).remove(0);
+    let b = l.bbox;
+    p.set_object_bbox(0, l.id, [b[0] + 200.0, b[1], b[2] + 200.0, b[3]])
+        .unwrap();
+    same(&p, "moved");
+}
+
+/// Poppler draws the staff's five lines at its end after the label is edited too. Opt-in:
+/// needs `pdftoppm`.
+#[test]
+#[ignore = "opt-in: needs poppler"]
+fn cross_check_a_staff_with_its_label_edited_with_poppler() {
+    let (mut p, x) = a_staff_with_its_label_edited();
+    assert_eq!(crossed(&poppler_column(&mut p, x, (80.0, 95.0))), 5);
+}
+
 #[test]
 fn a_form_s_underlined_text_is_not_the_page_s() {
     let inner = libreoffice(LINE, "underlined phrase", None);
@@ -621,6 +688,138 @@ fn an_underline_whose_words_keep_their_place_stays_as_drawn() {
     let paths = painted(&p);
     assert_eq!(paths.len(), 1);
     assert!(paths[0].has_stroke && !paths[0].has_fill, "{:?}", paths[0]);
+}
+
+/// `content` drawn under `m` (a `cm` round it), moved so the point (X, Y) is drawn at
+/// (X, 400): on the page whatever `m` does to it.
+fn drawn_by(m: [f32; 4], content: &str) -> String {
+    let [a, b, c, d] = m;
+    let (e, f) = (X - a * X - c * Y, 400.0 - b * X - d * Y);
+    format!("q {a} {b} {c} {d} {e} {f} cm\n{content}Q\n")
+}
+
+/// A stroked underline is read as thick as its pen draws it across the band, whatever the
+/// line is drawn by (M-13). A round pen 0.7 wide, drawn by `m`, is 0.7 |det m| / |m x|
+/// across a band along x, and 1.4 below the baseline is 1.4 |det m| / |m x| below it; the
+/// size each is read against is 12 |m x|.
+#[test]
+fn a_stroked_underline_is_read_as_thick_as_it_is_drawn() {
+    let (sin, cos) = 30f32.to_radians().sin_cos();
+    let cases = [
+        ("as it is", [1.0, 0.0, 0.0, 1.0]),
+        ("twice the size", [2.0, 0.0, 0.0, 2.0]),
+        ("twice as wide", [2.0, 0.0, 0.0, 1.0]),
+        ("twice as high", [1.0, 0.0, 0.0, 2.0]),
+        ("turned 30°", [cos, sin, -sin, cos]),
+        ("leaning", [1.0, 0.0, 0.3, 1.0]),
+        ("on a sloping baseline", [1.0, 0.5, 0.0, 1.0]),
+    ];
+    let mut wrong = vec![];
+    for (what, m) in cases {
+        let p = page(&drawn_by(m, &libreoffice(LINE, "underlined phrase", None)));
+        let got = read(&p);
+        assert_eq!(got.len(), 1, "{what}: {got:?}");
+        assert_eq!(got[0].0, "underlined phrase", "{what}");
+        let [a, b, c, d] = m;
+        let k = (a * d - b * c).abs() / (12.0 * (a * a + b * b));
+        let (v, t) = got[0].2[0];
+        let want = (-1.4 * k, 0.7 * k);
+        if !(near(v, want.0, 0.002) && near(t, want.1, 0.002)) {
+            wrong.push(format!("{what}: read {v} {t}, drawn {want:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// Whether each pixel is dark down the column through displayed x `x` of page 0, drawn at
+/// 4 pixels a point, from displayed y `y0` to `y1`.
+fn column(p: &mut Pdf, x: f32, (y0, y1): (f32, f32)) -> Vec<bool> {
+    let hp = limarepdf_core::render::load(p.snapshot().unwrap(), None).unwrap();
+    let bitmap = limarepdf_core::render::Renderer::new(&hp)
+        .render(0, 4.0)
+        .unwrap();
+    let x = (x * 4.0) as usize;
+    ((y0 * 4.0) as usize..(y1 * 4.0) as usize)
+        .map(|y| bitmap.rgba[(y * bitmap.width + x) * 4] < 128)
+        .collect()
+}
+
+/// The same column as Poppler draws the page (`pdftoppm`, at 288 dots an inch).
+fn poppler_column(p: &mut Pdf, x: f32, (y0, y1): (f32, f32)) -> Vec<bool> {
+    let dir = common::tool::Scratch::new("decoration");
+    let path = dir.join("page.pdf");
+    std::fs::write(&path, p.to_bytes().unwrap()).unwrap();
+    let stem = dir.join("page");
+    let run = common::tool::output(
+        std::process::Command::new("pdftoppm")
+            .args(["-r", "288", "-singlefile", "-png"])
+            .arg(&path)
+            .arg(&stem),
+    )
+    .expect("pdftoppm");
+    assert!(run.status.success());
+    let img = image::open(stem.with_extension("png")).unwrap().to_rgb8();
+    let x = (x * 4.0) as u32;
+    ((y0 * 4.0) as u32..(y1 * 4.0) as u32)
+        .map(|y| img.get_pixel(x, y).0[0] < 128)
+        .collect()
+}
+
+/// How many pixels of `column` are dark.
+fn dark(column: &[bool]) -> usize {
+    column.iter().filter(|&&d| d).count()
+}
+
+/// How many runs of dark pixels, light between, `column` has: the lines it crosses.
+fn crossed(column: &[bool]) -> usize {
+    (column.iter().enumerate())
+        .filter(|&(i, &d)| d && (i == 0 || !column[i - 1]))
+        .count()
+}
+
+/// LibreOffice's underline drawn at twice the size, carried through an edit that moves its
+/// words: the page, where `x` is, the middle of "nder" (displayed, its baseline at 392),
+/// and how thick, in points, the band is read before it is drawn again.
+fn carried_at_twice_the_size() -> (Pdf, f32, f32) {
+    let m = [2.0, 0.0, 0.0, 2.0];
+    let mut p = page(&drawn_by(m, &libreoffice(LINE, "underlined phrase", None)));
+    let thick = read(&p)[0].2[0].1 * 24.0;
+    let id = lines(&p)[0].id;
+    let text = "This has a nicely underlined phrase in it.";
+    p.edit_text(0, id, &same_text(text)).unwrap();
+    let got = read(&p);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].0, "underlined phrase");
+    assert!(near(got[0].2[0].0 * 24.0, -2.8, 0.03), "{got:?}");
+    // Drawn again, a filled band where the words are now.
+    let paths = painted(&p);
+    assert_eq!(paths.len(), 1, "{paths:?}");
+    assert!(paths[0].has_fill, "{:?}", paths[0]);
+    let l = lines(&p).remove(0);
+    let (from, to) = chars_of(text, "nder");
+    let x = l.baseline.unwrap().0 + (l.stops[from] + l.stops[to]) / 2.0;
+    (p, x, thick)
+}
+
+/// Carried through the edit, the band is drawn again as thick as it was drawn first: 1.4
+/// points (M-13 drew it half that).
+#[test]
+fn an_underline_carried_at_twice_the_size_keeps_its_thickness() {
+    let (mut p, x, thick) = carried_at_twice_the_size();
+    // At 4 pixels a point, 5.6 pixels deep, between the baseline and a descender's depth.
+    let rows = dark(&column(&mut p, x, (392.5, 398.0)));
+    let ok = near(thick, 1.4, 0.03) && (5..=7).contains(&rows);
+    assert!(ok, "read {thick} points thick, drawn {rows} pixels deep");
+}
+
+/// Poppler draws the band carried at twice the size 1.4 points deep too, within a pixel at
+/// 4 pixels a point. Opt-in: needs `pdftoppm`.
+#[test]
+#[ignore = "opt-in: needs poppler"]
+fn cross_check_carried_underlines_thickness_with_poppler() {
+    let (mut p, x, _) = carried_at_twice_the_size();
+    let rows = dark(&poppler_column(&mut p, x, (392.5, 398.0)));
+    assert!((5..=7).contains(&rows), "{rows} rows");
 }
 
 #[test]

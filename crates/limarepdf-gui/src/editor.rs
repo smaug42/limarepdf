@@ -1259,7 +1259,7 @@ enum Pick {
 
 /// The change `text` makes to line `o`, as core is asked it: in parts, each in its style;
 /// invisible (OCR) text, which has no styles, and an emptied line, in one.
-fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
+pub(crate) fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
     let flat = |s: &str| s.replace(['\n', '\r'], " ");
     if o.hidden || text.text().is_empty() {
         return TextEdit {
@@ -1409,7 +1409,7 @@ fn pdf_fonts(o: &PageObject, sel: (usize, usize)) -> Vec<String> {
 /// is written in, as core decides it, `fonts` being the line's ([`PageObject::kept_pieces`]):
 /// a part's own font where it is kept, else the installed family that font is from or the
 /// nearest standard font, or the font chosen.
-fn drawn_pieces<'a>(
+pub(crate) fn drawn_pieces<'a>(
     o: &'a PageObject,
     fonts: &'a [LineFont],
     text: &Styled,

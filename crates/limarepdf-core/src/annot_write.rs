@@ -774,7 +774,8 @@ fn user_stroke(to_user: mx::M, stroke: &[(f32, f32)]) -> Vec<f32> {
 }
 
 /// Fewer points along much the same line (Douglas–Peucker): every point dropped is within
-/// `tol` of the line kept. The first and last points always stay.
+/// `tol` of the piece of line kept across it, from one point kept to the next, so a stroke
+/// that doubles back keeps where it turned (M-11). The first and last points always stay.
 pub(crate) fn simplify(p: &[(f32, f32)], tol: f32) -> Vec<(f32, f32)> {
     if p.len() < 3 {
         return p.to_vec();
@@ -787,12 +788,14 @@ pub(crate) fn simplify(p: &[(f32, f32)], tol: f32) -> Vec<(f32, f32)> {
         let (pa, pb) = (p[a], p[b]);
         let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
         let len = dx.hypot(dy);
+        // How far from the segment: from its nearest point, an end past either end.
         let off = |q: (f32, f32)| {
-            if len < 1e-6 {
-                (q.0 - pa.0).hypot(q.1 - pa.1)
-            } else {
-                ((q.0 - pa.0) * dy - (q.1 - pa.1) * dx).abs() / len
-            }
+            let (qx, qy) = (q.0 - pa.0, q.1 - pa.1);
+            let t = match len < 1e-6 {
+                true => 0.0,
+                false => ((qx * dx + qy * dy) / (len * len)).clamp(0.0, 1.0),
+            };
+            (qx - t * dx).hypot(qy - t * dy)
         };
         let far = (a + 1..b)
             .map(|i| (i, off(p[i])))
@@ -868,5 +871,98 @@ mod tests {
         // A stroke that comes back to where it started keeps its far point.
         let back = [(0.0, 0.0), (5.0, 5.0), (0.0, 0.0)];
         assert_eq!(simplify(&back, 0.35), back);
+    }
+
+    /// A stroke that doubles back along itself keeps where it turned (M-11): that point is
+    /// on the line through its ends, but far past the end.
+    #[test]
+    fn simplifying_keeps_where_a_stroke_doubles_back() {
+        let p = [(0.0, 50.0), (100.0, 50.0), (1.0, 50.0)];
+        assert_eq!(simplify(&p, 0.35), p);
+    }
+
+    /// How far `q` is from the segment `a` to `b`, worked in f64 apart from [`simplify`].
+    fn from_segment(q: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f64 {
+        let [qx, qy, ax, ay, bx, by] = [q.0, q.1, a.0, a.1, b.0, b.1].map(f64::from);
+        let (dx, dy) = (bx - ax, by - ay);
+        let l2 = dx * dx + dy * dy;
+        let t = match l2 > 0.0 {
+            true => (((qx - ax) * dx + (qy - ay) * dy) / l2).clamp(0.0, 1.0),
+            false => 0.0,
+        };
+        (qx - ax - t * dx).hypot(qy - ay - t * dy)
+    }
+
+    /// Strokes that double back, overshoot their end, end near their start or go over
+    /// themselves again, with a little wobble (seeded, so each run tries the same ones):
+    /// every point dropped is within the tolerance of the piece of line kept across it.
+    #[test]
+    fn every_point_dropped_is_near_the_line_kept() {
+        let mut seed = 0x5eed_0016_u64;
+        let mut rand = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let tol = 0.35;
+        for n in 0..400 {
+            let (x0, y0) = (rand() * 200.0, rand() * 200.0);
+            let turn = rand() * std::f32::consts::TAU;
+            let (ux, uy) = (turn.cos(), turn.sin());
+            let far = 5.0 + rand() * 100.0;
+            // How far along the line each point is: out and back, past the end and back to
+            // it, round a loop, or over the same stretch three times.
+            let along: Vec<f32> = match n % 4 {
+                0 => (0..=20)
+                    .map(|i| i as f32 / 20.0 * far)
+                    .chain((1..=20).map(|i| far - i as f32 / 20.0 * far * rand()))
+                    .collect(),
+                1 => (0..=30)
+                    .map(|i| i as f32 / 20.0 * far)
+                    .chain([far])
+                    .collect(),
+                2 => Vec::new(),
+                _ => (0..=60)
+                    .map(|i| far * (1.0 - ((i % 20) as f32 / 10.0 - 1.0).abs()))
+                    .collect(),
+            };
+            let mut p: Vec<(f32, f32)> = match n % 4 {
+                // A loop ending a little short of its start.
+                2 => (0..=40)
+                    .map(|i| {
+                        let a = i as f32 / 40.0 * (std::f32::consts::TAU - 0.05);
+                        (x0 + far * a.cos(), y0 + far * a.sin())
+                    })
+                    .collect(),
+                _ => (along.iter())
+                    .map(|&s| (x0 + s * ux, y0 + s * uy))
+                    .collect(),
+            };
+            for q in &mut p {
+                q.0 += (rand() - 0.5) * 0.2;
+                q.1 += (rand() - 0.5) * 0.2;
+            }
+            let kept = simplify(&p, tol);
+            // The points kept are the stroke's, in order, its ends among them.
+            let mut at = Vec::new();
+            let mut from = 0;
+            for k in &kept {
+                let i = from
+                    + p[from..]
+                        .iter()
+                        .position(|q| q == k)
+                        .expect("a stroke point");
+                at.push(i);
+                from = i + 1;
+            }
+            assert_eq!((at[0], *at.last().unwrap()), (0, p.len() - 1), "stroke {n}");
+            for w in at.windows(2) {
+                for q in &p[w[0] + 1..w[1]] {
+                    let off = from_segment(*q, p[w[0]], p[w[1]]);
+                    assert!(off <= tol as f64 + 1e-3, "stroke {n}: {q:?} is {off} off");
+                }
+            }
+        }
     }
 }

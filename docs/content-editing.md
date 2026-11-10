@@ -576,8 +576,9 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   ones, and no colour of their own. They aren't offered in text boxes (comments), form fields, headers and
   footers, watermarks and stamps, where they are greyed, nor on the command line (nor are Bold and Italic). An
   underline or strike-through another app drew that LimarePDF can't be sure of (in another colour than its text,
-  under one character alone, dotted, dashed or wavy, or touching other drawings such as a table's rules or a box)
-  is left a drawing, and stays where it is when its line changes.
+  under one character alone, dotted, dashed or wavy, touching other drawings such as a table's rules or a box, or
+  one of three or more evenly spaced lines such as a music staff's) is left a drawing, and stays where it is when
+  its line changes.
 - Styling words doesn't rewrap: bold or larger words make their line longer and the rest of it moves along, and
   highlights, links and redaction marks over them stay where they were.
 - Alignment (Align left, Centre, Align right, Justify) works on the page's paragraphs, new text and text boxes. New

@@ -9,6 +9,24 @@
 
 ### Fixed
 
+- An underline shows while you type where it will be written when Helvetica, Times or Courier writes the words in
+  its embedded face, as it does when the text holds a character the font can't write as itself (an Ω, say), and
+  for new words of a line kept in its own font that go to one of those fonts. Before, the underline was drawn at
+  the standard font's own place, about 0.04 em above where it was written (half a point at 12 points), and moved
+  down when typing ended. Strike-throughs were already drawn where they are written.
+- An underline or strike-through another app drew as a stroked line keeps its thickness when its line is edited,
+  moved or deleted and the drawing it is in is scaled, turned or slanted. Before, it was read, and drawn again,
+  thinner than it was: half as thick in a drawing at twice the size, and about a tenth thinner on a turned
+  baseline.
+- A music staff's lines are no longer read as the underline or strike-throughs of a label sitting on the staff
+  (a part's name such as "Violin I"). Three or more lines of one thickness, evenly spaced closer than the text's
+  size, are left as the page's drawing. Before, staff lines drawn in pieces, one piece under the label, could be
+  read as the label's own, so editing or moving the label redrew those pieces as its underline and
+  strike-throughs, cut to its new width and moved with it, and left gaps in the staff.
+- A freehand pen drawing, or a signature drawn with Fill and sign, keeps a stroke that goes out and comes back
+  along itself. Before, smoothing the stroke could drop where it turned back: a line drawn to the right and back
+  lost its right end, so a signature could lose a flourish or the cross of a t. Every point smoothed away is now
+  close to the stroke kept.
 - A form field the document keeps off screen (one marked to be printed only, or never shown) is left alone on the
   page, as other PDF readers leave it: it isn't highlighted, Tab passes it by, a click doesn't type in it, and an
   empty signature field of that kind isn't offered for signing, by a click or in the list of fields to sign.
