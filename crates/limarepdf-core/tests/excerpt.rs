@@ -350,6 +350,96 @@ fn comments_and_fields_on_the_page_are_drawn_in_the_page_alone() {
     assert_eq!(kinds, ["Highlight", "Widget"]);
 }
 
+/// The page with "Walrus" taken out, alone and as the app's pages draw it, drawn: the two
+/// pixel for pixel the same.
+fn alone_and_as_shown(p: &Pdf) -> render::Bitmap {
+    let walrus = lines_reading(p, 0, "Walrus");
+    let without = p.page_without(0, &walrus).unwrap();
+    let mut deleted = p.clone();
+    deleted.delete_objects(0, &walrus).unwrap();
+    let want = drawn(deleted.app_snapshot().unwrap());
+    let got = drawn(without);
+    assert_eq!((got.width, got.height), (want.width, want.height));
+    assert!(got.rgba == want.rgba, "not drawn as the page");
+    got
+}
+
+/// How many pixels inside `r` (left, top, right, bottom in pixels) are red.
+fn red_in(b: &render::Bitmap, r: [usize; 4]) -> usize {
+    let red = |i: usize| b.rgba[i] > 200 && b.rgba[i + 1] < 80 && b.rgba[i + 2] < 80;
+    (r[1]..r[3])
+        .flat_map(|y| (r[0]..r[2]).map(move |x| (y * b.width + x) * 4))
+        .filter(|&i| red(i))
+        .count()
+}
+
+/// PB-76: comments with no look of their own, which the app's pages draw with LimarePDF's
+/// drawing, are drawn so in the page alone: a red square and a text box another app wrote
+/// without one. The document itself is given none.
+#[test]
+fn comments_without_a_look_of_their_own_are_drawn_in_the_page_alone() {
+    let mut p = scene(BOTH);
+    let page = p.page_ids()[0];
+    let square = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Square", "Rect" => rect([230, 150, 290, 190]),
+        "C" => vec![1.into(), 0.into(), 0.into()], "BS" => dictionary! { "W" => 4 }, "P" => page,
+    });
+    let text_box = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "FreeText", "Rect" => rect([225, 60, 295, 140]),
+        "Contents" => Object::string_literal("Walrus and otter"),
+        "DA" => Object::string_literal("/Helv 12 Tf 1 0 0 rg"), "P" => page,
+    });
+    let annots = vec![square.into(), text_box.into()];
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", annots);
+    let got = alone_and_as_shown(&p);
+    // The square's left side (230 to 234 across, 10 to 50 down as shown), the box's text.
+    assert!(red_in(&got, [460, 20, 468, 100]) > 200, "the square");
+    assert!(red_in(&got, [450, 120, 590, 280]) > 20, "the text box");
+    for id in [square, text_box] {
+        assert!(!p.doc.get_dictionary(id).unwrap().has(b"AP"));
+    }
+}
+
+/// PB-76: in a signed document the app draws a field with no look of its own in its pages
+/// without drawing it into the document (so that saving adds only the edits made to what
+/// was signed); the page alone draws it so too. The document itself is given none.
+#[test]
+fn a_signed_document_s_field_without_a_look_is_drawn_in_the_page_alone() {
+    let mut p = scene(BOTH);
+    let page = p.page_ids()[0];
+    let helvetica = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let widget = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "Rect" => rect([225, 150, 295, 180]),
+        "FT" => "Tx", "T" => Object::string_literal("name"),
+        "V" => Object::string_literal("Walrus"),
+        "DA" => Object::string_literal("/Helv 12 Tf 1 0 0 rg"), "P" => page,
+    });
+    let signed = p.doc.add_object(dictionary! {
+        "FT" => "Sig", "T" => Object::string_literal("signed"),
+        "V" => dictionary! { "Type" => "Sig" },
+    });
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", vec![widget.into()]);
+    let form = dictionary! {
+        "Fields" => vec![widget.into(), signed.into()],
+        "DR" => dictionary! { "Font" => dictionary! { "Helv" => helvetica } },
+    };
+    p.doc.catalog_mut().unwrap().set("AcroForm", form);
+    assert_eq!(p.signature_count(), 1);
+    let got = alone_and_as_shown(&p);
+    // The field's text, at 225 to 295 across and 20 to 50 down as shown.
+    assert!(red_in(&got, [450, 40, 590, 100]) > 20, "the field");
+    assert!(!p.doc.get_dictionary(widget).unwrap().has(b"AP"));
+}
+
 /// Only what the page uses is copied: the page alone from a long document is as small as
 /// from a document of that page.
 #[test]

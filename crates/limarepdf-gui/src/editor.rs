@@ -3182,13 +3182,22 @@ impl Editor {
     }
 
     /// The note or text box being typed on `page` (drawn at `r`, `k` pixels per point):
-    /// a comment box beside a note's icon, or the text box's own area. Esc and Ctrl+Enter
+    /// a comment box beside a note's icon, or the area the text box's text is set in, set
+    /// as `pdf` writes it (PB-60): one turned against the page is typed upright, centred
+    /// over it, and drawn turned again once kept. Esc and Ctrl+Enter
     /// keep what was typed, as does a click outside a note's comment box or the text box
     /// losing the keyboard. For a new note only a click on the page counts as outside, so
     /// its colour can be changed in the inspector while it is typed. Returns true when the
     /// page should not take the pointer this frame: it is over the text box, or the typing
     /// just ended.
-    fn writing_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
+    fn writing_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        pdf: &limarepdf_core::Pdf,
+        page: usize,
+        r: Rect,
+        k: f32,
+    ) -> bool {
         let (Some(id), scope) = (self.writing_id(), self.scope) else {
             return false;
         };
@@ -3270,9 +3279,28 @@ impl Editor {
             }
             // In Helvetica, as the box is written, the words it lacks in the fonts core
             // writes them in, not the interface's font; on the lines core breaks it into,
-            // where it writes them in the box.
-            let set = BoxSetting::text_box(w.rect[2] - w.rect[0], w.border, w.size);
-            let set = set.aligned(w.align);
+            // where it writes them in the box. One on the page is set as it is drawn: inside
+            // its margins and cloudy border, at its size (PB-60).
+            let written = w.id.and_then(|id| pdf.text_box_setting(id));
+            let (set, area) = match written {
+                Some(s) => {
+                    let a = s.area;
+                    let shown = Rect::from_min_max(to_screen(a[0], a[1]), to_screen(a[2], a[3]));
+                    let size = Vec2::new(s.width, s.height) * k;
+                    (
+                        s.set,
+                        if s.upright {
+                            shown
+                        } else {
+                            Rect::from_center_size(shown.center(), size)
+                        },
+                    )
+                }
+                None => {
+                    let set = BoxSetting::text_box(w.rect[2] - w.rect[0], w.border, w.size);
+                    (set.aligned(w.align), area)
+                }
+            };
             let lang = self.lang.as_deref();
             let (helvetica, color) = (FontChoice::default(), egui::Visuals::light().text_color());
             let now = page_text::set_in_box(ui.ctx(), &set, &w.text, helvetica, k, color, lang);
@@ -4410,7 +4438,7 @@ impl Editor {
             self.lang = pdf.language();
         }
         if self.adding_ui(ui, page, r, k)
-            || self.writing_ui(ui, page, r, k)
+            || self.writing_ui(ui, pdf, page, r, k)
             || self.line_edit_ui(ui, page, r, k)
             || self.para_ui(ui, page, r, k)
         {

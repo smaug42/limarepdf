@@ -273,7 +273,7 @@ pub(crate) enum Body<'a> {
 
 impl Look {
     /// The space taken by the border on each side.
-    fn inset(&self) -> f32 {
+    pub(crate) fn inset(&self) -> f32 {
         match &self.border {
             Some(b) if matches!(b.style, b'B' | b'I') => 2.0 * b.width,
             Some(b) => b.width,
