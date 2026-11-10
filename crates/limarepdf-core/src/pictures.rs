@@ -255,74 +255,86 @@ impl Pdf {
         if pw as u64 * ph as u64 > render::MAX_PIXELS {
             bail!("the picture is too large to save ({pw} × {ph} pixels)");
         }
-        let bytes = self.alone(s, place, pw, ph)?;
-        let pdf = render::load(bytes, None)?;
-        let r = render::Renderer::new(&pdf);
-        let b = r.render_clear(0)?;
-        if !r.take_missing().is_empty() {
-            bail!("the picture's data can't be read");
-        }
-        Ok(b)
+        drawn_alone(&self.doc, s, place, pw, ph)
     }
+}
 
-    /// A document of one `pw` × `ph` page drawing picture `s` placed by `place`, with the
-    /// objects the picture refers to (its mask, colour space and so on) copied from this one.
-    fn alone(&self, s: &Stream, place: M, pw: u32, ph: u32) -> Result<Vec<u8>> {
-        let mut pic = s.clone();
-        // What would hide it, or isn't needed to draw it.
-        for k in [
-            &b"OC"[..],
-            b"Metadata",
-            b"Alternates",
-            b"OPI",
-            b"StructParent",
-        ] {
-            pic.dict.remove(k);
-        }
-        let mut out = Document::with_version("1.7");
-        let mut todo: Vec<ObjectId> = Vec::new();
-        refs(&Object::Dictionary(pic.dict.clone()), &mut todo);
-        while let Some(id) = todo.pop() {
-            if out.objects.contains_key(&id) {
-                continue;
-            }
-            let Ok(o) = self.doc.get_object(id) else {
-                continue;
-            };
-            refs(o, &mut todo);
-            out.objects.insert(id, o.clone());
-            out.max_id = out.max_id.max(id.0);
-        }
-        let im = out.add_object(pic);
-        let n = |v: f32| Object::Real(v);
-        let content = lopdf::content::Content {
-            operations: vec![
-                lopdf::content::Operation::new("q", vec![]),
-                lopdf::content::Operation::new("cm", place.iter().map(|&v| n(v)).collect()),
-                lopdf::content::Operation::new("Do", vec![Object::Name(b"Im".to_vec())]),
-                lopdf::content::Operation::new("Q", vec![]),
-            ],
-        };
-        let content = out.add_object(Stream::new(Dictionary::new(), content.encode()?));
-        let pages = out.new_object_id();
-        let page = out.add_object(dictionary! {
-            "Type" => "Page", "Parent" => pages,
-            "MediaBox" => vec![0.into(), 0.into(), (pw as i64).into(), (ph as i64).into()],
-            "Resources" => dictionary! {"XObject" => dictionary! {"Im" => im}},
-            "Contents" => content,
-        });
-        out.objects.insert(
-            pages,
-            Object::Dictionary(dictionary! {
-                "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1,
-            }),
-        );
-        let catalog = out.add_object(dictionary! {"Type" => "Catalog", "Pages" => pages});
-        out.trailer.set("Root", catalog);
-        let mut bytes = Vec::new();
-        out.save_to(&mut bytes)?;
-        Ok(bytes)
+/// Picture `s` of `doc` drawn alone by the renderer the pages are drawn with, placed by
+/// `place` on a `pw` × `ph` page, on a clear backdrop: its colours as they show, in sRGB.
+pub(crate) fn drawn_alone(
+    doc: &Document,
+    s: &Stream,
+    place: M,
+    pw: u32,
+    ph: u32,
+) -> Result<render::Bitmap> {
+    let bytes = alone(doc, s, place, pw, ph)?;
+    let pdf = render::load(bytes, None)?;
+    let r = render::Renderer::new(&pdf);
+    let b = r.render_clear(0)?;
+    if !r.take_missing().is_empty() {
+        bail!("the picture's data can't be read");
     }
+    Ok(b)
+}
+
+/// A document of one `pw` × `ph` page drawing picture `s` placed by `place`, with the
+/// objects the picture refers to (its mask, colour space and so on) copied from `doc`.
+fn alone(doc: &Document, s: &Stream, place: M, pw: u32, ph: u32) -> Result<Vec<u8>> {
+    let mut pic = s.clone();
+    // What would hide it, or isn't needed to draw it.
+    for k in [
+        &b"OC"[..],
+        b"Metadata",
+        b"Alternates",
+        b"OPI",
+        b"StructParent",
+    ] {
+        pic.dict.remove(k);
+    }
+    let mut out = Document::with_version("1.7");
+    let mut todo: Vec<ObjectId> = Vec::new();
+    refs(&Object::Dictionary(pic.dict.clone()), &mut todo);
+    while let Some(id) = todo.pop() {
+        if out.objects.contains_key(&id) {
+            continue;
+        }
+        let Ok(o) = doc.get_object(id) else {
+            continue;
+        };
+        refs(o, &mut todo);
+        out.objects.insert(id, o.clone());
+        out.max_id = out.max_id.max(id.0);
+    }
+    let im = out.add_object(pic);
+    let n = |v: f32| Object::Real(v);
+    let content = lopdf::content::Content {
+        operations: vec![
+            lopdf::content::Operation::new("q", vec![]),
+            lopdf::content::Operation::new("cm", place.iter().map(|&v| n(v)).collect()),
+            lopdf::content::Operation::new("Do", vec![Object::Name(b"Im".to_vec())]),
+            lopdf::content::Operation::new("Q", vec![]),
+        ],
+    };
+    let content = out.add_object(Stream::new(Dictionary::new(), content.encode()?));
+    let pages = out.new_object_id();
+    let page = out.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages,
+        "MediaBox" => vec![0.into(), 0.into(), (pw as i64).into(), (ph as i64).into()],
+        "Resources" => dictionary! {"XObject" => dictionary! {"Im" => im}},
+        "Contents" => content,
+    });
+    out.objects.insert(
+        pages,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1,
+        }),
+    );
+    let catalog = out.add_object(dictionary! {"Type" => "Catalog", "Pages" => pages});
+    out.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    out.save_to(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// How picture `s`, shown as `shown` on the displayed page, is saved: [`PictureFormat::Jpeg`]
@@ -366,34 +378,16 @@ fn jpeg_as_is(doc: &Document, s: &Stream) -> bool {
 }
 
 /// Whether a picture's colour space is plain grey or RGB with `comps` components: what a
-/// JPEG file holds without the PDF.
+/// JPEG file holds without the PDF. A colour profile marked sRGB counts, as it shows the
+/// same; another profile, or a calibrated space, shows its numbers as other colours.
 fn plain_space(doc: &Document, d: &Dictionary, comps: Option<u8>) -> bool {
-    let Some(cs) = d
-        .get(b"ColorSpace")
-        .ok()
-        .and_then(|o| doc.dereference(o).ok())
-        .map(|(_, o)| o)
-    else {
+    let Ok(cs) = d.get(b"ColorSpace") else {
         return false;
     };
-    let kind = match cs {
-        Object::Name(n) => n.as_slice(),
-        Object::Array(a) => match a.first().and_then(|o| o.as_name().ok()) {
-            Some(n) => n,
-            None => return false,
-        },
-        _ => return false,
-    };
-    let n = match kind {
-        b"DeviceGray" | b"CalGray" => 1,
-        b"DeviceRGB" | b"CalRGB" => 3,
-        b"ICCBased" => match redact_img::components(doc, cs, &Dictionary::new(), 0) {
-            Some(n @ (1 | 3)) => n,
-            _ => return false,
-        },
-        _ => return false,
-    };
-    comps == Some(n as u8)
+    matches!(
+        crate::imgs::device_equivalent(doc, cs, &Dictionary::new()),
+        crate::imgs::Space::Plain(n) if comps == Some(n as u8)
+    )
 }
 
 /// Picture `s`'s width and height in pixels.

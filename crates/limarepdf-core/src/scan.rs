@@ -3,12 +3,16 @@
 //! The page's image XObject is decoded, cleaned up (deskew, despeckle), downsampled and
 //! re-encoded in place: CCITT G4 for black and white, JPEG for greyscale and colour. The
 //! page content is not touched, so the image keeps its position and size on the page.
+//! Downsampling keeps the resolution asked for in whichever direction the scan has fewest
+//! pixels for its size on the page. A scan with a colour profile or calibration keeps it
+//! when it stays as it is (colour as colour, grey as grey), and is made grey or black and
+//! white from its colours as they show; CMYK scans are left as they are.
 
-use crate::imgs::jpeg_components;
+use crate::imgs::{jpeg_components, Space};
 use crate::{ObjectKind, Pdf, Result};
 use image::imageops::FilterType;
 use image::{GrayImage, RgbImage};
-use lopdf::{dictionary, Document, Object, ObjectId, Stream};
+use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -90,8 +94,11 @@ struct Target {
     id: ObjectId,
     /// Its name in the page's resources.
     name: Vec<u8>,
+    /// Its resolution on the page, in the direction it has fewest pixels.
     dpi: f32,
     has_text: bool,
+    /// The page's colour spaces, which the image's may name.
+    spaces: Dictionary,
 }
 
 /// Decoded pixels. `Bits` holds 0 (black) or 255 (white).
@@ -110,8 +117,8 @@ impl Pdf {
     /// Only the pages given change: they get the new image, and anything else using the
     /// original (a page not given, for example) keeps it. An image shared by several of the
     /// pages is processed once, as carefully as the most demanding of them needs: at the
-    /// resolution of the page showing it largest, and not straightened if any of them has
-    /// text over it.
+    /// lowest resolution any of them shows it at, in either direction, and not straightened
+    /// if any of them has text over it.
     pub fn optimize_scans(
         &mut self,
         pages: &[usize],
@@ -124,16 +131,16 @@ impl Pdf {
             }
             found.push((p, self.scan_target(p)));
         }
-        // One job per distinct image, for the first page showing it, with the lowest
-        // resolution and any text among the pages that do.
+        // One job per distinct image, for the first page showing it (and its colour
+        // spaces), with the lowest resolution and any text among the pages that do.
         let mut first_use: HashMap<ObjectId, (usize, usize)> = HashMap::new();
-        let mut jobs: Vec<(ObjectId, f32, bool)> = Vec::new();
+        let mut jobs: Vec<(ObjectId, f32, bool, &Dictionary)> = Vec::new();
         for (p, t) in &found {
             let Ok(t) = t else { continue };
             match first_use.get(&t.id) {
                 None => {
                     first_use.insert(t.id, (*p, jobs.len()));
-                    jobs.push((t.id, t.dpi, t.has_text));
+                    jobs.push((t.id, t.dpi, t.has_text, &t.spaces));
                 }
                 Some(&(_, j)) => {
                     jobs[j].1 = jobs[j].1.min(t.dpi);
@@ -144,9 +151,9 @@ impl Pdf {
         let doc = &self.doc;
         let mut done: HashMap<ObjectId, std::result::Result<(Stream, ScanResult), String>> = jobs
             .par_iter()
-            .map(|&(id, dpi, has_text)| {
+            .map(|&(id, dpi, has_text, spaces)| {
                 let r = match doc.get_object(id).and_then(Object::as_stream) {
-                    Ok(s) => process(doc, s, dpi, has_text, opts),
+                    Ok(s) => process(doc, s, spaces, dpi, has_text, opts),
                     Err(e) => Err(e.to_string()),
                 };
                 (id, r)
@@ -261,28 +268,28 @@ impl Pdf {
             .and_then(|o| o.operands.first())
             .and_then(|o| o.as_name().ok())
             .ok_or("cannot find the image")?;
+        let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
         let id = self
-            .inherited(page, b"Resources")
-            .and_then(|r| self.doc.dereference(&r).ok()?.1.as_dict().ok().cloned())
-            .and_then(|r| {
-                let xo = r.get(b"XObject").ok()?;
-                let xo = self.doc.dereference(xo).ok()?.1.as_dict().ok()?;
-                xo.get(name).ok()?.as_reference().ok()
-            })
+            .resolved_dict(res.get(b"XObject").ok())
+            .get(name)
+            .ok()
+            .and_then(|o| o.as_reference().ok())
             .ok_or("cannot find the image")?;
-        let width_px = self
+        let (w, h) = self
             .doc
             .get_object(id)
             .and_then(Object::as_stream)
             .ok()
-            .and_then(|s| s.dict.get(b"Width").ok()?.as_i64().ok())
-            .ok_or("the image has no width")?;
-        let width_in = img.ctm[0].hypot(img.ctm[1]) / 72.0;
+            .and_then(|s| Some((int(s, b"Width")?, int(s, b"Height")?)))
+            .ok_or("the image has no size")?;
+        let dpi = crate::reduce::shown_ppi(w as f32, h as f32, img.ctm)
+            .ok_or("the image is drawn with no size")?;
         Ok(Target {
             id,
             name: name.to_vec(),
-            dpi: width_px as f32 / width_in.max(1e-3),
+            dpi,
             has_text: parsed.shows_text(),
+            spaces: self.resolved_dict(res.get(b"ColorSpace").ok()),
         })
     }
 }
@@ -290,14 +297,15 @@ impl Pdf {
 fn process(
     doc: &Document,
     s: &Stream,
+    spaces: &Dictionary,
     dpi: f32,
     has_text: bool,
     o: &ScanOptions,
 ) -> std::result::Result<(Stream, ScanResult), String> {
-    let img = decode(doc, s)?;
+    let Scan { img, shown } = decode(doc, s, spaces)?;
     let before = s.content.len();
     let wanted = match o.mode {
-        ScanMode::Auto => auto_mode(&img),
+        ScanMode::Auto => auto_mode(shown.as_ref().map_or(&img, |(v, _)| v)),
         m => m,
     };
     // Colour cannot be made from grey, nor grey from black and white.
@@ -305,6 +313,20 @@ fn process(
         (Img::Bits(_), _) => ScanMode::BlackWhite,
         (Img::Gray(_), ScanMode::Color) => ScanMode::Gray,
         _ => wanted,
+    };
+    // A calibrated scan kept as it is (colour as colour, grey as grey) keeps its own
+    // numbers and colour space; made into something else, it starts from how it shows.
+    let (img, space) = match shown {
+        Some((_, cs))
+            if matches!(
+                (&img, mode),
+                (Img::Gray(_), ScanMode::Gray) | (Img::Rgb(_), ScanMode::Color)
+            ) =>
+        {
+            (img, Some(cs))
+        }
+        Some((v, _)) => (v, None),
+        None => (img, None),
     };
     let mut work = match (img, mode) {
         (Img::Bits(b), _) => Img::Bits(b),
@@ -347,7 +369,7 @@ fn process(
             bits => bits,
         };
     }
-    let new = encode(s, work, o.jpeg_quality)?;
+    let new = encode(s, work, space, o.jpeg_quality)?;
     let after = new.content.len();
     if after >= before && !changed {
         return Err(format!(
@@ -372,31 +394,16 @@ fn int(s: &Stream, key: &[u8]) -> Option<i64> {
     s.dict.get(key).ok()?.as_i64().ok()
 }
 
-/// Number of colour components of an image colour space, or `None` if unsupported.
-fn components(doc: &Document, cs: &Object) -> Option<usize> {
-    let cs = doc.dereference(cs).ok()?.1;
-    match cs {
-        Object::Name(n) => match n.as_slice() {
-            b"DeviceGray" | b"CalGray" | b"G" => Some(1),
-            b"DeviceRGB" | b"CalRGB" | b"RGB" => Some(3),
-            b"DeviceCMYK" | b"CMYK" => Some(4),
-            _ => None,
-        },
-        Object::Array(a) => match a.first()?.as_name().ok()? {
-            b"ICCBased" => {
-                let s = doc.dereference(a.get(1)?).ok()?.1.as_stream().ok()?;
-                let n = s.dict.get(b"N").ok()?.as_i64().ok()?;
-                matches!(n, 1 | 3 | 4).then_some(n as usize)
-            }
-            b"CalGray" => Some(1),
-            b"CalRGB" => Some(3),
-            _ => None,
-        },
-        _ => None,
-    }
+/// A decoded scan: its own numbers and, when its colour space is calibrated (a colour
+/// profile other than sRGB, CalGray or CalRGB), how it shows (in sRGB, as many components
+/// as its own) with that colour space, its names followed.
+struct Scan {
+    img: Img,
+    shown: Option<(Img, Object)>,
 }
 
-fn decode(doc: &Document, s: &Stream) -> std::result::Result<Img, String> {
+fn decode(doc: &Document, s: &Stream, spaces: &Dictionary) -> std::result::Result<Scan, String> {
+    let original = s;
     let direct = crate::imgs::direct_parms(doc, s);
     let s = direct.as_ref().unwrap_or(s);
     let d = &s.dict;
@@ -411,36 +418,86 @@ fn decode(doc: &Document, s: &Stream) -> std::result::Result<Img, String> {
         _ => return Err("the image has no size".into()),
     };
     let filters: Vec<&[u8]> = s.filters().unwrap_or_default();
-    match filters.as_slice() {
-        [b"DCTDecode"] => {
-            if jpeg_components(&s.content) == Some(4) {
-                return Err("CMYK JPEG images are not optimised".into());
-            }
+    let plain = |img| Ok(Scan { img, shown: None });
+    let dct = match filters.as_slice() {
+        [b"DCTDecode"] => true,
+        [b"CCITTFaxDecode"] => return plain(decode_ccitt(s, w, h)?),
+        [.., b"JBIG2Decode"] => return Err("JBIG2 images are already compact".into()),
+        [.., b"JPXDecode"] => return Err("JPEG 2000 images are not supported".into()),
+        [.., b"DCTDecode" | b"CCITTFaxDecode"] => return Err("unsupported filter chain".into()),
+        _ => false,
+    };
+    let cs = d.get(b"ColorSpace").ok();
+    // CMYK shows through a profile of the printer's this has no way to follow, so its
+    // colours would change.
+    if (dct && jpeg_components(&s.content) == Some(4))
+        || cs.and_then(|cs| crate::redact_img::components(doc, cs, spaces, 0)) == Some(4)
+    {
+        return Err("CMYK images are not optimised".into());
+    }
+    let space = match cs {
+        Some(cs) => crate::imgs::device_equivalent(doc, cs, spaces),
+        // A JPEG's own colours.
+        None if dct => Space::Plain(0),
+        None => Space::Other,
+    };
+    let img = match (dct, space) {
+        (_, Space::Other) => return Err("unsupported colour space".into()),
+        (true, _) => {
             let img = image::load_from_memory_with_format(&s.content, image::ImageFormat::Jpeg)
                 .map_err(|e| format!("cannot decode the JPEG: {e}"))?;
-            Ok(if img.color().has_color() {
+            if img.color().has_color() {
                 Img::Rgb(img.to_rgb8())
             } else {
                 Img::Gray(img.to_luma8())
-            })
+            }
         }
-        [b"CCITTFaxDecode"] => decode_ccitt(s, w, h),
-        [.., b"JBIG2Decode"] => Err("JBIG2 images are already compact".into()),
-        [.., b"JPXDecode"] => Err("JPEG 2000 images are not supported".into()),
-        [.., b"DCTDecode" | b"CCITTFaxDecode"] => Err("unsupported filter chain".into()),
-        _ => {
+        (false, Space::Plain(n) | Space::Calibrated(n)) => {
             let raw = s
                 .decompressed_content_with_limit(MAX_DECODED)
                 .map_err(|e| format!("cannot decompress the image: {e}"))?;
             let bpc = int(s, b"BitsPerComponent").unwrap_or(8);
-            let n = d
-                .get(b"ColorSpace")
-                .ok()
-                .and_then(|cs| components(doc, cs))
-                .ok_or("unsupported colour space")?;
-            decode_raw(&raw, w, h, n, bpc)
+            decode_raw(&raw, w, h, n, bpc)?
         }
+    };
+    let (Space::Calibrated(n), Some(cs)) = (space, cs) else {
+        return plain(img);
+    };
+    let shown = match &img {
+        // Black and white are the same in any calibration.
+        Img::Bits(_) => return plain(img),
+        Img::Gray(_) if n == 1 => true,
+        Img::Rgb(_) if n == 3 => true,
+        _ => false,
+    };
+    if !shown {
+        return Err("the image's colour space doesn't match its data".into());
     }
+    let cs = crate::imgs::followed(doc, cs, spaces)
+        .ok_or("unsupported colour space")?
+        .clone();
+    let mut alone = original.clone();
+    alone.dict.set("ColorSpace", cs.clone());
+    // At its own pixel size, upright.
+    let place = [w as f32, 0.0, 0.0, h as f32, 0.0, 0.0];
+    let b = crate::pictures::drawn_alone(doc, &alone, place, w, h)
+        .map_err(|e| format!("cannot draw the image: {e}"))?;
+    let rgb = RgbImage::from_fn(b.width as u32, b.height as u32, |x, y| {
+        let at = (y as usize * b.width + x as usize) * 4;
+        image::Rgb([b.rgba[at], b.rgba[at + 1], b.rgba[at + 2]])
+    });
+    if rgb.dimensions() != (w, h) {
+        return Err("cannot draw the image".into());
+    }
+    let shown = if n == 1 {
+        Img::Gray(image::DynamicImage::ImageRgb8(rgb).to_luma8())
+    } else {
+        Img::Rgb(rgb)
+    };
+    Ok(Scan {
+        img,
+        shown: Some((shown, cs)),
+    })
 }
 
 fn decode_raw(raw: &[u8], w: u32, h: u32, n: usize, bpc: i64) -> std::result::Result<Img, String> {
@@ -458,7 +515,7 @@ fn decode_raw(raw: &[u8], w: u32, h: u32, n: usize, bpc: i64) -> std::result::Re
                 image::Luma([if white { 255 } else { 0 }])
             })))
         }
-        (_, 8 | 16) => {
+        (1 | 3, 8 | 16) => {
             let step = bpc as usize / 8;
             if raw.len() < wu * hu * n * step {
                 return Err(short());
@@ -468,16 +525,9 @@ fn decode_raw(raw: &[u8], w: u32, h: u32, n: usize, bpc: i64) -> std::result::Re
                 1 => Img::Gray(GrayImage::from_fn(w, h, |x, y| {
                     image::Luma([s(y as usize * wu + x as usize)])
                 })),
-                3 => Img::Rgb(RgbImage::from_fn(w, h, |x, y| {
+                _ => Img::Rgb(RgbImage::from_fn(w, h, |x, y| {
                     let i = (y as usize * wu + x as usize) * 3;
                     image::Rgb([s(i), s(i + 1), s(i + 2)])
-                })),
-                _ => Img::Rgb(RgbImage::from_fn(w, h, |x, y| {
-                    // Naive CMYK to RGB; scans are rarely CMYK.
-                    let i = (y as usize * wu + x as usize) * 4;
-                    let k = s(i + 3) as u16;
-                    let c = |v: u8| 255 - (v as u16 + k).min(255) as u8;
-                    image::Rgb([c(s(i)), c(s(i + 1)), c(s(i + 2))])
                 })),
             })
         }
@@ -803,7 +853,14 @@ fn despeckle(b: &mut GrayImage, max_area: usize) -> usize {
 
 /// A new image stream for `img`, keeping the old stream's other entries (such as /OC or
 /// /Metadata).
-fn encode(old: &Stream, img: Img, quality: u8) -> std::result::Result<Stream, String> {
+/// `img` as the image to replace `old`: in colour space `space` when given (for grey or
+/// colour, the scan's own kept), else in device grey or RGB.
+fn encode(
+    old: &Stream,
+    img: Img,
+    space: Option<Object>,
+    quality: u8,
+) -> std::result::Result<Stream, String> {
     let mut dict = old.dict.clone();
     for k in [
         "Filter",
@@ -844,13 +901,13 @@ fn encode(old: &Stream, img: Img, quality: u8) -> std::result::Result<Stream, St
         }
         Img::Gray(g) => {
             let (w, h) = g.dimensions();
-            dict.set("ColorSpace", "DeviceGray");
+            dict.set("ColorSpace", space.unwrap_or_else(|| "DeviceGray".into()));
             let data = jpeg(g.as_raw(), w, h, image::ExtendedColorType::L8, quality)?;
             (w, h, data)
         }
         Img::Rgb(c) => {
             let (w, h) = c.dimensions();
-            dict.set("ColorSpace", "DeviceRGB");
+            dict.set("ColorSpace", space.unwrap_or_else(|| "DeviceRGB".into()));
             let data = jpeg(c.as_raw(), w, h, image::ExtendedColorType::Rgb8, quality)?;
             (w, h, data)
         }
@@ -902,7 +959,7 @@ mod tests {
         );
         s.compress().unwrap();
         s.dict.set("DecodeParms", parms);
-        let Img::Rgb(img) = decode(&doc, &s).unwrap() else {
+        let Img::Rgb(img) = decode(&doc, &s, &Dictionary::new()).unwrap().img else {
             panic!("not read as colour");
         };
         assert!(
@@ -922,7 +979,7 @@ mod tests {
             image::Luma([if black.contains(&(x, y)) { 0 } else { 255 }])
         });
         let old = Stream::new(lopdf::Dictionary::new(), Vec::new());
-        let s = encode(&old, Img::Bits(img.clone()), 75).unwrap();
+        let s = encode(&old, Img::Bits(img.clone()), None, 75).unwrap();
         let Img::Bits(g) = decode_ccitt(&s, w, 2).unwrap() else {
             panic!("not read as black and white");
         };

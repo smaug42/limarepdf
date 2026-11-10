@@ -41,16 +41,20 @@ command line: `limarepdf-cli images` and `limarepdf-cli insert-images`.
 Works on pages that are one image covering the page.
 
 - **Storage:** black and white is stored as CCITT G4; greyscale and colour as JPEG, downsampled to 200 dpi by
-  default. "Automatic" chooses per page.
+  default. The resolution is kept in both directions: the scan is made smaller only until it reaches that resolution
+  in whichever direction it has fewest pixels for its size on the page. "Automatic" chooses per page.
 - **Clean-up:** straightens tilts of up to 5° and removes specks.
-- **Supported images:** raw or Flate, greyscale and RGB JPEG, and CCITT G4. CMYK JPEG, JBIG2, JPEG 2000, masked images
-  and pages with other content are skipped, with the reason given.
+- **Supported images:** raw or Flate greyscale and RGB, greyscale and RGB JPEG, and CCITT G4, including those with a
+  colour profile or a calibration (CalGray, CalRGB). CMYK images, JBIG2, JPEG 2000, masked images and pages with
+  other content are skipped, with the reason given.
+- **Colours:** a scan with a colour profile or a calibration keeps it when it stays colour or stays grey, so its
+  colours don't change. Made grey or black and white, it is made from its colours as they show.
 - An image is replaced only when the result is smaller, or was straightened or cleaned.
 - Pages with text, such as an OCR layer, are not straightened, so optimise before recognising text.
 - Only the pages chosen change. A picture they share with other pages (or other parts of the document) stays as it
   was there, so the file then holds both; the report says when. A picture shared by several chosen pages is
-  optimised once, as carefully as the most demanding of them needs: at the resolution of the page showing it
-  largest, and not straightened if any of them has text over it. The report lists the other pages as optimised with
+  optimised once, as carefully as the most demanding of them needs: at the lowest resolution any of them shows it
+  at, in either direction, and not straightened if any of them has text over it. The report lists the other pages as optimised with
   the first.
 
 Where: **Pages > Optimise**, which opens the Optimise scanned pages tool in the inspector, for the selected pages

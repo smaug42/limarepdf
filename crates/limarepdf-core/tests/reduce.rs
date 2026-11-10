@@ -495,6 +495,83 @@ fn a_chain_of_colour_space_names_is_followed() {
     assert_eq!(size_of(&p, im), (1200, 800));
 }
 
+/// A smooth grey 1,200 × 800 picture at [`AT_300`] in `/G`, which the page's colour spaces
+/// name as Lab (PB-107). `G` is also the abbreviation inline pictures use for DeviceGray;
+/// one component a pixel is a third of what Lab needs, so a reader taking the name shows
+/// little of it. Smooth, so drawings by different readers differ only by colour.
+fn g_also_lab() -> Pdf {
+    let mut p = pages(1);
+    let (w, h) = (1200, 800);
+    let data = (0..w * h)
+        .map(|i| ((i % w) * 200 / w + (i / w) * 55 / h) as u8)
+        .collect();
+    let im = p.doc.add_object(picture(w, h, "G", data));
+    at_300(&mut p, 0, im);
+    let lab = Object::Array(vec![
+        "Lab".into(),
+        Object::Dictionary(dictionary! {
+            "WhitePoint" => vec![0.9505.into(), 1.0.into(), 1.089.into()],
+        }),
+    ]);
+    let id = p.page_ids()[0];
+    let page = p.doc.get_dictionary_mut(id).unwrap();
+    let res = page.get_mut(b"Resources").unwrap().as_dict_mut().unwrap();
+    res.set("ColorSpace", dictionary! { "G" => lab });
+    p
+}
+
+/// Page 1 as LimarePDF draws it at 72 dpi.
+fn drawn(p: &mut Pdf) -> common::compare::Image {
+    let hp = render::load(p.to_bytes().unwrap(), None).unwrap();
+    let b = render::Renderer::new(&hp).render(0, 1.0).unwrap();
+    common::compare::Image::from_bitmap(&b)
+}
+
+/// The mean difference of two drawings of a page at 72 dpi where [`AT_300`] draws, per
+/// channel.
+fn picture_drift(a: &common::compare::Image, b: &common::compare::Image) -> f64 {
+    // 72 to 360 points across; 400 to 592 up the page, 200 to 392 down.
+    let (mut sum, mut n) = (0u64, 0u64);
+    for y in 200..392 {
+        for x in 72..360 {
+            let (p, q) = (a.px(x, y), b.px(x, y));
+            sum += (0..3).map(|k| u64::from(p[k].abs_diff(q[k]))).sum::<u64>();
+            n += 3;
+        }
+    }
+    sum as f64 / n as f64
+}
+
+/// A picture XObject in `/G` shows as DeviceGray whatever the page names `G` (hayro and
+/// poppler alike, which read the abbreviations first), so redone as grey it looks the same.
+#[test]
+fn a_picture_in_a_colour_space_named_g_is_redone_as_it_shows() {
+    let mut p = g_also_lab();
+    let mut was = p.clone();
+    let before = drawn(&mut p);
+    let grey = (200..392).all(|y| {
+        (72..360).all(|x| {
+            let [r, g, b] = before.px(x, y);
+            r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1
+        })
+    });
+    assert!(grey, "the picture isn't drawn in grey");
+    let r = reduce(&mut p, &[0], PictureQuality::Email);
+    assert_eq!(r.pictures, 1, "{r:?}");
+    let d = drift(&mut was, &mut p, 0);
+    assert!(d < 3.0, "mean difference {d:.2}");
+}
+
+/// Poppler shows the picture in `/G` as LimarePDF does: as DeviceGray.
+#[test]
+#[ignore = "opt-in: needs poppler"]
+fn poppler_shows_a_picture_in_a_colour_space_named_g_as_grey() {
+    let mut p = g_also_lab();
+    let theirs = common::saved::tools::pdftoppm(&p.to_bytes().unwrap());
+    let d = picture_drift(&drawn(&mut p), &theirs);
+    assert!(d < 3.0, "mean difference {d:.2}");
+}
+
 #[test]
 fn undo_puts_every_picture_back() {
     let mut p = pages(2);
