@@ -8613,7 +8613,7 @@ impl eframe::App for App {
                     .empty_signature_fields()
                     .into_iter()
                     .filter_map(|f| {
-                        let w = f.widgets.iter().find(|w| !w.hidden)?;
+                        let w = f.widgets.iter().find(|w| w.on_screen())?;
                         Some((f.name, w.page))
                     })
                     .collect();

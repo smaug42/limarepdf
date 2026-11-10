@@ -572,6 +572,60 @@ fn form_values_are_sent_drawn_in() {
     assert_eq!(p.form_fields().len(), 2);
 }
 
+/// A-07's print check: a field kept off screen (NoView) is printed when it has the Print
+/// flag; Hidden keeps a field off paper whatever else is set; without Print it isn't
+/// printed. S1-32 doesn't change printing.
+#[test]
+fn form_values_print_by_the_print_and_hidden_flags() {
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    // (field and value, /F, printed): Print; NoView and Print; Hidden and Print; NoView;
+    // all three.
+    let fields = [
+        ("Walrus", 4, true),
+        ("Otter", 32 | 4, true),
+        ("Puffin", 2 | 4, false),
+        ("Narwhal", 32, false),
+        ("Beluga", 2 | 32 | 4, false),
+    ];
+    let ids: Vec<_> = (fields.iter().enumerate())
+        .map(|(i, &(name, flags, _))| {
+            let y = 160 - 35 * i as i64;
+            let rect: Vec<Object> = [20, y, 280, y + 30].map(Object::from).to_vec();
+            p.doc.add_object(dictionary! {
+                "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "F" => flags,
+                "T" => Object::string_literal(name), "Rect" => rect,
+            })
+        })
+        .collect();
+    let refs: Vec<Object> = ids.iter().map(|&i| i.into()).collect();
+    let page = p.page_ids()[0];
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", refs.clone());
+    let helv = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let form = p.doc.add_object(dictionary! {
+        "Fields" => refs,
+        "DA" => Object::string_literal("/Helv 12 Tf 0 g"),
+        "DR" => dictionary! { "Font" => dictionary! { "Helv" => helv } },
+    });
+    p.doc.catalog_mut().unwrap().set("AcroForm", form);
+    for &(name, ..) in &fields {
+        p.set_field(name, FieldValue::Text(name.into())).unwrap();
+    }
+
+    let sent = p.print_data(&[0], &as_is(300.0, 200.0), false).unwrap();
+    let text = Pdf::from_bytes(&sent, None).unwrap().page_text(0);
+    let on_paper = |n: &str| text.contains(n);
+    let got: Vec<(&str, bool)> = fields.iter().map(|&(n, ..)| (n, on_paper(n))).collect();
+    let want: Vec<(&str, bool)> = fields.iter().map(|&(n, _, printed)| (n, printed)).collect();
+    assert_eq!(got, want, "{text:?}");
+}
+
 #[test]
 fn fields_that_would_print_empty_are_named_before_printing() {
     // Three filled fields with no drawing: two printed (flag 4), one only shown on screen.

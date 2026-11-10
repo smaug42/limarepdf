@@ -9,6 +9,13 @@
 
 ### Fixed
 
+- A form field the document keeps off screen (one marked to be printed only, or never shown) is left alone on the
+  page, as other PDF readers leave it: it isn't highlighted, Tab passes it by, a click doesn't type in it, and an
+  empty signature field of that kind isn't offered for signing, by a click or in the list of fields to sign.
+  Before, only fields marked hidden were left alone, so such a field was tinted where nothing showed, Tab stopped
+  in it, and a click on what looked like empty page could type in it or sign it. A field that prints still prints,
+  and flattening is unchanged. A picture put over a field shown nowhere, on screen or on paper, no longer says that
+  form fields show above it.
 - A form field whose own font can't write its value is written in Helvetica, Times or Courier even when the form
   already holds another font under the name LimarePDF gives that font. Before, the value could be drawn in the
   other font (Greek letters or symbols in place of the text) with no message, or that font could be replaced in the

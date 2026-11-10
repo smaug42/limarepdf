@@ -23,9 +23,6 @@ const EDIT: i64 = 1 << 18;
 const MULTI_SELECT: i64 = 1 << 21;
 const COMB: i64 = 1 << 24;
 
-/// Annotation flag (`/F`) for an annotation that is not shown.
-const HIDDEN: i64 = 1 << 1;
-
 /// What kind of field it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FieldKind {
@@ -103,10 +100,24 @@ pub struct Widget {
     /// For radio buttons: the value choosing this one gives the field (the export value
     /// of its "on" state).
     pub export: Option<String>,
-    pub hidden: bool,
+    /// The widget annotation's flags (`/F`), asked through [`Widget::on_screen`] and
+    /// [`Widget::prints`].
+    flags: i64,
     /// How text is set in it: left, centred or right, as its form says (its `/Q`, else its
     /// field's).
     pub align: Align,
+}
+
+impl Widget {
+    /// Whether the page shows it on screen: neither Hidden nor NoView is set.
+    pub fn on_screen(&self) -> bool {
+        crate::annots::on_screen(self.flags)
+    }
+
+    /// Whether it is printed: Print is set and Hidden isn't, whatever NoView says.
+    pub fn prints(&self) -> bool {
+        crate::annots::prints(self.flags)
+    }
 }
 
 /// Values inherited from parent fields.
@@ -200,7 +211,7 @@ impl Pdf {
         self.empty_signature_fields()
             .iter()
             .flat_map(|f| f.widgets.iter())
-            .filter(|w| w.page == page_index && !w.hidden)
+            .filter(|w| w.page == page_index && w.on_screen())
             .map(|w| w.bbox)
             .collect()
     }
@@ -534,7 +545,7 @@ impl Pdf {
             bbox: mx::transform_rect(to_vis?, rect),
             on_state,
             export: None,
-            hidden: flags & HIDDEN != 0,
+            flags,
             align: Align::Left,
         })
     }

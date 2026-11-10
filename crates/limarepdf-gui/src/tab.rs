@@ -1891,13 +1891,14 @@ impl Tab {
     }
 
     /// Whether a picture put in `rect` of page `page` (displayed-page points) overlaps one of
-    /// the form's fields shown there, which every PDF reader draws above the page's content.
+    /// the form's fields shown there on screen or on paper, which every PDF reader draws
+    /// above the page's content.
     fn over_fields(&self, page: usize, rect: [f32; 4]) -> bool {
         let over =
             |b: [f32; 4]| b[0] < rect[2] && rect[0] < b[2] && b[1] < rect[3] && rect[1] < b[3];
         (self.ed.form.fields().iter())
             .flat_map(|f| &f.widgets)
-            .any(|w| w.page == page && !w.hidden && over(w.bbox))
+            .any(|w| w.page == page && (w.on_screen() || w.prints()) && over(w.bbox))
     }
 
     /// Record the state before a change: what puts the document back (`None` if it did not
