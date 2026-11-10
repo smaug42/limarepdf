@@ -1,0 +1,8 @@
+# A `#` inside quotes starts no comment, so the reference after it is read.
+on:
+  workflow_dispatch:
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "# ${{ secrets.GPG_SIGNING_KEY }}" | gpg --batch --import

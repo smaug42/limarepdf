@@ -1,0 +1,7 @@
+on:
+  workflow_dispatch:
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo '${{ toJSON(secrets) }}' > all.json

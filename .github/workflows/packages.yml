@@ -2,9 +2,8 @@ name: packages
 # The apt and dnf repositories on GitHub Pages (https://smaug42.github.io/limarepdf/), rebuilt
 # from the .deb and .rpm files of the last three published releases each time a release
 # is published. Started by hand, it builds the site without deploying it (unless "deploy"
-# is ticked); before the first release with packages it takes them from the latest
-# release dry run of ci.yml on the chosen branch. Pull requests that change the packaging
-# build the site too, as a check, without deploying it.
+# is ticked). Pull requests that change the packaging build the site too, as a check,
+# without deploying it.
 on:
   release:
     types: [published]
@@ -19,16 +18,20 @@ on:
         type: boolean
         default: false
 
+# Only runs that deploy share the `pages` group, one at a time and never cancelled. Any other
+# run, a pull request's say, has a group of its own, so it can't take the place of a deploy
+# waiting for approval.
 concurrency:
-  group: pages
+  group: ${{ (github.event_name == 'release' || inputs.deploy) && 'pages' || format('packages-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
+  # Every run: the repositories built and signed with a key made for this run alone, and
+  # checked against it. No secrets, so pull requests from anywhere get the same check.
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Fetch the packages
@@ -40,23 +43,50 @@ jobs:
               --json tagName --jq '.[].tagName'); do
             gh release download "$tag" --pattern '*.deb' --pattern '*.rpm' --dir in || true
           done
-          if ! ls in/*.deb > /dev/null 2>&1; then
-            # A pull request's branch is GITHUB_HEAD_REF; otherwise the branch it was started on.
-            run=$(gh run list --workflow ci.yml --branch "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" --event workflow_dispatch \
-              --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-            gh run download "$run" --name release-dry-run --dir dry
-            cp dry/*.deb dry/*.rpm in/
+          if ! ls in/*.deb in/*.rpm > /dev/null 2>&1; then
+            echo "::error::No published release has a .deb and an .rpm"; exit 1
           fi
           ls -l in
-      - name: Build the repositories
+      - name: Build the repositories (a throwaway key)
+        run: |
+          sudo apt-get install -y apt-utils createrepo-c > /dev/null
+          gpg --batch --passphrase '' --quick-gen-key "LimarePDF check <check@invalid>" ed25519 sign 1d
+          gpg --export > "$RUNNER_TEMP/check.gpg"
+          bash packaging/build-repos.sh in site
+          gpgv --keyring "$RUNNER_TEMP/check.gpg" site/apt/InRelease
+          gpgv --keyring "$RUNNER_TEMP/check.gpg" site/rpm/repodata/repomd.xml.asc site/rpm/repodata/repomd.xml
+      # The packages just checked, so the signing job signs exactly these.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: in
+          retention-days: 1
+
+  # A release, or a run started by hand with "deploy": the same packages, signed with the
+  # release key, which only the release-signing environment holds, so the job waits for the
+  # maintainer's approval. The signatures are checked against the published key, as apt and
+  # dnf will.
+  sign:
+    needs: build
+    if: github.event_name == 'release' || inputs.deploy
+    runs-on: ubuntu-latest
+    environment: release-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: in
+      - name: Build and sign the repositories
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          bash packaging/import-signing-key.sh docs/limarepdf-signing-key.asc
           sudo apt-get install -y apt-utils createrepo-c > /dev/null
-          echo "$GPG_SIGNING_KEY" | gpg --batch --import
           bash packaging/build-repos.sh in site
-          # Check the signatures against the published key, as apt and dnf will.
           gpg --dearmor < docs/limarepdf-signing-key.asc > "$RUNNER_TEMP/limarepdf.gpg"
           gpgv --keyring "$RUNNER_TEMP/limarepdf.gpg" site/apt/InRelease
           gpgv --keyring "$RUNNER_TEMP/limarepdf.gpg" site/rpm/repodata/repomd.xml.asc site/rpm/repodata/repomd.xml
@@ -65,7 +95,7 @@ jobs:
           path: site
 
   deploy:
-    needs: build
+    needs: sign
     if: github.event_name == 'release' || inputs.deploy
     runs-on: ubuntu-latest
     permissions:

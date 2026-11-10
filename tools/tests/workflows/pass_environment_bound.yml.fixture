@@ -1,0 +1,25 @@
+# ci.yml's release job: a pull request runs the workflow, but only a tag runs this job.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build
+  release:
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - name: Checksums and signatures
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_SIGNING_KEY" | gpg --batch --import
+          bash packaging/sign-release.sh assets docs/limarepdf-signing-key.asc

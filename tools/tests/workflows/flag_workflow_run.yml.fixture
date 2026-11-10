@@ -1,0 +1,11 @@
+# workflow_run follows a pull request's workflow and runs with the repository's secrets.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - run: echo "${{ secrets.GPG_SIGNING_KEY }}" | gpg --batch --import

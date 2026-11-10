@@ -1,0 +1,13 @@
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        type: boolean
+jobs:
+  sign:
+    if: inputs.deploy || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - run: echo "${{ secrets.GPG_SIGNING_KEY }}" | gpg --batch --import

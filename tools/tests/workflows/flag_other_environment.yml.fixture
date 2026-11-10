@@ -1,0 +1,11 @@
+on: release
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - run: echo "$K" | gpg --batch --import
+        env:
+          K: ${{ secrets.GPG_SIGNING_KEY }}

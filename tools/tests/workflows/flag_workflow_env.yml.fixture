@@ -1,0 +1,10 @@
+# A workflow-wide env: every job sees it, whatever its environment.
+on: [push]
+env:
+  GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - run: true

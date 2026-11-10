@@ -1,0 +1,12 @@
+# In a run block a shell comment is still filled in before the shell runs.
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          # the key: ${{ secrets.GPG_SIGNING_KEY }}
+          true
+        env:
+          X: y
