@@ -1054,6 +1054,11 @@ pub(crate) fn r(x: f32) -> Object {
 fn name(n: &str) -> Object {
     Object::Name(n.as_bytes().to_vec())
 }
+/// `prefix1`, `prefix2`…: the names [`Pdf::add_resource`] tries, and those a form's standard
+/// font tries after its own (S1-31).
+pub(crate) fn numbered(prefix: &str) -> impl Iterator<Item = String> + '_ {
+    (1u64..).map(move |n| format!("{prefix}{n}"))
+}
 fn cm(m: M) -> Operation {
     op("cm", m.iter().map(|&x| r(x)).collect())
 }
@@ -1272,14 +1277,9 @@ impl Pdf {
     ) -> Result<String> {
         let mut res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
         let mut d = self.resolved_dict(res.get(cat.as_bytes()).ok());
-        let mut n = 1;
-        let nm = loop {
-            let c = format!("{prefix}{n}");
-            if !d.has(c.as_bytes()) {
-                break c;
-            }
-            n += 1;
-        };
+        let nm = numbered(prefix)
+            .find(|c| !d.has(c.as_bytes()))
+            .ok_or_else(|| anyhow!("no free name for a {cat} resource"))?;
         d.set(nm.as_bytes().to_vec(), obj);
         res.set(cat, d);
         self.doc.get_dictionary_mut(page)?.set("Resources", res);

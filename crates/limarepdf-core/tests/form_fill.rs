@@ -6,6 +6,7 @@ use common::saved::Saved;
 use common::tool;
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{FieldValue, Pdf};
+use lopdf::content::Content;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 
 const H: f32 = 200.0;
@@ -497,6 +498,336 @@ fn replaces_a_font_that_lacks_a_character() {
     );
     p.set_field("t", FieldValue::Text("a – b".into())).unwrap();
     assert!(appearance(&p, ids[0]).contains("/LimareHelvetica 10 Tf"));
+}
+
+/// The form's fonts (`/DR /Font`), as made by [`form`].
+fn form_fonts(p: &Pdf) -> Dictionary {
+    let form = p.doc.get_dictionary(acro_form(p)).unwrap();
+    let dr = p.doc.dereference(form.get(b"DR").unwrap()).unwrap().1;
+    font_of(p, dr.as_dict().unwrap().get(b"Font").unwrap())
+}
+
+fn form_fonts_mut(p: &mut Pdf) -> &mut Dictionary {
+    let form = acro_form(p);
+    let dr = p.doc.get_dictionary_mut(form).unwrap().get_mut(b"DR");
+    let fonts = dr.unwrap().as_dict_mut().unwrap().get_mut(b"Font");
+    fonts.unwrap().as_dict_mut().unwrap()
+}
+
+/// The font a resource entry holds (a reference, or a dictionary written in place).
+fn font_of(p: &Pdf, entry: &Object) -> Dictionary {
+    let (_, font) = p.doc.dereference(entry).unwrap();
+    font.as_dict().unwrap().clone()
+}
+
+/// The standard font `base` as LimarePDF adds it to a form.
+fn standard(base: &str) -> Dictionary {
+    let mut d = dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => base };
+    if base != "ZapfDingbats" {
+        d.set("Encoding", "WinAnsiEncoding");
+    }
+    d
+}
+
+/// A form ([`form`]) whose text fields `names` are in a Symbol font, `/Orig`, which can't write
+/// Latin letters, so their values go in Helvetica: the fields' ids and the Symbol font's.
+fn in_symbol(p: &mut Pdf, names: &[&str]) -> (Vec<ObjectId>, ObjectId) {
+    let fields = (names.iter().enumerate())
+        .map(|(i, n)| {
+            dictionary! { "FT" => "Tx", "T" => text(n), "DA" => text("/Orig 12 Tf 0 g"),
+            "Rect" => rect(10.0, 10.0 + 30.0 * i as f32, 120.0, 20.0) }
+        })
+        .collect();
+    let ids = form(p, fields);
+    let symbol = dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Symbol" };
+    let symbol = p.doc.add_object(symbol);
+    form_fonts_mut(p).set("Orig", symbol);
+    (ids, symbol)
+}
+
+/// The field `name` (its own widget) on the first page.
+fn widget_of(p: &Pdf, name: &str) -> ObjectId {
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    let annots = p.doc.dereference(page.get(b"Annots").unwrap()).unwrap().1;
+    let annots = annots.as_array().unwrap().iter();
+    annots
+        .map(|a| a.as_reference().unwrap())
+        .find(|&id| {
+            let t = p.doc.get_dictionary(id).unwrap().get(b"T").ok();
+            t.and_then(|t| t.as_str().ok()) == Some(name.as_bytes())
+        })
+        .unwrap()
+}
+
+/// A widget's normal drawing, the one for `state` when it has one for each.
+fn drawing(p: &Pdf, widget: ObjectId, state: Option<&str>) -> ObjectId {
+    let d = p.doc.get_dictionary(widget).unwrap();
+    let n = d.get(b"AP").unwrap().as_dict().unwrap().get(b"N").unwrap();
+    match state {
+        Some(s) => {
+            let n = p.doc.dereference(n).unwrap().1.as_dict().unwrap();
+            n.get(s.as_bytes()).unwrap().as_reference().unwrap()
+        }
+        None => n.as_reference().unwrap(),
+    }
+}
+
+/// The fonts the drawing `ap` sets text in: for each `Tf`, the name it gives, the entry the
+/// drawing's own resources hold under it, and that font.
+fn drawn_in(p: &Pdf, ap: ObjectId) -> Vec<(String, Object, Dictionary)> {
+    let s = p.doc.get_object(ap).unwrap().as_stream().unwrap();
+    let content = s.decompressed_content().unwrap_or(s.content.clone());
+    let res = s.dict.get(b"Resources").unwrap();
+    let res = p.doc.dereference(res).unwrap().1;
+    let fonts = res.as_dict().unwrap().get(b"Font").unwrap();
+    let fonts = p.doc.dereference(fonts).unwrap().1.as_dict().unwrap();
+    let ops = Content::decode(&content).unwrap().operations;
+    (ops.iter().filter(|o| o.operator == "Tf"))
+        .map(|o| {
+            let name = o.operands[0].as_name().unwrap();
+            let entry = fonts.get(name).unwrap().clone();
+            let name = String::from_utf8_lossy(name).into_owned();
+            (name, entry.clone(), font_of(p, &entry))
+        })
+        .collect()
+}
+
+/// That field `name`'s drawing sets its text only in Helvetica as LimarePDF adds it, the font
+/// the form holds under `want`, named `want` there and by the field's `/DA`.
+fn written_in_helvetica(p: &Pdf, name: &str, want: &str) {
+    let w = widget_of(p, name);
+    let drawn = drawn_in(p, drawing(p, w, None));
+    assert!(!drawn.is_empty(), "{name}");
+    let held = form_fonts(p).get(want.as_bytes()).ok().cloned();
+    let helvetica = standard("Helvetica");
+    for (n, entry, font) in drawn {
+        assert_eq!((n.as_str(), &font), (want, &helvetica), "{name}");
+        assert_eq!(Some(entry), held, "{name}");
+    }
+    let da = p.doc.get_dictionary(w).unwrap().get(b"DA").unwrap();
+    let da = String::from_utf8_lossy(da.as_str().unwrap()).into_owned();
+    assert!(da.contains(&format!("/{want} ")), "{name}: {da}");
+}
+
+/// A field whose own font can't write its value is written in Helvetica under the name
+/// LimarePDF gives it, `LimareHelvetica`, only when the form holds Helvetica there as LimarePDF
+/// adds it, or nothing (A-05). The full audit's case: a form whose `LimareHelvetica` is the
+/// field's own Symbol font, in which "HELLO" was drawn in Greek letters. That stays the form's
+/// `LimareHelvetica`, and Helvetica goes under the next name.
+#[test]
+fn a_fallback_name_holding_another_font_isnt_used() {
+    let mut p = page();
+    let (_, symbol) = in_symbol(&mut p, &["Name"]);
+    form_fonts_mut(&mut p).set("LimareHelvetica", symbol);
+    let hello = FieldValue::Text("HELLO".into());
+    p.set_field("Name", hello.clone()).unwrap();
+    let q = reopened(&mut p);
+    for p in [&p, &q] {
+        written_in_helvetica(p, "Name", "LimareHelvetica1");
+        let kept = font_of(p, form_fonts(p).get(b"LimareHelvetica").unwrap());
+        assert_eq!(kept.get(b"BaseFont").unwrap().as_name().unwrap(), b"Symbol");
+        assert_eq!(value(p, "Name"), hello);
+    }
+}
+
+/// [`a_fallback_name_holding_another_font_isnt_used`] with `taken` under `LimareHelvetica`, as
+/// an object of its own or written in place: "Café" (é, so the encoding shows) goes in
+/// Helvetica under `LimareHelvetica1`, and the form's `LimareHelvetica` stays as it was.
+fn fallback_name_holding(taken: Dictionary, in_place: bool) {
+    let mut p = page();
+    in_symbol(&mut p, &["Name"]);
+    let entry = match in_place {
+        true => Object::Dictionary(taken.clone()),
+        false => p.doc.add_object(taken.clone()).into(),
+    };
+    form_fonts_mut(&mut p).set("LimareHelvetica", entry);
+    let cafe = FieldValue::Text("Café".into());
+    p.set_field("Name", cafe.clone()).unwrap();
+    let q = reopened(&mut p);
+    for p in [&p, &q] {
+        written_in_helvetica(p, "Name", "LimareHelvetica1");
+        let kept = form_fonts(p).get(b"LimareHelvetica").unwrap().clone();
+        assert_eq!(matches!(kept, Object::Dictionary(_)), in_place);
+        assert_eq!(font_of(p, &kept), taken);
+        assert_eq!(value(p, "Name"), cafe);
+    }
+}
+
+#[test]
+fn a_fallback_name_holding_helvetica_without_an_encoding_isnt_used() {
+    let mut f = standard("Helvetica");
+    f.remove(b"Encoding");
+    fallback_name_holding(f, false);
+}
+
+#[test]
+fn a_fallback_name_holding_helvetica_in_another_encoding_isnt_used() {
+    let mut f = standard("Helvetica");
+    f.set("Encoding", "MacRomanEncoding");
+    fallback_name_holding(f, false);
+}
+
+#[test]
+fn a_fallback_name_holding_helvetica_with_differences_isnt_used() {
+    let mut f = standard("Helvetica");
+    let enc = dictionary! { "Type" => "Encoding", "BaseEncoding" => "WinAnsiEncoding",
+    "Differences" => vec![233.into(), Object::Name(b"egrave".to_vec())] };
+    f.set("Encoding", enc);
+    fallback_name_holding(f, false);
+}
+
+#[test]
+fn a_fallback_name_holding_a_truetype_helvetica_isnt_used() {
+    let mut f = standard("Helvetica");
+    f.set("Subtype", "TrueType");
+    fallback_name_holding(f, false);
+}
+
+#[test]
+fn a_fallback_name_holding_helvetica_with_a_descriptor_isnt_used() {
+    let mut f = standard("Helvetica");
+    // Written in place, so that it reads the same after reopening.
+    let desc = dictionary! { "Type" => "FontDescriptor", "FontName" => "Helvetica",
+    "Flags" => 32, "ItalicAngle" => 0, "Ascent" => 718, "Descent" => -207, "StemV" => 88 };
+    f.set("FontDescriptor", desc);
+    fallback_name_holding(f, false);
+}
+
+#[test]
+fn a_fallback_name_holding_helvetica_with_widths_isnt_used() {
+    let mut f = standard("Helvetica");
+    f.set("FirstChar", 32);
+    f.set("LastChar", 255);
+    f.set("Widths", vec![Object::Integer(600); 224]);
+    fallback_name_holding(f, false);
+}
+
+#[test]
+fn a_fallback_name_holding_a_font_in_place_isnt_used() {
+    let symbol = dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Symbol" };
+    fallback_name_holding(symbol, true);
+}
+
+/// The Helvetica LimarePDF added for a field is used again for another, after saving and
+/// reopening: no second font (a control: so it was before A-05's fix).
+#[test]
+fn a_fallback_font_added_before_is_used_again() {
+    let mut p = page();
+    in_symbol(&mut p, &["a", "b"]);
+    p.set_field("a", FieldValue::Text("HELLO".into())).unwrap();
+    let mut q = reopened(&mut p);
+    q.set_field("b", FieldValue::Text("WORLD".into())).unwrap();
+    let r = reopened(&mut q);
+    for p in [&q, &r] {
+        written_in_helvetica(p, "a", "LimareHelvetica");
+        written_in_helvetica(p, "b", "LimareHelvetica");
+        assert_eq!(form_fonts(p).len(), 3, "Helv, Orig and LimareHelvetica");
+    }
+}
+
+/// The Helvetica LimarePDF added under a numbered name is used again too, after saving and
+/// reopening: no further name, no second font.
+#[test]
+fn a_fallback_font_under_a_numbered_name_is_used_again() {
+    let mut p = page();
+    let (_, symbol) = in_symbol(&mut p, &["a", "b"]);
+    form_fonts_mut(&mut p).set("LimareHelvetica", symbol);
+    p.set_field("a", FieldValue::Text("HELLO".into())).unwrap();
+    let mut q = reopened(&mut p);
+    q.set_field("b", FieldValue::Text("WORLD".into())).unwrap();
+    let r = reopened(&mut q);
+    for p in [&q, &r] {
+        written_in_helvetica(p, "a", "LimareHelvetica1");
+        written_in_helvetica(p, "b", "LimareHelvetica1");
+        assert_eq!(form_fonts(p).len(), 4, "Helv, Orig and two LimareHelvetica");
+    }
+}
+
+/// The fields a reset writes in Helvetica share the one font it adds.
+#[test]
+fn one_reset_adds_one_fallback_font() {
+    let mut p = page();
+    let (ids, symbol) = in_symbol(&mut p, &["a", "b"]);
+    form_fonts_mut(&mut p).set("LimareHelvetica", symbol);
+    for (id, dv) in ids.into_iter().zip(["HELLO", "WORLD"]) {
+        p.doc.get_dictionary_mut(id).unwrap().set("DV", text(dv));
+    }
+    p.reset_form().unwrap();
+    let q = reopened(&mut p);
+    for p in [&p, &q] {
+        written_in_helvetica(p, "a", "LimareHelvetica1");
+        written_in_helvetica(p, "b", "LimareHelvetica1");
+        assert_eq!(form_fonts(p).len(), 4, "Helv, Orig and two LimareHelvetica");
+        assert_eq!(value(p, "b"), FieldValue::Text("WORLD".into()));
+    }
+}
+
+/// A fill that falls back to Helvetica where its name is taken, and can't be drawn in full,
+/// changes nothing (M-09): no name is taken, no font added (a control).
+#[test]
+fn a_fill_where_the_fallback_name_is_taken_that_cant_be_drawn_changes_nothing() {
+    let mut p = page();
+    let (_, symbol) = in_symbol(&mut p, &[]);
+    form_fonts_mut(&mut p).set("LimareHelvetica", symbol);
+    let kids = vec![
+        dictionary! { "Rect" => rect(10.0, 150.0, 100.0, 20.0) },
+        dictionary! { "Rect" => Object::Null },
+    ];
+    let field = dictionary! { "FT" => "Tx", "T" => text("two"), "DA" => text("/Orig 12 Tf 0 g") };
+    family(&mut p, field, kids);
+    let before = p.state_before();
+    let e = p.set_field("two", FieldValue::Text("HELLO".into()));
+    assert!(e.unwrap_err().to_string().contains("rectangle"));
+    assert_eq!(p.state_since(&before), []);
+}
+
+/// A form with a checkbox "c" that has no drawing, and `zadb` as its `/ZaDb`.
+fn check_with_zadb(p: &mut Pdf, zadb: Object) {
+    let c = dictionary! { "FT" => "Btn", "T" => text("c"), "Rect" => rect(30.0, 10.0, 12.0, 12.0) };
+    form(p, vec![c]);
+    form_fonts_mut(p).set("ZaDb", zadb);
+}
+
+/// A checkbox LimarePDF draws puts its mark in ZapfDingbats, `/ZaDb` in its own drawing, even
+/// when the form's `/ZaDb` is another font, which stays as it is (A-05).
+#[test]
+fn a_check_mark_isnt_drawn_in_another_font() {
+    let mut p = page();
+    let helv = p.doc.add_object(standard("Helvetica"));
+    check_with_zadb(&mut p, helv.into());
+    p.set_field("c", FieldValue::Check(true)).unwrap();
+    let q = reopened(&mut p);
+    for p in [&p, &q] {
+        let drawn = drawn_in(p, drawing(p, widget_of(p, "c"), Some("Yes")));
+        assert!(!drawn.is_empty());
+        for (n, _, font) in drawn {
+            assert_eq!((n.as_str(), font), ("ZaDb", standard("ZapfDingbats")));
+        }
+        let kept = font_of(p, form_fonts(p).get(b"ZaDb").unwrap());
+        assert_eq!(kept, standard("Helvetica"));
+        assert_eq!(value(p, "c"), FieldValue::Check(true));
+    }
+}
+
+/// The form's `/ZaDb`, when it is ZapfDingbats, is what a check mark is drawn in (a control).
+#[test]
+fn the_forms_zapfdingbats_is_used_for_check_marks() {
+    let mut p = page();
+    let mut zapf = standard("ZapfDingbats");
+    zapf.set("Name", "ZaDb");
+    let zapf = p.doc.add_object(zapf);
+    check_with_zadb(&mut p, zapf.into());
+    p.set_field("c", FieldValue::Check(true)).unwrap();
+    let q = reopened(&mut p);
+    for p in [&p, &q] {
+        let drawn = drawn_in(p, drawing(p, widget_of(p, "c"), Some("Yes")));
+        assert!(!drawn.is_empty());
+        let held = form_fonts(p).get(b"ZaDb").unwrap().clone();
+        for (n, entry, _) in drawn {
+            assert_eq!((n.as_str(), entry), ("ZaDb", held.clone()));
+        }
+        assert_eq!(form_fonts(p).len(), 2, "Helv and ZaDb");
+    }
 }
 
 #[test]

@@ -1019,6 +1019,62 @@ fn a_fill_in_a_standard_font_is_only_a_fill_when_signed() {
     }
 }
 
+/// [`a_fill_in_a_standard_font_is_only_a_fill_when_signed`] in a form whose `LimareHelvetica`
+/// is a Symbol font (A-05): the text is still written in Helvetica, under a name of its own in
+/// the drawing's resources, and the form stays as signed.
+#[test]
+fn a_signed_fill_doesnt_use_another_font_under_the_fallback_name() {
+    let mut p = Pdf::from_bytes(&unwritable_fonts_doc(), None).unwrap();
+    let symbol = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Symbol",
+    });
+    let form = p.doc.catalog_mut().unwrap().get_mut(b"AcroForm").unwrap();
+    let dr = form.as_dict_mut().unwrap().get_mut(b"DR").unwrap();
+    let fonts = dr.as_dict_mut().unwrap().get_mut(b"Font").unwrap();
+    fonts.as_dict_mut().unwrap().set("LimareHelvetica", symbol);
+    let s = sign(&p.snapshot().unwrap(), &req(rsa(), field("Approver"))).bytes;
+    let form_fonts = |b: &[u8]| {
+        let p = Pdf::from_bytes(b, None).unwrap();
+        let get = |d: &Dictionary, k: &[u8]| -> Dictionary {
+            let o = p.doc.dereference(d.get(k).unwrap()).unwrap().1;
+            o.as_dict().unwrap().clone()
+        };
+        let form = get(p.doc.catalog().unwrap(), b"AcroForm");
+        format!("{:?}", get(&get(&form, b"DR"), b"Font"))
+    };
+    let a = save(&s, |p| {
+        let text = FieldValue::Text("Montréal".into());
+        p.set_field("City", text).unwrap();
+    });
+    assert!(a.disallowed.is_none(), "{:?}", a.disallowed);
+    let rep = report(&a.bytes);
+    assert_eq!(rep.signatures[0].status, SigStatus::Valid);
+    assert_eq!(kinds(&rep, 0), [ChangeKind::FieldFilled("City".into())]);
+    let da = |b: &[u8]| format!("{:?}", widget(b, "City").get(b"DA").unwrap());
+    assert_eq!(da(&a.bytes), da(&s));
+    assert_eq!(form_fonts(&a.bytes), form_fonts(&s));
+    let p = Pdf::from_bytes(&a.bytes, None).unwrap();
+    let f = p.form_fields().into_iter().find(|f| f.name == "City");
+    assert_eq!(f.unwrap().value, FieldValue::Text("Montréal".into()));
+    // The drawing writes it in Helvetica as LimarePDF adds it, under the next name.
+    let w = widget(&a.bytes, "City");
+    let ap = w.get(b"AP").unwrap().as_dict().unwrap().get(b"N").unwrap();
+    let ap = p.doc.get_object(ap.as_reference().unwrap()).unwrap();
+    let ap = ap.as_stream().unwrap();
+    let content = ap.decompressed_content().unwrap_or(ap.content.clone());
+    let content = String::from_utf8_lossy(&content);
+    assert!(content.contains("/LimareHelvetica1 10 Tf"), "{content}");
+    assert!(!content.contains("/LimareHelvetica "), "{content}");
+    let res = ap.dict.get(b"Resources").unwrap().as_dict().unwrap();
+    let fonts = res.get(b"Font").unwrap().as_dict().unwrap();
+    let font = p.doc.dereference(fonts.get(b"LimareHelvetica1").unwrap());
+    let helvetica = dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    };
+    assert_eq!(font.unwrap().1.as_dict().unwrap(), &helvetica);
+}
+
 #[test]
 fn disallowed_edits_are_named_before_saving() {
     let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
