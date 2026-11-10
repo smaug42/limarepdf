@@ -1696,9 +1696,10 @@ own quality (`imgs::jpeg_quality`) and the choice's, a picture of at most 256 co
 as JPEG at the choice's (HD and High fidelity 90, Print 85, Web 80, Email 75). A soft mask is scaled with it (to
 the picture's new size when it had the picture's, as `/Matte` needs) into a new object, Flate. The new picture
 replaces the old in place (`objects.insert`, so Undo's comparison keeps the old), only when it and its mask are
-smaller than before. Left and counted by `KeptWhy`: other spaces than grey and RGB (`plain_components`: Device,
-Cal, ICCBased of 1 or 3; never Indexed, Separation, DeviceN, Lab; a name followed through the page's colour spaces
-at most 8 times and never back to one already met, S1-08, M-01), not 8 bits, `/Decode`, `/Mask`, `/ImageMask`,
+smaller than before. Left and counted by `KeptWhy`: other spaces than grey and RGB (`plain_components`:
+`imgs::device_equivalent`'s `Plain` or `Calibrated`, so Device, Cal, ICCBased of 1 or 3, saved again in that space;
+never Indexed, Separation, DeviceN, Lab; a name followed through the page's colour spaces by `imgs::followed`, at
+most 8 times and never back to one already met, S1-08, M-01), not 8 bits, `/Decode`, `/Mask`, `/ImageMask`,
 filters other than DCT, Flate, LZW, run length and the ASCII ones, a JPEG whose components don't match its space,
 a mask that isn't 8-bit grey, inline pictures. `Reduced::most` names the picture that lost the most bytes, for the
 app's preview.
@@ -1729,15 +1730,18 @@ picture object (an inline one through `redact_img::inline_stream`) and where it 
 to the displayed page (the object's `ctm` times the inverse of `vis_down`, so a page's `/Rotate` counts).
 `format_of` writes it byte for byte (`PictureFormat::Jpeg`) only when `upright` (x along the page's x, y up, no
 turn beyond a thousandth, stretched or not) and `jpeg_as_is`: `/DCTDecode` alone, no `/SMask`, `/Mask`,
-`/Decode`, `/ImageMask` or `/ColorTransform` (each would show differently outside the PDF), a grey or RGB space
-(`/DeviceGray`, `/DeviceRGB`, `/CalGray`, `/CalRGB`, `/ICCBased` of 1 or 3) matching the JPEG's components, and
+`/Decode`, `/ImageMask` or `/ColorTransform` (each would show differently outside the PDF), a space
+`imgs::device_equivalent` reads as `Space::Plain` (`/DeviceGray`, `/DeviceRGB`, or an `/ICCBased` profile of 3 whose
+header names sRGB) matching the JPEG's components (S1-17, C-02: a calibrated space or another profile shows the
+numbers changed, which a JPEG file doesn't carry), and
 `imgs::jpeg_as_shown` (the JPEG's own size, no EXIF turn, which a photo viewer would apply and a PDF reader
 ignores). Anything else is `picture_png`: `placed` lays the picture on a page of its own, each side as many
 points as its pixels in the direction it shows (a side within 1e-4 of upright or across taken as exactly so),
 the page the bounding box; `alone` writes a one-page document of the picture with every object its dictionary
 reaches copied under the same numbers (`/OC`, `/Metadata`, `/Alternates`, `/OPI`, `/StructParent` dropped), and
 `render.rs`'s `Renderer::render_clear` draws it at 72 dpi on a clear backdrop (`render_bands` with
-`TargetInit::Clear(TRANSPARENT)`, then the colours divided by alpha). Drawn 1:1 on whole pixels, the renderer
+`TargetInit::Clear(TRANSPARENT)`, then the colours divided by alpha); the three are `pictures::drawn_alone`, which
+Optimise scanned pages draws a calibrated scan with too. Drawn 1:1 on whole pixels, the renderer
 samples each pixel as stored, so a Flate RGB or grey picture comes out exactly (core's `tests/pictures.rs`, and a
 flipped RGB picture of Ghostscript's `GS9_Color_Management.pdf` equal to pdfimages' flipped); its colours are the
 renderer's, so CMYK, ICC, Lab, palettes, JPEG 2000, JBIG2 and masks show as on the page. A picture the renderer
@@ -1788,6 +1792,25 @@ written in place (a dictionary, or an array of them); given as a reference (pdf.
 if there were none, leaving a PNG predictor's byte at the start of every row, so the samples read shifted.
 `imgs::direct_parms` makes a copy with them resolved, decoded by `redact_img::decode` (redaction, reducing) and
 `scan.rs`'s `decode` (Optimise scanned pages, the CCITT parameters too); the copy is never written back.
+
+**What a picture's colour space means** (S1-17): `imgs::device_equivalent` is the one reading of a picture's
+colour space for saving it (`pictures.rs`'s `plain_space`), reducing it (`reduce.rs`'s `plain_components`) and
+optimising a scan (`scan.rs`'s `decode`). `imgs::followed` follows its names through the page's `/ColorSpace`
+resources, except the names that are spaces of their own: the device spaces, `G`, `RGB` and `CMYK`, `CalGray`,
+`CalRGB`, `CalCMYK` and `Pattern`, which hayro's `ColorSpace::new_from_name` reads before any resource (and poppler
+too; PB-107 was disproved by that). Then `Space::Plain(n)` is grey or RGB shown as stored: a device name, or an
+`/ICCBased` profile of 3 whose header (bytes 52 to 55) names sRGB, which hayro's `ICCProfile::new` takes as
+DeviceRGB without reading the curves. `Space::Calibrated(n)` is `CalGray`, `CalRGB` or another profile of 1 or 3,
+whose numbers show changed; `Space::Other` the rest. Optimise scanned pages: `scan_target` measures with
+reduce.rs's `shown_ppi`, the lower of the two directions (M-14; it was the width alone), and keeps the page's
+`/ColorSpace` resources (`Target::spaces`; an image shared by pages is decoded with its first page's). `decode`
+refuses CMYK (a JPEG of 4 components, or a space `redact_img::components` counts 4: the printer's profile can't be
+followed; PB-144, C-03's CMYK half), and for a `Calibrated` scan returns, beside its own numbers, how it shows
+(`Scan::shown`): the stream, its colour space replaced by the followed one so no resources are needed, drawn by
+`drawn_alone` at its own pixel size, grey or RGB as its own. `process` chooses the mode from how it shows; kept as
+it is (grey as grey, colour as colour) it re-encodes its own numbers and `encode` writes the followed colour space
+back, otherwise it starts from how it shows and writes device grey (C-03). A 1-bit scan is black and white in any
+calibration and is never drawn.
 
 Saving writes on a thread of its own (ENH-35, batch 37; `app/save.rs`). The window's thread does what comes
 before the write as it always did: keeping the typing, the questions (`App::save`, `save_unmarked`, `save_signed`,

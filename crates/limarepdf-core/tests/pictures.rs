@@ -4,6 +4,8 @@
 //! once. A picture's pixels as it shows, for the system's clipboard (NEW-09's stage 3), and
 //! pixels pasted from it put on a page as a lossless picture.
 
+mod common;
+
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use limarepdf_core::render::Bitmap;
@@ -497,4 +499,112 @@ fn every_picture_is_saved_to_a_folder() {
     let flat = png(&std::fs::read(&done.written[1]).unwrap());
     assert_eq!(flat.to_rgb8().into_raw(), corners(10, 10));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ------------------------------------------ colour profiles and calibration (C-02)
+
+/// RGB with sRGB's primaries and straight-line tone curves: 128 shows as about 188 (see
+/// `data/images/README.md`).
+const LINEAR_RGB: &[u8] = include_bytes!("data/images/linear-rgb.icc");
+
+/// CalRGB with sRGB's primaries and white and straight-line tone curves, as
+/// [`LINEAR_RGB`].
+fn cal_rgb() -> Object {
+    let r = |v: &[f32]| Object::Array(v.iter().map(|&x| x.into()).collect());
+    Object::Array(vec![
+        "CalRGB".into(),
+        Object::Dictionary(dictionary! {
+            "WhitePoint" => r(&[0.9505, 1.0, 1.089]),
+            "Gamma" => r(&[1.0, 1.0, 1.0]),
+            "Matrix" => r(&[0.4124, 0.2126, 0.0193, 0.3576, 0.7152, 0.1192, 0.1805, 0.0722, 0.9505]),
+        }),
+    ])
+}
+
+/// `[/ICCBased …]` for RGB profile `data`, added to `p`.
+fn icc(p: &mut Pdf, data: &[u8]) -> Object {
+    let mut s = Stream::new(dictionary! { "N" => 3 }, data.to_vec());
+    s.compress().unwrap();
+    Object::Array(vec!["ICCBased".into(), p.doc.add_object(s).into()])
+}
+
+/// A colour space, made in the document given (where it needs an object of its own).
+type MakeSpace = fn(&mut Pdf) -> Object;
+
+/// Colour spaces in which numbers don't show as they would in sRGB: [`LINEAR_RGB`] and
+/// CalRGB.
+const NOT_SRGB: [(&str, MakeSpace); 2] = [
+    ("profile", |p| icc(p, LINEAR_RGB)),
+    ("CalRGB", |_| cal_rgb()),
+];
+
+/// An upright 80 × 40 JPEG of [`corners`] drawn with `cm`, in colour space `cs` (given the
+/// document).
+fn jpeg_in(cm: &str, cs: impl FnOnce(&mut Pdf) -> Object) -> (Pdf, ObjectId) {
+    let (mut p, im) = one(jpeg_picture(80, 40), cm);
+    let cs = cs(&mut p);
+    let s = p.doc.get_object_mut(im).unwrap().as_stream_mut().unwrap();
+    s.dict.set("ColorSpace", cs);
+    (p, im)
+}
+
+/// The mean difference between `a` and `b`, RGB samples, over every pixel and channel (0 to
+/// 255).
+fn mean_delta<'a>(a: &[u8], b: impl IntoIterator<Item = &'a u8>) -> f32 {
+    let sum: u64 = a.iter().zip(b).map(|(&x, &y)| x.abs_diff(y) as u64).sum();
+    sum as f32 / a.len() as f32
+}
+
+/// The mean difference between the picture on page 1 as it shows and as saved.
+fn saved_unlike_shown(p: &Pdf) -> (PictureFormat, f32) {
+    let (format, bytes) = saved(p, 0);
+    let file = image::load_from_memory(&bytes).unwrap().to_rgb8();
+    let shown = p.picture_pixels(0, picture_id(p, 0)).unwrap();
+    assert_eq!(file.dimensions(), (shown.width as u32, shown.height as u32));
+    let rgb = shown.rgba.as_chunks::<4>().0.iter().flat_map(|px| &px[..3]);
+    (format, mean_delta(file.as_raw(), rgb))
+}
+
+#[test]
+fn a_jpeg_in_a_colour_profile_other_than_srgb_is_saved_as_it_shows() {
+    for (what, cs) in NOT_SRGB {
+        let (p, _) = jpeg_in("160 0 0 80 72 400", cs);
+        let (format, delta) = saved_unlike_shown(&p);
+        // A JPEG holds no colour space of the PDF's: other apps show its numbers as sRGB.
+        assert!(
+            format == PictureFormat::Png && delta < 2.0,
+            "{what}: saved as {format:?}, mean difference {delta:.1}"
+        );
+    }
+}
+
+#[test]
+fn a_jpeg_in_an_srgb_profile_is_written_byte_for_byte() {
+    // The profile's header names sRGB as its device: shown as plain RGB, as other apps show
+    // the JPEG.
+    let mut srgb = LINEAR_RGB.to_vec();
+    srgb[52..56].copy_from_slice(b"sRGB");
+    let (p, im) = jpeg_in("160 0 0 80 72 400", |p| icc(p, &srgb));
+    let (format, delta) = saved_unlike_shown(&p);
+    assert_eq!(format, PictureFormat::Jpeg);
+    assert!(delta < 2.0, "mean difference {delta:.1}");
+    let stored = &p.doc.get_object(im).unwrap().as_stream().unwrap().content;
+    assert_eq!(&saved(&p, 0).1, stored);
+}
+
+/// Poppler shows a JPEG in a colour profile or CalRGB as it is saved.
+#[test]
+#[ignore = "opt-in: needs poppler"]
+fn poppler_shows_a_jpeg_in_a_colour_profile_as_it_is_saved() {
+    for (what, cs) in NOT_SRGB {
+        // At its own size, a pixel to a point: 72 dots an inch shows it pixel for pixel,
+        // from 72 points in and 352 down.
+        let (mut p, _) = jpeg_in("80 0 0 40 72 400", cs);
+        let file = image::load_from_memory(&saved(&p, 0).1).unwrap().to_rgb8();
+        let page = common::saved::tools::pdftoppm(&p.to_bytes().unwrap());
+        let rows = page.rgb.chunks_exact(page.width * 3).skip(352).take(40);
+        let shown = rows.flat_map(|row| &row[72 * 3..152 * 3]);
+        let delta = mean_delta(file.as_raw(), shown);
+        assert!(delta < 4.0, "{what}: mean difference {delta:.1}");
+    }
 }

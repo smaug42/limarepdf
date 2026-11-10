@@ -11,6 +11,7 @@
 //! Text, fonts, form fields, comments and the pages' content are never changed; only the
 //! pictures' objects and, for a new one, the names in a page's resources.
 
+use crate::imgs::Space;
 use crate::matrix::{self as mx, M};
 use crate::redact_img::{self, Codec, Samples};
 use crate::{Pdf, Result};
@@ -568,7 +569,7 @@ fn int(d: &Dictionary, key: &[u8]) -> Option<i64> {
 
 /// The resolution a `w` × `h` picture is shown at when drawn with `ctm`: the lower of its
 /// two directions' pixels per inch. `None` when it is drawn with no size.
-fn shown_ppi(w: f32, h: f32, ctm: M) -> Option<f32> {
+pub(crate) fn shown_ppi(w: f32, h: f32, ctm: M) -> Option<f32> {
     let across = ctm[0].hypot(ctm[1]) / 72.0;
     let down = ctm[2].hypot(ctm[3]) / 72.0;
     (across > 1e-4 && down > 1e-4 && across.is_finite() && down.is_finite())
@@ -606,33 +607,13 @@ struct Redone {
 }
 
 /// How many colour components `cs` has when it is grey or RGB (in any of their forms), or
-/// `None` for any other colour space. A name is followed through `spaces` at most 8 times
-/// (as [`redact_img::components`] does) and never back to a name already met, so names
-/// standing for each other give `None`.
+/// `None` for any other colour space; its names followed through `spaces` as
+/// [`crate::imgs::followed`] does, so names standing for each other give `None`. The picture
+/// is saved again in its own colour space, so a calibrated one is as good as a plain one.
 fn plain_components(doc: &Document, cs: &Object, spaces: &Dictionary) -> Option<usize> {
-    let mut cs = cs;
-    let mut seen: Vec<&[u8]> = Vec::new();
-    loop {
-        let plain = match doc.dereference(cs).ok()?.1 {
-            Object::Name(n) => match n.as_slice() {
-                b"DeviceGray" | b"CalGray" | b"G" | b"DeviceRGB" | b"CalRGB" | b"RGB" => true,
-                other => {
-                    if seen.len() == 8 || seen.contains(&other) {
-                        return None;
-                    }
-                    seen.push(other);
-                    cs = spaces.get(other).ok()?;
-                    continue;
-                }
-            },
-            Object::Array(a) => matches!(
-                a.first().and_then(|o| o.as_name().ok()),
-                Some(b"ICCBased" | b"CalGray" | b"CalRGB")
-            ),
-            _ => false,
-        };
-        let n = redact_img::components(doc, cs, spaces, 0)?;
-        return (plain && matches!(n, 1 | 3)).then_some(n);
+    match crate::imgs::device_equivalent(doc, cs, spaces) {
+        Space::Plain(n) | Space::Calibrated(n) => Some(n),
+        Space::Other => None,
     }
 }
 

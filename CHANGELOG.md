@@ -9,6 +9,21 @@
 
 ### Fixed
 
+- Optimise scanned pages keeps the resolution you choose (200 dpi by default) both across and down the page. Before,
+  only the scan's width was measured. A scan drawn narrower or wider than its own shape, or turned, could be made
+  smaller than that the other way: a 600 × 1200-pixel scan drawn 2 inches wide and 12 tall came out at 200 dpi
+  across and 67 down. A scan that several pages show in different shapes now keeps what each of them needs, both
+  ways.
+- Optimise scanned pages keeps the colours of a scan with a colour profile (other than sRGB) or a calibration
+  (CalGray, CalRGB). Kept in colour, or kept grey, it keeps its colour profile. Made grey or black and white, it is
+  made from its colours as they show. Before, the profile was dropped and the scan's numbers were shown as plain
+  colour, so its colours changed.
+- A CMYK scan that isn't a JPEG (its samples stored as they are, or Flate-compressed) is no longer changed by
+  Optimise scanned pages: it is left as it is, with the reason given, as CMYK JPEGs already were. Before, its
+  colours were converted by a rough rule, and they shifted.
+- Save image as… saves a JPEG photo whose colour profile isn't sRGB, or that has a calibration, as a PNG of how it
+  shows. Before, the JPEG was saved exactly as stored, so other apps showed its numbers without the document's
+  profile, in other colours. A JPEG in plain colours or an sRGB profile is still saved exactly as stored.
 - An underline shows while you type where it will be written when Helvetica, Times or Courier writes the words in
   its embedded face, as it does when the text holds a character the font can't write as itself (an Ω, say), and
   for new words of a line kept in its own font that go to one of those fonts. Before, the underline was drawn at

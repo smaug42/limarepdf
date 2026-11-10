@@ -254,9 +254,12 @@ shows it. Saving runs in the background and asks before replacing files.
 
 How each picture is saved:
 
-- A JPEG photo shown upright is saved exactly as it is stored in the document, so no quality is lost.
+- A JPEG photo shown upright is saved exactly as it is stored in the document, so no quality is lost. This is
+  for a JPEG in plain colours or an sRGB colour profile, which other apps show as the page does.
 - Any other picture, or one turned or flipped on the page, is saved as a PNG as it shows on the page: at its own
-  size in pixels, turned as the page shows it, its transparency kept. A PNG loses nothing either.
+  size in pixels, turned as the page shows it, its transparency kept. A PNG loses nothing either. A JPEG whose
+  colour profile isn't sRGB, or that has a calibration, is saved this way too. Other apps would show the JPEG file
+  without the document's colour profile, so its colours would change.
 
 Neither changes the document. A picture is saved whole, even when the page shows only part of it. Pictures inside
 comments, stamps and form fields aren't saved, and a picture inside a group (a form XObject) can't be selected

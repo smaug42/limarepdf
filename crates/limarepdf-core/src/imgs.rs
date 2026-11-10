@@ -368,6 +368,106 @@ pub(crate) fn direct_parms(doc: &lopdf::Document, s: &Stream) -> Option<Stream> 
     Some(t)
 }
 
+/// How a picture's colour space shows its numbers, as the renderer reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Space {
+    /// Grey or RGB of `n` components shown as they are, as other apps show a JPEG or PNG
+    /// file: the device spaces, their abbreviations `G` and `RGB` (which the renderer, and
+    /// poppler, read before any name the page gives them: PB-107), and a profile whose
+    /// header names sRGB as its device, which the renderer takes as plain RGB.
+    Plain(usize),
+    /// Grey or RGB of `n` components through a calibration (CalGray, CalRGB) or another
+    /// colour profile: the numbers show changed.
+    Calibrated(usize),
+    /// Anything else: CMYK, Lab, palettes, separations, or a space that can't be read.
+    Other,
+}
+
+/// Colour space `cs` with the names it goes by followed through `spaces` (a page's
+/// `/ColorSpace` resources), as it is written there; `None` when they lead nowhere. At most
+/// 8 names are followed, and never back to one already met. The names that are spaces of
+/// their own (the device spaces and their abbreviations, CalGray, CalRGB, CalCMYK,
+/// Pattern) are not looked up.
+pub(crate) fn followed<'a>(
+    doc: &'a lopdf::Document,
+    cs: &'a Object,
+    spaces: &'a Dictionary,
+) -> Option<&'a Object> {
+    let mut cs = cs;
+    let mut seen: Vec<&[u8]> = Vec::new();
+    loop {
+        match doc.dereference(cs).ok()?.1 {
+            Object::Name(n)
+                if !matches!(
+                    n.as_slice(),
+                    b"DeviceGray"
+                        | b"G"
+                        | b"DeviceRGB"
+                        | b"RGB"
+                        | b"DeviceCMYK"
+                        | b"CMYK"
+                        | b"CalGray"
+                        | b"CalRGB"
+                        | b"CalCMYK"
+                        | b"Pattern"
+                ) =>
+            {
+                if seen.len() == 8 || seen.contains(&n.as_slice()) {
+                    return None;
+                }
+                seen.push(n);
+                cs = spaces.get(n).ok()?;
+            }
+            _ => return Some(cs),
+        }
+    }
+}
+
+/// How colour space `cs`, its names followed through `spaces` (see [`followed`]), shows
+/// its numbers. One reading for saving a picture (whether its JPEG shows elsewhere as here),
+/// optimising a scan and reducing pictures.
+pub(crate) fn device_equivalent(doc: &lopdf::Document, cs: &Object, spaces: &Dictionary) -> Space {
+    let Some(cs) = followed(doc, cs, spaces).and_then(|o| doc.dereference(o).ok()) else {
+        return Space::Other;
+    };
+    let kind = match cs.1 {
+        Object::Name(n) => n.as_slice(),
+        Object::Array(a) => match a.first().and_then(|o| o.as_name().ok()) {
+            Some(n) => n,
+            None => return Space::Other,
+        },
+        _ => return Space::Other,
+    };
+    match kind {
+        b"DeviceGray" | b"G" if matches!(cs.1, Object::Name(_)) => Space::Plain(1),
+        b"DeviceRGB" | b"RGB" if matches!(cs.1, Object::Name(_)) => Space::Plain(3),
+        b"CalGray" => Space::Calibrated(1),
+        b"CalRGB" => Space::Calibrated(3),
+        b"ICCBased" => {
+            let Some(s) = cs.1.as_array().ok().and_then(|a| a.get(1)) else {
+                return Space::Other;
+            };
+            let Ok(s) = doc.dereference(s).and_then(|(_, o)| o.as_stream()) else {
+                return Space::Other;
+            };
+            match s.dict.get(b"N").and_then(Object::as_i64) {
+                Ok(3) if srgb_profile(s) => Space::Plain(3),
+                Ok(n @ (1 | 3)) => Space::Calibrated(n as usize),
+                _ => Space::Other,
+            }
+        }
+        _ => Space::Other,
+    }
+}
+
+/// Whether colour profile `s` names sRGB as its device in its header (bytes 52 to 55),
+/// which the renderer takes as plain RGB without reading the rest.
+fn srgb_profile(s: &Stream) -> bool {
+    // A profile is a few kilobytes; one too large to read isn't taken as sRGB.
+    s.get_plain_content_with_limit(1 << 24)
+        .is_ok_and(|p| p.get(52..56) == Some(b"sRGB".as_slice()))
+}
+
 /// Whether an image XObject's data looks readable, judged from its start without decoding
 /// it: a JPEG must have a header giving its size, and compressed data a valid zlib header.
 /// Other kinds are taken as readable.
