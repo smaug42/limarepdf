@@ -35,6 +35,9 @@ on required ones. **Forms and sign > Fill fields â–¾ > Highlight fields** (or â˜
 fields), or the switch on the form's notice, turns this off or on again for every document, and the choice is
 remembered between runs.
 
+A field the document keeps off screen (one marked to be printed only, or never shown) isn't highlighted, and Tab
+and clicks pass it by, as in other PDF readers. It still prints if the document says so.
+
 ## The Form section
 
 With nothing selected, the inspector says how many form fields the document has, and its folded **Form** section

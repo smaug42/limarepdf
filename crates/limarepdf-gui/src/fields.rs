@@ -95,7 +95,7 @@ impl FormUi {
         let mut order: Vec<(usize, usize)> = Vec::new();
         for (fi, f) in fields.iter().enumerate() {
             for (wi, w) in f.widgets.iter().enumerate() {
-                if !w.hidden {
+                if w.on_screen() {
                     order.push((fi, wi));
                 }
             }
@@ -154,10 +154,11 @@ impl FormUi {
         self.focused().is_some() && matches!(self.focus.as_ref().map(|f| &f.edit), Some(Edit::Ring))
     }
 
-    /// Give the keyboard back to widget `widget` of the field `name`, as Tab gives it.
+    /// Give the keyboard back to widget `widget` of the field `name`, as Tab gives it: only
+    /// to a widget the page shows.
     pub fn focus_field(&mut self, name: &str, widget: usize) {
         let at = self.fields().iter().position(|f| f.name == name);
-        if let Some(fi) = at.filter(|&fi| widget < self.fields()[fi].widgets.len()) {
+        if let Some(fi) = at.filter(|&fi| self.order.contains(&(fi, widget))) {
             self.focus_on(fi, widget, false);
         }
     }
@@ -1094,5 +1095,151 @@ mod tests {
         ui.invalidate();
         ui.load(&p);
         assert_eq!(focused_name(&ui), Some("a"));
+    }
+
+    /// The field and widget with the keyboard.
+    fn focused_at(ui: &FormUi) -> Option<(&str, usize)> {
+        ui.focus.as_ref().map(|f| (f.name.as_str(), f.widget))
+    }
+
+    /// Adds to page 1 of `p` the text field "pair": two widgets with the flags `flags`, the
+    /// first above the second.
+    fn add_pair(p: &mut Pdf, flags: [i64; 2]) {
+        let parent = p.doc.new_object_id();
+        let mut kids: Vec<Object> = Vec::new();
+        for (f, y) in flags.into_iter().zip([150, 50]) {
+            let rect = vec![10.into(), y.into(), 100.into(), (y + 20).into()];
+            kids.push(Object::from(p.doc.add_object(dictionary! {
+                "Type" => "Annot", "Subtype" => "Widget", "Parent" => parent, "F" => f,
+                "Rect" => rect,
+            })));
+        }
+        let field = dictionary! { "FT" => "Tx", "T" => text("pair"), "Kids" => kids.clone() };
+        p.doc.objects.insert(parent, Object::Dictionary(field));
+        let page = p.page_ids()[0];
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        let mut annots = d.get(b"Annots").unwrap().as_array().unwrap().clone();
+        annots.extend(kids);
+        d.set("Annots", annots);
+        let form = p.doc.catalog().unwrap().get(b"AcroForm").unwrap();
+        let form = form.as_reference().unwrap();
+        let d = p.doc.get_dictionary_mut(form).unwrap();
+        let mut top = d.get(b"Fields").unwrap().as_array().unwrap().clone();
+        top.push(parent.into());
+        d.set("Fields", top);
+    }
+
+    /// A text field named `name`, its widget's flags `flags`.
+    fn tx(name: &str, flags: i64) -> Dictionary {
+        dictionary! { "FT" => "Tx", "T" => text(name), "F" => flags }
+    }
+
+    /// A-07: Tab passes by a field the document keeps off screen (NoView, printed or not),
+    /// as by a Hidden one, and goes to the widget of a field that is on screen.
+    #[test]
+    fn tab_passes_by_fields_kept_off_screen() {
+        let mut p = form(vec![
+            (0, 250, tx("top", 4)),
+            (0, 200, tx("off", 32)),
+            (0, 175, tx("printed", 36)),
+            (0, 125, tx("hidden", 6)),
+            (0, 100, dictionary! { "FT" => "Tx", "T" => text("low") }),
+        ]);
+        add_pair(&mut p, [32, 4]);
+        let mut ui = loaded(&p);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            ui.step(true);
+            let (name, widget) = focused_at(&ui).unwrap();
+            seen.push(format!("{name} {widget}"));
+        }
+        assert_eq!(seen, ["top 0", "low 0", "pair 1", "top 0"]);
+    }
+
+    /// A-07: the keyboard isn't given back (F6 to the page) to a field kept off screen, nor
+    /// to the widget of a field that is; the same field's widget on screen takes it.
+    #[test]
+    fn the_keyboard_goes_back_only_to_a_widget_on_screen() {
+        let mut p = form(vec![(0, 250, tx("off", 32))]);
+        add_pair(&mut p, [32, 4]);
+        let mut ui = loaded(&p);
+        for (name, widget) in [("off", 0), ("pair", 0)] {
+            ui.focus_field(name, widget);
+            assert_eq!(focused_at(&ui), None, "{name} {widget}");
+        }
+        ui.focus_field("pair", 1);
+        assert_eq!(focused_at(&ui), Some(("pair", 1)));
+    }
+
+    /// Draw page 1 of `p` at a pixel a point from the window's corner, with the tool filling
+    /// in fields and `events`: whether the pointer was over a field, and the rectangles
+    /// painted.
+    fn page_drawn(
+        ui: &mut FormUi,
+        ctx: &egui::Context,
+        p: &Pdf,
+        events: Vec<egui::Event>,
+        acts: &mut Vec<Action>,
+    ) -> (bool, Vec<Rect>) {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let r = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 300.0));
+        let mut over = false;
+        let mut out = ctx.run_ui(raw, |eui| {
+            let resp = eui.allocate_rect(r, egui::Sense::click());
+            over = ui.page_ui(eui, p, 0, r, 1.0, &resp, true, acts);
+        });
+        out.textures_delta.clear();
+        let painted = (out.shapes.iter())
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Rect(s) => Some(s.rect),
+                _ => None,
+            })
+            .collect();
+        (over, painted)
+    }
+
+    /// A-07: a field kept off screen isn't tinted, and a click on its place neither opens
+    /// it, rings it nor changes it; the field shown above it is tinted and opens.
+    #[test]
+    fn a_field_kept_off_screen_is_not_tinted_or_opened() {
+        let states = dictionary! { "Yes" => Object::Null, "Off" => Object::Null };
+        let tick = dictionary! {
+            "FT" => "Btn", "T" => text("tick"), "F" => 36, "AP" => dictionary! { "N" => states },
+        };
+        let p = form(vec![
+            (0, 250, tx("shown", 4)),
+            (0, 150, tx("off", 32)),
+            (0, 100, tick),
+        ]);
+        let mut ui = loaded(&p);
+        ui.highlight = true;
+        let ctx = egui::Context::default();
+        let mut acts = Vec::new();
+        let place = |ui: &FormUi, name: &str| {
+            let f = ui.fields().iter().find(|f| f.name == name).unwrap();
+            let b = f.widgets[0].bbox;
+            Rect::from_min_max(egui::pos2(b[0], b[1]), egui::pos2(b[2], b[3]))
+        };
+        let shown = place(&ui, "shown");
+        let (_, painted) = page_drawn(&mut ui, &ctx, &p, vec![], &mut acts);
+        assert!(painted.contains(&shown), "the field shown isn't tinted");
+        for name in ["off", "tick"] {
+            let r = place(&ui, name);
+            assert!(!painted.contains(&r), "{name} is tinted");
+            let (over, painted) = page_drawn(&mut ui, &ctx, &p, click(r.center()), &mut acts);
+            assert!(!over, "{name}: the pointer counts as over a field");
+            assert!(!painted.contains(&r), "{name} is tinted or ringed");
+            assert_eq!(focused_name(&ui), None, "{name} took the keyboard");
+            assert!(acts.is_empty(), "{name} was changed");
+        }
+        page_drawn(&mut ui, &ctx, &p, click(shown.center()), &mut acts);
+        assert_eq!(focused_name(&ui), Some("shown"));
     }
 }

@@ -230,7 +230,7 @@ fn reads_every_kind_of_field() {
     assert_eq!(opts, ["red", "blue"]);
     let pages: Vec<usize> = colour.widgets.iter().map(|w| w.page).collect();
     assert_eq!(pages, [0, 1]);
-    assert!(!colour.widgets[0].hidden && colour.widgets[1].hidden);
+    assert!(colour.widgets[0].on_screen() && !colour.widgets[1].on_screen());
     let exports: Vec<Option<&str>> = colour.widgets.iter().map(|w| w.export.as_deref()).collect();
     assert_eq!(exports, [Some("red"), Some("blue")]);
 
@@ -389,4 +389,59 @@ fn only_empty_signature_fields_are_offered_for_signing() {
     // 20 to 40 points up from the bottom of a 200-point page.
     assert_eq!(p.empty_signature_boxes(0), [[10.0, 160.0, 110.0, 180.0]]);
     assert!(p.empty_signature_boxes(1).is_empty());
+}
+
+/// A-07: a widget's flags decide where it shows. On screen unless Hidden (2) or NoView (32)
+/// is set; on paper when Print (4) is set and Hidden isn't. NoView keeps a widget off
+/// screen only: with Print, it still prints.
+#[test]
+fn a_widget_s_flags_decide_whether_it_shows_on_screen_and_on_paper() {
+    // (/F, on screen, printed); None has no /F.
+    let table: [(Option<i64>, bool, bool); 8] = [
+        (None, true, false),
+        (Some(0), true, false),
+        (Some(2), false, false),
+        (Some(4), true, true),
+        (Some(32), false, false),
+        (Some(32 | 4), false, true),
+        (Some(2 | 4), false, false),
+        (Some(2 | 32 | 4), false, false),
+    ];
+    let mut p = two_pages();
+    let mut ids = Vec::new();
+    for (i, &(flags, ..)) in table.iter().enumerate() {
+        let name = format!("f{i}");
+        let mut d = dictionary! { "FT" => "Tx", "T" => text(&name), "Rect" => rect(10, 10 + 20 * i as i64) };
+        if let Some(f) = flags {
+            d.set("F", f);
+        }
+        ids.push(p.doc.add_object(widget(d)));
+    }
+    on_page(&mut p, 0, &ids);
+    set_form(&mut p, &ids);
+    let fields = p.form_fields();
+    let got: Vec<(Option<i64>, bool, bool)> = (table.iter().enumerate())
+        .map(|(i, &(flags, ..))| {
+            let w = &find(&fields, &format!("f{i}")).widgets[0];
+            (flags, w.on_screen(), w.prints())
+        })
+        .collect();
+    assert_eq!(got, table);
+}
+
+/// A-07: an empty signature field the document keeps off screen (NoView, printed or not)
+/// offers no box to sign in, as a Hidden one doesn't.
+#[test]
+fn an_empty_signature_field_kept_off_screen_is_not_offered_for_signing() {
+    let mut p = two_pages();
+    let mut ids = Vec::new();
+    let fields = [("Shown", 4), ("Off", 32), ("Printed", 36), ("Hidden", 2)];
+    for (y, (name, flags)) in [20, 60, 100, 140].into_iter().zip(fields) {
+        ids.push(p.doc.add_object(widget(dictionary! {
+            "FT" => "Sig", "T" => text(name), "Rect" => rect(10, y), "F" => flags,
+        })));
+    }
+    on_page(&mut p, 0, &ids);
+    set_form(&mut p, &ids);
+    assert_eq!(p.empty_signature_boxes(0), [[10.0, 160.0, 110.0, 180.0]]);
 }

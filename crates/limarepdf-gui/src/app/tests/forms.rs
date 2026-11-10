@@ -304,3 +304,65 @@ fn a_mixed_form_is_filled_saved_and_stays_fillable() {
     assert_eq!(value("Town"), FieldValue::Text("Tofino".into()));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A window signing with a digital ID a Letter page of three empty signature fields, each
+/// 200 by 40 points at x 72: "Shown" at y 100 (down from the top), on screen; "Off" at 200
+/// and "Printed" at 300, kept off screen (NoView), the second printed.
+fn signing_fields_kept_off_screen() -> (egui::Context, App) {
+    let (ctx, mut app) = super::paragraphs::new_app();
+    let mut p = Pdf::new();
+    p.insert_blank(0, 612.0, 792.0).unwrap();
+    let page = p.page_ids()[0];
+    let mut ids = Vec::new();
+    let fields = [("Shown", 4), ("Off", 32), ("Printed", 36)];
+    for (y, (name, flags)) in [100.0, 200.0, 300.0].into_iter().zip(fields) {
+        let d = dictionary! {
+            "FT" => "Sig", "T" => Object::string_literal(name), "Rect" => rect(72.0, y, 200.0, 40.0),
+        };
+        let id = widget(&mut p, page, d);
+        p.doc.get_dictionary_mut(id).unwrap().set("F", flags);
+        ids.push(id);
+    }
+    let refs: Vec<Object> = ids.iter().map(|&id| id.into()).collect();
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set("Annots", refs.clone());
+    p.doc
+        .catalog_mut()
+        .unwrap()
+        .set("AcroForm", dictionary! { "Fields" => refs });
+    assert!(app.add_tab(&ctx, p, None, None, false));
+    settle(&mut app, &ctx);
+    app.act(&ctx, Act::SignDigital);
+    settle(&mut app, &ctx);
+    (ctx, app)
+}
+
+/// A-07: signing with a digital ID lists only the empty signature fields on screen, not
+/// those the document keeps off screen (NoView, printed or not).
+#[test]
+fn digital_signing_lists_only_signature_fields_on_screen() {
+    let (_ctx, app) = signing_fields_kept_off_screen();
+    let listed: Vec<&str> = (app.tabs[0].ed.digital_fields.iter())
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(listed, ["Shown"]);
+}
+
+/// A-07: with a digital ID, a click on the place of a signature field kept off screen
+/// asks for a field or a box, as a click anywhere else on the page does; a click on the
+/// field shown opens the signing window for it.
+#[test]
+fn digital_signing_takes_a_click_only_on_a_field_on_screen() {
+    let (ctx, mut app) = signing_fields_kept_off_screen();
+    let ask = "Click inside an empty signature field, or drag a box where the signature goes.";
+    for (name, y) in [("Off", 220.0), ("Printed", 320.0)] {
+        click_page(&mut app, &ctx, (172.0, y), false);
+        assert!(app.sign_window.is_none(), "{name} was taken for signing");
+        let tree = settle(&mut app, &ctx);
+        let said = (tree.nodes.iter()).any(|(_, n)| n.value() == Some(ask));
+        assert!(said, "{name}: nothing said");
+    }
+    click_page(&mut app, &ctx, (172.0, 120.0), false);
+    let w = app.sign_window.as_ref().expect("no signing window");
+    assert_eq!(w.place, SignPlace::Field("Shown".into()));
+}

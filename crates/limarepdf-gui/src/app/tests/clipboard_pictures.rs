@@ -304,3 +304,38 @@ fn a_picture_over_form_fields_says_they_show_above_it() {
     assert_eq!(pictures(&app).len(), 2, "not pasted");
     assert_eq!(note(&app), crate::tab::OVER_FIELDS);
 }
+
+/// A Letter page with one text field in its middle, its widget's flags `flags`.
+fn one_field(flags: i64) -> Pdf {
+    use lopdf::{dictionary, Object};
+    let mut p = Pdf::new();
+    p.insert_blank(0, 612.0, 792.0).unwrap();
+    let page = p.page_ids()[0];
+    let rect: Vec<Object> = [206, 376, 406, 416].map(Object::from).to_vec();
+    let w = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "F" => flags,
+        "T" => Object::string_literal("Name"), "Rect" => rect, "P" => page,
+    });
+    let annots = vec![Object::from(w)];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set("Annots", annots.clone());
+    let form = p.doc.add_object(dictionary! { "Fields" => annots });
+    p.doc.catalog_mut().unwrap().set("AcroForm", form);
+    p
+}
+
+/// A-07, the user's Q1 (a): the note comes for a field shown on screen, or printed though
+/// kept off screen (NoView with Print); not for one shown nowhere (NoView alone, or
+/// Hidden).
+#[test]
+fn the_picture_note_counts_fields_on_screen_or_printed() {
+    for (flags, said) in [(0, true), (4, true), (36, true), (32, false), (6, false)] {
+        let (ctx, mut app) = super::paragraphs::new_app();
+        assert!(app.add_tab(&ctx, one_field(flags), None, None, false));
+        settle(&mut app, &ctx);
+        images_copied(&mut app, &ctx, paste(teal(1920, 1080)));
+        assert_eq!(pictures(&app).len(), 1, "/F {flags}: not pasted");
+        let want = if said { crate::tab::OVER_FIELDS } else { "" };
+        assert_eq!(note(&app), want, "/F {flags}");
+    }
+}

@@ -28,9 +28,21 @@ pub struct Flattened {
 
 /// Annotation flags (`/F`).
 const HIDDEN: i64 = 1 << 1;
+const PRINT: i64 = 1 << 2;
 pub(crate) const NO_VIEW: i64 = 1 << 5;
 const READ_ONLY: i64 = 1 << 6;
 const LOCKED: i64 = 1 << 7;
+
+/// Whether an annotation with flags `flags` is shown on screen: neither Hidden nor NoView.
+pub(crate) fn on_screen(flags: i64) -> bool {
+    flags & (HIDDEN | NO_VIEW) == 0
+}
+
+/// Whether an annotation with flags `flags` is printed: Print set and Hidden clear. NoView
+/// is about the screen alone.
+pub(crate) fn prints(flags: i64) -> bool {
+    flags & PRINT != 0 && flags & HIDDEN == 0
+}
 
 /// What kind of annotation it is (its `/Subtype`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

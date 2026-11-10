@@ -4774,7 +4774,7 @@ impl Editor {
                         let field = pdf.empty_signature_fields().into_iter().find(|f| {
                             f.widgets
                                 .iter()
-                                .any(|w| w.page == page && !w.hidden && inside(&w.bbox))
+                                .any(|w| w.page == page && w.on_screen() && inside(&w.bbox))
                         });
                         match field {
                             Some(f) => {
