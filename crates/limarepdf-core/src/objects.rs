@@ -201,8 +201,12 @@ pub(crate) struct Span {
 #[derive(Clone, Debug)]
 pub(crate) struct Piece {
     pub chars: (usize, usize),
+    /// From where the show starts to where it leaves the pen.
     pub corners: [(f32, f32); 4],
-    /// Where each character starts and ends along the box, as fractions of its length
+    /// The box its letters reach as well: past the pen's end when the show takes back
+    /// some of their width (`[(t) 278] TJ`), before its start when it takes back more.
+    pub extent: [(f32, f32); 4],
+    /// Where each character starts and ends along `extent`, as fractions of its length
     /// from the start. Empty when not known; the characters are then spread evenly.
     pub spans: Vec<(f32, f32)>,
 }
@@ -392,10 +396,15 @@ struct RunInfo {
     fill: Option<[f32; 3]>,
     paint: Paint,
     corners: [(f32, f32); 4],
+    /// [`Piece::extent`], and its ends in text space along the run.
+    extent: [(f32, f32); 4],
+    reach: (f32, f32),
     /// Each character's start and end in text space along the run, from 0 to the
     /// advance.
     spans: Vec<(f32, f32)>,
     adv: f32,
+    /// User space per unit of text space along the run.
+    lin: f32,
     /// Distance in user space from `start` to the first character, along `dir`.
     lead: f32,
     ctm: M,
@@ -702,6 +711,16 @@ impl Pdf {
                         apply(m, adv, a0),
                         apply(m, 0.0, a0),
                     ];
+                    let reach = (spans.iter())
+                        .fold((adv.min(0.0), adv.max(0.0)), |(lo, hi), &(a, b)| {
+                            (lo.min(a), hi.max(b))
+                        });
+                    let extent = [
+                        apply(m, reach.0, d0),
+                        apply(m, reach.1, d0),
+                        apply(m, reach.1, a0),
+                        apply(m, reach.0, a0),
+                    ];
                     // A TJ can open with a gap before its first character.
                     let lead = spans.first().map_or(0.0, |&(a, _)| {
                         let (p, q) = (apply(m, 0.0, 0.0), apply(m, a, 0.0));
@@ -736,8 +755,11 @@ impl Pdf {
                         fill: gs.fill,
                         paint: gs.paint.clone(),
                         corners,
+                        extent,
+                        reach,
                         spans,
                         adv,
+                        lin,
                         lead,
                         ctm: gs.ctm,
                         visible: gs.tr != 3 && gs.tr != 7,
@@ -1255,7 +1277,7 @@ pub(crate) fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> 
             let n = (e - s) as f32;
             ((lo - s) as f32 / n, (hi - s) as f32 / n)
         };
-        let c = p.corners;
+        let c = p.extent;
         let pts = [
             lerp(c[0], c[1], f0),
             lerp(c[0], c[1], f1),
@@ -1280,7 +1302,7 @@ fn caret_stops(pieces: &[Piece], to_vis: M, origin: (f32, f32), dir: (f32, f32))
     let mut end = None;
     for p in pieces {
         let n = p.chars.1 - p.chars.0;
-        let ends = (p.corners[0], p.corners[1]);
+        let ends = (p.extent[0], p.extent[1]);
         for j in 0..n {
             let (f0, f1) = if p.spans.len() == n {
                 p.spans[j]
@@ -1298,7 +1320,9 @@ fn caret_stops(pieces: &[Piece], to_vis: M, origin: (f32, f32), dir: (f32, f32))
 /// A line's box in user space: its pieces' boxes, less the pieces showing only whitespace
 /// and the whitespace at the line's two ends, which draw nothing and would reach over
 /// what is next to the line (a label's tab in a larger font over the next label). Shows
-/// with no characters count where they are among the line's text.
+/// with no characters count where they are among the line's text. A piece's box is where
+/// the pen goes, not where letters reach past it: a paragraph's frame is measured with it,
+/// as the lines set in it are.
 fn line_box(pieces: &[Piece], text: &str) -> [f32; 4] {
     let chars: Vec<char> = text.chars().collect();
     let first = chars.iter().position(|c| !c.is_whitespace()).unwrap_or(0);
@@ -1347,10 +1371,11 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
             .map(|r| {
                 let n = r.text.chars().count();
                 at += n;
-                let spans = if r.spans.len() == n && r.adv.abs() > 1e-6 {
+                let (lo, len) = (r.reach.0, r.reach.1 - r.reach.0);
+                let spans = if r.spans.len() == n && len > 1e-6 {
                     r.spans
                         .iter()
-                        .map(|&(a, b)| (a / r.adv, b / r.adv))
+                        .map(|&(a, b)| ((a - lo) / len, (b - lo) / len))
                         .collect()
                 } else {
                     Vec::new()
@@ -1358,6 +1383,7 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
                 Piece {
                     chars: (at - n, at),
                     corners: r.corners,
+                    extent: r.extent,
                     spans,
                 }
             })
@@ -1435,11 +1461,8 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
                 p.text.push(' ');
                 p.run.gap = along;
                 // The space covers the gap, measured in the run's own units.
-                let c = p.corners;
-                let len = (c[1].0 - c[0].0).hypot(c[1].1 - c[0].1);
-                if !p.spans.is_empty() && len > 1e-6 {
-                    let gap = along * p.adv / len;
-                    p.spans.push((p.adv, p.adv + gap));
+                if !p.spans.is_empty() {
+                    p.spans.push((p.adv, p.adv + along / p.lin));
                 }
             }
         }

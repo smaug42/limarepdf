@@ -610,7 +610,7 @@ fn glyphs(t: &TextData, to_vis: M) -> Vec<(f32, f32)> {
     let mut out = Vec::with_capacity(t.text.len());
     for p in &t.pieces {
         let n = p.chars.1 - p.chars.0;
-        let (a, b) = (p.corners[0], p.corners[1]);
+        let (a, b) = (p.extent[0], p.extent[1]);
         let x = |f: f32| apply(to_vis, a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f).0;
         for j in 0..n {
             let (f0, f1) = match p.spans.len() == n {

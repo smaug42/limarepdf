@@ -8,6 +8,7 @@ mod annot_write;
 mod annots;
 mod asn1;
 mod atomic;
+mod attached;
 mod base_encodings;
 mod blank;
 mod budget;

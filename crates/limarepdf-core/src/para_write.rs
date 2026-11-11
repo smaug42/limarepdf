@@ -2,6 +2,7 @@
 //! line set anew where its old line was in the content, inside its text object, with the
 //! text state put back after it; the lines that keep their breaks left as they were.
 
+use crate::attached;
 use crate::decorate::{carried, Decorated, Redraw};
 use crate::edit::Written;
 use crate::edit::{line_body, move_only, op, put_code, r, tj, Check, Extent, Following, Ink};
@@ -317,6 +318,18 @@ impl Pdf {
             (parsed.objs.get(id).and_then(|o| o.text.as_ref()))
                 .ok_or_else(|| anyhow!("the page changed"))
         };
+        // The text other apps read in place of letters in the rows written anew, taken off
+        // where the edit changes them; it can't be kept around those it keeps (PB-71).
+        let gone: Vec<usize> = replaced.iter().flat_map(|&i| objects(i)).collect();
+        let origins: Vec<Option<usize>> = (parts.iter())
+            .flat_map(|p| (0..p.text.chars().count()).map(|j| p.origin(j)))
+            .collect();
+        let stripped = attached::in_rows(
+            (&self.attached(page, &parsed.ops), &parsed.objs),
+            &gone,
+            (para.chars.len(), |k| para.source(k)),
+            &origins,
+        )?;
         // Each written line's characters, without the spaces it ends with.
         let content = |l: &SetLine| {
             let mut end = l.chars.1;
@@ -438,7 +451,7 @@ impl Pdf {
             place.entry(show).or_default().push((n, body, back));
         }
         // The old lines' shows out, what follows each kept where it was.
-        let mut removed: Vec<usize> = replaced.iter().flat_map(|&i| objects(i)).collect();
+        let mut removed = gone;
         removed.sort_unstable();
         let mut shows: HashMap<usize, Show> = HashMap::new();
         let mut following = Vec::new();
@@ -469,7 +482,7 @@ impl Pdf {
                     put(&mut out, at.get(&i));
                     put(&mut out, after.get(&i));
                 }
-                None => out.push(o.clone()),
+                None => out.push(stripped.get(&i).cloned().unwrap_or_else(|| o.clone())),
             }
         }
         Ok((out, checks))
@@ -537,6 +550,7 @@ impl Pdf {
                         shows: (shows.into_iter())
                             .map(|(spacing, items)| (spacing, tj(items)))
                             .collect(),
+                        tags: Vec::new(),
                     });
                 }
                 Stretch::Word(a, f, k) => {
@@ -553,6 +567,7 @@ impl Pdf {
                             rise: p.rise + s.rise * size / 1000.0,
                             flipped: false,
                             shows: vec![([spacing[0], 0.0, spacing[2]], tj(s.items.clone()))],
+                            tags: Vec::new(),
                         });
                     }
                 }

@@ -568,7 +568,10 @@ built from exactly the versions in `Cargo.lock`; security problems are reported 
   down when a paragraph grows over it (ENH-44). The default, a double-click in a block LimarePDF is sure of opening it as a paragraph, waits for
   better detection to pass the finding check (ENH-46; testing.md, "Finding paragraphs"). Known limits of the writer (testing.md, "Editing
   paragraphs"): marked content's alternative text (`ActualText`) isn't read, so a letter marked as another (a
-  small capital) reads as its glyph's own and loses its mark when its line is rewritten (PB-71); TeX's accent
+  small capital) reads as its glyph's own (PB-71); since S1-24 an edit keeps the mark around letters it leaves as
+  they are (a copy of the tag, less `MCID`, on the line written on top), takes it off letters it changes, and is
+  refused where it can't keep it (rows rewrapped, invisible text, a restyle, a stretch over two lines), the
+  structure tree's own attached text untouched (PB-152); TeX's accent
   drawn over its letter reads to LimarePDF as the accent, then the letter (PB-74), though it is written back as it
   was drawn (PB-73, fixed in 3a); at a part's edge inside one text object a rewritten line can come out a little
   longer or shorter than it was set (PB-75).

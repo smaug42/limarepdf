@@ -9,6 +9,20 @@
 
 ### Fixed
 
+- Editing a line keeps the text other apps read in place of some of its letters (a file's attached text, such as
+  a whole word given for an abbreviation) with those letters when the edit leaves them as they were, and drops it
+  from letters the edit changes or removes. Before, other apps went on reading the old text in place of the letters
+  you typed, and letters left as they were lost the text attached to them. An edit that can't keep such text with
+  the letters it leaves (in invisible text, in a line set in another font, in a paragraph's rows written again, or
+  in a word broken over two lines) is refused, changing nothing: "letters the edit leaves as they are carry text
+  other apps read in their place, which this edit can't keep with them; nothing was changed".
+- A word marked for redaction from a selection or a search takes a letter drawn with its width taken back, as some
+  files draw a word's last letter, and redacting it removes that letter. Before, "Secret" marked and redacted could
+  leave its "t" on the page, with nothing said. Selecting, searching and the text cursor measure such a letter by
+  its whole width too.
+- Redacting text in a font whose own character map other apps read in different ways removes the whole run of text
+  the mark touches, keeping the space it took. Before, only the letters under the mark went, and other apps could
+  read and draw the letters left otherwise than before.
 - A message about characters no font on the computer has names one that doesn't show by its number: "No font on
   this computer has "ʘ" or the character U+F8E8". This covers a control character, a private-use one, a zero-width
   one, a space other than the plain one, and the like. Before, such a character was put in quotes where no one

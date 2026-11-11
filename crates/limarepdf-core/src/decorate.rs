@@ -437,7 +437,7 @@ impl Laid {
         let mut edges = vec![(f32::NAN, f32::NAN); n];
         for p in &t.pieces {
             let k = p.chars.1.saturating_sub(p.chars.0);
-            let (s, e) = (frame.at(p.corners[0]).0, frame.at(p.corners[1]).0);
+            let (s, e) = (frame.at(p.extent[0]).0, frame.at(p.extent[1]).0);
             for j in 0..k {
                 let (f0, f1) = match p.spans.len() == k {
                     true => p.spans[j],

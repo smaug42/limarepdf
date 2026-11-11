@@ -223,8 +223,8 @@ fn xs(p: &Pdf, s: &str) -> Vec<[f32; 2]> {
     b.iter().map(|b| [b[0], b[2]]).collect()
 }
 
-/// Whether two bytes `pair` appear together in any string page 1's content shows.
-fn shows_pair(p: &Pdf, pair: [u8; 2]) -> bool {
+/// Every string in page 1's content, in order.
+fn strings_shown(p: &Pdf) -> Vec<Vec<u8>> {
     let ops = Content::decode(&p.doc.get_page_content(p.page_ids()[0])).unwrap();
     fn strings(o: &Object, out: &mut Vec<Vec<u8>>) {
         match o {
@@ -237,7 +237,14 @@ fn shows_pair(p: &Pdf, pair: [u8; 2]) -> bool {
     for o in &ops.operations {
         o.operands.iter().for_each(|x| strings(x, &mut all));
     }
-    all.iter().any(|s| s.windows(2).any(|w| w == pair))
+    all
+}
+
+/// Whether two bytes `pair` appear together in any string page 1's content shows.
+fn shows_pair(p: &Pdf, pair: [u8; 2]) -> bool {
+    strings_shown(p)
+        .iter()
+        .any(|s| s.windows(2).any(|w| w == pair))
 }
 
 #[test]
@@ -417,6 +424,51 @@ fn a_code_that_also_starts_a_longer_one_goes_with_its_whole_string() {
     assert!(!p.page_text(0).contains('D'), "{}", p.page_text(0));
 }
 
+/// PB-100: a CMap (codespace `<00>` to `<FF>`) mapping a one-byte code that also starts a
+/// mapped two-byte code, `<41>` A and `<4142>` C, with `<44>` D and, in the second, `<42>`
+/// B, else `<43>` B. Poppler reads a code that starts a longer mapped one with the byte
+/// after it, mapped or not (unmapped, it draws nothing, a code 1000 wide); LimarePDF and
+/// hayro read one byte. At 20 pt from x 10:
+///
+/// 1. `<414344>`: LimarePDF reads A to x 20, B to 40 and D to 60; poppler nothing
+///    (`<4143>`) to 30 and D to 50.
+/// 2. `<414442>`: LimarePDF reads A to 20, D to 40 and B to 60; poppler nothing (`<4144>`)
+///    to 30 and B to 50, across LimarePDF's D and B.
+fn starts_a_mapped_pair(second: bool) -> Pdf {
+    let (chars, shown) = if second {
+        ("<41> 34 <4142> 36 <42> 35 <44> 37", "<414442>")
+    } else {
+        ("<41> 34 <4142> 36 <43> 35 <44> 37", "<414344>")
+    };
+    own_cmap(
+        "1 begincodespacerange <00> <FF> endcodespacerange",
+        chars,
+        &format!("BT /F2 20 Tf 10 100 Td {shown} Tj ET"),
+    )
+}
+
+/// PB-100: a font whose CMap maps a code that starts a longer mapped one. Where poppler puts
+/// the characters of a string in it isn't certain, so a mark over any of them takes the
+/// whole show, its width kept: the string after it stays where it was.
+#[test]
+fn a_cmap_mapping_a_code_that_starts_a_longer_one_takes_the_whole_show() {
+    for second in [false, true] {
+        let mut p = starts_a_mapped_pair(second);
+        let page = p.page_ids()[0];
+        let content = String::from_utf8(p.doc.get_page_content(page)).unwrap();
+        let content = content.replace("Tj ET", "Tj <44> Tj ET");
+        p.doc
+            .change_page_content(page, content.into_bytes())
+            .unwrap();
+        assert_eq!(xs(&p, "D").last(), Some(&[60.0, 80.0]), "{second}");
+        // Over LimarePDF's A.
+        let rep = p.redact(&[(0, [11.0, 80.0, 19.0, 108.0])]).unwrap();
+        assert!(rep.left.is_empty(), "{second}: {:?}", rep.left);
+        assert_eq!(strings_shown(&p), [b"\x44"], "{second}");
+        assert_eq!(xs(&p, "D"), [[60.0, 80.0]], "{second}");
+    }
+}
+
 /// Two marks laid on each other over the last fifth of S and nearly all of e (Q14, PB-13):
 /// S is a fifth under them, not two fifths, so it stays; e goes, and nothing readable is
 /// left under them.
@@ -451,6 +503,54 @@ fn keeps_tj_spacing_and_later_strings_in_place() {
     assert!(near(p.find_text_boxes(0, "Sec").unwrap()[0], sec));
     assert!(near(p.find_text_boxes(0, "Yzw").unwrap()[0], yzw));
     assert!(p.find_text_boxes(0, "ret").unwrap().is_empty());
+}
+
+/// "Secret" whose t is shown as `[(t) take] TJ`: 278 takes back its whole width (Helvetica's
+/// t is 278 wide), 500 more than it (as pdf.js's issue1912 does). "here" stands apart. At
+/// 20 pt, "Secre" is 52.24 wide, so t is drawn from x 82.24 to 87.8.
+fn taken_back(take: u16) -> Pdf {
+    make(&[&format!(
+        "BT /F1 20 Tf 30 100 Td (Secre) Tj [(t) {take}] TJ ET \
+         BT /F1 20 Tf 120 100 Td (here) Tj ET"
+    )])
+}
+
+/// PB-78: a letter whose show takes its width back is as wide as its glyph, so a mark found
+/// by search takes it with its word and nothing of it is left.
+#[test]
+fn a_letter_whose_width_is_taken_back_goes_with_its_word() {
+    for take in [278, 500] {
+        let mut p = taken_back(take);
+        assert_eq!(p.page_text(0).replace(' ', ""), "Secrethere", "{take}");
+        let t = xs(&p, "t");
+        let wide = t.len() == 1 && (t[0][0] - 82.24).abs() < 0.05 && (t[0][1] - 87.8).abs() < 0.05;
+        assert!(wide, "{take}: t at {t:?}");
+        let here = p.find_text_boxes(0, "here").unwrap()[0];
+        let marks = p.find_redaction_marks("Secret").unwrap();
+        let rep = p.redact(&marks).unwrap();
+        assert!(rep.left.is_empty(), "{take}: {:?}", rep.left);
+        assert_eq!(rep.pages[0].chars, 6, "{take}");
+        assert_eq!(p.page_text(0).replace(' ', ""), "here", "{take}");
+        let left = strings_shown(&p);
+        assert!(!left.iter().any(|s| s.contains(&b't')), "{take}: {left:?}");
+        assert!(
+            near(p.find_text_boxes(0, "here").unwrap()[0], here),
+            "{take}"
+        );
+    }
+}
+
+/// PB-78's control: an area drawn over the t's glyph already removes it, as the redactor
+/// measures a letter by its glyph.
+#[test]
+fn an_area_over_a_letter_whose_width_is_taken_back_removes_it() {
+    for take in [278, 500] {
+        let mut p = taken_back(take);
+        let rep = p.redact(&[(0, [82.0, 80.0, 88.5, 108.0])]).unwrap();
+        assert!(rep.left.is_empty(), "{take}: {:?}", rep.left);
+        assert_eq!(rep.pages[0].chars, 1, "{take}");
+        assert_eq!(p.page_text(0).replace(' ', ""), "Secrehere", "{take}");
+    }
 }
 
 #[test]
@@ -1899,20 +1999,7 @@ fn cross_check_redacted_output_with_poppler_and_ghostscript() {
 
     // An area over a character of a sparse CMap, where poppler puts it: poppler then reads
     // the characters around it where they were, and nothing under the area.
-    let words = |bytes: &[u8]| -> Vec<(String, f32, f32)> {
-        let html = tools::run("pdftotext", &["-bbox", "{}", "-"], bytes);
-        let attr = |w: &str, k: &str| -> f32 {
-            let v = &w[w.find(&format!("{k}=\"")).unwrap() + k.len() + 2..];
-            v[..v.find('"').unwrap()].parse().unwrap()
-        };
-        html.split("<word ")
-            .skip(1)
-            .map(|w| {
-                let text = &w[w.find('>').unwrap() + 1..w.find("</word>").unwrap()];
-                (text.to_string(), attr(w, "xMin"), attr(w, "xMax"))
-            })
-            .collect()
-    };
+    let words = poppler_words;
     let mut p = sparse_cmap();
     let before = words(&p.to_bytes().unwrap());
     assert_eq!(
@@ -1931,6 +2018,102 @@ fn cross_check_redacted_output_with_poppler_and_ghostscript() {
         [("C".into(), 10.0, 30.0), ("D".into(), 60.0, 80.0)],
         "poppler after"
     );
+}
+
+/// The words poppler reads on the first page, each with its left and right edges.
+fn poppler_words(bytes: &[u8]) -> Vec<(String, f32, f32)> {
+    let html = tools::run("pdftotext", &["-bbox", "{}", "-"], bytes);
+    let attr = |w: &str, k: &str| -> f32 {
+        let v = &w[w.find(&format!("{k}=\"")).unwrap() + k.len() + 2..];
+        v[..v.find('"').unwrap()].parse().unwrap()
+    };
+    html.split("<word ")
+        .skip(1)
+        .map(|w| {
+            let text = &w[w.find('>').unwrap() + 1..w.find("</word>").unwrap()];
+            (text.to_string(), attr(w, "xMin"), attr(w, "xMax"))
+        })
+        .collect()
+}
+
+/// The runs of columns of `img` with ink between rows `rows` (from and to).
+fn inked(img: &Image, rows: [usize; 2]) -> Vec<[usize; 2]> {
+    let mut out: Vec<[usize; 2]> = Vec::new();
+    for x in 0..img.width {
+        if ink(img, [x, rows[0], x + 1, rows[1]]) == 0 {
+            continue;
+        }
+        match out.last_mut() {
+            Some(r) if r[1] == x => r[1] = x + 1,
+            _ => out.push([x, x + 1]),
+        }
+    }
+    out
+}
+
+/// PB-100 read back by poppler: each letter of [`starts_a_mapped_pair`]'s strings marked
+/// in turn, where LimarePDF reads it and where poppler does, and nothing poppler reads left
+/// under the mark. Prints where each reads and draws the letters, before and after:
+/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check_a_code --nocapture`.
+#[test]
+#[ignore]
+fn cross_check_a_code_that_starts_a_mapped_pair_with_poppler() {
+    // (the second fixture, the letter marked, from and to x)
+    let cases = [
+        (false, "LimarePDF's A", 10.0, 20.0),
+        (false, "LimarePDF's B", 20.0, 40.0),
+        (false, "LimarePDF's D", 40.0, 60.0),
+        (false, "poppler's unmapped pair", 10.0, 30.0),
+        (false, "poppler's D", 30.0, 50.0),
+        (true, "LimarePDF's A", 10.0, 20.0),
+        (true, "LimarePDF's D", 20.0, 40.0),
+        (true, "LimarePDF's B", 40.0, 60.0),
+        (true, "poppler's unmapped pair", 10.0, 30.0),
+        (true, "poppler's B", 30.0, 50.0),
+    ];
+    let rows = [80, 108];
+    let mut left = Vec::new();
+    for (second, what, x0, x1) in cases {
+        let case = format!(
+            "fixture {}, {what} (x {x0} to {x1})",
+            1 + usize::from(second)
+        );
+        let mut p = starts_a_mapped_pair(second);
+        let before = p.to_bytes().unwrap();
+        let (ours, theirs) = (drawn(&mut p, 0), tools::pdftoppm(&before));
+        println!("{case}");
+        println!(
+            "  before: LimarePDF reads {:?}, draws at {:?}; poppler reads {:?}, draws at {:?}",
+            p.page_text(0),
+            inked(&ours, rows),
+            poppler_words(&before),
+            inked(&theirs, rows)
+        );
+        let mark = [x0 + 1.0, 80.0, x1 - 1.0, 108.0];
+        let rep = p.redact(&[(0, mark)]).unwrap();
+        let after = p.to_bytes().unwrap();
+        let read = poppler_words(&after);
+        println!(
+            "  after: left {:?}; shown {:02X?}; LimarePDF reads {:?}; poppler reads {:?}",
+            rep.left,
+            strings_shown(&p),
+            p.page_text(0),
+            read
+        );
+        let marks = [(0, mark)];
+        println!(
+            "  drawn differently outside the mark: LimarePDF {} px, poppler {} px",
+            changed_outside(&ours, &drawn(&mut p, 0), &marks),
+            changed_outside(&theirs, &tools::pdftoppm(&after), &marks)
+        );
+        let under: Vec<_> = (read.iter())
+            .filter(|(_, a, b)| a.max(mark[0]) < b.min(mark[2]))
+            .collect();
+        if !under.is_empty() {
+            left.push(format!("{case}: poppler reads {under:?}"));
+        }
+    }
+    assert!(left.is_empty(), "{left:#?}");
 }
 
 /// Poppler reading a redacted form's copy that a kept form inside draws with: the kept
@@ -1968,6 +2151,24 @@ fn cross_check_a_redacted_form_s_copy_with_poppler() {
             changed, 0,
             "{case}: poppler draws page 1 differently outside the mark"
         );
+    }
+}
+
+/// PB-78 read back by poppler: "Secret" found and redacted leaves no t, whether its show
+/// takes back its width or more:
+/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_a_letter_whose_width_is_taken_back_with_poppler() {
+    for take in [278, 500] {
+        let mut p = taken_back(take);
+        let before = tools::pdftotext(&p.to_bytes().unwrap());
+        assert!(before.contains("Secret"), "{take}: {before}");
+        let marks = p.find_redaction_marks("Secret").unwrap();
+        assert!(p.redact(&marks).unwrap().left.is_empty(), "{take}");
+        let after = tools::pdftotext(&p.to_bytes().unwrap());
+        assert!(!after.contains('t'), "{take}: {after}");
+        assert!(after.contains("here"), "{take}: {after}");
     }
 }
 
@@ -3468,6 +3669,76 @@ fn a_blacked_out_picture_s_soft_mask_a_picture_page_2_draws_shares_is_kept_and_r
     );
     assert_eq!(rep.pictures_elsewhere, [1]);
     assert_eq!(rep.picture_notices(), [notice(2)]);
+}
+
+/// The time each step of redacting one word in a long document takes, the median of three
+/// runs, for PB-44's baseline (WP-04 makes it faster): every page has a line of text sharing
+/// one font, and the middle page has "Secret" in it too. Run on a release build:
+/// `cargo test -p limarepdf-core --release --test redact -- --ignored --nocapture
+/// redaction_timings_in_long_documents`.
+#[test]
+#[ignore]
+fn redaction_timings_in_long_documents() {
+    use std::time::{Duration, Instant};
+    for pages in [1_000, 5_000, 10_000] {
+        let mut doc = lopdf::Document::with_version("1.7");
+        let tree = doc.new_object_id();
+        let font = doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding",
+        });
+        let kids: Vec<Object> = (0..pages)
+            .map(|i| {
+                let secret = if i == pages / 2 { " Secret" } else { "" };
+                let text = format!(
+                    "BT /F1 12 Tf 30 100 Td (Page {} keeps this line{secret}) Tj ET",
+                    i + 1
+                );
+                let s = doc.add_object(Stream::new(Dictionary::new(), text.into_bytes()));
+                doc.add_object(dictionary! {
+                    "Type" => "Page", "Parent" => tree, "Contents" => s,
+                    "MediaBox" => vec![0.into(), 0.into(), W.into(), H.into()],
+                    "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+                })
+                .into()
+            })
+            .collect();
+        doc.objects.insert(
+            tree,
+            dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => pages as i64 }.into(),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => tree });
+        doc.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+
+        let mut runs: Vec<[Duration; 4]> = (0..3)
+            .map(|_| {
+                let t = Instant::now();
+                let mut p = Pdf::from_bytes(&bytes, None).unwrap();
+                let open = t.elapsed();
+                let t = Instant::now();
+                let marks = p.find_redaction_marks("Secret").unwrap();
+                let find = t.elapsed();
+                assert_eq!(marks.len(), 1, "{marks:?}");
+                let t = Instant::now();
+                p.redact(&marks).unwrap();
+                let redact = t.elapsed();
+                let t = Instant::now();
+                p.to_bytes().unwrap();
+                [open, find, redact, t.elapsed()]
+            })
+            .collect();
+        let median = |step: usize| {
+            runs.sort_by_key(|r| r[step]);
+            runs[1][step].as_secs_f64()
+        };
+        let [open, find, redact, save] = [0, 1, 2, 3].map(median);
+        println!(
+            "{pages} pages ({} bytes): open {open:.3} s, find {find:.3} s, redact {redact:.3} s, \
+             save {save:.3} s",
+            bytes.len()
+        );
+    }
 }
 
 /// The blacked-out picture's alternate version or its original soft mask, which page 2's
