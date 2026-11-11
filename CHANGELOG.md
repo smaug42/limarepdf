@@ -9,6 +9,9 @@
 
 ### Fixed
 
+- A page too complex to read says why in the inspector: "Editing is unavailable on page 3: it is too complex to
+  read". The inspector says it with nothing selected while the page is in view, and when the page is selected.
+  Before, the editor showed nothing on such a page to select and said nothing about it.
 - In the Create signature window, Shift and an arrow key size the part of a picture used without closing
   LimarePDF when that part is a thin strip at the picture's right or bottom edge. Before, a part dragged out over
   the last few pixels there stopped the app at the first such key.

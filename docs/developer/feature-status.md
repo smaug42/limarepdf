@@ -349,8 +349,8 @@ available.
   underlines takes too long (S1-07; all of that looking counted since CP-05), past about 4 s of reading (7.5
   times the most any page of the test files takes), isn't read. Search names it with why,
   redaction over it refuses and changes nothing, and editing it is refused; its text counts as none for copying,
-  text export and paragraph finding. The editor shows nothing on such a page to select, and doesn't yet say why
-  (no message). A drawing drawn again inside itself is read once where it repeats, as pdf.js reads it. Text or a
+  text export and paragraph finding. The editor shows nothing on such a page to select, and the inspector says
+  why for it ("Editing is unavailable on page 3: it is too complex to read", PB-105). A drawing drawn again inside itself is read once where it repeats, as pdf.js reads it. Text or a
   drawing whose width and height come to more than about 370 m together (S1-07) is passed over when looking for underlines: none under it or
   touching it is read.
 - Redaction doesn't cut the tag tree's, private application data's or any other part of the file's links to what

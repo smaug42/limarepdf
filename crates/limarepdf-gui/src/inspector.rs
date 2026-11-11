@@ -727,6 +727,20 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         (None, None) => document_facts(t),
     };
     let count = t.page_count();
+    // A page whose objects can't be read has nothing on it to select, so the editor's
+    // notice for a selected object never shows: said here for the pages selected, or the
+    // page in view (PB-105).
+    let unread = (pages.as_ref())
+        .map_or(vec![t.current], |p| p.iter().copied().collect())
+        .into_iter()
+        .find_map(|p| Some((p, t.ed.unavailable_on(p)?)))
+        .map(|(p, why)| format!("Editing is unavailable on page {}: {why}", t.page_name(p)));
+    let unread = |ui: &mut Ui| {
+        if let Some(s) = &unread {
+            ui.colored_label(ui.visuals().error_fg_color, s);
+            ui.add_space(6.0);
+        }
+    };
     let f = &mut t.forms;
     let was_typing = f.typing.take();
     f.shown.clear();
@@ -745,6 +759,7 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         (None, Some(pages)) => {
             note(ui, pages_of(pages, count));
             ui.add_space(6.0);
+            unread(ui);
             facts(ui, "page-facts", &said);
             ui.add_space(8.0);
             for a in [
@@ -783,6 +798,7 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
             sections.open.append(&mut inner.open);
         }
         (None, None) => {
+            unread(ui);
             facts(ui, "document-facts", &said);
             ui.add_space(8.0);
             let props = Section::Properties;

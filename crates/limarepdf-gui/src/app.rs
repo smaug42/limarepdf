@@ -12157,6 +12157,39 @@ mod tests {
         assert!(open, "{says:?}");
     }
 
+    /// PB-105: a page too complex to read has nothing on it to select, so the notice shown
+    /// for a selected object never showed. The inspector says why for the page in view
+    /// with nothing selected, and for the page selected; not for another page, read.
+    #[test]
+    fn a_page_too_complex_to_read_says_why() {
+        use limarepdf_core::budget_seam;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        let unavailable = |tree: &egui::accesskit::TreeUpdate| {
+            let says = inspector_says(tree);
+            (says.iter())
+                .find(|s| s.starts_with("Editing is unavailable"))
+                .cloned()
+        };
+        assert_eq!(unavailable(&settled_at(&mut app, &ctx, 1400.0)), None);
+        // One step short of what reading page 1 takes.
+        let read = || app.tabs[0].pdf.page_objects(0).map(drop);
+        let (read, taken) = budget_seam::with_limit(u64::MAX, read);
+        read.unwrap();
+        let short = taken[0] - 1;
+        app.tabs[0].ed.invalidate();
+        let why = "Editing is unavailable on page 1: it is too complex to read";
+        for (pages, said) in [(None, Some(why)), (Some(0), Some(why)), (Some(1), None)] {
+            if let Some(p) = pages {
+                app.tabs[0].ed.selection = Selection::pages_from([p].into());
+            }
+            let (tree, _) = budget_seam::with_limit(short, || settled_at(&mut app, &ctx, 1400.0));
+            assert_eq!(unavailable(&tree).as_deref(), said, "pages {pages:?}");
+        }
+    }
+
     /// PF-40: each tool opens alone in the inspector from its command, headed by its name,
     /// with a button that closes it, back to the document (or, for page labels, the page
     /// they were opened for). Neither changes the document.

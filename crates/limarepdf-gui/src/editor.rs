@@ -3626,7 +3626,12 @@ impl Editor {
             let objs = match pdf.page_objects(page) {
                 Ok(v) => v,
                 Err(e) => {
-                    self.unavailable.insert(page, e.to_string());
+                    // Said as search says it.
+                    let why = match e.downcast_ref::<limarepdf_core::TooComplex>() {
+                        Some(_) => "it is too complex to read".into(),
+                        None => e.to_string(),
+                    };
+                    self.unavailable.insert(page, why);
                     Vec::new()
                 }
             };
@@ -3634,6 +3639,12 @@ impl Editor {
             self.objs.insert(page, objs);
         }
         &self.objs[&page]
+    }
+
+    /// Why `page`'s objects couldn't be read, when they were read and couldn't be: nothing
+    /// on it can be selected, so the inspector says so for the page (PB-105).
+    pub fn unavailable_on(&self, page: usize) -> Option<&str> {
+        self.unavailable.get(&page).map(String::as_str)
     }
 
     fn words(&mut self, pdf: &limarepdf_core::Pdf, page: usize) -> &[PageWord] {
