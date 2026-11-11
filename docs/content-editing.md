@@ -572,6 +572,11 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 - A word written in another font (a letter its font lacks, or another font chosen) loses its own character and
   word spacing and horizontal scaling, and words moved by cut and paste lose the fine spacing between their
   letters; letters left as they were keep theirs.
+- Some files attach text to letters for other apps to read in their place (a whole word for an abbreviation, say);
+  LimarePDF reads the letters as drawn. Letters you change or delete lose the text attached to them, so other apps
+  read what you typed; letters left as they were keep theirs. A change that leaves such letters as they were but
+  has to write them anew with their line (invisible text, a line set in another font, a paragraph's rows rewrapped,
+  or a word broken over two lines) is refused with a message, changing nothing.
 - Underline and Strikethrough are one plain line in the text's colour: there are no double, dotted, dashed or wavy
   ones, and no colour of their own. They aren't offered in text boxes (comments), form fields, headers and
   footers, watermarks and stamps, where they are greyed, nor on the command line (nor are Bold and Italic). An

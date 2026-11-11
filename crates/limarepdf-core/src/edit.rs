@@ -1,5 +1,6 @@
 //! Editing page content: move/resize, delete, change text, restyle paths, replace images, insert objects.
 
+use crate::attached::{self, Carried, Tag};
 use crate::colour::Paint;
 use crate::decorate::{Decorated, Decoration, Laid, Redraw};
 use crate::embed::unwritten_script;
@@ -367,9 +368,15 @@ pub(crate) fn pieces(text: &[char], ways: &[Way]) -> Vec<KeptPiece> {
 }
 
 /// A line of parts to write ([`Pdf::written_lines`]): the line edited (the page as parsed,
-/// and the line) or none for new text, its parts, and whether characters may be written
-/// in the line's own fonts (only those whose text is a part's own, unchanged, otherwise).
-type Asked<'a> = (Option<(&'a Parsed, &'a TextData)>, &'a [TextPart], bool);
+/// and the line) or none for new text, its parts, whether characters may be written in the
+/// line's own fonts (only those whose text is a part's own, unchanged, otherwise), and the
+/// tags copied around each part (none past the last given).
+type Asked<'a> = (
+    Option<(&'a Parsed, &'a TextData)>,
+    &'a [TextPart],
+    bool,
+    &'a [Vec<Tag>],
+);
 
 /// The lines a [`Pdf::edit_texts`] changes, for their decorations: the edits, their lines as
 /// read, which leave their words as they are, the decorations asked for (else carried) and
@@ -458,6 +465,8 @@ pub(crate) struct Written {
     /// ([`Pdf::turned`]), its rise the other way.
     pub flipped: bool,
     pub shows: Vec<([f32; 3], Operation)>,
+    /// The tags copied around its letters, outermost first (PB-71).
+    pub tags: Vec<Tag>,
 }
 
 /// What sets colour `color` for a part of line `t` in font `font`, when the line has it in a
@@ -485,7 +494,8 @@ fn line_ops(tm: M, parts: &[Written]) -> Vec<Operation> {
 /// [`line_ops`] inside a text object: from the first part's font, colour and rise to the
 /// last show. With `all`, the rise and spacing are set at the start whatever they are
 /// (inside a text object already drawing, they are what it set); else they start as a
-/// text object starts.
+/// text object starts. The tags copied around parts open before the first and close after
+/// the last of them.
 pub(crate) fn line_body(tm: M, parts: &[Written], all: bool) -> Vec<Operation> {
     let mut v = Vec::new();
     let mut font: Option<(&[u8], f32)> = None;
@@ -494,7 +504,14 @@ pub(crate) fn line_body(tm: M, parts: &[Written], all: bool) -> Vec<Operation> {
         true => (f32::NAN, [f32::NAN; 3]),
         false => (0.0, [0.0, 0.0, 1.0]),
     };
+    let mut open: &[Tag] = &[];
     for (k, p) in parts.iter().enumerate() {
+        let same = (open.iter().zip(&p.tags))
+            .take_while(|(a, b)| a.of == b.of)
+            .count();
+        v.extend(open[same..].iter().map(|_| op("EMC", vec![])));
+        v.extend(p.tags[same..].iter().map(|t| t.bdc.clone()));
+        open = &p.tags;
         if font != Some((&p.font, p.size)) {
             v.push(op("Tf", vec![Object::Name(p.font.clone()), r(p.size)]));
             font = Some((&p.font, p.size));
@@ -525,6 +542,7 @@ pub(crate) fn line_body(tm: M, parts: &[Written], all: bool) -> Vec<Operation> {
             v.push(show.clone());
         }
     }
+    v.extend(open.iter().map(|_| op("EMC", vec![])));
     v
 }
 
@@ -1658,6 +1676,21 @@ impl Pdf {
             .filter(|(_, u)| !**u)
             .map(|(o, _)| *o)
             .collect();
+        // The text other apps read in place of letters, taken off where the edits change
+        // them and copied around those they keep (PB-71).
+        let all = self.attached(page, &parsed.ops);
+        let mut carried = Carried::default();
+        for ((_, e), o) in writing.iter().zip(&objs) {
+            // One that isn't text is refused writing it.
+            let Some(t) = &o.text else {
+                carried.copies.push(Vec::new());
+                continue;
+            };
+            let first = t.spans.first().map(|s| (s.size, s.fill, s.rise));
+            let copies = !t.hidden && e.parts_for(&t.text, first).is_some();
+            let origins = e.origins(&t.text, first);
+            carried.line((&all, &parsed.objs), t, &e.text, &origins, copies)?;
+        }
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         let mut own = vec![true; writing.len()];
@@ -1666,7 +1699,7 @@ impl Pdf {
         let mut lost = Vec::new();
         let resources = self.page_resources(page)?;
         loop {
-            let e = self.edited_ops(page, &parsed, &writing, &own, &watch)?;
+            let e = self.edited_ops(page, &parsed, &writing, &own, &watch, &carried)?;
             let misread = self.misread(page, &parsed.inline, &e.ops, &e.checks)?;
             // Lines that read as typed keep their words where they were (S1-14).
             let misplaced = match misread.is_empty() {
@@ -1789,7 +1822,8 @@ impl Pdf {
     }
 
     /// The page's operators with `edits` made ([`Pdf::edit_texts`]), each edit's characters
-    /// written in its line's own fonts only where `own` says.
+    /// written in its line's own fonts only where `own` says, and the tags with text attached
+    /// on their lines as `carried` says.
     fn edited_ops(
         &mut self,
         page: ObjectId,
@@ -1797,6 +1831,7 @@ impl Pdf {
         edits: &[(usize, TextEdit)],
         own: &[bool],
         watch: &HashSet<usize>,
+        carried: &Carried,
     ) -> Result<Edited> {
         // A line is written in place of its first show, as one show in its own font, or on
         // top of the page without its shows.
@@ -1818,15 +1853,29 @@ impl Pdf {
             lines.push((obj, t));
         }
         // The parts each line is written in, the lines in parts written together, so they
-        // share the fonts they add.
-        let parts: Vec<_> = (edits.iter().zip(&lines))
-            .map(|((_, e), (_, t))| {
+        // share the fonts they add; cut where tags are copied around letters kept, with them.
+        let copies = |k: usize| carried.copies.get(k).map_or(&[][..], Vec::as_slice);
+        let parts: Vec<_> = (edits.iter().zip(&lines).enumerate())
+            .map(|(k, ((_, e), (_, t)))| {
                 let first = t.spans.first().map(|s| (s.size, s.fill, s.rise));
-                (!t.hidden).then(|| e.parts_for(&t.text, first)).flatten()
+                let parts = (!t.hidden).then(|| e.parts_for(&t.text, first)).flatten()?;
+                Some(match copies(k) {
+                    [] => {
+                        let n = parts.len();
+                        (parts, vec![Vec::new(); n])
+                    }
+                    copies => {
+                        let (parts, tags) = attached::split(&parts, copies);
+                        (std::borrow::Cow::Owned(parts), tags)
+                    }
+                })
             })
             .collect();
         let asked: Vec<Asked> = (parts.iter().zip(&lines).zip(own))
-            .filter_map(|((p, (_, t)), &own)| Some((Some((parsed, *t)), &p.as_ref()?[..], own)))
+            .filter_map(|((p, (_, t)), &own)| {
+                let (p, tags) = p.as_ref()?;
+                Some((Some((parsed, *t)), &p[..], own, &tags[..]))
+            })
             .collect();
         let mut written = self.written_lines(page, &asked)?.into_iter();
         let mut plans = Vec::new();
@@ -1863,15 +1912,16 @@ impl Pdf {
                     ops.extend([op("ET", vec![]), op("Q", vec![])]);
                 }
                 Plan::OnTop(ops)
-            } else if let Some(parts) = &parts[k] {
+            } else if let Some((parts, _)) = &parts[k] {
                 // In parts: in place, as one show, when the line is in one style and
-                // spacing, changed in words only, all in its own font; else on top as one
-                // line.
+                // spacing, changed in words only, all in its own font, and copies no tag;
+                // else on top as one line.
                 let (written, pen) = written.next().expect("written");
                 if pen {
                     check[k] = Some(e.text.clone());
                 }
-                match in_place(t, parts, &written) {
+                let place = copies(k).is_empty().then(|| in_place(t, parts, &written));
+                match place.flatten() {
                     Some((first, show)) => Plan::InPlace(first, show),
                     None => {
                         let mut ops = Vec::new();
@@ -1943,7 +1993,7 @@ impl Pdf {
                     if watch.contains(&i) {
                         watched.insert(i, out.len());
                     }
-                    out.push(o.clone())
+                    out.push(carried.stripped.get(&i).unwrap_or(o).clone())
                 }
             }
         }
@@ -2132,7 +2182,7 @@ impl Pdf {
     /// New text in `parts` as it is written, with the fonts it needs added to the page's
     /// resources ([`Pdf::written_lines`]).
     fn written(&mut self, page: ObjectId, parts: &[TextPart]) -> Result<Vec<Written>> {
-        let mut lines = self.written_lines(page, &[(None, parts, false)])?;
+        let mut lines = self.written_lines(page, &[(None, parts, false, &[])])?;
         Ok(lines.remove(0).0)
     }
 
@@ -2157,23 +2207,29 @@ impl Pdf {
             New(FontChoice),
         }
         type Piece = (TextPart, How, Tail, f32);
-        // Each line's pieces, whether any was written character by character, and the line
-        // edited.
-        type Line<'t> = (Vec<Piece>, bool, Option<&'t TextData>);
+        // Each line's pieces, whether any was written character by character, the line
+        // edited, and where each part's pieces start with the tags copied around them.
+        type Line<'t> = (
+            Vec<Piece>,
+            bool,
+            Option<&'t TextData>,
+            Vec<(usize, &'t [Tag])>,
+        );
         let mut hows: Vec<Line> = Vec::new();
         let font_dict = self.font_resources(page);
         let mut page_fonts = PageFonts::new(&self.doc, &font_dict);
-        for &(line, parts, own) in lines {
+        for &(line, parts, own, tags) in lines {
             let mut line_hows: Vec<Piece> = Vec::new();
-            let parts = parts.iter().filter(|p| !p.text.is_empty());
+            let mut tagged = Vec::new();
+            let parts = (parts.iter().enumerate()).filter(|(_, p)| !p.text.is_empty());
             let Some((parsed, t)) = line else {
-                for p in parts {
+                for (_, p) in parts {
                     let PartFont::Choice(c) = p.font else {
                         bail!("new text has no font of its own to keep");
                     };
                     line_hows.push((p.clone(), How::New(c), Tail::default(), 0.0));
                 }
-                hows.push((line_hows, false, None));
+                hows.push((line_hows, false, None, tagged));
                 continue;
             };
             let fonts = page_fonts.of(parsed, t);
@@ -2184,7 +2240,8 @@ impl Pdf {
             // The gap read as a space after a part kept as it was, written when what comes
             // after it is known: the show it follows, and the part.
             let mut open: Option<(usize, &Span)> = None;
-            for p in parts {
+            for (n, p) in parts {
+                tagged.push((line_hows.len(), tags.get(n).map_or(&[][..], Vec::as_slice)));
                 let text: Vec<char> = p.text.chars().collect();
                 let whole = match p.font {
                     PartFont::Span(i) => (t.spans.get(i)).filter(|s| {
@@ -2278,7 +2335,7 @@ impl Pdf {
                 let run = &t.runs[k];
                 then_gap(shows, gap_move(run.gap, run, was));
             }
-            hows.push((line_hows, used, Some(t)));
+            hows.push((line_hows, used, Some(t), tagged));
         }
         drop(page_fonts);
         // One pen for each font chosen, writing every piece set in it, its fonts (the one
@@ -2315,6 +2372,7 @@ impl Pdf {
                     rise: p.rise,
                     flipped,
                     shows,
+                    tags: Vec::new(),
                 }],
                 How::New(c) => {
                     let k = pens.iter().position(|(f, ..)| *f == c).expect("made");
@@ -2330,6 +2388,7 @@ impl Pdf {
                             rise: p.rise + s.rise * size / 1000.0,
                             flipped: false,
                             shows: vec![([0.0, 0.0, 1.0], tj(s.items.clone()))],
+                            tags: Vec::new(),
                         })
                         .collect()
                 }
@@ -2360,11 +2419,18 @@ impl Pdf {
         // A piece with nothing to show (a space that went to the piece before) is left out.
         let shown = |w: &Written| !w.shows.is_empty();
         let mut lines = Vec::with_capacity(hows.len());
-        for (h, used, t) in hows {
-            let written: Vec<Written> = (h.into_iter())
-                .flat_map(|piece| write(piece, t))
-                .filter(shown)
-                .collect();
+        for (h, used, t, tagged) in hows {
+            let mut written = Vec::new();
+            for (i, piece) in h.into_iter().enumerate() {
+                let tags = (tagged.iter().rev())
+                    .find(|(at, _)| *at <= i)
+                    .map_or(&[][..], |(_, tags)| tags);
+                written.extend(write(piece, t).into_iter().map(|w| Written {
+                    tags: tags.to_vec(),
+                    ..w
+                }));
+            }
+            written.retain(shown);
             lines.push((written, used));
         }
         Ok(lines)
@@ -2723,7 +2789,7 @@ fn apart(a: &TextData, b: &TextData) -> bool {
     // Where along a piece's box (which starts before a show's opening move) a character
     // starts or ends, by its share of the box.
     let at = |p: &crate::objects::Piece, f: f32| {
-        let (c0, c1) = (p.corners[0], p.corners[1]);
+        let (c0, c1) = (p.extent[0], p.extent[1]);
         (c0.0 + (c1.0 - c0.0) * f, c0.1 + (c1.1 - c0.1) * f)
     };
     let e = at(end, end.spans.last().map_or(1.0, |s| s.1));
@@ -2752,7 +2818,7 @@ fn placed(o: &Obj, to_vis: M, keep: &dyn Fn(usize) -> bool) -> Vec<(char, f32, f
     for (_, p) in t.runs.iter().zip(&t.pieces).filter(|(r, _)| keep(r.op)) {
         // Where along a piece's box a character starts or ends, by its share of the box.
         let along = |f: f32| {
-            let (c0, c1) = (p.corners[0], p.corners[1]);
+            let (c0, c1) = (p.extent[0], p.extent[1]);
             let (x, y) = mx::apply(to_vis, c0.0 + (c1.0 - c0.0) * f, c0.1 + (c1.1 - c0.1) * f);
             x * dir.0 + y * dir.1
         };

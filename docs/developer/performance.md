@@ -260,6 +260,31 @@ What they show:
 - When some replacements don't fit and others do, a second copy without them is made for Replace where it fits,
   doubling the time. Taking the copy is one undo step, as any edit: the document's objects compared once.
 
+## Redaction
+
+A baseline, not yet improved (PB-44). Measured on 11 November 2026 on the machine above with the opt-in test
+`redaction_timings_in_long_documents` (in `crates/limarepdf-core/tests/redact.rs`; `cargo test -p limarepdf-core
+--release --test redact -- --ignored --nocapture --exact redaction_timings_in_long_documents`), at d02070d with the
+changes that became S1-24: made-up documents, every page a line of Helvetica text under one page-tree node, the
+middle page holding "Secret". Each step is timed on its own, the median of three runs, release build. The run took
+18 minutes.
+
+| Pages (file size) | Open | Find "Secret" (`find_redaction_marks`) | Redact it (`redact`) | Save |
+| --- | --- | --- | --- | --- |
+| 1,000 (245 KB) | 0.002 s | 0.95 s | 0.18 s | 0.02 s |
+| 5,000 (1.2 MB) | 0.013 s | 35.5 s | 6.7 s | 0.13 s |
+| 10,000 (2.5 MB) | 0.028 s | 263.7 s | 54.3 s | 0.33 s |
+
+What they show:
+
+- Opening and saving grow with the page count. Finding the marks and redacting one mark grow much faster: about
+  the square of it from 1,000 to 5,000 pages, nearly the cube from 5,000 to 10,000.
+- Finding the marks is what `limarepdf-cli redact --text` does; the app marks its own search's results instead
+  (see [Search](#search)), which this doesn't time. Redacting is what the app's Apply and the CLI both do.
+- Not profiled yet. One candidate for finding: `find_redaction_marks` reads each page through
+  `find_text_matches`, which finds the page with `page_id_at`, which collects every page's ID each time, the
+  pattern batch 22 removed from search. What makes redacting one mark grow isn't traced.
+
 ## Reading underlines and strike-throughs
 
 Batch 46's stage 4a (NEW-07) reads other apps' underlines and strike-throughs whenever a page's objects are read

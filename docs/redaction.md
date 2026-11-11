@@ -224,10 +224,11 @@ of the file aren't kept in it.
 - Fonts embedded in the file keep the shapes of the letters they contain, including removed ones (not the text
   itself).
 - Text whose characters can't be placed for certain is removed a whole piece at a time when any of it is under the
-  area: text in fonts whose character map, or its code ranges, can't be read (some Asian-language encodings), and
-  text holding a code its font's character map leaves out. LimarePDF draws such a code as one byte, so the
-  characters after it can show elsewhere than other readers put them; the piece goes when the area covers it in
-  either place.
+  area: text in fonts whose character map, or its code ranges, can't be read (some Asian-language encodings),
+  text in fonts whose character map other readers split into characters in different ways (a code that also
+  starts a longer one, say), and text holding a code its font's character map leaves out. LimarePDF draws such a
+  code as one byte, so the characters after it can show elsewhere than other readers put them; the piece goes when
+  the area covers it in either place.
 - Text set in vertical writing, and text and pictures inside tiling patterns, aren't redacted.
 - A picture drawn at an angle (not a quarter turn) is blacked out over a rectangle in the picture that holds the
   whole area, so a little more than the area can go black.

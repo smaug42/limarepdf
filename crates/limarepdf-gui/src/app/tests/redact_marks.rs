@@ -385,6 +385,60 @@ fn selected_words_are_marked_for_redaction() {
     }
 }
 
+/// "Secret" with its t shown as `[(t) 278] TJ`, taking back its whole width, and "here"
+/// apart: Helvetica at 20 pt, the baseline 100 points down, t drawn from x 82.24 to 87.8.
+fn taken_back() -> Pdf {
+    use lopdf::dictionary;
+    let content = "BT /F1 20 Tf 30 100 Td (Secre) Tj [(t) 278] TJ ET \
+                   BT /F1 20 Tf 120 100 Td (here) Tj ET";
+    page_of(content, |p, _| {
+        let font = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        dictionary! { "Font" => dictionary! { "F1" => font } }
+    })
+}
+
+/// PB-78: "Secret" marked for redaction from words selected and from a search takes its t,
+/// whose show takes its width back: the mark reaches the t's end, and applied, it leaves
+/// only "here".
+#[test]
+fn a_letter_whose_width_is_taken_back_is_marked_with_its_word() {
+    let ctx = test_ctx();
+    for route in ["selection", "search"] {
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, taken_back(), None, None, false));
+        settle(&mut app, &ctx);
+        if route == "selection" {
+            // From inside the S to inside the t.
+            drag_page(&mut app, &ctx, (32.0, 94.0), (86.0, 94.0), false);
+            let sel = &app.tabs[0].ed.selection;
+            assert!(sel.words().is_some(), "no words: {sel:?}");
+            app.act(&ctx, Act::MarkRedact);
+        } else {
+            app.tabs[0].query = "Secret".into();
+            app.act(&ctx, Act::MarkResultsRedact);
+        }
+        settle(&mut app, &ctx);
+        let tab = &app.tabs[0];
+        assert!(tab.error.is_none(), "{route}: {:?}", tab.error);
+        let quads = mark(&app).quads;
+        let mut applied = app.tabs[0].pdf.clone();
+        let rep = applied.apply_redactions().unwrap();
+        let text = applied.page_text(0);
+        assert_eq!(
+            text.replace(' ', ""),
+            "here",
+            "{route}: {text:?}, {:?}",
+            rep.left
+        );
+        assert!(rep.left.is_empty(), "{route}: {:?}", rep.left);
+        let end = quads.iter().map(|q| q[2]).fold(f32::MIN, f32::max);
+        assert!(end > 87.75, "{route}: the mark ends at x {end}: {quads:?}");
+    }
+}
+
 /// Journey B, the applying step: a mark applied (the question answered) takes its text
 /// off the page and the mark with it, in one Undo step; one Undo brings back the text
 /// and the mark where it was, and Redo takes them away again.

@@ -143,6 +143,9 @@ pub(crate) struct FontCtx<'a> {
     /// The CMap's codespace, which says how many bytes each code takes (hayro-cmap reads it
     /// but keeps it to itself); empty when it can't be read.
     space: Vec<Space>,
+    /// The CMap maps a code outside its codespace, or where its ranges of different lengths
+    /// meet ([`breaks_codespace`], PB-100).
+    breaks_codespace: bool,
     /// The CMap's codes are Unicode, as UTF-16 (`UniJIS-UCS2-H`, `UniGB-UTF16-V`, ...).
     utf16: bool,
     /// For a Type 0 font with no ToUnicode map: its character collection's map from CIDs
@@ -295,6 +298,12 @@ impl Space {
                 .enumerate()
                 .all(|(i, b)| (self.low[i]..=self.high[i]).contains(b))
     }
+
+    /// Its lowest and highest codes, as numbers.
+    fn ends(&self) -> (u32, u32) {
+        let number = |b: &[u8]| b.iter().fold(0, |c, &x| c << 8 | x as u32);
+        (number(&self.low[..self.n]), number(&self.high[..self.n]))
+    }
 }
 
 /// Most codespace ranges read for one CMap, those of the CMaps it uses included. The
@@ -322,7 +331,8 @@ fn used_name(data: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The CMap of the embedded CMap stream `s` (object `id`) and its codespace, with those of
-/// the CMaps it is built on (BUG-33). A stream's `/UseCMap` entry names a predefined CMap
+/// the CMaps it is built on (BUG-33), and whether it breaks the codespace
+/// ([`breaks_codespace`]). A stream's `/UseCMap` entry names a predefined CMap
 /// or holds another stream, which its text may also name with `usecmap`; hayro-cmap
 /// follows only `usecmap`, and only to predefined CMaps. So an entry its text doesn't
 /// name is named at its start, and the names it uses find the streams. Each stream is
@@ -331,7 +341,7 @@ fn embedded_cmap(
     doc: &Document,
     id: Option<lopdf::ObjectId>,
     s: &lopdf::Stream,
-) -> (Option<Arc<CMap>>, Vec<Space>) {
+) -> (Option<Arc<CMap>>, Vec<Space>, bool) {
     let regular = |n: &[u8]| {
         !n.is_empty()
             && n.iter()
@@ -380,7 +390,7 @@ fn embedded_cmap(
         break;
     }
     let Some((_, top)) = chain.first() else {
-        return (None, Vec::new());
+        return (None, Vec::new(), false);
     };
     let get = |n: &[u8]| {
         predefined_data(n).or_else(|| {
@@ -389,7 +399,86 @@ fn embedded_cmap(
         })
     };
     let cmap = CMap::parse(top, |n: CMapName<'_>| get(n.to_bytes())).map(Arc::new);
-    (cmap, codespace_in(top, 0, &get))
+    let space = codespace_in(top, 0, &get);
+    let breaks = breaks_codespace(&space, chain.iter().map(|(_, d)| d.as_slice()));
+    (cmap, space, breaks)
+}
+
+/// Whether a code CMap texts `texts` map (a CMap's own and those of the embedded CMaps it
+/// uses) is read at another length by some reader, by codespace `space` (PB-100): one of
+/// several bytes outside every range of its length, which pdf.js reads as one byte; one
+/// whose start lies in a shorter range, which pdf.js reads instead; or one that starts a
+/// longer range, which poppler reads on into (and pdf.js, for a byte in no range). pdf.js
+/// reads ranges as numbers, shortest first; poppler and [`Space::starts`] byte by byte,
+/// codes that lie within. A code that starts a longer mapped one is one of these: that one
+/// lies in a longer range, or outside them all. The predefined CMaps map only codes in
+/// their codespaces (tested), so the codes they map aren't looked at. A text whose codes
+/// can't be read counts as breaking it.
+fn breaks_codespace<'d>(space: &[Space], texts: impl IntoIterator<Item = &'d [u8]>) -> bool {
+    let ranges: Vec<(usize, (u32, u32))> = space.iter().map(|s| (s.n, s.ends())).collect();
+    // The ranges of each length, those that touch joined, in order.
+    let mut joined: [Vec<(u32, u32)>; 5] = Default::default();
+    for &(n, r) in &ranges {
+        joined[n].push(r);
+    }
+    for j in &mut joined {
+        j.sort_unstable();
+        j.dedup_by(|(lo, hi), (_, top)| {
+            let touches = *lo <= top.saturating_add(1);
+            if touches {
+                *top = (*top).max(*hi);
+            }
+            touches
+        });
+    }
+    let meets = |(a, b): (u32, u32), (lo, hi): (u32, u32)| a <= hi && lo <= b;
+    for t in texts {
+        let Some(codes) = text_codes(t) else {
+            return true;
+        };
+        for (n, lo, hi) in codes {
+            if lo > hi {
+                continue;
+            }
+            let k = joined[n].partition_point(|&(a, _)| a <= lo);
+            let outside = n > 1 && (k == 0 || joined[n][k - 1].1 < hi);
+            let shorter = (1..n).any(|k| {
+                let shift = 8 * (n - k) as u32;
+                let starts = (lo >> shift, hi >> shift);
+                ranges.iter().any(|&(m, r)| m == k && meets(r, starts))
+            });
+            let longer =
+                (space.iter()).any(|s| s.n > n && least_in(s, n, lo).is_some_and(|c| c <= hi));
+            if outside || shorter || longer {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The least code of `n` bytes from `from` on whose bytes are each between those of range
+/// `s` at their place (its first `n`).
+fn least_in(s: &Space, n: usize, from: u32) -> Option<u32> {
+    let d = &from.to_be_bytes()[4 - n..];
+    let mut out = [0u8; 4];
+    for i in 0..n {
+        let j = if d[i] < s.low[i] {
+            out[i] = s.low[i];
+            i
+        } else if d[i] > s.high[i] {
+            // Carried at the last place before that can take a higher byte.
+            let j = (0..i).rev().find(|&j| d[j] < s.high[j])?;
+            out[j] = d[j] + 1;
+            j
+        } else {
+            continue;
+        };
+        out[..j].copy_from_slice(&d[..j]);
+        out[j + 1..n].copy_from_slice(&s.low[j + 1..n]);
+        return Some(out[..n].iter().fold(0, |c, &x| c << 8 | x as u32));
+    }
+    Some(from)
 }
 
 /// `bytes` split into character codes of the lengths `len` gives, each with its bytes.
@@ -495,62 +584,122 @@ fn space_range(low: &[u8], high: &[u8]) -> Option<Space> {
     Some(s)
 }
 
-/// [`codespace`] of a CMap's text: the hexadecimal pairs between `begincodespacerange` and
-/// `endcodespacerange`. Comments, strings and dictionaries are passed over.
-fn text_codespace<'a>(data: &[u8], depth: u32, get: Get<'a>) -> Option<Vec<Space>> {
-    let regular = |c: u8| !c.is_ascii_whitespace() && !b"()<>[]{}/%".contains(&c);
-    let mut out = Vec::new();
-    let mut inside = false;
-    let mut low: Option<Vec<u8>> = None;
-    let mut name: &[u8] = &[];
-    let mut i = 0;
-    while i < data.len() {
-        let c = data[i];
+/// A token of a CMap's text ([`Tokens`]).
+enum Token<'d> {
+    /// A hexadecimal string's bytes; `None` when its digits can't be read (an odd number of
+    /// them included).
+    Hex(Option<Vec<u8>>),
+    /// A hexadecimal string with no end, which ends the text.
+    Unended,
+    /// A name, without its slash.
+    Name(&'d [u8]),
+    /// A keyword or a number.
+    Word(&'d [u8]),
+    /// An array's brackets.
+    Open,
+    Close,
+}
+
+/// The tokens of a CMap's text, read for what hayro-cmap keeps to itself. Comments, strings
+/// and dictionaries' brackets are passed over.
+struct Tokens<'d> {
+    data: &'d [u8],
+    at: usize,
+}
+
+impl<'d> Iterator for Tokens<'d> {
+    type Item = Token<'d>;
+
+    fn next(&mut self) -> Option<Token<'d>> {
+        let data = self.data;
+        let regular = |c: u8| !c.is_ascii_whitespace() && !b"()<>[]{}/%".contains(&c);
         let word = |i: usize| -> usize {
             let n = data[i..].iter().position(|&c| !regular(c));
             i + n.unwrap_or(data.len() - i)
         };
-        match c {
-            b'%' => {
-                while i < data.len() && !matches!(data[i], b'\r' | b'\n') {
-                    i += 1;
-                }
-            }
-            b'(' => {
-                // A string, with nested brackets and escapes.
-                let mut level = 0usize;
-                while i < data.len() {
-                    match data[i] {
-                        b'\\' => i += 1,
-                        b'(' => level += 1,
-                        b')' => level -= 1,
-                        _ => {}
-                    }
-                    i += 1;
-                    if level == 0 {
-                        break;
+        while self.at < data.len() {
+            let i = self.at;
+            match data[i] {
+                b'%' => {
+                    while self.at < data.len() && !matches!(data[self.at], b'\r' | b'\n') {
+                        self.at += 1;
                     }
                 }
+                b'(' => {
+                    // A string, with nested brackets and escapes.
+                    let mut level = 0usize;
+                    while self.at < data.len() {
+                        match data[self.at] {
+                            b'\\' => self.at += 1,
+                            b'(' => level += 1,
+                            b')' => level -= 1,
+                            _ => {}
+                        }
+                        self.at += 1;
+                        if level == 0 {
+                            break;
+                        }
+                    }
+                }
+                b'<' if data.get(i + 1) == Some(&b'<') => self.at += 2,
+                b'<' => {
+                    let Some(n) = data[i..].iter().position(|&c| c == b'>') else {
+                        self.at = data.len();
+                        return Some(Token::Unended);
+                    };
+                    self.at = i + n + 1;
+                    let digits: Vec<u8> = data[i + 1..i + n]
+                        .iter()
+                        .filter(|c| !c.is_ascii_whitespace())
+                        .copied()
+                        .collect();
+                    let bytes = digits.len().is_multiple_of(2).then(|| {
+                        (digits.chunks(2))
+                            .map(|d| u8::from_str_radix(std::str::from_utf8(d).ok()?, 16).ok())
+                            .collect::<Option<Vec<u8>>>()
+                    });
+                    return Some(Token::Hex(bytes.flatten()));
+                }
+                b'/' => {
+                    self.at = word(i + 1);
+                    return Some(Token::Name(&data[i + 1..self.at]));
+                }
+                b'[' | b']' => {
+                    self.at += 1;
+                    return Some(if data[i] == b'[' {
+                        Token::Open
+                    } else {
+                        Token::Close
+                    });
+                }
+                c if regular(c) => {
+                    self.at = word(i);
+                    return Some(Token::Word(&data[i..self.at]));
+                }
+                _ => self.at += 1,
             }
-            b'<' if data.get(i + 1) == Some(&b'<') => i += 2,
-            b'<' => {
-                let end = i + data[i..].iter().position(|&c| c == b'>')?;
-                let digits: Vec<u8> = data[i + 1..end]
-                    .iter()
-                    .filter(|c| !c.is_ascii_whitespace())
-                    .copied()
-                    .collect();
-                i = end + 1;
-                if !inside {
-                    continue;
-                }
-                if digits.len() % 2 == 1 {
-                    return None;
-                }
-                let bytes = digits
-                    .chunks(2)
-                    .map(|d| u8::from_str_radix(std::str::from_utf8(d).ok()?, 16).ok())
-                    .collect::<Option<Vec<u8>>>()?;
+        }
+        None
+    }
+}
+
+/// The tokens of CMap text `data`.
+fn tokens(data: &[u8]) -> Tokens<'_> {
+    Tokens { data, at: 0 }
+}
+
+/// [`codespace`] of a CMap's text: the hexadecimal pairs between `begincodespacerange` and
+/// `endcodespacerange`. Comments, strings and dictionaries are passed over.
+fn text_codespace<'a>(data: &[u8], depth: u32, get: Get<'a>) -> Option<Vec<Space>> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    let mut low: Option<Vec<u8>> = None;
+    let mut name: &[u8] = &[];
+    for t in tokens(data) {
+        match t {
+            Token::Unended => return None,
+            Token::Hex(bytes) if inside => {
+                let bytes = bytes?;
                 match low.take() {
                     None => low = Some(bytes),
                     Some(l) => out.push(space_range(&l, &bytes)?),
@@ -559,23 +708,78 @@ fn text_codespace<'a>(data: &[u8], depth: u32, get: Get<'a>) -> Option<Vec<Space
                     return None;
                 }
             }
-            b'/' => {
-                let end = word(i + 1);
-                name = &data[i + 1..end];
-                i = end;
+            Token::Name(n) => name = n,
+            Token::Word(b"begincodespacerange") => inside = true,
+            Token::Word(b"endcodespacerange") if low.is_some() => return None,
+            Token::Word(b"endcodespacerange") => inside = false,
+            Token::Word(b"usecmap") => out.extend(used_codespace(name, depth, get)?),
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
+/// The codes CMap text `data` maps, to CIDs, to `.notdef` or to text (which hayro-cmap
+/// also reads as CIDs): each range's length in bytes and its lowest and highest codes, a
+/// single code as a range of one. `None` when they can't be read.
+fn text_codes(data: &[u8]) -> Option<Vec<(usize, u32, u32)>> {
+    let mut out = Vec::new();
+    // The tokens an entry of the open section takes (its codes, then what they map to);
+    // 0 outside one.
+    let mut size = 0;
+    let mut entry: Vec<Option<Vec<u8>>> = Vec::new();
+    // Arrays open, as a range mapped to text has: one token, whatever they hold.
+    let mut arrays = 0usize;
+    for t in tokens(data) {
+        let item = match t {
+            Token::Unended => return None,
+            Token::Open => {
+                arrays += 1;
+                continue;
             }
-            c if regular(c) => {
-                let end = word(i);
-                match &data[i..end] {
-                    b"begincodespacerange" => inside = true,
-                    b"endcodespacerange" if low.is_some() => return None,
-                    b"endcodespacerange" => inside = false,
-                    b"usecmap" => out.extend(used_codespace(name, depth, get)?),
-                    _ => {}
+            Token::Close => {
+                arrays = arrays.saturating_sub(1);
+                if arrays > 0 {
+                    continue;
                 }
-                i = end;
+                None
             }
-            _ => i += 1,
+            _ if arrays > 0 => continue,
+            Token::Word(b"begincidchar" | b"beginnotdefchar" | b"beginbfchar") => {
+                (size, entry) = (2, Vec::new());
+                continue;
+            }
+            Token::Word(b"begincidrange" | b"beginnotdefrange" | b"beginbfrange") => {
+                (size, entry) = (3, Vec::new());
+                continue;
+            }
+            Token::Word(
+                b"endcidchar" | b"endnotdefchar" | b"endbfchar" | b"endcidrange"
+                | b"endnotdefrange" | b"endbfrange",
+            ) => {
+                size = 0;
+                continue;
+            }
+            Token::Hex(bytes) => bytes,
+            _ => None,
+        };
+        if size == 0 {
+            continue;
+        }
+        entry.push(item);
+        if entry.len() == size {
+            let lo = entry[0].take()?;
+            let hi = if size == 3 {
+                entry[1].take()?
+            } else {
+                lo.clone()
+            };
+            if lo.len() != hi.len() || !(1..=4).contains(&lo.len()) {
+                return None;
+            }
+            let code = |b: &[u8]| b.iter().fold(0, |c, &x| c << 8 | x as u32);
+            out.push((lo.len(), code(&lo), code(&hi)));
+            entry.clear();
         }
     }
     Some(out)
@@ -660,6 +864,7 @@ impl<'a> FontCtx<'a> {
                     .is_some_and(|n| n.starts_with(b"Identity-")),
             cmap: None,
             space: Vec::new(),
+            breaks_codespace: false,
             utf16: false,
             cid_text: None,
             glyph_text: None,
@@ -727,7 +932,7 @@ impl<'a> FontCtx<'a> {
                     ctx.parse_w(doc, w);
                 }
             }
-            (ctx.cmap, ctx.space) = match dict
+            (ctx.cmap, ctx.space, ctx.breaks_codespace) = match dict
                 .get(b"Encoding")
                 .ok()
                 .and_then(|o| doc.dereference(o).ok())
@@ -735,10 +940,10 @@ impl<'a> FontCtx<'a> {
                 Some((_, Object::Name(n))) => {
                     let name = CMapName::from_bytes(n);
                     let space = load_embedded(name).map_or_else(Vec::new, |d| codespace(d, 0));
-                    (predefined(name), space)
+                    (predefined(name), space, false)
                 }
                 Some((id, Object::Stream(s))) => embedded_cmap(doc, id, s),
-                _ => (None, Vec::new()),
+                _ => (None, Vec::new(), false),
             };
             ctx.codes_known |= ctx.cmap.is_some() && !ctx.space.is_empty();
             ctx.utf16 = enc_name.as_deref().is_some_and(|n| {
@@ -935,13 +1140,18 @@ impl<'a> FontCtx<'a> {
     /// as one byte, whatever the codespace says, so the characters after it are drawn
     /// elsewhere. Where the two agree, poppler and pdf.js read the string the same way too,
     /// unless the CMap breaks its own codespace with a code that also starts a longer one
-    /// ([`starts_longer`]): such a string isn't drawn alike either.
+    /// ([`starts_longer`]): such a string isn't drawn alike either. Nor is any string of a
+    /// font whose CMap breaks it anywhere ([`breaks_codespace`], PB-100): other readers may
+    /// split even a string LimarePDF finds no such code in otherwise.
     pub fn drawn_alike(&self, bytes: &[u8]) -> bool {
         let Some(m) = self.cmap.as_ref() else {
             return true;
         };
         if !self.type0 || self.utf16 || self.space.is_empty() {
             return true;
+        }
+        if self.breaks_codespace {
+            return false;
         }
         let mut rest = bytes;
         while !rest.is_empty() {
@@ -1176,19 +1386,21 @@ mod tests {
         space_range(low, high).unwrap()
     }
 
+    /// The predefined CMaps' names.
+    const PREDEFINED: &str = "83pv-RKSJ-H 90ms-RKSJ-H 90ms-RKSJ-V 90msp-RKSJ-H 90msp-RKSJ-V \
+        90pv-RKSJ-H Add-RKSJ-H Add-RKSJ-V B5pc-H B5pc-V CNS-EUC-H CNS-EUC-V ETen-B5-H \
+        ETen-B5-V ETenms-B5-H ETenms-B5-V EUC-H EUC-V Ext-RKSJ-H Ext-RKSJ-V GB-EUC-H \
+        GB-EUC-V GBK-EUC-H GBK-EUC-V GBK2K-H GBK2K-V GBKp-EUC-H GBKp-EUC-V GBpc-EUC-H \
+        GBpc-EUC-V H HKscs-B5-H HKscs-B5-V Identity-H Identity-V KSC-EUC-H KSC-EUC-V \
+        KSCms-UHC-H KSCms-UHC-HW-H KSCms-UHC-HW-V KSCms-UHC-V KSCpc-EUC-H UniCNS-UCS2-H \
+        UniCNS-UCS2-V UniCNS-UTF16-H UniCNS-UTF16-V UniGB-UCS2-H UniGB-UCS2-V \
+        UniGB-UTF16-H UniGB-UTF16-V UniJIS-UCS2-H UniJIS-UCS2-HW-H UniJIS-UCS2-HW-V \
+        UniJIS-UCS2-V UniJIS-UTF16-H UniJIS-UTF16-V UniKS-UCS2-H UniKS-UCS2-V \
+        UniKS-UTF16-H UniKS-UTF16-V V";
+
     #[test]
     fn every_predefined_cmap_has_a_codespace() {
-        let names = "83pv-RKSJ-H 90ms-RKSJ-H 90ms-RKSJ-V 90msp-RKSJ-H 90msp-RKSJ-V \
-            90pv-RKSJ-H Add-RKSJ-H Add-RKSJ-V B5pc-H B5pc-V CNS-EUC-H CNS-EUC-V ETen-B5-H \
-            ETen-B5-V ETenms-B5-H ETenms-B5-V EUC-H EUC-V Ext-RKSJ-H Ext-RKSJ-V GB-EUC-H \
-            GB-EUC-V GBK-EUC-H GBK-EUC-V GBK2K-H GBK2K-V GBKp-EUC-H GBKp-EUC-V GBpc-EUC-H \
-            GBpc-EUC-V H HKscs-B5-H HKscs-B5-V Identity-H Identity-V KSC-EUC-H KSC-EUC-V \
-            KSCms-UHC-H KSCms-UHC-HW-H KSCms-UHC-HW-V KSCms-UHC-V KSCpc-EUC-H UniCNS-UCS2-H \
-            UniCNS-UCS2-V UniCNS-UTF16-H UniCNS-UTF16-V UniGB-UCS2-H UniGB-UCS2-V \
-            UniGB-UTF16-H UniGB-UTF16-V UniJIS-UCS2-H UniJIS-UCS2-HW-H UniJIS-UCS2-HW-V \
-            UniJIS-UCS2-V UniJIS-UTF16-H UniJIS-UTF16-V UniKS-UCS2-H UniKS-UCS2-V \
-            UniKS-UTF16-H UniKS-UTF16-V V";
-        let none: Vec<&str> = names
+        let none: Vec<&str> = PREDEFINED
             .split_whitespace()
             .filter(|n| {
                 used_codespace(n.as_bytes(), 0, &predefined_data)
@@ -1270,5 +1482,96 @@ mod tests {
         assert_eq!(len(&[0x86, 0x41]), 2);
         // Cut off: what is left.
         assert_eq!(len(&[0x81]), 1);
+    }
+
+    #[test]
+    fn a_cmap_mapping_codes_outside_its_codespace_or_where_ranges_meet_breaks_it() {
+        let sjis = b"2 begincodespacerange <00> <80> <8140> <9FFC> endcodespacerange ";
+        let breaks = |maps: &[u8]| {
+            let text = [&sjis[..], maps].concat();
+            breaks_codespace(&codespace(&text, 0), [&text[..]])
+        };
+        let fine = b"3 begincidchar <41> 34 <8141> 36 <00> 1 endcidchar \
+            1 begincidrange <8240> <82FC> 100 endcidrange \
+            % <85> 1 in a comment\n\
+            2 beginbfrange <8340> <8341> [<0041> (B)] <9F40> <9FFC> <3000> endbfrange \
+            1 beginbfchar <42> /B endbfchar 1 beginnotdefrange <01> <1F> 1 endnotdefrange";
+        assert!(!breaks(fine));
+        // Ranges are numbers: 81FD lies between 8140 and 9FFC, though FD isn't between 40
+        // and FC.
+        assert!(!breaks(b"1 begincidrange <81FC> <8240> 1 endcidrange"));
+        // Its codes with others: one byte that starts two-byte codes, two bytes where there
+        // are none, a range running past the two-byte range's end, and codes that can't be
+        // read.
+        for bad in [
+            &b"1 begincidchar <85> 37 endcidchar"[..],
+            b"1 beginbfchar <4142> <0041> endbfchar",
+            b"1 begincidrange <9FFC> <A001> 1 endcidrange",
+            b"1 beginnotdefchar <4> 1 endnotdefchar",
+            b"1 begincidrange <41> <4142> 1 endcidrange",
+            b"1 begincidchar <0000000000> 1 endcidchar",
+        ] {
+            let text = [&fine[..], bad].concat();
+            assert!(breaks(&text), "{}", String::from_utf8_lossy(bad));
+        }
+        // Where ranges meet: <81> is one byte, and starts two-byte codes.
+        let meet = b"3 begincodespacerange <00> <81> <8140> <9FFC> <A0> <DF> endcodespacerange ";
+        let breaks = |maps: &[u8]| {
+            let text = [&meet[..], maps].concat();
+            breaks_codespace(&codespace(&text, 0), [&text[..]])
+        };
+        assert!(!breaks(b"2 begincidchar <41> 34 <9141> 36 endcidchar"));
+        assert!(breaks(b"1 begincidchar <81> 34 endcidchar"));
+        assert!(breaks(b"1 begincidchar <8141> 34 endcidchar"));
+        assert!(breaks(b"1 begincidrange <7F> <82> 34 endcidrange"));
+        assert!(breaks(b"1 begincidrange <8040> <8140> 34 endcidrange"));
+        // Two-byte codes only, ranges written as numbers (pdf.js issue15292): read alike.
+        let text = b"2 begincodespacerange <0001> <0192> <2013> <2265> endcodespacerange \
+            3 begincidrange <0020> <007E> 3 <00A0> <00FF> 98 <2202> <2202> 289 endcidrange";
+        assert!(!breaks_codespace(&codespace(text, 0), [&text[..]]));
+        // Byte by byte, as poppler reads on: <8241> starts none of GB 18030's four-byte
+        // codes (second byte 30 to 39), <82> both lengths.
+        let gb = |code: &str| {
+            let text = format!("/GBK2K-H usecmap 1 begincidchar <{code}> 34 endcidchar");
+            breaks_codespace(&codespace(text.as_bytes(), 0), [text.as_bytes()])
+        };
+        assert!(!gb("8241"));
+        assert!(gb("82"));
+        // A code of a CMap it uses counts.
+        let used = b"1 begincidchar <85> 37 endcidchar";
+        let space = codespace(sjis, 0);
+        assert!(!breaks_codespace(&space, [&sjis[..]]));
+        assert!(breaks_codespace(&space, [&sjis[..], used]));
+    }
+
+    #[test]
+    fn the_predefined_cmaps_map_only_codes_in_their_codespace_whose_ranges_do_not_meet() {
+        for name in PREDEFINED.split_whitespace() {
+            let space = used_codespace(name.as_bytes(), 0, &predefined_data).unwrap();
+            // Read byte by byte, a range's codes start none longer. (Read as numbers, as
+            // pdf.js does, GBK2K's two-byte 8140 to FEFE holds the starts of its four-byte
+            // 81308130 to FE39FE39.)
+            for a in &space {
+                for b in space.iter().filter(|b| b.n > a.n) {
+                    let meet = (0..a.n).all(|i| a.low[i] <= b.high[i] && b.low[i] <= a.high[i]);
+                    assert!(!meet, "{name}: {a:?} {b:?}");
+                }
+            }
+            // Every code of one and two bytes; those of more are only the few four-byte
+            // ranges' of some (UTF-16 and GB 18030).
+            let m = predefined(CMapName::from_bytes(name.as_bytes())).unwrap();
+            let mut mapped = 0;
+            for n in 1..=2usize {
+                for code in 0..1u32 << (8 * n) {
+                    if m.lookup_cid_code(code, n as u8).is_some() {
+                        let b = &code.to_be_bytes()[4 - n..];
+                        let given = space.iter().any(|s| s.n == n && s.starts(b));
+                        assert!(given, "{name}: {b:02X?}");
+                        mapped += 1;
+                    }
+                }
+            }
+            assert!(mapped > 100, "{name}: {mapped}");
+        }
     }
 }
