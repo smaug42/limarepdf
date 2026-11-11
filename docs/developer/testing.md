@@ -528,8 +528,8 @@ points, 30 % of a letter's width or height under a mark removes it, 20 % keeps i
 the current content, its older version and a stream nothing uses: none of it in the saved bytes or any decoded
 stream), and the command line's `redact_removes_the_text_under_the_area_and_keeps_the_rest` (`--area` and
 `--text`, the input never replaced) and `marks_made_with_mark_only_are_applied_later`. They guard what was
-already built: all passed on the code as it was, so nothing was fixed. Shift+Tab through fields is checked only
-by `fields.rs`'s unit test, and saved field values only by LimarePDF's own reading (another reader's view of a
+already built: all passed on the code as it was, so nothing was fixed. Shift+Tab through fields was checked only
+by `fields.rs`'s unit test (in the app too since S1-21, PB-39), and saved field values only by LimarePDF's own reading (another reader's view of a
 filled, unflattened form is the acceptance rows' hand check).
 
 The same stage took the guide's screenshots again at scale 2 (`WINIT_X11_SCALE_FACTOR=2`, a 1000 × 660-point
@@ -742,6 +742,30 @@ below it), `a_text_box_s_size_comes_from_its_style_when_its_appearance_string_gi
 not 12), and `a_text_box_limarepdf_wrote_is_set_as_a_new_one_is` (LimarePDF's own box, on an upright page and a
 turned one, set by `Pdf::text_box_setting` as `BoxSetting::text_box` sets a new one: the same lines, margin and
 place, upright, in its whole box; new API, so not run before).
+
+S1-21's low-severity fixes (2026-11-11; each test written first and seen failing before its fix, on 3466550 with
+the fixes before it; logs in the cycle folder's `runs/S1-21/`). A-08: `signing.rs`'s
+`a_narrow_part_at_an_edge_is_sized_from_the_keyboard` (a part narrower than a step against each edge of the
+picture, sized by Shift and the arrows; before, `clamp` panicked, "min > max"). L-01: `main.rs`'s
+`a_file_name_that_isn_t_unicode_is_opened` (on Unix, a name with the byte 0xFF, then `--page 3`). L-02:
+`spin.rs`'s `a_number_being_typed_is_stepped_from`. L-03: `settings.rs`'s
+`a_size_that_isn_t_a_finite_number_is_the_default` ("NaN", "nan", "inf", "-inf" and "1e40" for Organise's cards,
+a panel and the window) and `organise.rs`'s `a_card_size_that_isn_t_a_number_is_the_default` (the settings not
+saved again every frame in a window too narrow for the zoom slider, the cards not shrunk in a wide one). L-04:
+core's `integration.rs` `only_a_protected_file_needs_a_password` and the app's
+`a_missing_file_named_for_a_password_is_said_not_asked_for`. PB-32: `tab_goes_through_the_bars_in_reading_order`
+no longer reaches "Page 1". PB-33: `the_inspector_edge_takes_a_drag_from_the_pages_side` (a press on the edge's
+line and 2 points onto the pages). PB-39: `forms.rs`'s `a_field_reached_with_tab_from_a_text_box_takes_its_keys`
+(Space, then Enter, on a drop-down reached with Tab from a text field, its list open; Shift+Tab from the first
+field round to the last, a radio button, chosen with Space); it failed first ("still a ring after Space"), so it
+was fixed, and Shift+Tab with it. PB-40: `redact_marks.rs`'s `the_notice_and_the_pane_count_marks` and `sign.rs`'s
+`the_notice_counts_items_put_down`. PB-41: `review.rs`'s `the_search_box_hint_fits_and_keeps_its_name` (the hint,
+measured in the body font, fits the box less its padding; the box still named Search comments). PB-72:
+`embed.rs`'s `characters_that_dont_show_are_named_by_their_number` (controls, spaces but the plain one,
+default-ignorable characters, non-characters and private use named by number; a character not yet assigned
+quoted; an emoji sequence whole; a text box's refusal the same). PB-105: `a_page_too_complex_to_read_says_why`
+(page 1 read one step short of what it takes, through `budget_seam`: the inspector says why with nothing selected
+and with the page selected, and nothing with page 2 selected).
 
 Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:

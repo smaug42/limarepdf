@@ -202,8 +202,7 @@ this list once it works. The feature table below has the details.
 - The command band's Paste and Copy work on text typed on the page (Paste also on words selected while reading
   and on pages cut); in a form field or one of the inspector's boxes, use the keys (Ctrl+V and Ctrl+C, ⌘V and ⌘C
   on macOS): a right-click there opens no menu. A comment text box's font size and colour are set in the inspector, not in
-  Edit > Font. The inspector's edge takes a drag only from the panel's side of its line: a press on the line or
-  just onto the pages goes to the pages (PB-33). There is no high-contrast theme for the window itself (High
+  Edit > Font. There is no high-contrast theme for the window itself (High
   contrast is a page colour, for the pages only), and LimarePDF doesn't follow the system's high-contrast setting.
   In a window too narrow for the floating toolbar, it is cut off at the edge of the pages rather than folding to
   one button.
@@ -349,8 +348,8 @@ available.
   underlines takes too long (S1-07; all of that looking counted since CP-05), past about 4 s of reading (7.5
   times the most any page of the test files takes), isn't read. Search names it with why,
   redaction over it refuses and changes nothing, and editing it is refused; its text counts as none for copying,
-  text export and paragraph finding. The editor shows nothing on such a page to select, and doesn't yet say why
-  (no message). A drawing drawn again inside itself is read once where it repeats, as pdf.js reads it. Text or a
+  text export and paragraph finding. The editor shows nothing on such a page to select, and the inspector says
+  why for it ("Editing is unavailable on page 3: it is too complex to read", PB-105). A drawing drawn again inside itself is read once where it repeats, as pdf.js reads it. Text or a
   drawing whose width and height come to more than about 370 m together (S1-07) is passed over when looking for underlines: none under it or
   touching it is read.
 - Redaction doesn't cut the tag tree's, private application data's or any other part of the file's links to what

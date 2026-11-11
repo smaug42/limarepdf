@@ -1806,7 +1806,7 @@ pub struct Editor {
     pub box_style: TextStyle,
     /// The name new annotations are signed with (from the settings).
     pub author: String,
-    /// How many areas are marked for redaction (counted by the tab).
+    /// How many redaction marks there are (counted by the tab).
     pub redact_marks: usize,
     /// The Redact tool's Apply button was pressed; the tab runs the command.
     pub apply_redactions: bool,
@@ -3626,7 +3626,12 @@ impl Editor {
             let objs = match pdf.page_objects(page) {
                 Ok(v) => v,
                 Err(e) => {
-                    self.unavailable.insert(page, e.to_string());
+                    // Said as search says it.
+                    let why = match e.downcast_ref::<limarepdf_core::TooComplex>() {
+                        Some(_) => "it is too complex to read".into(),
+                        None => e.to_string(),
+                    };
+                    self.unavailable.insert(page, why);
                     Vec::new()
                 }
             };
@@ -3634,6 +3639,12 @@ impl Editor {
             self.objs.insert(page, objs);
         }
         &self.objs[&page]
+    }
+
+    /// Why `page`'s objects couldn't be read, when they were read and couldn't be: nothing
+    /// on it can be selected, so the inspector says so for the page (PB-105).
+    pub fn unavailable_on(&self, page: usize) -> Option<&str> {
+        self.unavailable.get(&page).map(String::as_str)
     }
 
     fn words(&mut self, pdf: &limarepdf_core::Pdf, page: usize) -> &[PageWord] {
@@ -4195,7 +4206,9 @@ impl Editor {
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
         let id = ui.scope_id().with(("page-edit", tab_id, page));
-        let mut resp = ui.interact(r, id, Sense::click_and_drag());
+        // Clicked and dragged, but no Tab stop (PB-32): the page's keys don't work while it
+        // has the keyboard.
+        let mut resp = ui.interact(r, id, Sense::CLICK | Sense::DRAG);
         resp.widget_info(|| {
             egui::WidgetInfo::labeled(egui::Role::Unknown, true, format!("Page {}", page + 1))
         });
@@ -7075,10 +7088,11 @@ impl Editor {
                 ui.label("Nothing is removed until the marks are applied.");
                 ui.add_space(6.0);
                 let n = self.redact_marks;
+                // Marks, not areas: one over several lines is one (PB-40).
                 ui.label(match n {
-                    0 => "No areas are marked yet.".to_string(),
-                    1 => "1 area is marked.".to_string(),
-                    n => format!("{n} areas are marked."),
+                    0 => "No marks yet.".to_string(),
+                    1 => "1 mark.".to_string(),
+                    n => format!("{n} marks."),
                 });
                 if ui
                     .add_enabled(n > 0, egui::Button::new("Apply redactions…"))

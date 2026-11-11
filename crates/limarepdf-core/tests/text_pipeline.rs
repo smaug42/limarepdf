@@ -352,7 +352,7 @@ fn a_word_goes_whole_to_a_font_that_has_it_and_an_ideograph_alone() {
     let before = format!("{:?}", p.doc.objects);
     let kan = format!("Kan{NONE}");
     let e = (p.add_text(0, (20.0, 40.0), &kan, serif, 12.0, [0.0; 3])).unwrap_err();
-    let none = format!("No font on this computer has \"{NONE}\"");
+    let none = "No font on this computer has the character U+2FFFE";
     assert_eq!(e.to_string(), none);
     assert_eq!(format!("{:?}", p.doc.objects), before);
 }

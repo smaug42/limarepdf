@@ -263,6 +263,38 @@ fn the_banner_for_one_mark_says_it() {
     assert!(two.contains("nothing under them has been removed"), "{two}");
 }
 
+/// PB-40: the notice and the Redact tool's pane count marks, not areas: a mark over a line
+/// of text and one drawn as a box are two marks.
+#[test]
+fn the_notice_and_the_pane_count_marks() {
+    let one = crate::banners::redactions(1).text;
+    assert!(
+        one.starts_with("A mark for redaction (outlined in red)"),
+        "{one}"
+    );
+    let two = crate::banners::redactions(2).text;
+    assert!(
+        two.starts_with("2 marks for redaction (outlined in red)"),
+        "{two}"
+    );
+    for text in [one, two] {
+        assert!(!text.contains("area"), "{text}");
+    }
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = objects_tab(&ctx);
+    app.tabs[0].ed.set_tool(Tool::Redact);
+    let shown = |tree: &egui::accesskit::TreeUpdate, s: &str| {
+        (tree.nodes.iter()).any(|(_, n)| n.value() == Some(s))
+    };
+    assert!(shown(&ty.pause(&mut app), "No marks yet."), "none");
+    for (area, says) in [(ONE, "1 mark."), (TWO, "2 marks.")] {
+        let add = |p: &mut Pdf| p.add_redaction_mark(0, &[area], "").map(drop);
+        assert!(app.tabs[0].edit(&ctx, add));
+        assert!(shown(&ty.pause(&mut app), says), "not {says:?}");
+    }
+}
+
 /// Apply redactions… in the Protect band is greyed with no marks to apply and says why on
 /// hover, as the command does wherever it is; with a mark, it is on.
 #[test]

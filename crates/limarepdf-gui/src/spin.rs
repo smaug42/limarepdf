@@ -202,6 +202,7 @@ impl<N: Numeric> Widget for Spin<'_, N> {
         }
 
         let old = value.to_f64();
+        let fit = |x: f64| if N::INTEGRAL { x.round() } else { x }.clamp(lo, hi);
         let mut note = None;
         let mut new = None;
         if r.lost_focus() {
@@ -218,7 +219,7 @@ impl<N: Numeric> Widget for Spin<'_, N> {
                         note = Some(format!("{name} takes a number from {range}, so {stays}."));
                     }
                     Some(x) => {
-                        let v = if N::INTEGRAL { x.round() } else { x }.clamp(lo, hi);
+                        let v = fit(x);
                         let used = shown(v);
                         if x < lo || x > hi {
                             note = Some(format!("{name} can be {range}, so {used} was used."));
@@ -241,7 +242,10 @@ impl<N: Numeric> Widget for Spin<'_, N> {
             field.right_bottom(),
         );
         let (top, bottom) = strip.split_top_bottom_at_y(strip.center().y);
-        let at = new.unwrap_or(old);
+        // A number typed and not yet entered is what the keys and arrows step from (L-02).
+        let typing = new.is_none() && r.has_focus() && (mixed || text != shown(old));
+        let pending = typing.then(|| typed(&text, suffix)).flatten().map(fit);
+        let at = new.or(pending).unwrap_or(old);
         let can_up = enabled && (mixed || at < hi);
         let can_down = enabled && (mixed || at > lo);
         let arrow = |ui: &mut Ui, rect: Rect, which: &str, can: bool| {
@@ -280,7 +284,10 @@ impl<N: Numeric> Widget for Spin<'_, N> {
         let line = strip.y_range().shrink(4.0);
         ui.painter().vline(strip.left(), line, edge);
         if steps != 0 {
-            let from = if mixed && new.is_none() { 0.0 } else { at };
+            let from = match mixed && new.or(pending).is_none() {
+                true => 0.0,
+                false => at,
+            };
             let v = (from + f64::from(steps) * step).clamp(lo, hi);
             // Steps of a fraction land on two places, not 0.30000000000000004.
             let v = match N::INTEGRAL {
@@ -555,6 +562,47 @@ mod tests {
         assert_eq!(b.value, 7.75);
         b.key(Key::Escape);
         assert_eq!(b.text(), "7.75 pt");
+    }
+
+    /// A number typed and not yet entered is what Up, Down, Page Up, Page Down and the
+    /// arrows step from (L-02): brought into the range first, as Enter would. Text that is
+    /// no number is stepped past, from the value as it was.
+    #[test]
+    fn a_number_being_typed_is_stepped_from() {
+        let typed_then = |text: &str, then: &dyn Fn(&mut Boxed<u32>)| {
+            let mut b = Boxed::new(12u32, 1..=999);
+            b.click_at(b.rect.left_center() + Vec2::new(8.0, 0.0));
+            b.frame(vec![Event::Text(text.into())]);
+            then(&mut b);
+            b.value
+        };
+        assert_eq!(typed_then("25", &|b| b.key(Key::ArrowUp)), 26);
+        assert_eq!(typed_then("25", &|b| b.key(Key::ArrowDown)), 24);
+        assert_eq!(typed_then("25", &|b| b.key(Key::PageUp)), 35);
+        assert_eq!(typed_then("25", &|b| b.key(Key::PageDown)), 15);
+        assert_eq!(typed_then("5000", &|b| b.key(Key::ArrowDown)), 998);
+        assert_eq!(typed_then("0", &|b| b.key(Key::ArrowUp)), 2);
+        assert_eq!(typed_then("many", &|b| b.key(Key::ArrowUp)), 13);
+        let up = |b: &mut Boxed<u32>| {
+            let strip = b.rect.right() - ARROWS / 2.0;
+            b.click_at(Pos2::new(strip, b.rect.top() + 4.0));
+        };
+        assert_eq!(typed_then("25", &up), 26);
+        // A fraction, with the box's unit typed.
+        let mut b = Boxed::new(10.0f32, 0.25..=40.0);
+        b.step = 0.25;
+        b.suffix = " pt";
+        b.click_at(b.rect.left_center() + Vec2::new(8.0, 0.0));
+        b.frame(vec![Event::Text("7.5 pt".into())]);
+        b.key(Key::ArrowUp);
+        assert_eq!(b.value, 7.75);
+        assert_eq!(b.text(), "7.75 pt");
+        // Nothing typed: a value outside the range steps from where it is, as before.
+        let mut b = Boxed::new(0.1f32, 0.25..=40.0);
+        b.step = 0.25;
+        b.click_at(b.rect.left_center() + Vec2::new(8.0, 0.0));
+        b.key(Key::ArrowUp);
+        assert_eq!(b.value, 0.35);
     }
 
     /// A value outside the range, as a document's can be, is shown as it is; a box for

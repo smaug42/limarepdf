@@ -349,8 +349,12 @@ impl Tab {
         self.go_to(p);
     }
 
-    /// Change the grid's zoom, keeping the first card in view at the top.
+    /// Change the grid's zoom, keeping the first card in view at the top; one that isn't a
+    /// number (L-03) leaves it as it is.
     pub fn zoom_grid(&mut self, z: f32) {
+        if !z.is_finite() {
+            return;
+        }
         let z = z.clamp(ORGANISE_MIN, ORGANISE_MAX);
         if (z - self.grid_zoom).abs() < 1e-4 {
             return;

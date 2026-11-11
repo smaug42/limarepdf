@@ -9,6 +9,39 @@
 
 ### Fixed
 
+- A message about characters no font on the computer has names one that doesn't show by its number: "No font on
+  this computer has "ʘ" or the character U+F8E8". This covers a control character, a private-use one, a zero-width
+  one, a space other than the plain one, and the like. Before, such a character was put in quotes where no one
+  could see it ("No font on this computer has """). A text box's refusal names them the same way.
+- The Comments view's search box says "Search", which fits in it. Before, "Search comments" was cut off. A screen
+  reader still calls it Search comments.
+- The redaction notice and the Redact tool's pane count marks: "2 marks for redaction (outlined in red) aren't
+  applied yet". A mark over several lines is one. Before, they counted areas, so one mark over three lines was
+  "3 areas". Fill and sign's notice says "3 items you put down" for a signature, a date and a tick. Before, it said
+  "3 signatures and other items" whatever they were.
+- The inspector's edge takes a drag from a press on its line, or just onto the pages, as from the panel's side.
+  Before, the pages' scroll bar lay over that part of it, so such a press went to the pages.
+- A drop-down field reached with Tab from a text field takes its keys: Space or Enter opens its list. Before, they
+  did nothing there until the field was clicked. Shift+Tab from the first field goes round to the last, as Tab goes
+  from the last to the first, and Space chooses a radio button reached so. Before, Shift+Tab left the form.
+- Tab no longer stops on the pages themselves. There, Page Down, Page Up, Home, End, Delete and the arrow keys did
+  nothing until Esc or a click. F6 or a click gives the pages the keyboard.
+- A number box with up and down arrows steps from the number typed in it and not yet entered, for Up, Down, Page
+  Up, Page Down and its arrows. Before, it stepped from the number there before the typing, which was lost.
+- A size in the settings file that isn't a number ("NaN", "inf", or one too big to hold) is taken as the default,
+  for Organise's cards, a panel and the window. Before, a card size like that made Organise's zoom slider shrink
+  the cards to the smallest. In a window too narrow for the slider, the settings were saved again every frame, so
+  a settings file deleted came straight back.
+- A file that can't be opened says so, opened or appended, even when "password" is in its name. Before, a missing
+  file such as `password-guide.pdf` was taken for a protected one, and LimarePDF asked for its password.
+- A file whose name isn't valid Unicode, which Linux and the BSDs allow, opens when it is given on the command
+  line or by a file manager. Before, such a name stopped LimarePDF as it started.
+- A page too complex to read says why in the inspector: "Editing is unavailable on page 3: it is too complex to
+  read". The inspector says it with nothing selected while the page is in view, and when the page is selected.
+  Before, the editor showed nothing on such a page to select and said nothing about it.
+- In the Create signature window, Shift and an arrow key size the part of a picture used without closing
+  LimarePDF when that part is a thin strip at the picture's right or bottom edge. Before, a part dragged out over
+  the last few pixels there stopped the app at the first such key.
 - Every package (the archives, the Windows installer, the Linux packages and the Mac app) carries
   `THIRD-PARTY-LICENSES.html`: the licences and notices of the Rust crates built into LimarePDF on that platform,
   with those of the fonts and code some of them bundle (egui's fonts, Foxit's fonts for the standard PDF fonts).

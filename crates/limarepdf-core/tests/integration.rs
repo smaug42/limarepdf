@@ -1,5 +1,5 @@
 use limarepdf_core::{
-    render, Bates, Cipher, Encryption, HeaderFooter, Pdf, Restrictions, Watermark,
+    render, Bates, Cipher, Encryption, HeaderFooter, NeedsPassword, Pdf, Restrictions, Watermark,
 };
 use lopdf::{dictionary, Dictionary, Stream};
 
@@ -207,6 +207,36 @@ fn files_tell_whether_they_needed_a_password() {
     }
     let plain = Pdf::from_bytes(&doc_with_text().to_bytes().unwrap(), None).unwrap();
     assert!(!plain.password_needed());
+}
+
+/// L-04: a protected file opened with no password or a wrong one fails as needing one,
+/// which the apps ask for; a file missing or damaged doesn't, whatever its name says.
+#[test]
+fn only_a_protected_file_needs_a_password() {
+    let mut p = doc_with_text();
+    p.set_encryption(Some(Encryption {
+        user_password: "user".into(),
+        owner_password: "owner".into(),
+        cipher: Cipher::Aes128,
+        restrictions: Restrictions::default(),
+    }));
+    let locked = p.to_bytes().unwrap();
+    // The cases are said by name: the password itself isn't printed.
+    for (case, password) in [("no password", None), ("a wrong one", Some("wrong"))] {
+        let e = Pdf::from_bytes(&locked, password).err().expect("opened");
+        assert!(e.downcast_ref::<NeedsPassword>().is_some(), "{case}: {e:#}");
+        let said = "cannot open PDF: invalid password for encrypted PDF";
+        assert_eq!(format!("{e:#}"), said, "{case}");
+    }
+    let dir = std::env::temp_dir().join(format!("limarepdf-{}-no-folder", std::process::id()));
+    let e = Pdf::open(dir.join("password-guide.pdf"), None)
+        .err()
+        .expect("opened");
+    assert!(e.downcast_ref::<NeedsPassword>().is_none(), "{e:#}");
+    let e = Pdf::from_bytes(b"not a PDF; password: walrus", None)
+        .err()
+        .expect("opened");
+    assert!(e.downcast_ref::<NeedsPassword>().is_none(), "{e:#}");
 }
 
 /// lopdf drops the encryption dictionary of a file it decrypted, which the

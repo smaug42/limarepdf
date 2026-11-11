@@ -578,7 +578,7 @@ fn characters_it_cant_write_are_refused_with_nothing_changed() {
     let e = p
         .add_text(0, (20.0, 40.0), &seal, helvetica, 12.0, [0.0; 3])
         .unwrap_err();
-    let none = format!("No font on this computer has \"{NONE}\"");
+    let none = "No font on this computer has the character U+2FFFE";
     assert_eq!(e.to_string(), none);
     let wm = Watermark {
         text: "שלום".into(),
@@ -694,7 +694,7 @@ fn text_boxes_and_fill_and_sign_text_refuse_what_they_cant_write() {
         .unwrap_err();
     assert_eq!(
         e.to_string(),
-        format!("No font on this computer has \"{NONE}\"")
+        "No font on this computer has the character U+2FFFE"
     );
     assert_eq!(objects(&p), before);
 

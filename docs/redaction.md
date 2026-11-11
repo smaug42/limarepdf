@@ -44,7 +44,8 @@ where it was first made. A mark locked by the app that made it can't be moved.
 
 **The notice:** while a document has marks, a notice above the pages says how many and has an **Apply
 redactions…** button. It comes first, and goes once the marks are applied or deleted; dismissed, it comes back when
-another area is marked. The Redact tool's pane has the same button with the count. With no marks, Apply
+another mark is made. It counts marks, so a mark over several lines is one. The Redact tool's pane has the same
+button with the count. With no marks, Apply
 redactions… is greyed and says why. Saving a document that still has marks asks first, since nothing under them
 has been removed.
 
