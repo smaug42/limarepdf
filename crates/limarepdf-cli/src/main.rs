@@ -3026,6 +3026,8 @@ fn unwritten(e: std::io::Error) -> anyhow::Error {
 }
 
 fn main() -> Result<()> {
+    // A copy started to read a printer's paper sizes on Windows answers and exits here.
+    print::answer_if_asked();
     let cli = Cli::parse();
     // Only `guard`'s error is printed for a panic; with RUST_BACKTRACE set, Rust's own message and the
     // backtrace are printed too, for bug reports.

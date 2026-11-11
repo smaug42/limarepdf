@@ -11,8 +11,10 @@
 //! but holds nothing of the caller's: its writes fail, and no thread, handle or buffer of the
 //! call outlives it.
 //!
-//! Production starts programs only on Linux and macOS. On Windows [`run`] exists only for the
-//! tests, on threads of its own, and doesn't stop what the program started.
+//! On Windows the same is done on threads of their own, and what the program started isn't
+//! stopped with it. Production starts one program there, a copy of itself reading a printer's
+//! paper sizes ([`run_kept`], `print_win.rs`), which makes its outputs uninheritable before it
+//! asks the driver anything; the tests start the rest through [`child_seam`].
 
 use std::io;
 #[cfg(unix)]
@@ -21,9 +23,11 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 /// The most of each output kept: the rest is read and dropped, and [`Ran::truncated`] says so.
+#[cfg(any(unix, test, feature = "test-seams"))]
 pub const CAP: usize = 16 << 20;
 
 /// A program run by [`run`].
+#[cfg_attr(all(windows, not(any(test, feature = "test-seams"))), allow(dead_code))]
 pub struct Ran {
     /// How it ended: for one stopped at the deadline, how it was stopped, unless it had
     /// already exited.
@@ -46,6 +50,7 @@ pub struct Ran {
 /// Run `cmd`, writing `input` to its standard input (none gives it no input at all), for at
 /// most `limit` from its start and again from its taking all of the input. An error means it
 /// couldn't start, or waiting for it failed (it is stopped then too).
+#[cfg(any(unix, test, feature = "test-seams"))]
 pub fn run(cmd: &mut Command, input: Option<&[u8]>, limit: Duration) -> io::Result<Ran> {
     run_to(cmd, input, Stdio::piped(), limit)
 }
@@ -281,14 +286,34 @@ fn stop(child: &Child) {
     let _ = kill_process(pid, Signal::KILL);
 }
 
-/// [`run_to`] for the tests on Windows, on threads of its own: what the program started isn't
-/// stopped with it, and one of those holding its output open keeps the call waiting.
-#[cfg(windows)]
+/// [`run_to`] for the tests on Windows ([`threaded`]).
+#[cfg(all(windows, any(test, feature = "test-seams")))]
 pub fn run_to(
     cmd: &mut Command,
     input: Option<&[u8]>,
     stdout: Stdio,
     limit: Duration,
+) -> io::Result<Ran> {
+    threaded(cmd, input, stdout, limit, CAP)
+}
+
+/// As [`run`] with no input, keeping at most `cap` of each output ([`threaded`]): a copy of
+/// the program reading a printer's paper sizes (`print_win.rs`).
+#[cfg(windows)]
+pub fn run_kept(cmd: &mut Command, limit: Duration, cap: usize) -> io::Result<Ran> {
+    threaded(cmd, None, Stdio::piped(), limit, cap)
+}
+
+/// [`run_to`] on Windows, keeping at most `cap` of each output, on threads of its own: what
+/// the program started isn't stopped with it, and one of those holding its output open keeps
+/// the call waiting.
+#[cfg(windows)]
+fn threaded(
+    cmd: &mut Command,
+    input: Option<&[u8]>,
+    stdout: Stdio,
+    limit: Duration,
+    cap: usize,
 ) -> io::Result<Ran> {
     use std::io::{Read, Write};
     let mut child = cmd
@@ -312,7 +337,7 @@ pub fn run_to(
                 if let Some(mut p) = pipe {
                     let mut buf = vec![0; 64 << 10];
                     while let Ok(n @ 1..) = p.read(&mut buf) {
-                        let room = CAP - kept.len();
+                        let room = cap - kept.len();
                         kept.extend_from_slice(&buf[..n.min(room)]);
                         truncated |= n > room;
                     }

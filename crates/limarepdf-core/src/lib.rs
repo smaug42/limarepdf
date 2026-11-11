@@ -11,7 +11,6 @@ mod atomic;
 mod base_encodings;
 mod blank;
 mod budget;
-#[cfg(any(unix, test, feature = "test-seams"))]
 mod child;
 mod cms_check;
 mod cms_write;
@@ -51,6 +50,8 @@ pub mod page_colours;
 mod pagerange;
 mod pages_gone;
 mod paper;
+#[cfg(any(windows, test))]
+mod paper_answer;
 mod para_frames;
 mod para_write;
 mod paragraph;
@@ -138,6 +139,8 @@ pub use own_font::{CharRefusal, FontRefusal, LineFont};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
 pub use pictures::{png_file, PictureFormat, SavedPictures};
+#[cfg(all(windows, any(test, feature = "test-seams")))]
+pub use print_win::papers_seam;
 pub use redact::{PageRedaction, RedactReport};
 pub use reduce::{
     KeptWhy, Most, PictureQuality, ReduceOptions, ReducePreview, Reduced, PREVIEW_SIDE,

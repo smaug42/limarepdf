@@ -153,7 +153,9 @@ doesn't confirm within 2 minutes after taking it, is stopped, with a message say
 the printer's queue before printing again.
 
 **Windows** prints through the print spooler, on the paper chosen, which LimarePDF sets in the printer's settings
-for the job. LimarePDF draws each sheet at the printer's resolution, at most 600 dpi and at most 268 million
+for the job. LimarePDF reads a printer's paper sizes in a separate copy of itself, started with no window, so a
+printer driver that goes wrong while giving them closes only that copy, not LimarePDF; Print then says it couldn't
+find the paper sizes, and why. LimarePDF draws each sheet at the printer's resolution, at most 600 dpi and at most 268 million
 pixels (an A0 sheet is drawn at about 415 dpi, which the printer scales up), and sends the part the printer can
 print on. When the spooler takes no step for 2 minutes (a printer that doesn't answer, say), LimarePDF stops waiting and says so, and other
 background work (Append PDFs, OCR, exports) can go ahead. The job itself can't be stopped on Windows and may still
