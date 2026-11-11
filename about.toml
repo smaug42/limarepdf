@@ -1,0 +1,84 @@
+# cargo-about's settings for THIRD-PARTY-LICENSES.html, the licences and notices of the crates built into the
+# programs: packaging/package-notices.sh writes it, packaging/check-package.py checks it in every package. The
+# licences are the crates' own, as they state them; this is not a legal verdict.
+#
+# The licences accepted are deny.toml's allow list (package-notices.sh stops if they differ). A crate offering a
+# choice is listed under the first here it offers: MIT before Apache-2.0, as MIT's text has the copyright line.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "0BSD",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+# Only the crates built into the programs; the workspace's own (publish = false) are LimarePDF.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+private = { ignore = true }
+
+# Works a crate bundles that cargo-about doesn't find by itself. Each file is pinned by its SHA-256: when a new
+# version of the crate changes it, cargo-about only warns and leaves the notice out, so package-notices.sh stops
+# on the warning. Read the new file, then update the licence and the sum (docs/developer/releasing.md).
+
+# Foxit's fonts for the standard PDF fonts (the embed-fonts feature), with their BSD-3-Clause notice.
+[hayro-interpret.clarify]
+license = "(Apache-2.0 OR MIT) AND BSD-3-Clause"
+[[hayro-interpret.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "51b50e6120c344dcc146bbd6375ca1c78e079d97c8bea76e67a53d6ff0efebac"
+[[hayro-interpret.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9"
+[[hayro-interpret.clarify.files]]
+path = "assets/LICENSE_FOXIT"
+license = "BSD-3-Clause"
+checksum = "b578cdd2345840ada550bd12519533812320d5f1d21cf4c1c7e1b1b0a31c98b7"
+
+# egui's fonts: Hack (MIT, with Bitstream Vera's notice), Ubuntu Light, and egui-icons, cut from emoji-icon-font
+# (MIT). The crate's licence names the OFL for Noto Emoji, which only egui's monochrome_emoji_fonts builds in.
+[epaint_default_fonts.clarify]
+license = "(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0 AND MIT"
+[[epaint_default_fonts.clarify.files]]
+path = "fonts/Hack-Regular.txt"
+license = "MIT"
+checksum = "47c0cccbeec7e8614548cc485588b28149e7874188df5f41b36efebcee285c87"
+[[epaint_default_fonts.clarify.files]]
+path = "fonts/emoji-icon-font-mit-license.txt"
+license = "MIT"
+checksum = "b9d2c1d909aa149996fd4c91dcb92b2362a04431640c1d200959da94caf8cde1"
+[[epaint_default_fonts.clarify.files]]
+path = "fonts/OFL.txt"
+license = "OFL-1.1"
+checksum = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+[[epaint_default_fonts.clarify.files]]
+path = "fonts/UFL.txt"
+license = "Ubuntu-font-1.0"
+checksum = "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002"
+
+# Code adapted from ttf-parser and fonttools, each MIT, in its NOTICE.
+[subsetter.clarify]
+license = "(MIT OR Apache-2.0) AND MIT"
+[[subsetter.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+[[subsetter.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+[[subsetter.clarify.files]]
+path = "NOTICE"
+license = "MIT"
+checksum = "756e3179c6911701fb3fd41e5a364a7fe38360670955444aab40a0070a512c27"

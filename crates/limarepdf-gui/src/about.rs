@@ -221,6 +221,20 @@ fn main_page(ui: &mut Ui, page: &mut Page) {
     ui.with_layout(Layout::top_down(Align::Min), credits);
 }
 
+/// The fonts credited: the ones the interface loads (`theme::fonts`), the ones typed on the page and the ones
+/// the libraries carry.
+const FONTS: &str = "Inter, Liberation, Caveat, Cedarville Cursive and Zeyada \
+                     (SIL Open Font License 1.1); \
+                     Homemade Apple (Apache License 2.0); all included unmodified. \
+                     From egui: Hack (MIT and the Bitstream Vera licence), Ubuntu Light \
+                     (Ubuntu Font Licence 1.0) and a few icons cut from emoji-icon-font (MIT). \
+                     Foxit's fonts for the standard PDF fonts, in hayro (BSD-3-Clause). \
+                     Cantarell, in window title bars on Linux under Wayland (SIL Open Font License 1.1)";
+const ICONS: &str = "Phosphor Icons (MIT)";
+/// Where the rest of the notices are; every package carries the file (packaging/package-notices.sh).
+const NOTICES: &str =
+    "The other components' licences come with the program, in THIRD-PARTY-LICENSES.html.";
+
 fn credits(ui: &mut Ui) {
     egui::CollapsingHeader::new("Credits")
         .default_open(false)
@@ -239,14 +253,8 @@ fn credits(ui: &mut Ui) {
                 "Text recognition model:",
                 "ocrs by Robert Knight, CC BY-SA 4.0, included unmodified",
             );
-            row(
-                ui,
-                "Fonts:",
-                "Inter, Liberation, Caveat, Cedarville Cursive and Zeyada \
-                 (SIL Open Font License 1.1); \
-                 Homemade Apple (Apache License 2.0); all included unmodified",
-            );
-            row(ui, "Icons:", "Phosphor Icons (MIT)");
+            row(ui, "Fonts:", FONTS);
+            row(ui, "Icons:", ICONS);
             row(
                 ui,
                 "Spelling:",
@@ -255,6 +263,7 @@ fn credits(ui: &mut Ui) {
             );
             ui.add_space(4.0);
             ui.weak("LimarePDF is licensed under MIT or Apache-2.0, at your option.");
+            ui.weak(NOTICES);
         });
 }
 
@@ -284,6 +293,29 @@ fn contributors_page(ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every font the interface loads, egui's own included, is credited by its family's name, and the credits
+    /// say where the other notices are. A font added without a credit fails here.
+    #[test]
+    fn the_credits_name_every_font_the_interface_loads() {
+        let family = |key: &str| match key {
+            "Inter" | "Inter-SemiBold" | "Inter-Medium" => "Inter",
+            "phosphor" | "phosphor-fill" => "Phosphor",
+            "Hack" => "Hack",
+            "Ubuntu-Light" => "Ubuntu Light",
+            "egui-icons" => "emoji-icon-font",
+            other => panic!("{other} has no family here: credit it in FONTS and docs/licence.md"),
+        };
+        let credits = format!("{FONTS} {ICONS}");
+        let missing: Vec<_> = theme::fonts()
+            .font_data
+            .keys()
+            .filter(|k| !credits.contains(family(k)))
+            .cloned()
+            .collect();
+        assert!(missing.is_empty(), "not credited: {missing:?}");
+        assert!(NOTICES.contains("THIRD-PARTY-LICENSES.html"), "{NOTICES:?}");
+    }
 
     #[test]
     fn pictures_decode() {

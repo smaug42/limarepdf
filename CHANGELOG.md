@@ -9,6 +9,13 @@
 
 ### Fixed
 
+- Every package (the archives, the Windows installer, the Linux packages and the Mac app) carries
+  `THIRD-PARTY-LICENSES.html`: the licences and notices of the Rust crates built into LimarePDF on that platform,
+  with those of the fonts and code some of them bundle (egui's fonts, Foxit's fonts for the standard PDF fonts).
+  The Linux packages also carry the licence of Cantarell, the font that draws the window title bars under Wayland.
+  The About window's credits name these fonts too, and say where the other licences are. Before, the packages
+  carried only LimarePDF's own licence and those of the fonts, dictionaries and model it includes. Releases
+  check each page against the crates actually built.
 - A text box another app made is typed in where its text is written: inside its own inner margins (a callout's
   box, say) and cloudy border, at the size its style gives when its appearance string gives none. Before, it was
   typed in as a plain 12-point box filling its whole rectangle, so its lines broke in other places while you typed

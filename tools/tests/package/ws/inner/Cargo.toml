@@ -1,0 +1,11 @@
+[package]
+name = "inner"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "../../crates/empty.rs"
+
+[dependencies]
+via-inner = { path = "../../crates/via-inner" }

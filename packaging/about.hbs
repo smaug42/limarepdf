@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<!-- cargo-about's template for THIRD-PARTY-LICENSES.html (packaging/package-notices.sh). Each crate it lists has
+     a data-crate attribute, its name and version, which packaging/check-package.py compares with the crates built. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LimarePDF: third-party licences</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; line-height: 1.45; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+  section { border-top: 1px solid #8884; margin-top: 2rem; }
+  ul.crates { columns: 16rem; padding-left: 1.2rem; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #8881; padding: 1rem; border-radius: 4px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>Third-party licences</h1>
+<p>LimarePDF is built with the open-source Rust crates below. Each licence text is followed by the crates it covers,
+as each crate states it.</p>
+<p>Some crates carry fonts, and their licences are listed with them: Hack, Ubuntu Light and icons cut from
+emoji-icon-font in epaint_default_fonts (egui's fonts), and Foxit's fonts for the standard PDF fonts in
+hayro-interpret. On Linux, the Cantarell font that draws window title bars (sctk-adwaita) has its licence in
+FONT-LICENSE-Cantarell.txt.</p>
+<p>The fonts, dictionaries and text recognition model that LimarePDF itself includes have their own licence files
+next to this one.</p>
+<h2>Licences</h2>
+<ul>
+{{#each overview}}  <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+{{/each}}</ul>
+{{#each licenses}}<section>
+<h3{{#if first_of_kind}} id="{{id}}"{{/if}}>{{name}}</h3>
+<ul class="crates">
+{{#each used_by}}  <li data-crate="{{crate.name}} {{crate.version}}"><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}</ul>
+<pre>{{text}}</pre>
+</section>
+{{/each}}</body>
+</html>

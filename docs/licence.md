@@ -26,6 +26,17 @@ LimarePDF is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE
   Homemade Apple by Font Diner (Apache License 2.0). They are drawn as shapes and never embedded in PDFs. Release
   archives include the licences as `FONT-LICENSE-Caveat.txt`, `FONT-LICENSE-CedarvilleCursive.txt`,
   `FONT-LICENSE-HomemadeApple.txt` and `FONT-LICENSE-Zeyada.txt`.
+- **Fonts that come with crates LimarePDF is built with,** included unmodified as the crates ship them:
+  - egui's fonts: Hack (MIT, with the Bitstream Vera licence) for monospaced text, and Ubuntu Light (Ubuntu Font
+    Licence 1.0) and a few icons cut from emoji-icon-font by John Slegers (MIT) for characters Inter and Phosphor
+    lack;
+  - Foxit's fonts, © PDFium Authors (BSD-3-Clause), in hayro, for text in the standard PDF fonts when a PDF
+    doesn't embed them;
+  - on Linux under Wayland, Cantarell 0.05, © Understanding Limited and Jakub Steiner (SIL Open Font License 1.1),
+    in sctk-adwaita, for the window title bars.
+
+  Their licences are in `THIRD-PARTY-LICENSES.html` (see [Dependencies](#dependencies)), and Cantarell's in
+  `FONT-LICENSE-Cantarell.txt` in the Linux packages.
 - **Font metrics:** the glyph widths of the standard PDF fonts (Helvetica, Times, Symbol and ZapfDingbats),
   extracted from Adobe's Core 14 AFM files, © 1985–1997 Adobe Systems Incorporated, which may be used, copied and
   distributed for any purpose with their copyright notices kept. The notices, Adobe's permission notice and a note of
@@ -76,13 +87,27 @@ These are in the source repository only, never in release archives:
 
 ## Dependencies
 
-Dependencies carry their own licences. A scan of the dependency metadata for all platforms found only permissive
-licences (MIT, Apache-2.0, BSD, Zlib, Unicode, ISC, Unlicense, BSL-1.0 and similar), plus the SIL OFL 1.1 and Ubuntu
-Font Licence for the fonts bundled with egui. A few crates are dual-licensed with LGPL or GPL as one option; the
-permissive option applies.
+The Rust crates LimarePDF is built with carry their own licences. Every package (the archives, the Windows
+installer, the Linux packages and the Mac app) includes `THIRD-PARTY-LICENSES.html`: each licence text, with the
+crates it covers, for the crates built into that platform's programs. It is made with
+[cargo-about](https://github.com/EmbarkStudios/cargo-about) from each crate's own licence files, and also holds
+the licences of the fonts above and of code that the subsetter crate adapted from ttf-parser and fonttools (MIT),
+from its NOTICE file. CI checks every package's page against the crates actually built.
 
-If you redistribute binaries, keep the dependencies' licence texts with them (`cargo about` or `cargo license` can
-generate the list).
+The licences the crates may use are listed in `deny.toml`, and CI checks every crate in `Cargo.lock` against them:
+
+- permissive licences: MIT, Apache-2.0 (with or without the LLVM exception), the BSD licences, 0BSD, BSL-1.0,
+  ISC, Unicode-3.0, Unlicense and Zlib;
+- for fonts: the SIL Open Font License 1.1 and the Ubuntu Font Licence 1.0;
+- the Mozilla Public License 2.0, a file-level copyleft licence, used only by the spellbook crate (see
+  [Included works](#included-works)).
+
+Where a crate offers a choice of licences, the page lists one: MIT if offered, otherwise Apache-2.0, otherwise the
+next in `about.toml`'s order. One crate, self_cell, offers GPL-2.0 as an alternative to Apache-2.0; Apache-2.0
+applies.
+
+The licences are as each crate states them; this page and `THIRD-PARTY-LICENSES.html` aren't legal advice. If you
+redistribute LimarePDF, keep `THIRD-PARTY-LICENSES.html` and the other licence files with it.
 
 ---
 

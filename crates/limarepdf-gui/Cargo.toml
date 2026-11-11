@@ -74,9 +74,10 @@ limarepdf-core = { path = "../limarepdf-core", features = ["test-seams"] }
 # Linux packages, built in CI with cargo-deb and cargo-generate-rpm after the release build.
 # Both hold limarepdf and the limarepdf-cli command, the desktop entry, the icon, the README,
 # changelog and security notes (from packaging/package-docs.sh, run first, with links to the
-# online guide for this version) and the licences. The
-# libraries listed are the ones limarepdf loads at run time (windowing, OpenGL, file dialogs
-# over D-Bus), which the tools can't see; printing uses lp and file dialogs use the portal.
+# online guide for this version) and the licences, the crates' in THIRD-PARTY-LICENSES.html (from
+# packaging/package-notices.sh, also run first). The libraries listed are the ones limarepdf loads
+# at run time (windowing, OpenGL, file dialogs over D-Bus), which the tools can't see; printing
+# uses lp and file dialogs use the portal.
 [package.metadata.deb]
 name = "limarepdf"
 maintainer = "Clayton Cornell <clayton@smaug42.com>"
@@ -97,6 +98,7 @@ assets = [
     ["../../target/package-docs/SECURITY.md", "usr/share/doc/limarepdf/", "644"],
     ["../../LICENSE-MIT", "usr/share/doc/limarepdf/", "644"],
     ["../../LICENSE-APACHE", "usr/share/doc/limarepdf/", "644"],
+    ["../../target/package-notices/THIRD-PARTY-LICENSES.html", "usr/share/doc/limarepdf/", "644"],
     ["../limarepdf-core/models/README.md", "usr/share/doc/limarepdf/OCR-MODEL.md", "644"],
     ["assets/fonts/OFL.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Inter.txt", "644"],
     ["assets/fonts/LICENSE-Phosphor.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Phosphor.txt", "644"],
@@ -105,6 +107,7 @@ assets = [
     ["../limarepdf-core/assets/fonts/OFL-CedarvilleCursive.txt", "usr/share/doc/limarepdf/FONT-LICENSE-CedarvilleCursive.txt", "644"],
     ["../limarepdf-core/assets/fonts/LICENSE-HomemadeApple.txt", "usr/share/doc/limarepdf/FONT-LICENSE-HomemadeApple.txt", "644"],
     ["../limarepdf-core/assets/fonts/OFL-Zeyada.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Zeyada.txt", "644"],
+    ["../../packaging/linux/FONT-LICENSE-Cantarell.txt", "usr/share/doc/limarepdf/", "644"],
     ["../limarepdf-core/assets/dictionaries/README_en_CA.txt", "usr/share/doc/limarepdf/DICTIONARY-LICENSE-English.txt", "644"],
     ["../limarepdf-core/assets/dictionaries/README_dict_fr.txt", "usr/share/doc/limarepdf/DICTIONARY-LICENSE-French.txt", "644"],
     ["../limarepdf-core/assets/dictionaries/LICENSE-MPL-2.0.txt", "usr/share/doc/limarepdf/LICENSE-MPL-2.0.txt", "644"],
@@ -127,6 +130,7 @@ assets = [
     { source = "../../target/package-docs/SECURITY.md", dest = "/usr/share/doc/limarepdf/SECURITY.md", mode = "644", doc = true },
     { source = "../../LICENSE-MIT", dest = "/usr/share/licenses/limarepdf/LICENSE-MIT", mode = "644" },
     { source = "../../LICENSE-APACHE", dest = "/usr/share/licenses/limarepdf/LICENSE-APACHE", mode = "644" },
+    { source = "../../target/package-notices/THIRD-PARTY-LICENSES.html", dest = "/usr/share/licenses/limarepdf/THIRD-PARTY-LICENSES.html", mode = "644" },
     { source = "../limarepdf-core/models/README.md", dest = "/usr/share/doc/limarepdf/OCR-MODEL.md", mode = "644", doc = true },
     { source = "assets/fonts/OFL.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Inter.txt", mode = "644" },
     { source = "assets/fonts/LICENSE-Phosphor.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Phosphor.txt", mode = "644" },
@@ -135,6 +139,7 @@ assets = [
     { source = "../limarepdf-core/assets/fonts/OFL-CedarvilleCursive.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-CedarvilleCursive.txt", mode = "644" },
     { source = "../limarepdf-core/assets/fonts/LICENSE-HomemadeApple.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-HomemadeApple.txt", mode = "644" },
     { source = "../limarepdf-core/assets/fonts/OFL-Zeyada.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Zeyada.txt", mode = "644" },
+    { source = "../../packaging/linux/FONT-LICENSE-Cantarell.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Cantarell.txt", mode = "644" },
     { source = "../limarepdf-core/assets/dictionaries/README_en_CA.txt", dest = "/usr/share/licenses/limarepdf/DICTIONARY-LICENSE-English.txt", mode = "644" },
     { source = "../limarepdf-core/assets/dictionaries/README_dict_fr.txt", dest = "/usr/share/licenses/limarepdf/DICTIONARY-LICENSE-French.txt", mode = "644" },
     { source = "../limarepdf-core/assets/dictionaries/LICENSE-MPL-2.0.txt", dest = "/usr/share/licenses/limarepdf/LICENSE-MPL-2.0.txt", mode = "644" },

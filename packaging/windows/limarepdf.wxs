@@ -2,7 +2,8 @@
   The Windows installer, built in CI with WiX 5 from the repository root:
     wix build packaging/windows/limarepdf.wxs -arch x64 -d Version=<version> -o limarepdf-<version>-x86_64.msi
   (with -ext WixToolset.UI.wixext -loc packaging/windows/limarepdf.wxl -culture en-US; the .wxl holds the
-  Welcome screen's licence summary and the shortcut option's label), after packaging/package-docs.sh.
+  Welcome screen's licence summary and the shortcut option's label), after packaging/package-docs.sh and
+  packaging/package-notices.sh.
   Installs for all users, by default in Program Files\LimarePDF, with a Start menu shortcut, a desktop
   shortcut if asked for, LimarePDF under "Open with" for PDFs (and in Settings > Default apps), and
   limarepdf-cli.exe on the PATH. The UpgradeCode must never change: it is how a newer LimarePDF replaces
@@ -143,6 +144,8 @@
       <Component Directory="INSTALLFOLDER"><File Source="target\package-docs\SECURITY.md" /></Component>
       <Component Directory="INSTALLFOLDER"><File Source="LICENSE-MIT" /></Component>
       <Component Directory="INSTALLFOLDER"><File Source="LICENSE-APACHE" /></Component>
+      <!-- The licences of the crates built in (packaging/package-notices.sh). -->
+      <Component Directory="INSTALLFOLDER"><File Source="target\package-notices\THIRD-PARTY-LICENSES.html" /></Component>
       <Component Directory="INSTALLFOLDER">
         <File Source="crates\limarepdf-core\models\README.md" Name="OCR-MODEL.md" />
       </Component>
