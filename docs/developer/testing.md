@@ -125,6 +125,7 @@ stronger check, used only where a fixture's bytes are shown to be the same each 
 | `crates/limarepdf-cli/tests/no_replace.rs` | `split` (by count and at bookmarks) and `render` refusing, listing them, when files are already at their names, with nothing written and those files unchanged; `--overwrite` replacing them; `split` into a folder that can't be written to leaving no files (Unix); `render --overwrite` and `id export … .cer` over a file hard-linked to another one leaving that other file unchanged (Unix) |
 | `crates/limarepdf-cli/tests/not_confirmed.rs` | REL-10, decision D7, through core's test seam (`LIMAREPDF_TEST_SYNC_FAILS`, architecture.md's "atomic.rs" paragraph): a file written but not confirmed on disk (`rotate`) saying it was saved but not confirmed and to run the command again if the power went, never "nothing was written", with a failed status and the new file in place, and the same command succeeding without the seam; `split`, whose parts are written on several threads, writing every part and naming one as not confirmed, not as a failure part way. Beside them, core's `a_split_not_confirmed_writes_every_part` (`atomic.rs`) and the app's `a_save_not_confirmed_on_disk_stays_unsaved` (Save and closing with Save: "Saved, not confirmed", the document left unsaved and open, then saved once the disk confirms) and `digital::tests::a_signed_file_not_confirmed_is_written` (the real signed write, and the ID made the default, not confirmed) |
 | `crates/limarepdf-cli/tests/output.rs` | Output that can't be written: `info`, `text` and `form list --json` to a full disk (`/dev/full`, Linux only) exit 1 with a plain message; `set-info` says its file was saved, and `remove-blank`, whose report comes first, saves nothing; a reader that went away stops quietly, with status 0, or 1 for `verify --require-trusted` on a file with no signatures; ordinary output as before (the title saved is read from the file, packed in an object stream since ENH-19) |
+| `crates/limarepdf-cli/tests/papers_win.rs` | Windows only. C-01, through core's test seam (`LIMAREPDF_TEST_PAPERS`, a stand-in printer; architecture.md's paragraph on paper sizes): `printers --paper` with a driver writing past its buffers says the copy reading them stopped unexpectedly (exception 0xC0000005) and exits 0, where reading in the CLI's own process ended it; a list that changes while it is read is refused; a copy's papers are listed as before; an answer too long, malformed or cut off is refused, saying why; a copy that hangs is stopped at the limit and holds nothing after; a program whose `main` doesn't answer gets an error; and each printer the system has lists the same papers through a copy as in the test's own process, with the times logged. Run under Wine for S1-23 (not Windows); Windows CI is the check of record |
 | `crates/limarepdf-cli/tests/save_images.rs` | `save-images` (NEW-09's stage 2): a lossless picture and a JPEG on page 1 and another JPEG on page 3 saved as `in-page-001-image-1.png`, `-image-2.jpg` and `in-page-003-image-1.jpg`, "saved 3 picture(s) to pics", the JPEG byte for byte and the PNG its pixels; a file already there refused with its name and kept, then replaced with `--overwrite`; a document without pictures saying "no pictures to save" and making no folder |
 | `crates/limarepdf-cli/tests/reduce.rs` | `reduce` (ENH-19's stage 1): a 300-ppi photo at `--quality web` made 600 pixels wide, the report's "pictures made smaller: 1" and "wrote out.pdf:" lines, the file under half its size; reduced again, kept and said so; `high-fidelity` keeping the picture, with no pictures line; `--jpeg-quality 0` refused by its parser; a signed document refused with its message, nothing written |
 | `crates/limarepdf-cli/tests/merge.rs` | `merge` and form fields (BUG-19): a later input with fields refused without `--flatten-forms`, and with an answer LimarePDF can't draw, nothing written either way; with it, the answer drawn on its page and no fields left; the first input's form kept fillable. Every input's bookmarks kept, each going to its page (ENH-18; failed first: the second file's missing) |
@@ -167,7 +168,8 @@ tends it from the calling thread, with no thread of its own: it writes the input
 most 16 MiB of each output and fails the test if there was more, and stops at the deadline the whole group, even
 when the program itself has already ended and something it started still holds the pipes open. A process that left
 the group (`setsid`) keeps running but holds nothing of the test's. On Windows the tests' version uses threads and
-stops only the program itself. The one child process that talks with its test as it runs (the crash recovery test
+stops only the program itself, as does the copy of LimarePDF that reads a printer's paper sizes (`run_kept`, its
+answer kept to 1 MiB). The one child process that talks with its test as it runs (the crash recovery test
 of a session another process holds) keeps its own deadlines.
 
 The comparison with poppler needs `pdftoppm` (poppler-utils) and curl. From `crates/limarepdf-core`, run
@@ -542,6 +544,22 @@ off the computer's clock: `comment_dates_are_shown_in_local_time` (`tests/local_
 an hour ahead, without a zone and a date alone, in UTC+14 and UTC−11) failed first, at "2026-10-29 03:33" for
 "17:33"; core's `lists_comments_and_markup_but_not_links_widgets_or_popups` now expects the computer's time. The run's other
 findings are in the backlog (PB-39 to PB-42).
+
+After S1-21 (2026-11-11) every screenshot in the guide was checked against a release build of `b1a8931` in the
+same set-up. Five were retaken: `redaction.png` and `fill-and-sign.png` (their notices reworded, PB-40),
+`comments.png` (the search box's hint, PB-41; the inspector wider, its number boxes with arrows), `inspector.png`
+(the date on one line, the border in whole points) and `signatures-panel.png` (the Aa button in the side strip).
+Of the other eleven, nine still show the app as it is: `icon.png` is `icon.ico`'s 256-pixel image, pixel for
+pixel; `limarepdf`, `window-tour`, `minimal` and `create-signature` taken again differ in at most 0.17 % of their
+pixels, none of it a change (anti-aliasing, the pointer over Tools, the dialog's transparent corners);
+`insert-link`, `reduce-file-size`, `print` and `print-more` were compared with the app by eye. Two differ in a
+detail: in `organise` the scroll bar is now 3 points in from the window's edge (PB-33), and in `forms` the text
+being typed in Notes is now the field's 11 points, as the page draws it (it was about 6 % larger before 473edaa and
+cce8b4f); both are retaken the next time those areas change (PB-150). The ribbon is 4 points shorter than in October, so whatever is under it is drawn 8 pixels higher at
+scale 2. The scripts for the five retaken are now in the repository, `tools/docshots/`: `mkreport.py` writes the
+made-up report (standard-library Python, fixed names and dates) and `docshots.sh` runs the release app on it under
+Xvfb with settings, recovery folders and made-up digital IDs of its own, and crops each picture to its old size.
+Its header says how to find a control's new click point when one moves.
 
 D2's flow (build plan 6.4): fields filled in one flow (BUG-03, BUG-04, BUG-10), and a photographed or flat form
 finished in Fill and sign (batch 42, ENH-09), each step with its test:

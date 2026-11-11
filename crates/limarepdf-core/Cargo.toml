@@ -96,7 +96,9 @@ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] 
 limarepdf-core = { path = ".", features = ["test-seams"] }
 
 # Printing through the Windows print spooler and GDI (system DLLs; no C code is built), and
-# a disk's free space for crash recovery copies (disk.rs).
+# a disk's free space for crash recovery copies (disk.rs). A printer's paper sizes are read in
+# a copy of the program (print_win.rs): started with no window, its crash dialog off, its
+# buffers ending at an inaccessible page.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -104,6 +106,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Printing",
     "Win32_Storage_FileSystem",
     "Win32_Storage_Xps",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
 ] }
 
 # A disk's free space and this user's id, for crash recovery copies (disk.rs); waiting on an

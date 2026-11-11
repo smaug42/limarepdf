@@ -111,6 +111,20 @@ pub const ASK_WITHIN: Duration = Duration::from_secs(10);
 /// How long `lp` may take to take the document, and then to confirm the job.
 pub const SEND_WITHIN: Duration = Duration::from_secs(120);
 
+/// The hidden argument, followed by a printer's name, that a copy of the program reading the
+/// printer's paper sizes is started with on Windows ([`answer_if_asked`]).
+pub const PAPERS_ARG: &str = "--limarepdf-paper-sizes";
+
+/// The first call in the `main` of a program that lists a printer's paper sizes ([`papers`]).
+/// On Windows they are read by a copy of the program, started with [`PAPERS_ARG`]: in that
+/// copy this writes them and exits, and in any other run it lets [`papers`] start copies. A
+/// program whose `main` doesn't call it gets an error from [`papers`] on Windows. Elsewhere it
+/// does nothing.
+pub fn answer_if_asked() {
+    #[cfg(windows)]
+    crate::print_win::answer_if_asked();
+}
+
 /// Why a command was stopped by [`child::run`](crate::child::run) after `limit`.
 #[cfg(not(windows))]
 fn too_slow(program: &str, limit: Duration) -> anyhow::Error {
@@ -234,12 +248,15 @@ fn cups_printers_now() -> Result<Vec<Printer>> {
 /// The paper sizes `printer` takes and its default, as the printing service reports them,
 /// each with the margins the printer can't print in when it says, within [`ASK_WITHIN`] for
 /// each question asked. On Linux and macOS CUPS is asked over IPP, and failing that its
-/// `lpoptions` names the sizes without margins; on Windows the printer's driver is asked.
+/// `lpoptions` names the sizes without margins; on Windows the printer's driver is asked, by a
+/// copy of the program ([`answer_if_asked`]).
 pub fn papers(printer: &str) -> Result<PaperList> {
     #[cfg(windows)]
     {
         let name = printer.to_string();
-        within("the printer's paper sizes", ASK_WITHIN, move || {
+        // The thread's limit a little over the copy's own, so that its message is said.
+        let limit = ASK_WITHIN + Duration::from_secs(2);
+        within("the printer's paper sizes", limit, move || {
             crate::print_win::papers(&name)
         })
     }

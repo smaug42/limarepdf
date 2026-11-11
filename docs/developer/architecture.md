@@ -1462,10 +1462,26 @@ commands), IPP is asked again after `lpoptions` has run. Each question is bounde
 own (Windows' `printers` uses it too). `ipp::post` sets the socket's waits to the time left before each read; macOS
 refuses that (EINVAL, `InvalidInput`) once CUPS has closed its end after answering, so that refusal is passed over,
 the wait set before still ending by the deadline (BUG-48: the answer was given up on, and every Mac fell back to
-`lpoptions`). On Windows `print_win::papers` reads the driver's lists
-(`DeviceCapabilitiesW`: numbers, names, sizes in tenths of a millimetre), the default from its settings, and each
-paper's printable area held portrait from an information context (`CreateICW`, `GetDeviceCaps`), measuring for
-at most 3 seconds in all. `paper::listed` keeps each label once, the default's over others of its label.
+`lpoptions`). On Windows the driver's lists are read in a copy of the program (C-01): `DeviceCapabilitiesW` fills
+buffers sized by an earlier count and is given no capacity, so a driver whose list grew in between would write past
+them. `print_win::papers` starts the program's own file (`current_exe`) with `print::PAPERS_ARG` and the printer's
+name, with no window, and reads its answer through `child::run_kept` (at most `paper_answer::MAX_ANSWER`, 1 MiB,
+within `print::ASK_WITHIN`, its thread under `print::within` 2 seconds longer). Both `main`s call
+`print::answer_if_asked` first, which in a copy answers and exits, and otherwise allows the asking: a program whose
+`main` doesn't call it gets an error, never a reading in its own process. The copy (`print_win::answer`) turns off
+the crash dialog (`SetErrorMode`); counts the papers (at most `MAX_PAPERS`, 4,096); reads the numbers, names and
+sizes (tenths of a millimetre) into buffers ending at an inaccessible page (`Guarded`: `VirtualAlloc`,
+`VirtualProtect`), so a driver writing past them ends the copy at once; counts again (a changed count is an error);
+takes the default from the printer's settings; and measures each paper's printable area held portrait from an
+information context (`CreateICW`, `GetDeviceCaps`) for at most 3 seconds in all, dropping margins that leave none
+of the paper. It writes them in `paper_answer`'s format (a version line, the default, a line a paper, then `end`
+and their count), which the program asking checks whole before using any of it (`paper_answer::read`). A copy that
+crashed (its exception number given), failed (its message, on one line of at most 300 characters), didn't answer
+in time or answered with anything malformed gives an error; nothing falls back to reading in the program's own
+process. `papers_seam` (test seams) puts a stand-in printer in front of the driver: `LIMAREPDF_TEST_PAPERS` makes
+it write past its buffers or change its list, or makes the copy hang, or answer too much, malformed or cut off
+(`crates/limarepdf-cli/tests/papers_win.rs`). `paper::listed` keeps each label once, the default's over others of
+its label.
 
 Every printout is laid out by LimarePDF itself (ENH-14's stage 2), on every platform, so what reaches the printer is
 what the placements say, and Print's preview draws the same sheets. The design pass found the platforms

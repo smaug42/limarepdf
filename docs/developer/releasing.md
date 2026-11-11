@@ -36,7 +36,8 @@ How a release is made, for maintainers.
      actions](#pinned-actions)), and move `dtolnay/rust-toolchain` to its `stable` branch's latest commit by hand;
    - check that the user guide's screenshots (`docs/images/`) still show the app as it is, and retake any that
      don't: a 1000×660 window in the light theme under a virtual X server, made-up documents and digital IDs only,
-     cut down to the part the page is about.
+     cut down to the part the page is about. `tools/docshots/docshots.sh` takes `comments`, `fill-and-sign`,
+     `inspector`, `redaction` and `signatures-panel` this way (its header says how).
 2. Open a pull request. CI builds, tests and packages all four platforms; check the archives in the run's artifacts.
    Merge when it is green.
 3. On `main`, after pulling the merge, make a signed tag and push it:

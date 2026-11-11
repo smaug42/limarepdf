@@ -79,6 +79,8 @@ fn read_args(
 }
 
 fn main() -> eframe::Result {
+    // A copy started to read a printer's paper sizes on Windows answers and exits here.
+    limarepdf_core::print::answer_if_asked();
     timing::start();
     let (files, page) = read_args(std::env::args_os().skip(1), cfg!(target_os = "macos"));
     // Finder's Open With and double-click, from the first one, sent as the app launches.
