@@ -221,14 +221,12 @@ fn only_a_protected_file_needs_a_password() {
         restrictions: Restrictions::default(),
     }));
     let locked = p.to_bytes().unwrap();
-    for password in [None, Some("wrong")] {
+    // The cases are said by name: the password itself isn't printed.
+    for (case, password) in [("no password", None), ("a wrong one", Some("wrong"))] {
         let e = Pdf::from_bytes(&locked, password).err().expect("opened");
-        assert!(
-            e.downcast_ref::<NeedsPassword>().is_some(),
-            "{password:?}: {e:#}"
-        );
+        assert!(e.downcast_ref::<NeedsPassword>().is_some(), "{case}: {e:#}");
         let said = "cannot open PDF: invalid password for encrypted PDF";
-        assert_eq!(format!("{e:#}"), said, "{password:?}");
+        assert_eq!(format!("{e:#}"), said, "{case}");
     }
     let dir = std::env::temp_dir().join(format!("limarepdf-{}-no-folder", std::process::id()));
     let e = Pdf::open(dir.join("password-guide.pdf"), None)
