@@ -208,6 +208,22 @@ fn missing_glyphs(app: &mut App, ty: &Typist) -> BTreeSet<String> {
 /// Fill and sign's pane offers one way to make a signature and one to make initials, with
 /// none saved and with some: one "Create signature…" button and one "Create initials…",
 /// and no "New…" button.
+/// PB-40: the notice for items still movable counts items, not signatures: a signature, a
+/// date and a tick are three items. One is still "A signature or other item".
+#[test]
+fn the_notice_counts_items_put_down() {
+    let one = crate::banners::signing(1).text;
+    assert!(
+        one.starts_with("A signature or other item you put down can"),
+        "{one}"
+    );
+    let three = crate::banners::signing(3).text;
+    assert!(
+        three.starts_with("3 items you put down can still be moved"),
+        "{three}"
+    );
+}
+
 #[test]
 fn fill_and_sign_offers_one_way_to_create_each() {
     let ctx = test_ctx();

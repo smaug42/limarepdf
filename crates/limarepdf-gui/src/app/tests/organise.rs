@@ -1721,3 +1721,33 @@ fn crop_goes_back_to_the_page_view() {
     assert_eq!(t.current, 2, "not at the first page selected");
     assert_eq!(chosen(&app), [2, 4], "the pages let go");
 }
+
+/// L-03: a card size that isn't a number, written into the settings file, is the default:
+/// in a window too narrow for the zoom slider the settings aren't saved again every frame
+/// (a file deleted stays deleted), and in a wide one the slider doesn't shrink the cards
+/// to the smallest; a zoom that isn't a number leaves the grid's as it was.
+#[test]
+fn a_card_size_that_isn_t_a_number_is_the_default() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let file = test_dir("organise-nan").join("settings.txt");
+    std::fs::write(&file, "organise_size = NaN\n").unwrap();
+    let mut app = App::with(
+        Settings::from_file(Some(file.clone())),
+        Recent::from_file(None),
+    );
+    let mut pdf = Pdf::new();
+    pdf.insert_blank(0, 400.0, 600.0).unwrap();
+    assert!(app.add_tab(&ctx, pdf, None, None, false));
+    app.act(&ctx, Act::Organise);
+    settled_at(&mut app, &ctx, 800.0);
+    std::fs::remove_file(&file).unwrap();
+    settled_at(&mut app, &ctx, 800.0);
+    assert!(!file.exists(), "the settings were saved again");
+    ty.pause(&mut app);
+    assert_eq!(app.tabs[0].grid_zoom, crate::settings::ORGANISE_ZOOM);
+    app.tabs[0].zoom_grid(f32::NAN);
+    assert_eq!(app.tabs[0].grid_zoom, crate::settings::ORGANISE_ZOOM);
+    app.tabs[0].zoom_grid(f32::INFINITY);
+    assert_eq!(app.tabs[0].grid_zoom, crate::settings::ORGANISE_ZOOM);
+}

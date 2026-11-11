@@ -173,13 +173,14 @@ impl Tab {
         }
         // The search box and Filter on one row, left to right so Tab reaches them in that
         // order: the box is what room Filter leaves, as wide as it was last drawn (the
-        // frame drawn again when that changed).
+        // frame drawn again when that changed). Its hint is "Search" alone, which fits that
+        // room (PB-41); its name says what it searches.
         ui.horizontal(|ui| {
             let filter = self.review.filter_width.unwrap_or(80.0);
             let room = ui.available_width() - filter - ui.spacing().item_spacing.x;
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.review.query)
-                    .hint_text("Search comments")
+                    .hint_text("Search")
                     .desired_width(room.max(40.0)),
             );
             crate::dialogs::set_name(&r, "Search comments");

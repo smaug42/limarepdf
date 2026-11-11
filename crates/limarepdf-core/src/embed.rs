@@ -577,18 +577,86 @@ pub(crate) fn cant_write(missing: &str) -> String {
     let sequences = sequences(missing);
     if !sequences.is_empty() {
         return format!(
-            "LimarePDF can't write \"{sequences}\" yet: flags, skin tones, keycaps and joined \
-             emoji aren't supported"
+            "LimarePDF can't write {} yet: flags, skin tones, keycaps and joined emoji aren't \
+             supported",
+            named(&sequences)
         );
     }
-    let script: String = missing.chars().filter(|&c| unwritten_script(c)).collect();
+    let script = script(missing);
     if !script.is_empty() {
         return format!(
             "LimarePDF can't write \"{script}\" yet: right-to-left writing, and scripts whose \
              letters join, such as Arabic, Hebrew and Hindi, aren't supported"
         );
     }
-    format!("No font on this computer has \"{missing}\"")
+    format!("No font on this computer has {}", named(missing))
+}
+
+/// The characters `missing` as a message names them (PB-72): those that show in quotes,
+/// with the marks they join (an emoji's joiner), and each that doesn't ([`hidden`]) by its
+/// number, "the character U+F8E8"; joined with "or".
+fn named(missing: &str) -> String {
+    let (mut shown, mut numbers) = (String::new(), Vec::new());
+    for g in missing.graphemes(true) {
+        if g.chars().all(hidden) {
+            numbers.extend(
+                g.chars()
+                    .map(|c| format!("the character U+{:04X}", c as u32)),
+            );
+        } else {
+            shown.push_str(g);
+        }
+    }
+    let quoted = (!shown.is_empty()).then(|| format!("\"{shown}\""));
+    quoted
+        .into_iter()
+        .chain(numbers)
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+/// Whether `c` doesn't show, so a message can't quote it: a control or private-use
+/// character, a non-character, one Unicode ignores by default (zero-width characters,
+/// joiners, the soft hyphen, direction marks, variation selectors, tags), or a space other
+/// than the plain one.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || (c.is_whitespace() && c != ' ')
+        || c as u32 & 0xFFFE == 0xFFFE
+        || matches!(
+            c,
+            '\u{E000}'..='\u{F8FF}'
+                | '\u{F0000}'..='\u{FFFFD}'
+                | '\u{100000}'..='\u{10FFFD}'
+                | '\u{FDD0}'..='\u{FDEF}'
+                // Default_Ignorable_Code_Point, from Unicode's DerivedCoreProperties.txt.
+                | '\u{AD}'
+                | '\u{34F}'
+                | '\u{61C}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
+                | '\u{180B}'..='\u{180F}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{3164}'
+                | '\u{FE00}'..='\u{FE0F}'
+                | '\u{FEFF}'
+                | '\u{FFA0}'
+                | '\u{FFF0}'..='\u{FFF8}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0000}'..='\u{E0FFF}'
+        )
+}
+
+/// The characters of scripts LimarePDF doesn't write yet ([`unwritten_script`]) among
+/// `missing`, but those that don't show, such as U+FEFF in the Arabic forms' block: a
+/// message names those by number instead.
+fn script(missing: &str) -> String {
+    (missing.chars())
+        .filter(|&c| unwritten_script(c) && !hidden(c))
+        .collect()
 }
 
 /// The emoji sequences ([`emoji_sequence`]) among the characters `missing`.
@@ -605,18 +673,21 @@ pub(crate) fn box_refusal(missing: &str) -> String {
     let sequences = sequences(missing);
     if !sequences.is_empty() {
         return format!(
-            "it has \"{sequences}\", and flags, skin tones, keycaps and joined emoji aren't \
-             supported yet"
+            "it has {}, and flags, skin tones, keycaps and joined emoji aren't supported yet",
+            named(&sequences)
         );
     }
-    let script: String = missing.chars().filter(|&c| unwritten_script(c)).collect();
+    let script = script(missing);
     if !script.is_empty() {
         return format!(
             "it has \"{script}\", in a script LimarePDF can't write yet (right-to-left \
              writing, and scripts whose letters join, aren't supported)"
         );
     }
-    format!("it has \"{missing}\", which no font on this computer has")
+    format!(
+        "it has {}, which no font on this computer has",
+        named(missing)
+    )
 }
 
 /// Whether `c` is of a script LimarePDF doesn't write in any font yet: one written right
@@ -1752,7 +1823,7 @@ mod tests {
         let before = p.doc.objects.len();
         let text = format!("Ωmega {NONE}");
         let err = p.pen(caveat, &[&text]).err().unwrap().to_string();
-        assert_eq!(err, format!("No font on this computer has \"{NONE}\""));
+        assert_eq!(err, "No font on this computer has the character U+2FFFE");
         assert_eq!(p.doc.objects.len(), before, "nothing changed");
         assert_eq!(unwritable(caveat, &format!("Ωж{NONE}")), NONE.to_string());
         // Scripts LimarePDF can't write in any font are named so.
@@ -1775,6 +1846,58 @@ mod tests {
         assert_eq!(err, "Source Serif 4 has no bold face");
         assert!(!writable(bold_serif, 'A'));
         assert_eq!(p.doc.objects.len(), before);
+    }
+
+    /// PB-72: a character that doesn't show is named by its number, not quoted where no
+    /// one can see it ('No font on this computer has ""'); one that shows stays in quotes,
+    /// and an emoji keeps its joiner.
+    #[test]
+    fn characters_that_dont_show_are_named_by_their_number() {
+        let none = "No font on this computer has";
+        assert_eq!(
+            cant_write("\u{F8E8}"),
+            format!("{none} the character U+F8E8")
+        );
+        let both = format!("{none} \"ʘ\" or the character U+F8E8");
+        assert_eq!(cant_write("ʘ\u{F8E8}"), both);
+        assert_eq!(cant_write("ʘ★"), format!("{none} \"ʘ★\""));
+        let two = format!("{none} the character U+E000 or the character U+E001");
+        assert_eq!(cant_write("\u{E000}\u{E001}"), two);
+        // Not yet assigned: a reader may have a font that shows it, so quoted.
+        assert_eq!(cant_write("\u{378}"), format!("{none} \"\u{378}\""));
+        // Controls, spaces but the plain one, Unicode's default-ignorable characters,
+        // non-characters and private use.
+        let hidden = [
+            ('\u{1}', "U+0001"),
+            ('\u{A0}', "U+00A0"),
+            ('\u{3000}', "U+3000"),
+            ('\u{AD}', "U+00AD"),
+            ('\u{200B}', "U+200B"),
+            ('\u{200F}', "U+200F"),
+            ('\u{2060}', "U+2060"),
+            ('\u{FE0E}', "U+FE0E"),
+            ('\u{FEFF}', "U+FEFF"),
+            ('\u{FDD0}', "U+FDD0"),
+            ('\u{2FFFE}', "U+2FFFE"),
+            ('\u{10FFFF}', "U+10FFFF"),
+            ('\u{E000}', "U+E000"),
+            ('\u{F0000}', "U+F0000"),
+        ];
+        for (c, number) in hidden {
+            let want = format!("{none} the character {number}");
+            assert_eq!(cant_write(&c.to_string()), want, "{c:?}");
+        }
+        // Parts that only make emoji sequences, alone, by number; a sequence whole.
+        let parts = "can't write the character U+FE0F or the character U+E0041 yet";
+        assert!(cant_write("\u{FE0F}\u{E0041}").contains(parts));
+        let joined = cant_write("👨\u{200D}👩");
+        assert!(
+            joined.contains("can't write \"👨\u{200D}👩\" yet"),
+            "{joined}"
+        );
+        // A text box's refusal names them the same way.
+        let it = "it has the character U+F8E8, which no font on this computer has";
+        assert_eq!(box_refusal("\u{F8E8}"), it);
     }
 
     /// The made-up font with emoji (`tools/make_emoji_test_font.py`).

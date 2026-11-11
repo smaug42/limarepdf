@@ -109,7 +109,9 @@ pub use cms_check::CertInfo;
 pub use compact::MAX_XMP;
 pub use decorate::{decoration_lines, DecoKind, Decorated, Decoration, FontLines, Look};
 pub use display::{display_line, display_text, local_date, local_time, quoted_list, short_list};
-pub use doc::{existing, part_file_name, write_file, write_file_expecting, Info, Pdf, SplitBy};
+pub use doc::{
+    existing, part_file_name, write_file, write_file_expecting, Info, NeedsPassword, Pdf, SplitBy,
+};
 pub use edit::{KeptPiece, PartFont, PathStyle, Shape, TextEdit, TextPart};
 pub use embed::{
     bundled_face, emoji_sequence, liberation, refusal, unwritten_script, writable, LIBERATION,

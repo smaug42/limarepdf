@@ -580,7 +580,7 @@ mod tests {
         assert!(e.contains("שלום") && e.contains("right-to-left"), "{e}");
         assert!(!e.contains('Ω'), "{e}");
         let e = stamp_wording("paid \u{2FFFE}").unwrap_err().to_string();
-        assert_eq!(e, "No font on this computer has \"\u{2FFFE}\"");
+        assert_eq!(e, "No font on this computer has the character U+2FFFE");
     }
 
     #[test]

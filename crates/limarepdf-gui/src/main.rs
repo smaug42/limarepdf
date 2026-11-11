@@ -57,19 +57,21 @@ pub fn guard<T>(f: impl FnOnce() -> limarepdf_core::Result<T>) -> limarepdf_core
     })
 }
 
-/// The files and `--page` number on the command line (without the program's name). Older
-/// macOS gave an app started from Finder a `-psn_…` process number, which is no file.
+/// The files and `--page` number on the command line (without the program's name), taken
+/// as the system gives them, so a file name that isn't valid Unicode still opens (L-01).
+/// Older macOS gave an app started from Finder a `-psn_…` process number, which is no file.
 fn read_args(
-    args: impl IntoIterator<Item = String>,
+    args: impl IntoIterator<Item = std::ffi::OsString>,
     macos: bool,
 ) -> (Vec<std::path::PathBuf>, Option<usize>) {
     let mut files = Vec::new();
     let mut page: Option<usize> = None;
     let mut args = args.into_iter();
     while let Some(a) = args.next() {
+        let starts = |p: &str| a.as_encoded_bytes().starts_with(p.as_bytes());
         if a == "--page" {
-            page = args.next().and_then(|v| v.parse().ok());
-        } else if !a.starts_with("--") && !(macos && a.starts_with("-psn_")) {
+            page = args.next().and_then(|v| v.to_str()?.parse().ok());
+        } else if !starts("--") && !(macos && starts("-psn_")) {
             files.push(std::path::PathBuf::from(a));
         }
     }
@@ -78,7 +80,7 @@ fn read_args(
 
 fn main() -> eframe::Result {
     timing::start();
-    let (files, page) = read_args(std::env::args().skip(1), cfg!(target_os = "macos"));
+    let (files, page) = read_args(std::env::args_os().skip(1), cfg!(target_os = "macos"));
     // Finder's Open With and double-click, from the first one, sent as the app launches.
     #[cfg(target_os = "macos")]
     macos::listen();
@@ -122,9 +124,26 @@ mod tests {
         assert!(e.to_string().contains("index 7"));
     }
 
+    /// A file name that isn't valid Unicode, which Linux and the BSDs allow, is opened at
+    /// the page given rather than stopping the app (L-01).
+    #[cfg(unix)]
+    #[test]
+    fn a_file_name_that_isn_t_unicode_is_opened() {
+        use std::os::unix::ffi::OsStringExt;
+        let name = std::ffi::OsString::from_vec(b"a\xff.pdf".to_vec());
+        let args = vec![name.clone(), "--page".into(), "3".into()];
+        let (files, page) = super::read_args(args, false);
+        assert_eq!(files, [std::path::PathBuf::from(name)]);
+        assert_eq!(page, Some(3));
+    }
+
     #[test]
     fn finder_process_numbers_are_not_files_on_macos() {
-        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let args = |a: &[&str]| {
+            a.iter()
+                .map(|s| s.into())
+                .collect::<Vec<std::ffi::OsString>>()
+        };
         let (files, page) =
             super::read_args(args(&["-psn_0_12345", "a b.pdf", "--page", "3"]), true);
         assert_eq!(files, [std::path::PathBuf::from("a b.pdf")]);

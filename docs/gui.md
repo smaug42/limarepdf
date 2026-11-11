@@ -495,7 +495,7 @@ click a section's name to open or fold it.
 | Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Cut, Copy, Paste in their place, Bold, Italic, Underline, Strikethrough, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu, which also has **Link…** |
 | A link (clicked with the Link tool, or right-clicked with it or the read tool) | Headed **Link**: the page it is on, Link to, the address or page, and Show as a link; each change applies at once. The right-click menu has **Edit link…**, **Open link**, **Copy link address** (web and email links) and **Remove link**; Delete removes it ([Change or remove a link](reading-and-finding.md#change-or-remove-a-link)) |
 
-The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
+The inspector holds controls, with at most a short line about state (such as how many redaction marks there are); how to
 use a tool is in its button's tooltip and the menus, and in this guide.
 
 The page and document settings apply as you set them, with no Apply button, each change one undo step: typed
@@ -641,8 +641,8 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | ⌘⇧X (on a Mac only) | Strikethrough, for the same text as Ctrl+U, as in Word for Mac. On Windows and Linux it has no key, as in Word: use the Font group's **S**, the right-click menu or the command search |
 | Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J (in page text being edited, or with words or lines selected; in new text or a text box) | Align left, Centre, Align right, Justify their paragraphs, as in Word; Centre, Align right or Justify again puts them back to the left. New text's lines and a text box's are aligned left, centred or right, not justified |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
-| Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
-| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so are Organise's grid and the bookmarks list); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+Shift+P every command |
+| Tab, Shift+Tab | Next, previous form field, from the last round to the first; Space ticks a checkbox or chooses a radio button, and Space or Enter opens a list, also in a field reached from a text field |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so are Organise's grid and the bookmarks list; the pages are none: F6 or a click gives them the keyboard); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+Shift+P every command |
 
 ### Screen readers
 

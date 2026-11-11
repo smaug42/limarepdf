@@ -557,6 +557,23 @@ impl FormUi {
             };
             te = te.align(egui::Align2([along, egui::Align::Min]));
         }
+        // Tab and Shift+Tab go to the form's next field or the one before, not to egui's next
+        // widget (PB-39), which a field with a ring can't take the keys back from; egui goes
+        // back a frame late, too, when Shift+Tab is gone. Taken here, too, so that `keys`
+        // doesn't move on a second field.
+        let (tab, shift) = match ui.memory(|m| m.has_focus(id)) {
+            true => ui.input_mut(|i| {
+                let shift = i.consume_key(egui::Modifiers::SHIFT, Key::Tab);
+                (
+                    shift || i.consume_key(egui::Modifiers::NONE, Key::Tab),
+                    shift,
+                )
+            }),
+            false => (false, false),
+        };
+        if tab {
+            ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+        }
         // Light colours in either theme: the box sits on the paper.
         let theme = ui.visuals().clone();
         *ui.visuals_mut() = egui::Visuals::light();
@@ -582,7 +599,9 @@ impl FormUi {
             *back = false;
             return;
         }
-        if !out.lost_focus() {
+        if tab {
+            out.surrender_focus();
+        } else if !out.lost_focus() {
             return;
         }
         // A dialog took the keyboard (a command's question, or why the typing couldn't be
@@ -591,16 +610,7 @@ impl FormUi {
             *back = true;
             return;
         }
-        // Tab is taken here, or `keys` would see it too and move on a second field. Esc,
-        // like Enter or a click away, keeps what was typed.
-        let (tab, shift) = ui.input_mut(|i| {
-            let shift = i.modifiers.shift;
-            (
-                i.consume_key(egui::Modifiers::SHIFT, Key::Tab)
-                    || i.consume_key(egui::Modifiers::NONE, Key::Tab),
-                shift,
-            )
-        });
+        // Esc, like Enter or a click away, keeps what was typed.
         if text != original {
             self.left = Some(Left {
                 name: field.name.clone(),

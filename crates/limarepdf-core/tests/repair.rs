@@ -211,6 +211,8 @@ fn damaged_encrypted_files_need_their_password() {
     enc.splice(line..line, *b"%                                      \n");
     let wrong = Pdf::from_bytes(&enc, Some("nope")).err().expect("opened");
     assert!(format!("{wrong:#}").contains("password"), "{wrong:#}");
+    let marked = wrong.downcast_ref::<limarepdf_core::NeedsPassword>();
+    assert!(marked.is_some(), "{wrong:#}");
     let pdf = opens_repaired(&enc, Some("user"));
     assert_eq!(pdf.info().title.as_deref(), Some("Damaged"));
 }

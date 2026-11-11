@@ -366,3 +366,54 @@ fn digital_signing_takes_a_click_only_on_a_field_on_screen() {
     let w = app.sign_window.as_ref().expect("no signing window");
     assert_eq!(w.place, SignPlace::Field("Shown".into()));
 }
+
+/// PB-39: a drop-down reached with Tab, from the text field before it, opens its list
+/// with Space, and with Enter, as a click opens it. Shift+Tab from the first field goes
+/// round to the last, the radio button L, and Space chooses it.
+#[test]
+fn a_field_reached_with_tab_from_a_text_box_takes_its_keys() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    let dir = test_dir("drop-down-keys");
+    let path = dir.join("form.pdf");
+    mixed_form().save(&path).unwrap();
+    open_and_wait(&mut app, &ctx, &path, 1);
+    for key in [Key::Space, Key::Enter] {
+        ty.click_field(&mut app, "Phone", 0);
+        ty.key(&mut app, Key::Tab, NONE);
+        let tree = ty.pause(&mut app);
+        let form = &app.tabs[0].ed.form;
+        let at = form.focused_field().map(|f| f.name.as_str());
+        assert_eq!(at, Some("Colour"), "Tab, for {key:?}");
+        assert!(form.ringed(), "no ring, for {key:?}");
+        assert!(node(&tree, "Otter brown").is_none(), "open before {key:?}");
+        ty.key(&mut app, key, NONE);
+        let tree = ty.pause(&mut app);
+        assert!(!app.tabs[0].ed.form.ringed(), "still a ring after {key:?}");
+        assert!(
+            node(&tree, "Otter brown").is_some(),
+            "{key:?} didn't open the list"
+        );
+        ty.key(&mut app, Key::Escape, NONE);
+        ty.pause(&mut app);
+    }
+
+    ty.click_field(&mut app, "First name", 0);
+    ty.key(&mut app, Key::Tab, egui::Modifiers::SHIFT);
+    ty.pause(&mut app);
+    let form = &app.tabs[0].ed.form;
+    let at = form.focused_field().map(|f| f.name.as_str());
+    assert_eq!(at, Some("Size"), "Shift+Tab");
+    assert!(form.ringed(), "no ring after Shift+Tab");
+    ty.key(&mut app, Key::Space, NONE);
+    ty.pause(&mut app);
+    let size = fields_of(&app.tabs[0].pdf)
+        .into_iter()
+        .find(|f| f.0 == "Size");
+    assert_eq!(
+        size.map(|f| f.2),
+        Some(FieldValue::Choice(vec!["L".into()]))
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

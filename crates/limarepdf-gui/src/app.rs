@@ -149,9 +149,10 @@ enum AppendStop {
     Failed(String),
 }
 
-/// Whether opening a file failed for want of the right password.
-fn needs_password(e: &str) -> bool {
-    e.to_lowercase().contains("password")
+/// Whether opening a file failed for want of the right password: by the error's type,
+/// not its words, which can be a file name with "password" in it (L-04).
+fn needs_password(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<limarepdf_core::NeedsPassword>().is_some()
 }
 
 /// What a password prompt says when asked again.
@@ -1228,7 +1229,7 @@ impl App {
                 },
                 Err(e) => {
                     let s = format!("{e:#}");
-                    if needs_password(&s) {
+                    if needs_password(&e) {
                         Loaded::NeedPassword {
                             path,
                             error: password.map(|_| INCORRECT_PASSWORD.to_string()),
@@ -4548,7 +4549,7 @@ impl App {
                     Ok(d) => a.read.push(Some(d)),
                     Err(e) => {
                         let s = format!("{e:#}");
-                        stop = Some(if needs_password(&s) {
+                        stop = Some(if needs_password(&e) {
                             AppendStop::Password(given.map(|_| INCORRECT_PASSWORD.into()))
                         } else {
                             AppendStop::Failed(format!("{}: {s}", f.display()))
@@ -8537,6 +8538,10 @@ impl eframe::App for App {
         let ring = self.regions.ring;
         let grid_zoom = self.settings.organise_zoom;
         let pages = egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
+            // Scroll bars clear of the inspector's edge, which takes a drag this far onto the
+            // canvas (PB-33): flush with it, the pages' bar was over the edge and took it.
+            let grab = ui.style().interaction.resize_grab_radius_side;
+            ui.style_mut().spacing.scroll.bar_outer_margin = grab;
             if let Some(t) = self.tabs.get_mut(self.active) {
                 regions::name(ui, Region::Page);
                 // App-wide choices, lent to the tab.
@@ -9357,13 +9362,15 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
-        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 37);
+        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 44);
         // Not the zoom level, which depends on the window.
         reached.retain(|name| !name.ends_with('%'));
         // Redo is disabled, as nothing was undone, and Paste, Copy and the Font group as
         // nothing is typed or selected; planned features are no Tab stops. The status
         // bar's view buttons and zoom (NEW-14) before the strip; the thumbnails are one
-        // stop, their list. The interface's switch ends the tab strip (ENH-45).
+        // stop, their list. The interface's switch ends the tab strip (ENH-45). The page is
+        // no stop (PB-32), as its keys don't work while it has the keyboard: from the
+        // inspector's edge Tab goes round to the tab strip.
         let bars = [
             "Untitled, unsaved",
             "Close Untitled",
@@ -9401,6 +9408,12 @@ mod tests {
             "Spelling",
             "Digital signatures",
             "Page thumbnails",
+            "Side panel width",
+            "Collapse the inspector",
+            "Properties",
+            "Opening view",
+            "Inspector width",
+            "Untitled, unsaved",
         ];
         assert_eq!(reached[..bars.len()], bars);
     }
@@ -12507,9 +12520,7 @@ mod tests {
         let from = edge(&mut app, "Inspector width");
         assert!(1400.0 - from.x > INSPECTOR_WIDTH + 8.0, "not widened");
         assert_eq!(app.settings.panel_widths.get("inspector"), None);
-        // Dragged 40 points wider, then let go: from the panel's side of its edge, as the
-        // pages' scroll area takes a drag on the other side (PB-33).
-        let from = from + egui::vec2(3.0, 0.0);
+        // Dragged 40 points wider, then let go.
         let to = from - egui::vec2(40.0, 0.0);
         let over = egui::Event::PointerMoved(from);
         window(&mut app, &ctx, 1400.0, vec![over]);
@@ -12539,6 +12550,45 @@ mod tests {
         let (at, _) = node(&tree, "Inspector width").expect("the edge");
         let width = 1400.0 - at.center().x;
         assert!((width - given).abs() <= 1.0, "{width}, not {given}");
+    }
+
+    /// PB-33: the inspector's edge takes a drag from a press on its line, or 2 points onto
+    /// the pages, as from the panel's side: the pages' scroll bar is clear of it.
+    #[test]
+    fn the_inspector_edge_takes_a_drag_from_the_pages_side() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let edge = |app: &mut App| {
+            let tree = settled_at(app, &ctx, 1400.0);
+            let (at, _) = node(&tree, "Inspector width").expect("the edge");
+            at.center()
+        };
+        for off in [3.0, 0.0, -2.0] {
+            let at = edge(&mut app);
+            let from = at + egui::vec2(off, 0.0);
+            let to = from - egui::vec2(40.0, 0.0);
+            window(
+                &mut app,
+                &ctx,
+                1400.0,
+                vec![egui::Event::PointerMoved(from)],
+            );
+            window(&mut app, &ctx, 1400.0, vec![press(from, true)]);
+            for i in 1..=4 {
+                let p = from + (to - from) * (i as f32 / 4.0);
+                window(&mut app, &ctx, 1400.0, vec![egui::Event::PointerMoved(p)]);
+            }
+            window(&mut app, &ctx, 1400.0, vec![press(to, false)]);
+            let now = edge(&mut app).x;
+            assert!(
+                (now - to.x).abs() <= 1.0,
+                "{off} from {}: at {now}, not {}",
+                at.x,
+                to.x
+            );
+        }
     }
 
     /// A26: with characters selected in a line edited on the page, the first colour picked
@@ -20236,6 +20286,32 @@ mod tests {
         assert_ne!(app.tabs[0].disk, before, "the file read again isn't known");
         assert_eq!(known, app.tabs[0].disk, "and it may be replaced");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// L-04: a file that can't be read is said to be so, opened or appended, not taken for
+    /// a protected one because "password" is in its name.
+    #[test]
+    fn a_missing_file_named_for_a_password_is_said_not_asked_for() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let missing = test_dir("password-named").join("password-guide.pdf");
+        app.spawn_open(&ctx, missing.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        assert_eq!(asked_password(&app), None, "a password asked for, opening");
+        let (title, text) = message(&app);
+        assert_eq!(title, CANNOT_OPEN);
+        assert!(text.contains("password-guide.pdf"), "{text}");
+        app.dialog = Dialog::None;
+        app.merge_files(&ctx, std::slice::from_ref(&missing));
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert_eq!(
+            asked_password(&app),
+            None,
+            "a password asked for, appending"
+        );
+        let (title, text) = message(&app);
+        assert_eq!(title, "Append failed");
+        assert!(text.contains("password-guide.pdf"), "{text}");
     }
 
     /// The audit's A17 (BUG-20): Append PDFs asks for a protected file's password (again

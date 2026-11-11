@@ -1135,8 +1135,25 @@ impl Default for Pdf {
     }
 }
 
+/// A protected document was opened with no password, or not with one of its own (L-04).
+/// It is a type of its own so that the apps ask for the password for this, not for any
+/// error whose words mention one (a missing file named password-guide.pdf).
+#[derive(Debug)]
+pub struct NeedsPassword;
+
+impl std::fmt::Display for NeedsPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cannot open PDF: {}", lopdf::Error::InvalidPassword)
+    }
+}
+
+impl std::error::Error for NeedsPassword {}
+
 fn cannot_open(e: lopdf::Error) -> anyhow::Error {
-    anyhow!("cannot open PDF: {e}")
+    match e {
+        lopdf::Error::InvalidPassword => NeedsPassword.into(),
+        e => anyhow!("cannot open PDF: {e}"),
+    }
 }
 
 /// Sides `[top, right, bottom, left]` of an unrotated page, as they appear once the page

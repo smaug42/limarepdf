@@ -894,7 +894,9 @@ character a chosen font draws only in colour goes to another font with its outli
 no font writes is refused with `embed::cant_write`'s message (PB-34, batch 45: an emoji sequence, "flags, skin
 tones, keycaps and joined emoji aren't supported"; a script not written yet, "right-to-left writing, and scripts
 whose letters join, such as Arabic, Hebrew and Hindi, aren't supported"; else "No font on this computer has …";
-batch 40's "Latin, Greek and Cyrillic characters are supported" is gone), `box_refusal` wording the same as the
+batch 40's "Latin, Greek and Cyrillic characters are supported" is gone; a character that doesn't show, such as a
+control, private-use or zero-width one, is named by its number, "the character U+F8E8", not quoted where no one
+can see it: `embed::named`, PB-72), `box_refusal` wording the same as the
 end of a message naming a text box. The app's caret note (`page_text::note`) is `SEQUENCE`, `SCRIPT` or `REFUSED`
 ("No font on this computer has this character"), naming no other font, as any font that has a character is
 already tried; `page_text::keep_typable` keeps or leaves out a whole cluster. A line's own font (`edit.rs`'s

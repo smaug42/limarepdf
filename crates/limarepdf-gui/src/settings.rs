@@ -170,6 +170,12 @@ pub const ORGANISE_MAX: f32 = 0.6;
 /// ([`crate::panels::NARROWEST`]) to half the widest window.
 const PANEL_WIDTHS: std::ops::RangeInclusive<f32> = crate::panels::NARROWEST..=WINDOW_MAX[0] / 2.0;
 
+/// The number in a setting's `text`; `None` when it isn't a finite one (L-03), as "NaN",
+/// "inf" and a number too big to hold (which reads as infinity) aren't sizes.
+fn finite(text: &str) -> Option<f32> {
+    text.trim().parse::<f32>().ok().filter(|v| v.is_finite())
+}
+
 /// A window size within [`WINDOW_MIN`] and [`WINDOW_MAX`], in whole points; `None` when it
 /// isn't a real size (not a number, or under 100 points either way, as when minimized).
 fn window_size([w, h]: [f32; 2]) -> Option<[f32; 2]> {
@@ -407,7 +413,7 @@ impl Settings {
                 "inspector_panel" => s.inspector_panel = value != "closed",
                 "panel_width" => {
                     let width = value.split_once(' ').and_then(|(panel, w)| {
-                        let w = w.trim().parse::<f32>().ok()?;
+                        let w = finite(w)?;
                         (PANEL_WIDTHS.contains(&w)).then(|| (panel.to_string(), w.round()))
                     });
                     s.panel_widths.extend(width);
@@ -433,7 +439,7 @@ impl Settings {
                     s.spelling_language = Some(value.into());
                 }
                 "organise_size" => {
-                    if let Ok(percent) = value.parse::<f32>() {
+                    if let Some(percent) = finite(value) {
                         let zoom = percent / 100.0;
                         s.organise_zoom = zoom.clamp(ORGANISE_MIN, ORGANISE_MAX);
                     }
@@ -504,9 +510,9 @@ impl Settings {
                     }
                 }
                 "window" => {
-                    let size = value.split_once('x').and_then(|(w, h)| {
-                        window_size([w.trim().parse().ok()?, h.trim().parse().ok()?])
-                    });
+                    let size = value
+                        .split_once('x')
+                        .and_then(|(w, h)| window_size([finite(w)?, finite(h)?]));
                     if let Some(size) = size {
                         s.window = size;
                     }
@@ -1043,6 +1049,23 @@ mod tests {
         std::fs::write(&f, "organise_size = walrus\n").unwrap();
         let s = Settings::from_file(Some(f));
         assert_eq!(s.organise_zoom, ORGANISE_ZOOM);
+    }
+
+    /// L-03: a size that isn't a finite number (not a number, infinity, or one too big to
+    /// hold) is the default, as nonsense is, for Organise's cards, a panel and the window.
+    #[test]
+    fn a_size_that_isn_t_a_finite_number_is_the_default() {
+        let f = file("not-finite");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        for v in ["NaN", "nan", "inf", "-inf", "1e40"] {
+            let lines =
+                format!("organise_size = {v}\npanel_width = side {v}\nwindow = {v} x {v}\n");
+            std::fs::write(&f, lines).unwrap();
+            let s = Settings::from_file(Some(f.clone()));
+            assert_eq!(s.organise_zoom, ORGANISE_ZOOM, "organise_size = {v}");
+            assert!(s.panel_widths.is_empty(), "panel_width = side {v}");
+            assert_eq!(s.window, WINDOW_DEFAULT, "window = {v} x {v}");
+        }
     }
 
     /// ENH-14 and ENH-47: the printer last printed to, the paper last printed on with each

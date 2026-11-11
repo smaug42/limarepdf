@@ -170,19 +170,20 @@ pub fn leftover_copy(file: &std::path::Path) -> Banner {
     )
 }
 
-/// The banner for `marks` areas marked for redaction and not yet applied. Unlike the
-/// others it follows the document as it changes (see `Tab::refresh_marks_banner`).
+/// The banner for `marks` redaction marks not yet applied (a mark over several lines is
+/// one, PB-40). Unlike the others it follows the document as it changes (see
+/// `Tab::refresh_marks_banner`).
 pub fn redactions(marks: usize) -> Banner {
     Banner::plain(
         Kind::Redactions,
         if marks == 1 {
-            "An area is marked for redaction (outlined in red) but not yet applied: nothing \
-             under it has been removed."
+            "A mark for redaction (outlined in red) isn't applied yet: nothing under it has \
+             been removed."
                 .to_string()
         } else {
             format!(
-                "{marks} areas are marked for redaction (outlined in red) but not yet applied: \
-                 nothing under them has been removed."
+                "{marks} marks for redaction (outlined in red) aren't applied yet: nothing \
+                 under them has been removed."
             )
         },
     )
@@ -196,10 +197,11 @@ pub fn signing(items: usize) -> Banner {
         format!(
             "{} can still be moved or removed. Finish signing to draw {} into the pages for \
              good.",
+            // Items, whatever they are: a signature, a date and a tick are 3 (PB-40).
             if items == 1 {
                 "A signature or other item you put down".to_string()
             } else {
-                format!("{items} signatures and other items you put down")
+                format!("{items} items you put down")
             },
             if items == 1 { "it" } else { "them" }
         ),

@@ -697,6 +697,38 @@ fn the_filter_shows_comments_by_type_author_and_page() {
     assert_eq!(count(&tree).as_deref(), Some("3 of 5 comments"));
 }
 
+/// PB-41: the search box's hint is whole at the side panel's width, beside Filter: it is
+/// "Search" alone, as the box is in the Comments view; a screen reader still hears "Search
+/// comments".
+#[test]
+fn the_search_box_hint_fits_and_keeps_its_name() {
+    let ctx = test_ctx();
+    let ty = Typist::new(&ctx);
+    let mut pdf = otters();
+    note(&mut pdf, 0, 300.0, "Walrus one", "Tester");
+    let mut app = comments_tab(&ty, pdf);
+    let tree = calm(&mut app, &ty);
+    let boxes: Vec<&Node> = (tree.nodes.iter().map(|(_, n)| n))
+        .filter(|n| n.role() == Role::TextInput && n.label() == Some("Search comments"))
+        .collect();
+    let [search] = boxes[..] else {
+        panic!("{} boxes named Search comments", boxes.len())
+    };
+    let hint = search.placeholder().expect("no hint");
+    // Inside the box's margins (egui's: the button padding), in the font it is drawn in.
+    let style = ctx.global_style();
+    let font = egui::TextStyle::Body.resolve(&style);
+    let colour = egui::Color32::BLACK;
+    let wide = ctx.fonts_mut(|f| f.layout_no_wrap(hint.into(), font, colour).size().x);
+    let b = search.bounds().expect("its place");
+    let room = (b.x1 - b.x0) as f32 - 2.0 * style.spacing.button_padding.x;
+    assert!(
+        wide <= room,
+        "{hint:?} is {wide} wide, the box has room for {room}"
+    );
+    assert_eq!(hint, "Search");
+}
+
 /// The search box shows the threads whose comment, marked words or replies hold the words
 /// typed, in any case; a reply found shows with its comment. Words on the page that
 /// nothing marks find nothing.
