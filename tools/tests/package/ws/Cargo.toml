@@ -1,0 +1,40 @@
+# packaging/check-package.py's self-test: a workspace whose program, app, has each kind of dependency the
+# notices check must tell apart. Never built; `cargo tree` only reads it.
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "../crates/empty.rs"
+
+[workspace]
+members = ["inner"]
+resolver = "2"
+
+[dependencies]
+# Two versions of one crate: 1.0.0 here, 2.0.0 through mid.
+common = { path = "../crates/common-1" }
+mid = { path = "../crates/mid" }
+# The workspace's own crate is left out; what it brings in is not.
+inner = { path = "inner" }
+# A proc-macro counts, as cargo-about counts it.
+derive-it = { path = "../crates/derive-it" }
+# Its feature is off, so it isn't built (cargo metadata's graph still has it).
+off = { path = "../crates/off", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-only = { path = "../crates/linux-only" }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+arm-mac = { path = "../crates/arm-mac" }
+
+[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
+intel-mac = { path = "../crates/intel-mac" }
+
+[build-dependencies]
+build-only = { path = "../crates/build-only" }
+
+[dev-dependencies]
+dev-only = { path = "../crates/dev-only" }

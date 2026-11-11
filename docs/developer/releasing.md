@@ -25,6 +25,13 @@ How a release is made, for maintainers.
      `limarepdf-gui`'s winit entry at the winit version eframe uses; after a winit
      upgrade, whether it now handles Finder's "open documents" event or lets an app set its own delegate, either
      of which changes `macos.rs` (see [How it is built](architecture.md), BUG-28);
+   - after the updates, run `packaging/package-notices.sh` for each platform's targets (with the cargo-about
+     version it names) and read what it reports ([Third-party licences](#third-party-licences)). A clarification in
+     `about.toml` whose file changed is reported as a checksum mismatch: read the new file, then update that
+     clarification's licence and checksum. A crate that brings new fonts or code under another licence needs a
+     clarification there and a line in `check-package.py`'s `BUNDLED`, and its fonts named in the About window's
+     credits and in licence.md. Move cargo-about to its latest release here, after reading its changelog: the
+     version is set in `package-notices.sh` and in `ci.yml`'s two Install cargo-about steps;
    - merge or close Dependabot's open pull requests for the workflows' actions ([Pinned
      actions](#pinned-actions)), and move `dtolnay/rust-toolchain` to its `stable` branch's latest commit by hand;
    - check that the user guide's screenshots (`docs/images/`) still show the app as it is, and retake any that
@@ -75,11 +82,12 @@ Actions page each artifact therefore downloads as a zip with the archive inside.
 The packages and installers (deb, rpm, MSI, dmg) don't carry `docs/`: `packaging/package-docs.sh` writes their
 README, changelog and security notes into `target/package-docs/` with every relative link pointed at the version's
 tag on GitHub (pages under `blob/`, images under `raw/`), so those links work once the version is tagged.
-`packaging/check-package.py <folder>` checks a layout as installed: the programs, the README, changelog, security
-notes, OCR model notes and every licence (the font ones included) there, every relative link reaching a file and
-heading in the folder, and every link to the version's tag reaching one in the repository. CI runs it on each
-archive before packing it, on the deb and rpm unpacked, on the MSI installed, and on the app in the mounted dmg;
-the logs list each package's files.
+`packaging/check-package.py [--target TRIPLE]... <folder>` checks a layout as installed: the programs, the README,
+changelog, security notes, OCR model notes and every licence (the font ones and the crates' included) there, every
+relative link reaching a file and heading in the folder, every link to the version's tag reaching one in the
+repository, and the crates' licences matching the crates built ([below](#third-party-licences)). CI runs it on
+each archive before packing it, on the deb and rpm unpacked, on the MSI installed, and on the app in the mounted
+dmg; the logs list each package's files.
 
 The Linux job also makes `limarepdf_<version>-1_amd64.deb` and `limarepdf-<version>-1.x86_64.rpm` with `cargo-deb` and
 `cargo-generate-rpm`, from the `[package.metadata.deb]` and `[package.metadata.generate-rpm]` sections of
@@ -135,6 +143,30 @@ and `packaging/sign-release.sh` signs the rpm, writes `SHA256SUMS`, and signs it
 checking each signature against `docs/limarepdf-signing-key.asc` as rpm and gpgv will. The job then records build
 provenance with `actions/attest-build-provenance`, which users check with `gh attestation verify`. A tag run whose
 environment has no `GPG_SIGNING_KEY` fails at the signing step, with nothing signed or released.
+
+### Third-party licences
+
+Every package carries `THIRD-PARTY-LICENSES.html`, the licences of the crates built into its programs.
+`packaging/package-notices.sh [target]...` writes it into `target/package-notices/` with cargo-about, at the
+version the script names (`ci.yml` installs the same one), from `about.toml` and the template
+`packaging/about.hbs`. It covers the targets given, the computer's own if none (the dmg gives both Mac targets),
+leaving out build and dev dependencies and the workspace's own crates. It stops, leaving no page, when
+`about.toml`'s accepted licences differ from `deny.toml`'s allow list, or when cargo-about warns.
+
+`about.toml`'s clarifications add what cargo-about can't find by itself: the fonts that hayro-interpret and
+epaint_default_fonts bundle, and the code notices in subsetter's NOTICE, each file pinned by its SHA-256. When a
+new version of the crate changes one of those files, cargo-about only warns and leaves the notice out, which is why
+the script stops on a warning. sctk-adwaita's Cantarell font, which draws the window title bars on Linux under
+Wayland, comes with no licence file in the crate (its notice is in the font), so the Linux layouts carry
+`packaging/linux/FONT-LICENSE-Cantarell.txt` instead.
+
+`check-package.py` compares the page with the crates `cargo tree -e normal` lists for the folder's targets
+(`--target`, the computer's own if none; both Macs for the dmg), less the workspace's own. There must be a notice
+for each crate built, by name and version, and none for a crate that isn't. The notices for bundled fonts and code
+(its `BUNDLED` list) must be there for each crate that bundles them. `check-package.py --self-test`, which the
+`lint` job runs, checks the crate list against a small workspace in `tools/tests/package/` with each kind of
+dependency, and checks the notices against made-up pages. The Linux packages and the MSI take the page from the
+Package step; to build them locally, run `package-notices.sh` first, as with `package-docs.sh`.
 
 ### Dry run
 

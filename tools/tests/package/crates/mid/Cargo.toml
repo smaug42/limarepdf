@@ -1,0 +1,10 @@
+[package]
+name = "mid"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "../empty.rs"
+
+[dependencies]
+common = { path = "../common-2" }

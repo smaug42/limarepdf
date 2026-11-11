@@ -208,8 +208,8 @@ pub fn install(ctx: &egui::Context) {
 
 /// Inter for text, then egui's own fonts as fallbacks (symbols, emoji), with the
 /// Phosphor icons after Inter. Fonts for text being typed on the page are added when first
-/// needed (`typing_fonts`).
-fn fonts() -> FontDefinitions {
+/// needed (`typing_fonts`). The About window credits each (`about::FONTS`).
+pub fn fonts() -> FontDefinitions {
     let mut f = FontDefinitions::default();
     let regular = include_bytes!("../assets/fonts/Inter-Regular.ttf");
     let semi = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");

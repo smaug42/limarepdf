@@ -5,6 +5,7 @@
 #
 # Run from the repository root after building both targets:
 #   cargo build --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+# It needs cargo-about, for the crates' licences (packaging/package-notices.sh says which version).
 # The app is signed ad hoc only (no Apple Developer ID), so Gatekeeper asks once.
 set -euo pipefail
 
@@ -40,6 +41,9 @@ res="$app/Contents/Resources"
 bash "$here/../package-docs.sh"
 cp target/package-docs/README.md target/package-docs/CHANGELOG.md target/package-docs/SECURITY.md "$res/"
 cp LICENSE-MIT LICENSE-APACHE "$res/"
+# The crates' licences, for both kinds of Mac.
+bash "$here/../package-notices.sh" aarch64-apple-darwin x86_64-apple-darwin
+cp target/package-notices/THIRD-PARTY-LICENSES.html "$res/"
 cp crates/limarepdf-core/models/README.md "$res/OCR-MODEL.md"
 cp crates/limarepdf-gui/assets/fonts/OFL.txt "$res/FONT-LICENSE-Inter.txt"
 cp crates/limarepdf-gui/assets/fonts/LICENSE-Phosphor.txt "$res/FONT-LICENSE-Phosphor.txt"

@@ -1500,6 +1500,22 @@ halves of `limarepdf` and `limarepdf-cli` saying macOS 11.0. The installer's scr
 the test suite ran on both Macs (Apple silicon and Intel: 1,051 passed, 37 ignored, the new `incoming` test
 among them).
 
+Third-party licences (S1-20, M-17, PB-97; 2026-11-10). `check-package.py --self-test` (9 cases) takes the crates
+built from a small workspace (`tools/tests/package/`) for Linux and for both Macs: a crate in two versions, a
+proc-macro, a dependency of a workspace member, and per-platform dependencies are in; an optional dependency left
+off, build and dev dependencies, and the workspace's own crates are out. It checks the notices against made-up
+pages too. Written first, its stub failed 6 of the 8 cases it then had; the ninth, no page at all, failed against
+the check's first version, which stopped at a missing page and so missed a missing Cantarell file. The crates
+`cargo tree -e normal` lists matched those cargo-about put in its page for Linux (419), Windows (324), Apple
+silicon (320), Intel (321) and both Macs (321). `package-notices.sh` stopped, leaving no page, with Zlib taken out
+of `about.toml`'s licences (not `deny.toml`'s), and with one wrong checksum for hayro-interpret's Foxit licence
+(cargo-about's warning). A Linux archive-shaped folder without the page and the Cantarell file reported both; with
+them, no problems, nor in the Windows and both-Macs pages' folders. Checked against the wrong targets, the Windows
+page reported 140 problems as Linux, and the Macs' page reported core_detect (Intel only) as Apple silicon alone.
+The deb and rpm built locally carry both files (under `/usr/share/doc/limarepdf/` and
+`/usr/share/licenses/limarepdf/`), with no problems; the MSI and the dmg are checked in CI only. `about.rs`'s
+`the_credits_name_every_font_the_interface_loads` failed first, naming Hack, Ubuntu Light and egui's icons.
+
 ## Acceptance checks
 
 The automated tests cover the library and the command line. These checks cover what they can't: the desktop app used
