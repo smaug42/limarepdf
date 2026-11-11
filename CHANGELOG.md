@@ -9,6 +9,9 @@
 
 ### Fixed
 
+- In the Create signature window, Shift and an arrow key size the part of a picture used without closing
+  LimarePDF when that part is a thin strip at the picture's right or bottom edge. Before, a part dragged out over
+  the last few pixels there stopped the app at the first such key.
 - Every package (the archives, the Windows installer, the Linux packages and the Mac app) carries
   `THIRD-PARTY-LICENSES.html`: the licences and notices of the Rust crates built into LimarePDF on that platform,
   with those of the fonts and code some of them bundle (egui's fonts, Foxit's fonts for the standard PDF fonts).

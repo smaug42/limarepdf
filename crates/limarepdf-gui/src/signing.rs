@@ -842,8 +842,9 @@ impl Create {
             if dx != 0.0 || dy != 0.0 {
                 let [l, t, r, b] = self.crop.unwrap_or([0.25, 0.25, 0.75, 0.75]);
                 let c = if size {
-                    let r = (r + dx * NUDGE).clamp(l + NUDGE, 1.0);
-                    [l, t, r, (b + dy * NUDGE).clamp(t + NUDGE, 1.0)]
+                    // A part already narrower than a step (dragged so) isn't made narrower.
+                    let r = (r + dx * NUDGE).clamp((l + NUDGE).min(r), 1.0);
+                    [l, t, r, (b + dy * NUDGE).clamp((t + NUDGE).min(b), 1.0)]
                 } else {
                     let (w, h) = (r - l, b - t);
                     let l = (l + dx * NUDGE).clamp(0.0, 1.0 - w);
@@ -1865,6 +1866,53 @@ mod tests {
         }
         let crop = w.c.crop.unwrap();
         assert!(near(crop, [0.0, 0.0, NUDGE, 0.52]), "{crop:?}");
+    }
+
+    /// A part narrower than a step, against any edge of the picture, is sized by Shift and
+    /// the arrows without stopping the app (A-08): it stays inside the picture and keeps
+    /// some width and height, and its left and top stay put.
+    #[test]
+    fn a_narrow_part_at_an_edge_is_sized_from_the_keyboard() {
+        use egui::Key;
+        let picture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/images/icon.png");
+        let mut c = Create::new(SignRole::Signature, "Sam Lee");
+        c.way = Way::Picture;
+        c.picture = Some(picture);
+        c.clear_paper = false;
+        let mut w = Win::new(c, Vec2::new(1000.0, 800.0), 1.0);
+        let view = bounds(&w.settled(), PICTURE);
+        w.pointer(view.center(), Some(true));
+        w.pointer(view.center(), Some(false));
+        w.settled();
+        // The last five pixels of a picture 480 across, at each edge.
+        let (a, b) = (5.0 / 480.0, 475.0 / 480.0);
+        let parts = [
+            [b, 0.25, 1.0, 0.75],
+            [0.0, 0.25, a, 0.75],
+            [0.25, b, 0.75, 1.0],
+            [0.25, 0.0, 0.75, a],
+        ];
+        for part in parts {
+            for key in [
+                Key::ArrowLeft,
+                Key::ArrowRight,
+                Key::ArrowUp,
+                Key::ArrowDown,
+            ] {
+                w.c.crop = Some(part);
+                w.frame(vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::SHIFT,
+                }]);
+                let [l, t, r, b] = w.c.crop.expect("no part chosen");
+                let inside = 0.0 <= l && l < r && r <= 1.0 && 0.0 <= t && t < b && b <= 1.0;
+                assert!(inside, "{part:?} {key:?}: {:?}", [l, t, r, b]);
+                assert_eq!([l, t], [part[0], part[1]], "{part:?} {key:?}");
+            }
+        }
     }
 
     #[test]
