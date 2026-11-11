@@ -1,7 +1,8 @@
 # LimarePDF user guide
 
-LimarePDF is a PDF viewer and editor for Linux, Windows and macOS. It works entirely on your computer: no account,
-no network connection, no subscription. This guide takes you from installing it to using every part of it.
+LimarePDF is a PDF viewer and editor for Linux, Windows and macOS. It works on your computer: no account, nothing
+uploaded, no subscription; the network is used only for printing. This guide takes you from installing it to using
+every part of it.
 
 **New to LimarePDF?** Read the first three pages in order. Then pick the tasks you need.
 

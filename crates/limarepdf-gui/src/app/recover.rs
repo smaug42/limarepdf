@@ -93,7 +93,7 @@ fn left(t: &mut Tab, files: Vec<PathBuf>) {
 fn stopped(n: NotConfirmed, done: &str, ours: bool) -> Dialog {
     let title = "Recovery copy not removed".to_string();
     let or_off = if ours {
-        ", or turn off recovery copies (File > Keep recovery copies of unsaved changes)"
+        ", or turn off recovery copies (File > Settings… > Keep recovery copies of unsaved changes)"
     } else {
         ""
     };
@@ -384,7 +384,7 @@ impl App {
         }
     }
 
-    /// File > Keep recovery copies of unsaved changes. Turning it off always takes effect
+    /// File > Settings… > Keep recovery copies of unsaved changes. Turning it off always takes effect
     /// for new copies; copies it can't withdraw are reported (section 6).
     pub(super) fn toggle_recovery(&mut self) {
         let on = !self.settings.recovery;

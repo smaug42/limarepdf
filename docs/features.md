@@ -5,7 +5,8 @@
 LimarePDF is a complete PDF editor that works entirely on your computer. Open a document and change it the way
 you would in a word processor: fix a typo where it stands, fill in a form, sign it, stamp it, black out what
 shouldn't be seen, then print it or send it on. There is no account to make, no subscription to pay and nothing
-uploaded: your documents never leave your computer. It runs on Linux, Windows and macOS, and it is free and open
+uploaded: LimarePDF works on your documents on your computer, and they leave it only when you print to a network
+printer. It runs on Linux, Windows and macOS, and it is free and open
 source.
 
 <img src="images/limarepdf.png" width="1000" alt="The LimarePDF window: page thumbnails on the left, a report with a highlight, a note, a tick and an arrow with a text box in the middle, and the inspector on the right">
@@ -47,7 +48,8 @@ source.
 - **Keep your work safe:** undo and redo your changes, and recovery copies bring back your recent unsaved work
   after a crash.
 - **Work from the command line:** `limarepdf-cli` does most of this in scripts and batches.
-- **Private by design:** no network connections, no accounts, no licence checks, no tracking.
+- **Private by design:** no accounts, no licence checks, no tracking. The network is used only to print, and a web
+  link opens in your browser only after asking.
 
 LimarePDF is young and growing quickly. For the details of what works today and what doesn't yet, see
 [Features and status](developer/feature-status.md).

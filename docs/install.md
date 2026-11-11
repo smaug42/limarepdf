@@ -152,7 +152,7 @@ are under the run's artifacts (this needs a GitHub sign-in).
 
 ## Build from source
 
-You need Rust 1.95 or newer.
+You need the latest stable Rust (`rustup update stable`); older versions aren't supported.
 
 ```
 cargo build --release --locked

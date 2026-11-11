@@ -466,7 +466,9 @@ opens that line (`Editor::words_line`: the line of the selection's moving end, i
 `Pick::Chars`, from `Chosen::line_ids` and `selected_in`) and keeps the events in `LineEdit::typed`; `line_edit_ui`
 splices them in front of the frame's events once the line has the keyboard, so they take the line editor's own
 path (its refusals, the selection replaced, its history). Keys typed in the frame a double-click opens a line are
-kept the same way (they were lost before). Words on more than one line get Q3's note at the selection's end
+kept the same way (they were lost before). Words across lines of one paragraph (one LimarePDF is sure of, or with
+paragraph editing on: `Editor::words_paragraph`) open the paragraph with the typing there (stage 3's plan, Q3);
+words across paragraphs get the note "Type over words within one paragraph." at the selection's end
 (`Editor::words_note`, drawn by `words_note_at` through `page_text::Refused::show_at`); words only in text that
 can't change get `chosen::Left`'s notice. Delete and Backspace (`deletable`) and Cut call
 `Editor::delete_words`: `Across::delete` takes each line's ranges out back to front (`Styled::delete`), and a space
@@ -2318,9 +2320,11 @@ scope id of its own (`COLLAPSE`), the same with or without the close button befo
 opens it (`POPOUT_OPENER`). The inspector's Future text tools, marked Planned, went with Underline and
 Strikethrough built (batch 46's 4b), and with them `Editor::planned`, which showed it.
 
-F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`, the one shortcut `App::shortcuts` runs
-while a text box has the keyboard (and never while a list or menu is open), with Shift told apart exactly, as egui
-otherwise ignores an extra Shift. They only set `Regions::step`; `App::move_region` does the move at the end of
+F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`. `App::shortcuts` runs them while a text
+box has the keyboard, as it does F3, Shift+F3 and F7 (`FindNext`, `FindPrevious`, `Spelling`) and the Ctrl (⌘)
+shortcuts other than those for what is selected on the page (`page_only`: Copy, Cut, Select all, Bold and the like,
+which the box takes for its own text); F6, F3 and F7 never run while a list or menu is open. Shift is told apart
+exactly for F6, as egui otherwise ignores an extra Shift. They only set `Regions::step`; `App::move_region` does the move at the end of
 `App::ui`, once every region and control of the frame is drawn. `crates/limarepdf-gui/src/regions.rs` keeps where
 each region was drawn this frame (`Regions::add` from each panel's response; the notices' scope from
 `Tab::banners_at`; the inspector's pop-out with `add_over`, looked in first), finds a control's region by where its

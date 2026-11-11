@@ -211,7 +211,7 @@ the way of editing.
 
 - A link to another page goes there.
 - A link to a web or email address asks first, showing the full address, and then opens it in your browser or
-  email program. LimarePDF itself never connects to the network.
+  email program. LimarePDF itself connects to the network only to print.
 - Links to anything else are never opened: another file (another PDF too), a program, a script, or an address
   that isn't a web page's or an email address (such as `file:`). Hovering over one says what it would do; the
   pointer stays as it is, and a click there works as if the link weren't there.

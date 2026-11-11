@@ -221,8 +221,8 @@ impl App {
             t.scrubbed = false;
         }
         if !run.appended {
-            // The saved file is the repaired copy, with nothing left to repair, and it reads
-            // the same in every app.
+            // The saved file is the repaired copy, with nothing left to repair, and none of
+            // the parts other apps may read differently.
             t.repaired = false;
             t.banners
                 .retain(|b| !matches!(b.kind, BannerKind::Repaired | BannerKind::OtherApps));

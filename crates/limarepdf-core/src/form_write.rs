@@ -96,8 +96,9 @@ impl Pdf {
     /// Set a field's value and redraw it. The value must suit the field: text for a text
     /// field, `Check` for a checkbox, and for radio groups and choices the export value of
     /// an option (a choice's shown text is accepted too). Read-only fields, push buttons
-    /// and signature fields can't be set, and text LimarePDF can't write (characters outside
-    /// Latin, Greek and Cyrillic) is refused rather than saved wrongly.
+    /// and signature fields can't be set, and text LimarePDF can't write (right-to-left or
+    /// shaped scripts, emoji of several characters, characters no installed font has) is
+    /// refused rather than saved wrongly.
     pub fn set_field(&mut self, name: &str, value: FieldValue) -> Result<()> {
         let (field, node) = self
             .form_nodes()

@@ -389,7 +389,7 @@ something to do and × to dismiss it. At most two show at a time.
 | An earlier recovery copy, made before content was removed, couldn't be deleted, and where it is | Show file |
 | Recovery copies of it can't be kept right now, and why | Save |
 | The file is damaged, and LimarePDF repaired it to open it: some content may be missing. The original stays as it is: the document counts as changed (closing it asks whether to save the changes), and Save asks whether to replace the original or save the repaired copy as a new file. A signed file's signatures can't vouch for what is shown (they show *can't check*, or a change that isn't allowed), and the repaired copy can't keep them ([details](rendering.md#damaged-files)) | Save as… |
-| The file isn't put together quite as the PDF format asks, so other PDF apps may show it differently: some content could be missing or different in them. Saving a copy writes it the way LimarePDF shows it, which every app reads the same, and the notice goes. Not shown for repaired files (the notice above covers them) or signed ones (their signatures show *can't check* and say why) ([details](rendering.md#files-other-apps-may-show-differently)) | Save as… |
+| The file isn't put together quite as the PDF format asks, so other PDF apps may show it differently: some content could be missing or different in them. Saving a copy writes it the way LimarePDF shows it, without the parts other apps may read differently, and the notice goes. Not shown for repaired files (the notice above covers them) or signed ones (their signatures show *can't check* and say why) ([details](rendering.md#files-other-apps-may-show-differently)) | Save as… |
 | The document was password-protected: saving removes the protection unless you set it again. A document that opens without a password but has a permissions password (which can limit printing, copying or changes; other readers open it without asking too) says so instead: saving removes that password unless you set it again ([Password protection](security.md)) | Password security |
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work; [Redaction](redaction.md)) | Apply redactions… |
 | Signatures and other items put down with the Fill and sign tool can still be moved (kept up to date while you work; [Fill and sign](fill-and-sign.md#move-then-finish)) | Finish signing… |
@@ -499,8 +499,8 @@ The inspector holds controls, with at most a short line about state (such as how
 use a tool is in its button's tooltip and the menus, and in this guide.
 
 The page and document settings apply as you set them, with no Apply button, each change one undo step: typed
-text when you press Enter or leave the field, a choice at once, a number when you stop dragging it or leave its
-box. Saving, printing and other commands keep a field you are still typing in. Password security is the exception: its Apply button
+text when you press Enter or leave the field, a choice at once, a number when you press Enter or leave its box,
+or at once when stepped with its arrows or Up and Down. Saving, printing and other commands keep a field you are still typing in. Password security is the exception: its Apply button
 sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words, a thumbnail or a card in Organise for a short menu of what applies
