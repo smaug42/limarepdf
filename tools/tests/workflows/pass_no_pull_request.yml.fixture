@@ -1,0 +1,10 @@
+# Tags only: bound to the environment, no `if:` needed.
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: { name: release-signing }
+    steps:
+      - run: echo "${{ secrets.GPG_SIGNING_KEY }}" | gpg --batch --import

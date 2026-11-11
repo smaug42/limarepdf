@@ -46,13 +46,16 @@ How a release is made, for maintainers.
 4. CI runs again for the tag. Its `release` job starts only once the `deny` job and every build have passed, so a
    new advisory published since the pull request stops the release: fix it (an update, or an `ignore` entry with
    its reason in `deny.toml`, and in `docs/signatures-in-depth.md` for a signing crate, when it doesn't apply), then delete the tag
-   (`git push --delete origin vX.Y.Z`, `git tag -d vX.Y.Z`) and tag the fixed `main` again. It checks that the tag
-   matches `Cargo.toml`, takes the release notes
-   from the matching `CHANGELOG.md` section, ends them with a link comparing the tag with the previous version tag,
-   and creates a draft GitHub Release with the four archives, `SHA256SUMS`, and a GPG signature (`.asc`) for each.
-   It also records a build attestation for every file.
+   (`git push --delete origin vX.Y.Z`, `git tag -d vX.Y.Z`) and tag the fixed `main` again. The job then waits for
+   approval, since the signing key is only in the `release-signing` environment ([Signing key](#signing-key)): on
+   the run's page choose Review deployments, tick `release-signing` and approve. Before signing anything, it checks
+   that the tag matches `Cargo.toml`, takes the release notes from the matching `CHANGELOG.md` section, and ends
+   them with a link comparing the tag with the previous version tag. It then signs and creates a draft GitHub
+   Release with the four archives, `SHA256SUMS`, and a GPG signature (`.asc`) for each, and records a build
+   attestation for every file.
 5. On GitHub, open the draft under Releases, choose Edit, check the notes and files, and publish it. Publishing
-   starts the `packages` workflow, which updates the apt and dnf repositories ([below](#package-repositories)).
+   starts the `packages` workflow, which updates the apt and dnf repositories ([below](#package-repositories)); its
+   `sign` job waits for approval in the same way.
 
 Do not create the release on GitHub by hand, or the tag from GitHub's release form: the `release` job then finds a
 release already there and fails.
@@ -126,22 +129,31 @@ means adding that target here). The same commands run locally once the two targe
 add`. Clippy comes with the stable toolchain, so a new Rust release can bring new lints: fix them in their own
 change. The release job doesn't wait for it, since a lint doesn't change what is built; pull requests show it.
 
-The `release` job writes `SHA256SUMS`, signs it and every file with the signing subkey (below), checks each signature
-against `docs/limarepdf-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which
-users check with `gh attestation verify`.
+The `release` job runs only for a version tag, in the `release-signing` environment, once the maintainer approves
+it. After its checks of the tag and the notes, `packaging/import-signing-key.sh` imports the signing subkey (below)
+and `packaging/sign-release.sh` signs the rpm, writes `SHA256SUMS`, and signs it and every file with that subkey,
+checking each signature against `docs/limarepdf-signing-key.asc` as rpm and gpgv will. The job then records build
+provenance with `actions/attest-build-provenance`, which users check with `gh attestation verify`. A tag run whose
+environment has no `GPG_SIGNING_KEY` fails at the signing step, with nothing signed or released.
 
 ### Dry run
 
 To try the release job without making a release, start the workflow by hand (Actions > ci > Run workflow) on a
-branch with "dry_run" ticked. It builds, signs and attests as a release would, then uploads the files as the
-`release-dry-run` artifact instead of creating a release. Like a release, it waits for the `deny` job: the run's
-graph shows `release` after `deny`, `build` and `macos-dmg`, and a failed `deny` skips it. Its attestations are real but harmless: they name the
-branch, not a tag.
+branch with "dry_run" ticked. The `dry-run` job runs instead of `release`, with no secrets and no approval, so it
+signs and attests nothing for real:
 
-Without the `GPG_SIGNING_KEY` secret (a fork, say), a dry run still builds every package and writes `SHA256SUMS`,
-but signs nothing (no `.asc` files, no rpm signature) and makes no attestations. It says so in a warning on the run
-and its summary, and uploads the files as `release-dry-run-unsigned`, a name `packages.yml` never takes. A tag run
-without the secret fails at the release job's first step.
+- `packaging/check-signing-key.sh` fails it if the published key (`docs/limarepdf-signing-key.asc`) can't sign for
+  another 60 days, when its primary key, or every signing subkey, expires or has been revoked by then
+  ([renew it](#signing-key));
+- the signing is rehearsed on a copy of the files with the release job's own scripts: a key made for the run alone
+  is imported with `packaging/import-signing-key.sh`, as at a tag, and `packaging/sign-release.sh` signs with it,
+  checking each signature against it;
+- the files themselves get `SHA256SUMS` only, and are uploaded unsigned as the `release-dry-run-unsigned` artifact,
+  with a notice on the run and its summary saying so.
+
+Like a release, it waits for the `deny` job: the run's graph shows `dry-run` after `deny`, `build` and `macos-dmg`,
+and a failed `deny` skips it. What it can't try is the release key itself in CI (the environment's secrets and the
+approval): a tag run, or `packages.yml`'s `sign` job, is the first to use them.
 
 ### Pinned actions
 
@@ -156,26 +168,44 @@ pinned the same way: `gh api repos/OWNER/REPO/commits/vX.Y.Z --jq .sha`.
 
 ## Package repositories
 
-`.github/workflows/packages.yml` runs when a release is published. It downloads the `.deb` and `.rpm` files of the
-last three published releases, builds a flat apt repository and a dnf repository with
-`packaging/build-repos.sh`, signs them (`InRelease`, `Release.gpg`, `repomd.xml.asc`), checks the signatures against
-`docs/limarepdf-signing-key.asc`, and deploys them to GitHub Pages at https://smaug42.github.io/limarepdf/ with the page in
-`packaging/pages/`.
+`.github/workflows/packages.yml` runs when a release is published. Its `build` job downloads the `.deb` and `.rpm`
+files of the last three published releases, builds a flat apt repository and a dnf repository with
+`packaging/build-repos.sh`, signed with a key made for the run alone, and checks the signatures against that key.
+Its `sign` job imports the release key with `packaging/import-signing-key.sh`, builds them again from the same
+packages, signed with that key (`InRelease`, `Release.gpg`, `repomd.xml.asc`), and checks the signatures against
+`docs/limarepdf-signing-key.asc`; like the tag's `release` job, it runs in the `release-signing` environment and
+waits for the maintainer's approval (Review deployments on the run). The `deploy` job then deploys them to GitHub
+Pages at https://smaug42.github.io/limarepdf/ with the page in `packaging/pages/`.
 
 Set up once: Settings > Pages > Source: GitHub Actions; then, under Settings > Environments > github-pages, add a
 deployment tag rule `v*`, since a release run's ref is its tag.
 
-Started by hand (Actions > packages > Run workflow), it builds the site without deploying it unless "deploy" is
-ticked; pull requests that change `packaging/` or the workflow build it the same way, as a check. (Starting it by hand
-needs the workflow on `main`.) If no published release has packages yet, it takes them from the latest successful `release-dry-run` of
-`ci.yml` on the chosen branch. To try the script locally, run it in an `ubuntu:24.04` container with `apt-utils`,
+Started by hand (Actions > packages > Run workflow), it runs the `build` job alone unless "deploy" is ticked; pull
+requests that change `packaging/` or the workflow run it the same way, as a check that needs no secrets. (Starting it
+by hand needs the workflow on `main`.) Only runs that deploy wait for one another, one at a time and never cancelled,
+so a pull request's run can't take the place of a deploy waiting for approval. With no published release that has
+packages, the `build` job fails. To try the script locally, run it in an `ubuntu:24.04` container with `apt-utils`,
 `createrepo-c` and `gnupg`, a throwaway key, and `LIMAREPDF_SITE_URL=file:///site`.
 
 ## Signing key
 
 Releases are signed with a GPG key used only for LimarePDF: an ed25519 primary key that only certifies, kept offline,
 and a signing subkey, the only part CI holds. The subkey expires after a year and the primary after three, so both
-need renewing in time.
+need renewing in time; a dry run fails 60 days before either can no longer sign.
+
+CI holds the subkey and its passphrase as secrets of the `release-signing` environment, never as repository secrets:
+a repository secret reaches every job of every workflow, while an environment's secrets reach only a job that names
+the environment, and only once the maintainer approves that run. Two jobs name it: the tag's `release` job in
+`ci.yml` and the `sign` job in `packages.yml`. Neither runs for a pull request, so a pull request (from a fork,
+Dependabot or a branch) never gets the key. `tools/check-workflows.py`, which the `lint` job runs, fails when a
+workflow names the signing secrets outside such a job; it is an early warning, and the environment is the
+protection.
+
+Setting up the environment (once, on GitHub): Settings > Environments > New environment, named `release-signing`.
+Under Deployment protection rules, tick Required reviewers and add the maintainer; leave Prevent self-review
+unticked, since the maintainer approves their own tag's run, and untick Allow administrators to bypass configured
+protection rules. Under Deployment branches and tags, choose Selected branches and tags and add the branch `main`
+and the tag `v*`.
 
 Making the key (once, on the maintainer's computer). `FPR` and `SUB` below stand for fingerprints: the 40-character
 hex line that `gpg --list-keys` prints under the `pub ... [C]` line (the primary key, `FPR`) and under the
@@ -192,23 +222,28 @@ Publishing the public key and giving CI the subkey (`gh` is the GitHub CLI; the 
 
 ```
 gpg --armor --export FPR > docs/limarepdf-signing-key.asc
-gpg --armor --export-secret-subkeys SUB! | gh secret set GPG_SIGNING_KEY
-gh secret set GPG_PASSPHRASE          # type the key's passphrase
+gpg --armor --export-secret-subkeys SUB! | gh secret set GPG_SIGNING_KEY --env release-signing
+gh secret set GPG_PASSPHRASE --env release-signing          # type the key's passphrase
 ```
 
-Without `gh`, add the two secrets on GitHub under Settings > Secrets and variables > Actions > New repository
+Without `gh`, add the two secrets on GitHub under Settings > Environments > release-signing > Add environment
 secret, pasting the subkey export (copied with `gpg --armor --export-secret-subkeys SUB! | wl-copy`, so it never
-touches the disk) and the passphrase.
+touches the disk) and the passphrase. `gh secret list --env release-signing` then lists both, and `gh secret list`
+(the repository's) neither. A `GPG_` secret found there, such as one from before the environment existed, is
+deleted with `gh secret delete NAME` once the environment has its own copy, never before.
 
 Then upload the public key at keys.openpgp.org (it emails a confirmation link), put the primary fingerprint in
 `docs/install.md`, and keep a backup of the whole key (`gpg --armor --export-secret-keys FPR`) and its revocation
 certificate (`~/.gnupg/openpgp-revocs.d/FPR.rev`) off the computer, for example on a USB stick kept elsewhere.
 
 Renewing: `gpg --quick-set-expire FPR 3y` for the primary, `gpg --quick-set-expire FPR 1y SUB` for the subkey, then
-export `docs/limarepdf-signing-key.asc` again and re-upload it to keys.openpgp.org. The secret in CI does not change.
+export `docs/limarepdf-signing-key.asc` again, commit it before the next tag, and re-upload it to keys.openpgp.org.
+CI's secret needs no change: the copy it holds keeps the expiry dates it was exported with, but the jobs that sign
+import the published key after it (`packaging/import-signing-key.sh`), and gpg takes the renewed dates from the key
+in the commit the job runs on.
 
 If the subkey leaks, revoke it (`gpg --edit-key FPR`, `key 1`, `revkey`), add a new one, and replace both the
-published key and the secret.
+published key and the environment's secret.
 
 ## To do
 

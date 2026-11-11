@@ -533,7 +533,8 @@ keystores, signing encrypted files (see [ideas](ideas.md)).
 ### Packaging
 
 Since 0.5: every release file and `SHA256SUMS` are GPG-signed with LimarePDF's own key, and each file has a build
-attestation (`gh attestation verify`); a dry run of the release job checks this without releasing. Each release has
+attestation (`gh attestation verify`). CI holds the key only in an environment whose jobs wait for the maintainer's
+approval; a dry run of the release job rehearses the signing with a key of its own, without releasing. Each release has
 Linux `.deb` and `.rpm` packages (the rpm signed), signed apt and dnf repositories on the project's GitHub Pages
 (rebuilt when a release is published), a universal macOS `LimarePDF.app` in a `.dmg`, and a Windows MSI installer that
 offers a desktop shortcut (also for installs without its screens: `DESKTOPSHORTCUT=1`). The packages carry every

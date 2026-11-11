@@ -1,0 +1,24 @@
+# packages.yml's sign job: the environment as a mapping; a release or a run by hand with deploy.
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - packaging/**
+  workflow_dispatch:
+    inputs:
+      deploy:
+        type: boolean
+        default: false
+jobs:
+  sign:
+    if: >-
+      github.event_name == 'release' ||
+      inputs.deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: release-signing  # approval first
+    steps:
+      - env:
+          GPG_SIGNING_KEY: "${{ secrets.GPG_SIGNING_KEY }}"
+        run: echo "$GPG_SIGNING_KEY" | gpg --batch --import

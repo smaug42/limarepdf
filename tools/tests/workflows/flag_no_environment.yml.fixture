@@ -1,0 +1,15 @@
+# Today's packages.yml: a pull request's job imports the key, with no environment.
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - packaging/**
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build the repositories
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+        run: echo "$GPG_SIGNING_KEY" | gpg --batch --import

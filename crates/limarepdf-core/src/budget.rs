@@ -68,6 +68,7 @@ impl Work {
     }
 
     /// The steps taken so far.
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn taken(&self) -> u64 {
         self.limit - self.left
     }

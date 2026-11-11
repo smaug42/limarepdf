@@ -1,0 +1,7 @@
+# A reusable workflow given every secret.
+on:
+  pull_request:
+jobs:
+  call:
+    uses: ./.github/workflows/sign.yml
+    secrets: inherit

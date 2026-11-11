@@ -1,0 +1,13 @@
+# Bound to the environment, but a pull request starts it: no `if:` keeps it to releases.
+on:
+  pull_request:
+  release:
+    types: [published]
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - run: echo "$KEY" | gpg --batch --import
+        env:
+          KEY: ${{ secrets.GPG_SIGNING_KEY }}

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Sign and attest the files as a release would, without making a release
+        description: Build the release files and rehearse signing them, without signing, attesting or making a release
         type: boolean
         default: false
 
@@ -59,13 +59,16 @@ jobs:
           targets: x86_64-pc-windows-gnu, aarch64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # No tracked code reading from a build folder and no audit scratch tracked; the docs'
-      # relative links and anchors. Each tool's self-test first, so a broken tool can't pass.
+      # relative links and anchors; the signing secrets only in release-signing jobs that no pull
+      # request starts. Each tool's self-test first, so a broken tool can't pass.
       - name: Repository checks
         run: |
           python3 -I tools/check-scratch.py --self-test
           python3 -I tools/check-scratch.py
           python3 -I tools/check-doc-links.py --self-test
           python3 -I tools/check-doc-links.py
+          python3 -I tools/check-workflows.py --self-test
+          python3 -I tools/check-workflows.py
       - name: Formatting
         run: cargo fmt --all --check
       # Each platform in turn, all of them reported even when one fails.
@@ -297,15 +300,15 @@ jobs:
 
   # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
   # GPG signatures, build attestations and this version's section of CHANGELOG.md.
-  # Publish it on GitHub. A dry run (workflow_dispatch) does everything but the release
-  # and uploads the signed files as an artifact instead. Without the signing key (a fork),
-  # a dry run only checksums the files, with no signatures or attestations, and says so; a
-  # tag run always needs the key. Both wait for the deny job, so neither starts after a
-  # known advisory.
+  # Publish it on GitHub. The release key is only in the release-signing environment, so the
+  # job waits for the maintainer's approval. The tag's own checks come first, so a wrong tag
+  # stops before anything is signed or attested. It waits for the deny job, so it never
+  # starts after a known advisory.
   release:
     needs: [deny, build, macos-dmg]
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    environment: release-signing
     permissions:
       contents: write
       id-token: write
@@ -315,76 +318,8 @@ jobs:
         with:
           # All tags, to find the previous release for the compare link.
           fetch-depth: 0
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          path: assets
-          merge-multiple: true
-      # Signed whenever the key is there; a tag run without it stops here.
-      - name: Signing key
-        id: key
-        env:
-          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
-        run: |
-          if [ -n "$GPG_SIGNING_KEY" ]; then
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "The GPG_SIGNING_KEY secret is not set"; exit 1
-          else
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-          fi
-      # SHA256SUMS, then a detached signature (.asc) for it and for every file, made with
-      # the signing subkey in secrets and checked against the published key in docs/.
-      - name: Checksums and signatures
-        if: steps.key.outputs.signed == 'true'
-        env:
-          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: |
-          echo "$GPG_SIGNING_KEY" | gpg --batch --import
-          gpg --dearmor < docs/limarepdf-signing-key.asc > "$RUNNER_TEMP/limarepdf.gpg"
-          # The rpm carries its own signature, checked by rpm and dnf against the published key.
-          sudo apt-get install -y rpm > /dev/null
-          (umask 077; printf '%s' "$GPG_PASSPHRASE" > "$RUNNER_TEMP/pass")
-          key=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
-          # Ubuntu's rpm looks for gpg2, which isn't installed.
-          rpmsign --addsign --define "__gpg /usr/bin/gpg" --define "_gpg_name $key" \
-            --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-file $RUNNER_TEMP/pass" \
-            assets/*.rpm
-          rm "$RUNNER_TEMP/pass"
-          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --import docs/limarepdf-signing-key.asc
-          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --checksig assets/*.rpm | tee "$RUNNER_TEMP/rpmcheck"
-          grep -q "signatures OK" "$RUNNER_TEMP/rpmcheck"
-          cd assets
-          sha256sum * > SHA256SUMS
-          for f in *; do
-            gpg --batch --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
-              --armor --detach-sign "$f"
-            gpgv --keyring "$RUNNER_TEMP/limarepdf.gpg" "$f.asc" "$f"
-          done
-      # A dry run without the key: the files and SHA256SUMS only, with a warning on the run.
-      - name: Checksums only (unsigned dry run)
-        if: steps.key.outputs.signed == 'false'
-        run: |
-          cd assets
-          sha256sum * > SHA256SUMS
-          note="Unsigned dry run: the GPG_SIGNING_KEY secret is not set, so the files have checksums only, with no GPG or rpm signatures and no attestations. A release needs the key."
-          echo "::warning::$note"
-          echo "$note" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        if: steps.key.outputs.signed == 'true'
-        with:
-          subject-path: assets/*
-      # Unsigned files get their own name, so packages.yml never takes them for signed ones.
-      - name: Upload the dry run
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ${{ steps.key.outputs.signed == 'true' && 'release-dry-run' || 'release-dry-run-unsigned' }}
-          path: assets
-      - name: Draft the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # The tag must match Cargo.toml and have a section in CHANGELOG.md, which is the notes.
+      - name: Release notes
         run: |
           tag="$GITHUB_REF_NAME"
           version="${tag#v}"
@@ -403,5 +338,69 @@ jobs:
             printf '\n**All changes:** https://github.com/%s/compare/%s...%s\n' \
               "$GITHUB_REPOSITORY" "$prev" "$tag" >> notes.md
           fi
-          gh release create "$tag" --draft --verify-tag --title "LimarePDF $version" \
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: assets
+          merge-multiple: true
+      # The rpm's own signature, SHA256SUMS, and a detached signature (.asc) for it and for every
+      # file, made with the signing subkey and checked against the published key in docs/.
+      - name: Checksums and signatures
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          bash packaging/import-signing-key.sh docs/limarepdf-signing-key.asc
+          sudo apt-get install -y rpm > /dev/null
+          bash packaging/sign-release.sh assets docs/limarepdf-signing-key.asc
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: assets/*
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "LimarePDF ${GITHUB_REF_NAME#v}" \
             --notes-file notes.md assets/*
+
+  # Started by hand with "dry_run" ticked: everything the release job does but signing, attesting
+  # and publishing, with no secrets and no approval. The signing is rehearsed on a copy of the files
+  # with a key made for this run alone (packaging/sign-release.sh, as at a tag), and the
+  # published key must still be able to sign for 60 days. The files themselves get SHA256SUMS
+  # only and are uploaded as release-dry-run-unsigned. Like a release, it waits for the deny job.
+  dry-run:
+    needs: [deny, build, macos-dmg]
+    if: inputs.dry_run && !startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: assets
+          merge-multiple: true
+      - name: The release key's expiry
+        run: bash packaging/check-signing-key.sh docs/limarepdf-signing-key.asc 60
+      - name: Signing rehearsed (a throwaway key)
+        run: |
+          sudo apt-get install -y rpm > /dev/null
+          export GNUPGHOME="$RUNNER_TEMP/rehearsal-key"
+          mkdir -m 700 "$GNUPGHOME"
+          gpg --batch --passphrase '' --quick-gen-key "LimarePDF rehearsal <rehearsal@invalid>" ed25519 sign 1d
+          gpg --armor --export > "$RUNNER_TEMP/rehearsal.asc"
+          # Imported as a tag imports the release key.
+          GPG_SIGNING_KEY=$(gpg --armor --export-secret-keys)
+          export GPG_SIGNING_KEY GNUPGHOME="$RUNNER_TEMP/rehearsal-gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          bash packaging/import-signing-key.sh "$RUNNER_TEMP/rehearsal.asc"
+          cp -r assets "$RUNNER_TEMP/rehearsal"
+          bash packaging/sign-release.sh "$RUNNER_TEMP/rehearsal" "$RUNNER_TEMP/rehearsal.asc"
+      - name: Checksums (unsigned)
+        run: |
+          cd assets
+          sha256sum * > SHA256SUMS
+          note="Unsigned dry run: the files have checksums only, with no GPG or rpm signatures and no attestations. Signing was rehearsed on a copy with a throwaway key; only a version tag's release job, approved in the release-signing environment, signs with the release key."
+          echo "::notice::$note"
+          echo "$note" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dry-run-unsigned
+          path: assets
