@@ -158,10 +158,11 @@ fn commit(
                 return Ok(());
             }
         };
-        // Checked as late as possible: a change after this, before the rename, is still
-        // replaced (there is no locking).
+        // Checked as late as possible, by the bytes (PB-28 (2)): a change after this, before
+        // the rename, is still replaced (there is no locking).
         if let Some(known) = expect {
-            if let Ok(crate::disk::OnDisk::Changed(now)) = crate::disk::compare(&path, known) {
+            if let Ok(crate::disk::OnDisk::Changed(now)) = crate::disk::compare_bytes(&path, known)
+            {
                 return Err(ChangedOnDisk {
                     path: path.clone(),
                     now,
@@ -1005,6 +1006,38 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         assert_eq!(syncs.get(), 0);
         unwatch();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// PB-28 (2): a file changed in place at the same size, its time then put back, isn't
+    /// replaced. Its size, time and inode are as they were read, long enough ago to be
+    /// trusted, so only its bytes tell the change; the boundary always compares them.
+    #[test]
+    fn a_change_that_keeps_the_size_and_time_is_not_replaced() {
+        let dir = folder("kept-time");
+        let doc = dir.join("doc.pdf");
+        std::fs::write(&doc, "old").unwrap();
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let open = || std::fs::OpenOptions::new().write(true).open(&doc).unwrap();
+        open().set_modified(hour_ago).unwrap();
+        let known = crate::disk::version(&doc).unwrap();
+        let e = at_the_boundary(
+            &dir,
+            || {
+                let f = open();
+                (&f).write_all(b"0ld").unwrap();
+                f.set_modified(hour_ago).unwrap();
+                // The quick check alone takes it as unchanged.
+                let quick = crate::disk::compare(&doc, &known).unwrap();
+                assert!(matches!(quick, crate::disk::OnDisk::Same(_)), "{quick:?}");
+            },
+            || crate::write_file_expecting(&doc, b"new", Some(&known)),
+        )
+        .unwrap_err();
+        let changed = e.downcast_ref::<ChangedOnDisk>().expect("changed on disk");
+        assert!(changed.now.same_bytes(&crate::disk::version(&doc).unwrap()));
+        assert_eq!(std::fs::read(&doc).unwrap(), b"0ld");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

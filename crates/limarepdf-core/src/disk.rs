@@ -234,7 +234,7 @@ pub struct Version {
 }
 
 impl Version {
-    fn of(m: &Metadata, bytes: &[u8], read: SystemTime) -> Self {
+    fn of(m: &Metadata, sum: [u8; 32], read: SystemTime) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         Self {
@@ -242,14 +242,13 @@ impl Version {
             modified: m.modified().ok(),
             #[cfg(unix)]
             node: (m.dev(), m.ino()),
-            sum: sha256(bytes),
+            sum,
             read,
         }
     }
 
-    /// Whether `m` shows the file as this version knew it, so it needn't be read. A time
-    /// too close to the reading isn't trusted: the file is read and its checksum compared.
-    fn stamp_is(&self, m: &Metadata) -> bool {
+    /// Whether `m` has this version's size, time and (Unix) inode, however recent its time.
+    fn unmoved(&self, m: &Metadata) -> bool {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -257,11 +256,17 @@ impl Version {
                 return false;
             }
         }
+        self.len == m.len() && self.modified == m.modified().ok()
+    }
+
+    /// Whether `m` shows the file as this version knew it, so it needn't be read. A time
+    /// too close to the reading isn't trusted: the file is read and its checksum compared.
+    fn stamp_is(&self, m: &Metadata) -> bool {
         let settled = self
             .modified
             .and_then(|t| t.checked_add(SETTLED))
             .is_some_and(|t| t <= self.read);
-        settled && self.len == m.len() && self.modified == m.modified().ok()
+        settled && self.unmoved(m)
     }
 
     /// Whether the two hold the same bytes.
@@ -279,8 +284,28 @@ pub fn read(path: &Path) -> std::io::Result<(Vec<u8>, Version)> {
     let m = f.metadata()?;
     let mut bytes = Vec::with_capacity(usize::try_from(m.len()).unwrap_or(0));
     f.read_to_end(&mut bytes)?;
-    let v = Version::of(&m, &bytes, read);
+    let v = Version::of(&m, sha256(&bytes), read);
     Ok((bytes, v))
+}
+
+/// The version of the file at `path` now, as [`read`] gives it, without keeping the bytes:
+/// they are checksummed as they are read.
+fn hashed(path: &Path) -> std::io::Result<Version> {
+    use sha2::Digest;
+    let mut f = File::open(path)?;
+    let read = SystemTime::now();
+    let m = f.metadata()?;
+    let mut sum = sha2::Sha256::new();
+    let mut buf = vec![0; 1 << 16];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => sum.update(&buf[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Version::of(&m, sum.finalize().into(), read))
 }
 
 /// The version of the file at `path` now.
@@ -319,6 +344,34 @@ pub fn compare(path: &Path, known: &Version) -> std::io::Result<OnDisk> {
     } else {
         OnDisk::Changed(now)
     })
+}
+
+/// Compares the file at `path` with `known` by its bytes, whatever its size and time say: a
+/// change at the same size whose time was put back keeps both (PB-28 (2)), which [`compare`]
+/// trusts once settled. For the moment before replacing a file: its size, time and inode are
+/// looked at once more after the reading, and a file changed meanwhile is read again, a few
+/// times at most; one still changing then is changed.
+pub fn compare_bytes(path: &Path, known: &Version) -> std::io::Result<OnDisk> {
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let now = match hashed(path) {
+            Ok(v) => v,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(OnDisk::Gone),
+            Err(e) => return Err(e),
+        };
+        let unmoved = match std::fs::metadata(path) {
+            Ok(m) => now.unmoved(&m),
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(OnDisk::Gone),
+            Err(e) => return Err(e),
+        };
+        if unmoved && now.same_bytes(known) {
+            return Ok(OnDisk::Same(now));
+        }
+        if unmoved || tries == 3 {
+            return Ok(OnDisk::Changed(now));
+        }
+    }
 }
 
 #[cfg(test)]
