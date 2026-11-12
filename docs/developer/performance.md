@@ -914,8 +914,8 @@ same machine and display as above. What changed in the method:
   that isn't there, and stand-ins for `lpstat` (4 s for each list, one printer), `lpoptions`, `lp` and the file
   chooser: no real printer was listed or used.
 - One mode at a time, nothing building beside it; the usual desktop session ran alongside.
-- Warm only: 10 runs after one discarded, typing 200 keys a run (2,000 a row). The cold launches are **not run**
-  (below).
+- Warm: 10 runs after one discarded, typing 200 keys a run (2,000 a row). Cold: 5 launches, the page cache dropped
+  before each (root), run later the same day on 762584d with the same release build (no app code changed).
 - The pictures were 5.0 ms apart at the median in every mode (7.5 ms in the 10,000-page redaction's). Each result
   carries the driver's uncertainty, about ±5 to 15 ms shown and ±1 ms built; "borderline" is within it of a limit.
   No gated result was borderline.
@@ -949,7 +949,7 @@ Median / worst.
 | Threshold | Measured | Result |
 | --- | --- | --- |
 | First useful page, letter.pdf, warm (shown): median ≤ 500 ms, worst ≤ 700 ms | 309.8 / 323.1 ms | passed |
-| The same, cold: median ≤ 1.2 s, worst ≤ 1.5 s | – | not run |
+| The same, cold: median ≤ 1.2 s, worst ≤ 1.5 s | 790.1 / **1,718.5** ms (built 760.2 / 1,690.7 ms) | **failed** the worst |
 | Typing (shown): median ≤ 50 ms, none over 100 ms | a form field 24.8 / 50.8 ms; Add text 25.6 / 49.1 ms; a line 26.5 / 71.6 ms (1,350 keys; 650 past the view, not seen); a paragraph, new, 26.4 / 50.8 ms | passed |
 | Typing (built, every key): none over 50 ms | worst 24.0, 21.8, 25.0 and 24.2 ms | passed |
 | Search processing, 120 pages (built): ≤ 300 ms worst | first search 50.4 ms, later 43.5 ms | passed |
@@ -977,6 +977,13 @@ starting target (median ≤ 50 ms, none over 100 ms, shown):
   with no frame. The write, on the save's thread, took 264.6 / 371.7 ms of it. The wheel turns waited for it, and
   the busy sign was first drawn after the save had ended: on 10,000 pages Save misses the starting target's 100 ms
   for its sign too. Not traced (PB-158).
+
+The cold launch's worst failed, within the starting target (worst ≤ 2 s); two of the five were slow. Launches 1
+to 3 were shown in 768.5 to 790.1 ms, 4 and 5 in 1,718.5 and 1,263.0 ms. All the extra time came before the first
+frame: the app was made 370 to 500 ms later than in launches 1 to 3, and its first frame came 446 and 113 ms after
+that (19 ms otherwise). From the first frame to the page shown took 61 to 66 ms in every launch. The timing log has
+no marks inside those steps (the window, the graphics device and its drivers, the first frame), so where the time
+went isn't known; not traced (PB-166).
 
 #### The other documents' first page (no threshold)
 
@@ -1016,8 +1023,8 @@ first, so each misses the starting target for a heavy command's sign (≤ 100 ms
 - PB-52's "built" is the frame that took the click. The line shows selected a frame later, once its page's fonts
   are read (`page_line_fonts`, in that frame), which is where the shown time goes.
 - **PB-61** is typing, judged by the typing thresholds: 中 typed into a new Add text box set in Times on letter.pdf,
-  built 105.7 / 107.3 ms, shown 131.8 / 136.0 ms. **Failed** all three, and the starting target. Warm only (the
-  font file in the page cache); cold not run.
+  built 105.7 / 107.3 ms, shown 131.8 / 136.0 ms. **Failed** all three, and the starting target. Cold, built
+  121.3 / 121.6 ms, shown 147.4 / 150.4 ms: failed the same, about 15 ms over warm.
 
 Also found while measuring, on text-10000.pdf: with the large-document notice and the notice of unapplied
 redactions both up, the window redraws without end, about 32 frames a second, two passes each (PB-159); marking a
@@ -1026,7 +1033,4 @@ redaction, the drag's release is taken in a frame 257.1 / 261.7 ms later, and th
 
 #### Not run
 
-- The cold launches of letter.pdf (5) and the first ideograph cold (5): dropping the page cache needs root. Run
-  `sudo -v`, then `python3 -I tools/perf/drive.py startup letter.pdf --cold` and
-  `python3 -I tools/perf/drive.py ideograph --cold`, with nothing else running.
 - The testers' Windows and macOS figures.
