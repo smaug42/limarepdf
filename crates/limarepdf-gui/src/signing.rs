@@ -307,13 +307,18 @@ impl SignKit {
                 SignRole::Initials => "initials",
             };
             let copy = dir.join(format!("{name}-{stamp}.{ext}"));
-            match std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&*path, &copy)) {
+            // For this user only, as it is a picture of their signature (O-06). A copy the
+            // system couldn't confirm on disk is there, and is used.
+            let copied = std::fs::read(&*path)
+                .map_err(anyhow::Error::from)
+                .and_then(|b| crate::app::unconfirmed(limarepdf_core::write_private(&copy, &b)));
+            match copied {
                 Ok(_) => *path = copy,
                 Err(err) => {
                     e.keep = false;
                     unkept = Some(format!(
                         "The {name} can be used until LimarePDF closes, but LimarePDF couldn't \
-                         keep a copy of its picture for next time ({err})."
+                         keep a copy of its picture for next time ({err:#})."
                     ));
                 }
             }
@@ -1454,6 +1459,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let original = dir.join("mine.png");
         std::fs::write(&original, b"not really a png").unwrap();
+        #[cfg(unix)]
+        let mode = |p: &Path| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let mut k = SignKit::from_file(Some(f));
         let saved = Saved::Picture {
             path: original.clone(),
@@ -1472,6 +1487,12 @@ mod tests {
         // The whole picture is copied; the part used stays a part of it.
         assert_eq!(std::fs::read(&copy).unwrap(), b"not really a png");
         assert_eq!(crop, Some([0.0, 0.25, 1.0, 0.75]));
+        // O-06: the copy and its folder are for this user only, though the original isn't.
+        #[cfg(unix)]
+        {
+            assert_eq!(mode(&copy), 0o600);
+            assert_eq!(mode(&dir.join("signatures")), 0o700);
+        }
         k.remove(SignRole::Signature, 0);
         assert!(!copy.exists() && original.exists());
     }
