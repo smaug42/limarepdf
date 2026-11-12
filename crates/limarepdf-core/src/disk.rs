@@ -79,9 +79,9 @@ pub struct Identity {
     /// not there yet, its folder's with its name (or the deepest folder's that is there,
     /// with the names below it).
     path: PathBuf,
-    /// The device and inode of a file that is there, as a hard link to it shares.
-    #[cfg(unix)]
-    node: Option<(u64, u64)>,
+    /// The [`Node`] of a file that is there, as a hard link to it shares.
+    #[cfg(any(unix, windows))]
+    node: Option<Node>,
     /// The path in lower case, as a disk that ignores case compares names.
     folded: String,
 }
@@ -92,12 +92,12 @@ impl Identity {
         &self.path
     }
 
-    /// Whether the two name one file: the same path, or on Unix the same device and inode.
+    /// Whether the two name one file: the same path, or the same [`Node`].
     pub fn matches(&self, other: &Identity) -> bool {
         if self.path == other.path {
             return true;
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let (Some(a), Some(b)) = (self.node, other.node) {
             return a == b;
         }
@@ -125,18 +125,58 @@ pub fn identity(path: &Path) -> Identity {
             _ => lexical(path),
         }
     });
-    #[cfg(unix)]
-    let node = {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino()))
-    };
+    #[cfg(any(unix, windows))]
+    let node = node(&path);
     let folded = path.to_string_lossy().to_lowercase();
     Identity {
         path,
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         node,
         folded,
     }
+}
+
+/// A file's own number on its disk, which every hard link to it shares: the device and
+/// inode on Unix, the volume's serial number and the file's ID on Windows.
+#[cfg(unix)]
+type Node = (u64, u64);
+#[cfg(windows)]
+type Node = (u64, [u8; 16]);
+
+/// The [`Node`] of the file at `path`, if it is there.
+#[cfg(unix)]
+fn node(path: &Path) -> Option<Node> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// The [`Node`] of the file at `path`, if it is there. The 128-bit ID, as ReFS (a Dev
+/// Drive's file system) has no unique 64-bit one.
+#[cfg(windows)]
+fn node(path: &Path) -> Option<Node> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO,
+    };
+    // Opened only to ask, with no access to its contents; a folder opens too.
+    let f = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: the handle is open for the call, and `info` is a buffer of the size given for
+    // the class asked for.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            f.as_raw_handle(),
+            FileIdInfo,
+            (&raw mut info).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    (ok != 0).then_some((info.VolumeSerialNumber, info.FileId.Identifier))
 }
 
 /// `path` made absolute with `.` and `..` taken out by their names alone, for a path whose
@@ -308,8 +348,13 @@ mod tests {
         {
             std::os::unix::fs::symlink(&a, dir.join("link.pdf")).unwrap();
             assert!(same_file(&dir.join("link.pdf"), &a));
+        }
+        // D-02: on Windows too, by the file's ID.
+        #[cfg(any(unix, windows))]
+        {
             std::fs::hard_link(&a, dir.join("hard.pdf")).unwrap();
             assert!(same_file(&dir.join("hard.pdf"), &a));
+            assert!(!same_file(&dir.join("hard.pdf"), &b));
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -373,7 +418,7 @@ mod tests {
     }
 
     /// A hard link is another path to the same file.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn identity_through_a_hard_link() {
         let dir = test_dir("identity-hard");

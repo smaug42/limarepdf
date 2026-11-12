@@ -19020,14 +19020,19 @@ mod tests {
         let other = dir.join("other.pdf");
         form_file(&other, "Other");
         std::fs::create_dir(dir.join("sub")).unwrap();
-        // Links are added on Unix only.
-        #[cfg_attr(not(unix), allow(unused_mut))]
+        // A symbolic link on Unix only (Windows needs a privilege for one); a hard link on
+        // Windows too (D-02).
+        #[cfg_attr(not(any(unix, windows)), allow(unused_mut))]
         let mut paths = vec![path.clone(), dir.join("sub/../form.pdf")];
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&path, dir.join("link.pdf")).unwrap();
+            paths.push(dir.join("link.pdf"));
+        }
+        #[cfg(any(unix, windows))]
+        {
             std::fs::hard_link(&path, dir.join("hard.pdf")).unwrap();
-            paths.extend([dir.join("link.pdf"), dir.join("hard.pdf")]);
+            paths.push(dir.join("hard.pdf"));
         }
         for p in &paths {
             app.spawn_open(&ctx, p.clone(), None, None);

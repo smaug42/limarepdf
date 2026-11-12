@@ -7,8 +7,9 @@
 //! else runs while it is written.
 //!
 //! The claims compare names without case, as a disk that ignores case does; another tab's
-//! open file is told exactly, by its path or (on Unix) its inode. Not covered: exporting a
-//! digital ID or certificate, the recovery store's private folder, and other apps.
+//! open file is told exactly, by its path or its file's own number (the inode on Unix, the
+//! file ID on Windows). Not covered: exporting a digital ID or certificate, the recovery
+//! store's private folder, and other apps.
 //!
 //! Opening is checked here too: a file open in a tab, being read for one or asking for its
 //! password, by any path or link to it, isn't read again (BUG-06). Every check here knows a

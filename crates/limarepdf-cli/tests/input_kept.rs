@@ -117,8 +117,9 @@ fn a_symbolic_link_to_the_input_is_refused() {
     refused_for(&dir, "link.pdf");
 }
 
-/// A hard link to the input is refused on Unix, where it can be told.
-#[cfg(unix)]
+/// A hard link to the input is refused: told by its inode on Unix, by its file ID on Windows
+/// (D-02).
+#[cfg(any(unix, windows))]
 #[test]
 fn a_hard_link_to_the_input_is_refused() {
     let dir = folder("hardlink");
@@ -188,7 +189,7 @@ const GENERATED: [(&[&str], [&str; 2]); 3] = [
     ),
 ];
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn with_overwrite<'a>(cmd: &[&'a str], overwrite: bool) -> Vec<&'a str> {
     cmd.iter()
         .copied()
@@ -207,7 +208,7 @@ fn names(dir: &Path) -> Vec<String> {
 }
 
 /// `out`, empty.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn empty(out: &Path) {
     let _ = std::fs::remove_dir_all(out);
     std::fs::create_dir(out).unwrap();
@@ -270,15 +271,14 @@ fn save_images_refuses_a_picture_linked_to_the_input() {
 }
 
 /// A generated file that is a hard link to the input is refused as `-o` is, though replacing it
-/// would leave the input as it was: one rule for every file a command writes.
-#[cfg(unix)]
+/// would leave the input as it was: one rule for every file a command writes. On Windows too
+/// since D-02.
+#[cfg(any(unix, windows))]
 #[test]
 fn a_generated_file_hard_linked_to_the_input_is_refused() {
-    use std::os::unix::fs::MetadataExt;
     let dir = folder("generated-hardlink");
     let before = pictures_pdf(&dir);
     let (out, full) = (dir.join("out"), dir.join("input.pdf"));
-    let input = std::fs::metadata(&full).unwrap().ino();
     for (cmd, files) in GENERATED {
         for name in files {
             empty(&out);
@@ -297,10 +297,10 @@ fn a_generated_file_hard_linked_to_the_input_is_refused() {
                 "{case} changed the input"
             );
             assert_eq!(names(&out), [name], "{case} wrote a file");
-            assert_eq!(
-                std::fs::metadata(out.join(name)).unwrap().ino(),
-                input,
-                "{case}"
+            // Still the link: a file of its own written there would hold a picture.
+            assert!(
+                std::fs::read(out.join(name)).unwrap() == before,
+                "{case} replaced the link"
             );
         }
     }

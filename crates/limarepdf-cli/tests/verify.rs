@@ -104,9 +104,9 @@ fn a_symbolic_link_to_the_input_is_refused() {
     unchanged(&input, &before);
 }
 
-/// A hard link to the input leaves the input unchanged: on Unix it is refused, as the same
-/// file; elsewhere the output replaces the link's name with a new file. Writing into it once
-/// cut the input short.
+/// A hard link to the input leaves the input unchanged: it is refused, as the same file (on
+/// Windows too since D-02); elsewhere the output replaces the link's name with a new file.
+/// Writing into it once cut the input short.
 #[test]
 fn a_hard_link_to_the_input_leaves_it_unchanged() {
     let (dir, input) = setup("hardlink");
@@ -115,7 +115,7 @@ fn a_hard_link_to_the_input_leaves_it_unchanged() {
     std::fs::hard_link(&input, &alias).unwrap();
     let out = signed_version(&dir, &input, &alias);
     unchanged(&input, &before);
-    if cfg!(unix) {
+    if cfg!(any(unix, windows)) {
         refused(&out);
         unchanged(&alias, &before);
     }
