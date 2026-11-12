@@ -1361,6 +1361,7 @@ fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>, flatten: bool) -
     };
     let mut todo: Vec<(String, FieldValue)> = Vec::new();
     if let Some(path) = values {
+        not_an_input(&[path], &io.output)?;
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read {}", path.display()))?;
         let json: serde_json::Value = serde_json::from_str(&text)
@@ -2168,6 +2169,7 @@ fn run_trust(cmd: TrustCmd) -> Result<()> {
             trust_file,
         } => {
             let path = trust_path(&trust_file)?;
+            not_an_input(&[&input], &path)?;
             let mut list = TrustList::load(&path)?;
             let bytes =
                 std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
@@ -2611,6 +2613,7 @@ fn run_id(cmd: IdCmd) -> Result<()> {
         } => {
             let store = id_store(&folder)?;
             let id = store.find(&which)?;
+            not_an_input(&[&id.path], &output)?;
             let label = clean(id.cert.display_name());
             let ext = output
                 .extension()
@@ -2618,6 +2621,9 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                 .unwrap_or_default();
             match ext.as_str() {
                 "p12" | "pfx" => {
+                    let passwords: Vec<_> =
+                        password_file.iter().chain(&new_password_file).collect();
+                    not_an_input(&passwords, &output)?;
                     let password =
                         read_password(&password_file, &format!("Password of \"{label}\": "))?;
                     let unlocked = store.unlock(&id, &password)?;
@@ -2718,7 +2724,8 @@ fn trust_path(explicit: &Option<PathBuf>) -> Result<PathBuf> {
 }
 
 /// Refuses an `output` that is one of the `inputs`, by any path or link to it, so the input is
-/// never changed.
+/// never changed. The inputs are every file the command reads: besides the document, a picture,
+/// a password, form values, a trust list, a certificate or a digital ID (PB-139).
 fn not_an_input(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
     use limarepdf_core::disk::same_file;
     if let Some(input) = inputs.iter().find(|i| same_file(i.as_ref(), output)) {
@@ -3337,6 +3344,7 @@ fn run(cmd: Cmd) -> Result<()> {
             images,
             size,
         } => {
+            not_an_input(&images, &io.output)?;
             let files = read_all(&images)?;
             run_edit(&io, |p| {
                 p.insert_image_pages(after, &files, &size.opts()).map(drop)
@@ -3374,6 +3382,7 @@ fn run(cmd: Cmd) -> Result<()> {
             rotation,
             background,
         } => {
+            not_an_input(image.as_slice(), &io.output)?;
             let image = match image {
                 Some(path) => Some(
                     std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
@@ -3511,6 +3520,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 bail!("--color is for --text stamps and signatures only");
             }
             let style = SignStyle::from_number(style).context("--style is 1, 2, 3 or 4")?;
+            not_an_input(image.as_slice(), &io.output)?;
             let image = match image {
                 Some(path) => Some(
                     std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
@@ -3662,6 +3672,12 @@ fn run(cmd: Cmd) -> Result<()> {
             signed_version,
             output,
         } => {
+            if let Some(output) = &output {
+                // The trust list read is LimarePDF's own when none is named.
+                let trusted = trust_file.clone().or_else(TrustList::default_path);
+                let read: Vec<_> = std::iter::once(&input).chain(&trusted).collect();
+                not_an_input(&read, output)?;
+            }
             let bytes =
                 std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
             let trust = trust_for_checking(&trust_file)?;
@@ -3685,7 +3701,6 @@ fn run(cmd: Cmd) -> Result<()> {
                 let len = s.signed_len.with_context(|| {
                     format!("LimarePDF can't tell which version signature {n} signed")
                 })?;
-                not_an_input(&[&input], &output)?;
                 // A new file renamed into place, so a name that is a link to the input (or to
                 // anything else) never has its bytes cut short (audit R16).
                 saved(limarepdf_core::write_file(&output, &bytes[..len]))
@@ -3758,7 +3773,11 @@ fn run(cmd: Cmd) -> Result<()> {
                 _ => bail!("say where to sign: --field NAME, or --page N with --rect X,Y,W,H"),
             };
             let style = SignStyle::from_number(style).context("--style is 1, 2, 3 or 4")?;
-            not_an_input(&[&input], &output)?;
+            let read: Vec<_> = std::iter::once(&input)
+                .chain(&image)
+                .chain(&password_file)
+                .collect();
+            not_an_input(&read, &output)?;
             let picture = match &image {
                 Some(path) => Some(
                     std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
@@ -3779,6 +3798,7 @@ fn run(cmd: Cmd) -> Result<()> {
                      with `limarepdf-cli id import`",
                 )?,
             };
+            not_an_input(&[&chosen.path], &output)?;
             let label = limarepdf_core::display_line(chosen.cert.display_name(), 80);
             if chosen.cert.expired() {
                 bail!(
