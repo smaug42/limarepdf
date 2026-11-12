@@ -264,7 +264,8 @@ builds; its `README.md` has the targets and commands (nightly Rust and cargo-fuz
 `fuzz` workflow runs each target for five minutes, weekly and by hand, and is never a required check (S2-15).
 `fuzz/seed.sh` starts each corpus from the repository's own test files, and from the inputs the audit's regression
 tests build: it runs those core tests with `LIMAREPDF_FUZZ_SEEDS` set, and each writes its input for the targets
-that read it (`tests/common/seeds.rs`, O-04, S2-01; nothing over 256 KiB, so not M-01's). A failure found becomes
+that read it (`tests/common/seeds.rs`, O-04, S2-01; nothing over 256 KiB, so not M-01's). If those tests fail, it
+warns and fuzzing goes on with the seeds there are (PB-169). A failure found becomes
 a test in the crate it concerns, failing first, as any bug's does; one in hayro or lopdf is recorded in the backlog.
 The first runs (2026-11-04, 4 minutes each, 2 GB, 20 seconds an input): `open`, `content`, `readers` and `images`
 found nothing; `draw` found PB-81 (a picture's stated size setting hayro's buffer: a 78-byte content stream asking

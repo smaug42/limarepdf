@@ -138,12 +138,22 @@ print(f"{n} signatures, 1 trust list, "
 EOF
 
 # The inputs the audit's regression tests build, each test writing its own into the folders of
-# the targets that read it (crates/limarepdf-core/tests/common/seeds.rs).
+# the targets that read it (crates/limarepdf-core/tests/common/seeds.rs). A test failing is the
+# test run's to report: here it is a warning, and fuzzing goes on with the seeds written
+# (PB-169).
 corpus=$PWD/corpus
-(cd .. && LIMAREPDF_FUZZ_SEEDS="$corpus" cargo test -q --locked -p limarepdf-core \
+if ! (cd .. && LIMAREPDF_FUZZ_SEEDS="$corpus" cargo test -q --locked -p limarepdf-core \
     --test signatures --test signature_trust --test signature_changes --test signing \
     --test too_complex --test redact --test sanitise --test compact --test form_fill \
     --test many_annotations --test blank --test import --test pictures --test render_region)
+then
+    warning="the regression tests that build seeds failed, so some of their seeds may be missing"
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+        echo "::warning title=fuzz/seed.sh::$warning"
+    else
+        echo "warning: $warning" >&2
+    fi
+fi
 
 echo "seeded: $(ls corpus/open | wc -l) PDFs, $(ls corpus/verify | wc -l) signed PDFs," \
     "$(ls corpus/signature | wc -l) signatures, $n content streams, $(ls corpus/images | wc -l) pictures"
