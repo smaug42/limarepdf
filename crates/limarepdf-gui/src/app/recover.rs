@@ -700,7 +700,9 @@ mod tests {
     /// Runs the schedule at `at`, waits for the recovery thread and takes its reports.
     fn tick(app: &mut App, ctx: &egui::Context, at: Instant) {
         app.recovery_tick_at(ctx, at);
+        let until = Instant::now() + Duration::from_secs(60);
         while !queue(app).idle() {
+            assert!(Instant::now() < until, "the recovery thread didn't finish");
             std::thread::sleep(Duration::from_millis(1));
         }
         app.recovery_tick_at(ctx, at);
@@ -857,9 +859,11 @@ mod tests {
         // The files are read in the background.
         let merge = |app: &mut App, files: &[PathBuf]| {
             app.merge_files(&ctx, files);
+            let until = Instant::now() + Duration::from_secs(60);
             while app.busy {
+                assert!(Instant::now() < until, "the files were never read");
                 app.poll_loads(&ctx);
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(Duration::from_millis(5));
             }
         };
         // An unprotected document: copies go on.

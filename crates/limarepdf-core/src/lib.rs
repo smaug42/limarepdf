@@ -179,6 +179,25 @@ pub use viewprefs::{OpenLayout, OpenPanel, ViewPrefs};
 
 pub type Result<T> = anyhow::Result<T>;
 
+/// The readers fuzz/'s targets reach that aren't public: digital ID files and the printing
+/// service's answers. Built only with `--cfg fuzzing`, as `cargo fuzz` builds; never in the app.
+#[cfg(fuzzing)]
+pub mod fuzz_seam {
+    /// Reads a digital ID file as LimarePDF does: its certificates without the password, as
+    /// the list of IDs shows them, then all of it with `password`.
+    pub fn digital_id(file: &[u8], password: &str) {
+        let _ = crate::pkcs12::peek(file);
+        let _ = crate::pkcs12::read(file, password);
+    }
+
+    /// Reads an answer from the printing service (IPP), then the paper sizes in it.
+    pub fn printer_answer(data: &[u8]) {
+        if let Ok(answer) = crate::ipp::read_answer(data) {
+            let _ = crate::paper::from_ipp(&answer.printer);
+        }
+    }
+}
+
 /// LimarePDF's settings folder, from the environment; `None` when it can't be found:
 ///
 /// - Linux and other Unix: `$XDG_CONFIG_HOME/limarepdf/`, else `~/.config/limarepdf/`

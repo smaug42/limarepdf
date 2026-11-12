@@ -24,14 +24,11 @@ const PASSWORD: &str = "mpe-test-password";
 
 /// The test ID file `name`, imported into a scratch folder and opened.
 fn unlocked(name: &str) -> UnlockedId {
-    let dir = std::env::temp_dir().join(format!("limarepdf-signing-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = tool::Scratch::new(&format!("signing-{name}"));
     let store = IdStore::new(dir.join("ids"));
     let file = std::fs::read(data_dir().join("ids").join(format!("{name}.p12"))).unwrap();
     let id = store.import(&file, PASSWORD, None).unwrap().id;
-    let u = store.unlock(&id, PASSWORD).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-    u
+    store.unlock(&id, PASSWORD).unwrap()
 }
 
 macro_rules! test_id {
@@ -51,18 +48,14 @@ test_id!(issued, "chain");
 fn czech() -> &'static UnlockedId {
     static ID: OnceLock<UnlockedId> = OnceLock::new();
     ID.get_or_init(|| {
-        let dir =
-            std::env::temp_dir().join(format!("limarepdf-signing-{}-czech", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tool::Scratch::new("signing-czech");
         let store = IdStore::new(dir.join("ids"));
         let new = NewId {
             name: "Šárka Dvořák".into(),
             ..NewId::default()
         };
         let id = store.create(&new, PASSWORD).unwrap().id;
-        let u = store.unlock(&id, PASSWORD).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        u
+        store.unlock(&id, PASSWORD).unwrap()
     })
 }
 

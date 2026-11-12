@@ -886,7 +886,7 @@ mod tests {
     use skrifa::string::StringId;
     use skrifa::{FontRef, GlyphId, MetadataProvider};
     use std::fmt::Debug;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use Seg::{Close, Curve, Line, Move};
 
     const SOURCE_SERIF: &[u8] = include_bytes!("../tests/data/fonts/SourceSerif4-Regular.otf");
@@ -1377,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn five_thousand_glyphs_take_well_under_a_second() {
+    fn five_thousand_glyphs_take_about_five_times_as_long_as_a_thousand() {
         // Each about as much as a Chinese character: twelve contours of lines and curves.
         let glyphs: Vec<Glyph> = (0..5000)
             .map(|i| {
@@ -1411,15 +1411,23 @@ mod tests {
                 }
             })
             .collect();
-        let start = Instant::now();
+        // The machine's speed, and how busy it is, change both counts alike, so the times are
+        // compared rather than held to a limit: work growing with the count takes about five
+        // times as long, work growing with its square 25 times. The quickest of three runs,
+        // taken in turn, so a busy moment doesn't land on one count only.
+        let mut quickest = [Duration::MAX; 2];
+        for _ in 0..3 {
+            for (q, n) in quickest.iter_mut().zip([1000, 5000]) {
+                let start = Instant::now();
+                opentype("Many", &glyphs[..n], METRICS);
+                *q = (*q).min(start.elapsed());
+            }
+        }
+        let [thousand, all] = quickest;
+        let times = all.as_secs_f64() / thousand.as_secs_f64();
+        println!("1000 glyphs written in {thousand:?}, 5000 in {all:?}: {times:.1} times");
+        assert!(times < 12.0, "1000 glyphs in {thousand:?}, 5000 in {all:?}");
         let bytes = opentype("Many", &glyphs, METRICS);
-        let took = start.elapsed();
-        println!(
-            "{} glyphs written in {took:?}, {} bytes",
-            glyphs.len(),
-            bytes.len()
-        );
-        assert!(took.as_secs_f64() < 1.0, "{took:?}");
         let font = FontRef::new(&bytes).unwrap();
         assert_eq!(font.maxp().unwrap().num_glyphs(), 5001);
         let sample: Vec<Glyph> = glyphs.iter().step_by(97).cloned().collect();

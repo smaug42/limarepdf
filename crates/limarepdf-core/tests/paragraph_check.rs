@@ -9,14 +9,25 @@
 //! and at least 70% of multi-line body parts are found exactly as one confident block. The
 //! tagged corpus is judged without its tags, which are its answers; the made-up set as the
 //! detector reads documents (the user's answer to the plan's Q2, 2026-10-30). Both passing
-//! turns paragraph editing on as the default; the output says which.
+//! turns paragraph editing on as the default; the output says which. A part whose file, page
+//! or lines aren't read still counts in coverage, as missed, and the figures say how many.
+//!
+//! `paragraph_gate` asserts the threshold, and fails when the render corpus isn't all here
+//! (the cycle plan's WP-11, O-03). It fails today, which is why paragraph editing isn't the
+//! default: run at release preparation and when detection changes, never in CI, and recorded
+//! in testing.md, "Finding paragraphs":
+//!
+//! `cargo test -p limarepdf-core --test paragraph_check -- --ignored --exact paragraph_gate --nocapture`
 //!
 //! `PARAGRAPH_CHECK_HALF=tune` shows the tuning halves alone, for tuning the detector's
 //! constants without looking at the halves that judge them; `PARAGRAPH_CHECK_FILES=1` adds
-//! each file's figures, `PARAGRAPH_CHECK_ERRORS=1` each error, and
-//! `PARAGRAPH_CHECK_ONLY=name,name` judges those files alone.
+//! each file's figures, `PARAGRAPH_CHECK_ERRORS=1` each error, the test halves' only with
+//! `PARAGRAPH_CHECK_BLIND_OK=1` too; and `PARAGRAPH_CHECK_ONLY=name,name` judges those files
+//! alone (not in the gate). `the_halves_are_as_recorded` checks the split against its
+//! checksum in `tests/data/paragraphs/README.md`.
 
 use limarepdf_core::{Block, Detect, ObjectKind, PageObject, Pdf};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -200,6 +211,8 @@ struct Counts {
     under: usize,
     targets: usize,
     found: usize,
+    /// Targets not read: counted, as missed.
+    unread: usize,
     misses: BTreeMap<String, usize>,
     /// Examples: over-merges, under-merges, misses.
     over_ex: Vec<String>,
@@ -217,6 +230,7 @@ impl Counts {
         self.under += o.under;
         self.targets += o.targets;
         self.found += o.found;
+        self.unread += o.unread;
         for (k, n) in &o.misses {
             *self.misses.entry(k.clone()).or_default() += n;
         }
@@ -249,7 +263,7 @@ impl Counts {
         let (o, u, c) = self.figures();
         let mark = |ok: bool| if ok { "pass" } else { "FAIL" };
         format!(
-            "over {}/{} = {o:.2}% ({}); under {}/{} = {u:.2}% ({}); coverage {}/{} = {c:.1}% ({}); confident {}, with left-out lines {}, unjudged {}",
+            "over {}/{} = {o:.2}% ({}); under {}/{} = {u:.2}% ({}); coverage {}/{} = {c:.1}% ({}), not read {}; confident {}, with left-out lines {}, unjudged {}",
             self.over,
             self.judged,
             mark(o <= OVER_MAX),
@@ -259,6 +273,7 @@ impl Counts {
             self.found,
             self.targets,
             mark(c >= COVERAGE_MIN),
+            self.unread,
             self.confident,
             self.ignored,
             self.unjudged,
@@ -284,22 +299,47 @@ fn first_words(text: &str) -> String {
         .join(" ")
 }
 
+/// The parts coverage counts, by name: multi-line body parts whose lines aren't left out.
+fn targets(f: &File) -> Vec<&str> {
+    let answered: HashSet<&str> = (f.lines.iter())
+        .filter_map(|l| match &l.ans {
+            Ans::Part(p) => Some(p.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut t: Vec<&str> = (f.parts.iter())
+        .filter(|(p, info)| {
+            answered.contains(p.as_str()) && BODY.contains(&info.kind.as_str()) && info.rows >= 2
+        })
+        .map(|(p, _)| p.as_str())
+        .collect();
+    t.sort_unstable();
+    t
+}
+
 /// One file judged with `how`: its counts, and each page's detection time in seconds.
 fn judge(f: &File, how: Detect) -> (Counts, Vec<f64>) {
     let mut c = Counts::default();
     let mut times = Vec::new();
-    let Ok(pdf) = Pdf::open(f.path(), None) else {
-        c.misses.insert("file not opened".into(), 1);
-        return (c, times);
-    };
+    // Pages not read, and why: their targets count, as missed.
+    let mut not_read: HashMap<usize, &str> = HashMap::new();
+    let pdf = Pdf::open(f.path(), None).ok();
     // Each answer line's owners: today's lines that are it, by (page, object id).
     let mut owners: Vec<Vec<(usize, usize)>> = vec![Vec::new(); f.lines.len()];
     // Each of today's lines' answer.
     let mut answer: HashMap<(usize, usize), Ans> = HashMap::new();
     let mut texts: HashMap<(usize, usize), String> = HashMap::new();
     let mut pages: Vec<(usize, Vec<Block>)> = Vec::new();
-    for page in 0..f.pages.min(pdf.page_count()) {
-        let objs = pdf.page_objects(page).unwrap_or_default();
+    for page in 0..f.pages {
+        let Some(pdf) = &pdf else {
+            not_read.insert(page, "file not opened");
+            continue;
+        };
+        let objs = (page < pdf.page_count()).then(|| pdf.page_objects(page).ok());
+        let Some(objs) = objs.flatten() else {
+            not_read.insert(page, "page not read");
+            continue;
+        };
         let here: Vec<usize> = (0..f.lines.len())
             .filter(|&i| f.lines[i].page == page)
             .collect();
@@ -324,9 +364,12 @@ fn judge(f: &File, how: Detect) -> (Counts, Vec<f64>) {
             texts.insert((page, o.id), o.text.clone().unwrap_or_default());
         }
         let t = Instant::now();
-        let blocks = pdf.page_blocks_by(page, how).unwrap_or_default();
+        let blocks = pdf.page_blocks_by(page, how);
         times.push(t.elapsed().as_secs_f64());
-        pages.push((page, blocks));
+        match blocks {
+            Ok(blocks) => pages.push((page, blocks)),
+            Err(_) => _ = not_read.insert(page, "blocks not found"),
+        }
     }
     // Each part's lines that today's lines are.
     let mut want: HashMap<&str, HashSet<usize>> = HashMap::new();
@@ -406,17 +449,25 @@ fn judge(f: &File, how: Detect) -> (Counts, Vec<f64>) {
         }
     }
     let blocks_of: HashMap<usize, &Vec<Block>> = pages.iter().map(|(p, b)| (*p, b)).collect();
-    let mut parts: Vec<(&String, &Part)> = f.parts.iter().collect();
-    parts.sort_by(|a, b| a.0.cmp(b.0));
-    for (p, info) in parts {
-        let Some(lines) = want.get(p.as_str()) else {
+    for p in targets(f) {
+        let info = &f.parts[p];
+        c.targets += 1;
+        let read = want.get(p).filter(|_| !not_read.contains_key(&info.page));
+        let Some(lines) = read else {
+            let why = not_read.get(&info.page).unwrap_or(&"no line found");
+            let why = format!("not read: {why}");
+            c.unread += 1;
+            c.miss_ex.push(format!(
+                "{} p{} part {p} ({}, {} rows): {why}",
+                f.name,
+                info.page + 1,
+                info.kind,
+                info.rows
+            ));
+            *c.misses.entry(why).or_default() += 1;
             continue;
         };
-        if !BODY.contains(&info.kind.as_str()) || info.rows < 2 {
-            continue;
-        }
-        c.targets += 1;
-        if exact.contains(p.as_str()) {
+        if exact.contains(p) {
             c.found += 1;
             continue;
         }
@@ -494,21 +545,19 @@ fn total<'a>(res: &HashMap<String, Counts>, files: impl Iterator<Item = &'a File
     c
 }
 
-#[test]
-#[ignore = "opt-in: the paragraph check over both answer sets (see the top of this file)"]
-fn paragraph_check() {
-    let only_tune = std::env::var("PARAGRAPH_CHECK_HALF").is_ok_and(|h| h == "tune");
-    let halves: &[&str] = if only_tune {
-        &["tune"]
-    } else {
-        &["tune", "test"]
-    };
-    // `PARAGRAPH_CHECK_ONLY=name,name` judges those files alone, and lists every error.
-    let only: Option<Vec<String>> = std::env::var("PARAGRAPH_CHECK_ONLY")
-        .ok()
-        .map(|v| v.split(',').map(str::to_string).collect());
+/// What a run found: each set's test half as the verdict judges it ("corpus (geometry)",
+/// "madeup (tags)"), and how many of the corpus's answered files are here.
+struct Run {
+    verdict: Vec<(String, Counts)>,
+    corpus: (usize, usize),
+}
+
+/// The answer sets' `halves` judged, or `only` those files, and the figures printed. The
+/// test halves' files and errors are listed only with `PARAGRAPH_CHECK_BLIND_OK=1`: they
+/// judge the detector blind.
+fn run(halves: &[&str], only: Option<&[String]>) -> Run {
     let pick = |files: Vec<File>| -> Vec<File> {
-        match &only {
+        match only {
             Some(names) => files
                 .into_iter()
                 .filter(|f| names.contains(&f.name))
@@ -516,12 +565,17 @@ fn paragraph_check() {
             None => files,
         }
     };
+    let blind_ok = std::env::var("PARAGRAPH_CHECK_BLIND_OK").is_ok_and(|v| v == "1");
     let mut sets = vec![("madeup", pick(read("madeup")))];
     let corpus = pick(read("corpus"));
     let have = corpus
         .iter()
         .filter(|f| Path::new(&f.path()).exists())
         .count();
+    let mut found = Run {
+        verdict: Vec::new(),
+        corpus: (have, corpus.len()),
+    };
     if have == corpus.len() {
         sets.insert(0, ("corpus", corpus));
     } else {
@@ -535,7 +589,6 @@ fn paragraph_check() {
         ("geometry", Detect { tags: false }),
         ("tags", Detect { tags: true }),
     ];
-    let mut verdict: Vec<(String, bool)> = Vec::new();
     let mut all_times: Times = Vec::new();
     for (set, files) in &sets {
         for (vname, how) in variants {
@@ -550,7 +603,7 @@ fn paragraph_check() {
                 let judged = (*set == "corpus" && vname == "geometry")
                     || (*set == "madeup" && vname == "tags");
                 if *half == "test" && judged {
-                    verdict.push((format!("{set} ({vname})"), c.passes()));
+                    found.verdict.push((format!("{set} ({vname})"), c.clone()));
                 }
                 if vname == "geometry" || (*set == "madeup" && vname == "tags") {
                     let misses: Vec<String> = (c.misses.iter())
@@ -559,6 +612,16 @@ fn paragraph_check() {
                     println!("        misses: {}", misses.join("; "));
                 }
                 let errors = vname == "geometry" || (*set == "madeup" && vname == "tags");
+                let asked = std::env::var("PARAGRAPH_CHECK_FILES").is_ok()
+                    || std::env::var("PARAGRAPH_CHECK_ERRORS").is_ok();
+                let blind = errors && *half == "test" && !blind_ok;
+                if blind && asked {
+                    println!(
+                        "        its files and errors aren't listed, as they judge the detector \
+                         blind (PARAGRAPH_CHECK_BLIND_OK=1 lists them)"
+                    );
+                }
+                let errors = errors && !blind;
                 if errors && std::env::var("PARAGRAPH_CHECK_FILES").is_ok() {
                     for f in files.iter().filter(|f| f.half == *half) {
                         println!("        {:34} {}", f.name, res[&f.name].line());
@@ -607,10 +670,28 @@ fn paragraph_check() {
             worst.join(", ")
         );
     }
+    found
+}
+
+#[test]
+#[ignore = "opt-in: the paragraph check over both answer sets (see the top of this file)"]
+fn paragraph_check() {
+    let only_tune = std::env::var("PARAGRAPH_CHECK_HALF").is_ok_and(|h| h == "tune");
+    let halves: &[&str] = if only_tune {
+        &["tune"]
+    } else {
+        &["tune", "test"]
+    };
+    // `PARAGRAPH_CHECK_ONLY=name,name` judges those files alone, and lists every error.
+    let only: Option<Vec<String>> = std::env::var("PARAGRAPH_CHECK_ONLY")
+        .ok()
+        .map(|v| v.split(',').map(str::to_string).collect());
+    let verdict = run(halves, only.as_deref()).verdict;
     if !only_tune && verdict.len() == 2 {
-        let on = verdict.iter().all(|(_, ok)| *ok);
-        for (what, ok) in &verdict {
-            println!("verdict: {what} {}", if *ok { "passes" } else { "fails" });
+        let on = verdict.iter().all(|(_, c)| c.passes());
+        for (what, c) in &verdict {
+            let ok = c.passes();
+            println!("verdict: {what} {}", if ok { "passes" } else { "fails" });
         }
         println!(
             "paragraph editing as the default: {}",
@@ -621,4 +702,65 @@ fn paragraph_check() {
             }
         );
     }
+}
+
+/// The threshold asserted on both sets' test halves, every file judged. It fails today
+/// (testing.md, "Finding paragraphs"), so it is never counted as a passing check.
+#[test]
+#[ignore = "release preparation and detection changes: the paragraph threshold asserted, failing today (see the top of this file)"]
+fn paragraph_gate() {
+    let Run {
+        verdict,
+        corpus: (have, all),
+    } = run(&["tune", "test"], None);
+    assert_eq!(
+        have, all,
+        "the render corpus isn't all here (tools/fetch-render-samples.sh)"
+    );
+    let fails: Vec<String> = (verdict.iter())
+        .filter(|(_, c)| !c.passes())
+        .map(|(what, c)| format!("{what}: {}", c.line()))
+        .collect();
+    assert!(
+        fails.is_empty(),
+        "the test halves miss the threshold (over at most {OVER_MAX}%, under at most \
+         {UNDER_MAX}%, coverage at least {COVERAGE_MIN}%):\n{}",
+        fails.join("\n")
+    );
+}
+
+/// A file not read still counts its parts in coverage, as missed: coverage is of the answers,
+/// not of what was read.
+#[test]
+fn parts_not_read_still_count() {
+    let mut f = read("madeup").swap_remove(0);
+    f.name = "not-there".into();
+    let want = targets(&f).len();
+    assert!(want > 0);
+    let (c, _) = judge(&f, Detect { tags: true });
+    assert_eq!((c.targets, c.unread, c.found), (want, want, 0));
+    assert_eq!(c.misses.get("not read: file not opened"), Some(&want));
+}
+
+/// The tune/test split as `tests/data/paragraphs/README.md` records it, by checksum: a file
+/// added or moved to the other half is a change made on purpose, and written there.
+#[test]
+fn the_halves_are_as_recorded() {
+    let mut rows: Vec<String> = Vec::new();
+    for set in ["corpus", "madeup"] {
+        let text = std::fs::read_to_string(format!("{DATA}paragraphs/{set}.tsv")).unwrap();
+        for line in text.lines().filter(|l| l.starts_with("F\t")) {
+            let v: Vec<&str> = line.split('\t').collect();
+            rows.push(format!("{}\t{}\n", v[1], v[2]));
+        }
+    }
+    rows.sort();
+    let sum: String = (Sha256::digest(rows.concat()).iter())
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let readme = std::fs::read_to_string(format!("{DATA}paragraphs/README.md")).unwrap();
+    assert!(
+        readme.contains(&format!("`{sum}`")),
+        "the halves changed: their checksum is {sum}, not the README's"
+    );
 }

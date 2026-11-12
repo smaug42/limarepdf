@@ -295,10 +295,7 @@ fn a_compact_file_saves_compactly_again() {
 #[ignore = "needs the fetched samples: sh tools/fetch-render-samples.sh"]
 fn compact_saving_on_the_corpus() {
     let only = std::env::var("COMPACT_ONLY").unwrap_or_default();
-    let every: usize = std::env::var("COMPACT_EVERY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
+    let every = common::corpus::every("COMPACT_EVERY");
     let samples: Vec<_> = common::corpus::samples(&only)
         .into_iter()
         .filter(|s| s.path().exists())

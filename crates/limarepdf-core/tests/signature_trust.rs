@@ -1427,15 +1427,9 @@ fn adding_and_removing() {
     assert_eq!(l.entries.len(), 1);
 }
 
-fn scratch(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("limarepdf-trust-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
-
 #[test]
 fn file_round_trip() {
-    let dir = scratch("round-trip");
+    let dir = tool::Scratch::new("trust-round-trip");
     let path = dir.join("settings").join("trust.txt");
     // Missing is empty.
     assert!(TrustList::load(&path).unwrap().entries.is_empty());
@@ -1459,14 +1453,13 @@ fn file_round_trip() {
     assert!(text.contains("[signer]\nlabel = Jane\n"));
     assert!(text.contains("[authority]\nlabel = Trust Test Root\n"));
     assert!(!dir.join("settings").join("trust.txt.tmp").exists());
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[cfg(unix)]
 #[test]
 fn file_others_can_change_is_refused() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = scratch("perms");
+    let dir = tool::Scratch::new("trust-perms");
     let path = dir.join("trust.txt");
     trusting(&[("rsa3072", TrustRole::Signer)])
         .save(&path)
@@ -1482,7 +1475,6 @@ fn file_others_can_change_is_refused() {
     TrustList::load(&path).unwrap().save(&path).unwrap();
     let mode = std::fs::metadata(&path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

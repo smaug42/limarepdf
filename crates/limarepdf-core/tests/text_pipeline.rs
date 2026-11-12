@@ -119,20 +119,14 @@ const PASSWORD: &str = "mpe-test-password";
 fn signed_page() -> Pdf {
     static ID: OnceLock<UnlockedId> = OnceLock::new();
     let id = ID.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!(
-            "limarepdf-text-pipeline-{}-ids",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = IdStore::new(dir.clone());
+        let dir = common::tool::Scratch::new("text-pipeline");
+        let store = IdStore::new(dir.join("ids"));
         let new = NewId {
             name: SHORT.into(),
             ..NewId::default()
         };
         let made = store.create(&new, PASSWORD).unwrap().id;
-        let id = store.unlock(&made, PASSWORD).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        id
+        store.unlock(&made, PASSWORD).unwrap()
     });
     let r = SignRequest {
         id,

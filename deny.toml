@@ -40,6 +40,11 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.9
+# libFuzzer, the LLVM project's (NCSA), in fuzz/ only: never built into LimarePDF or shipped. CI
+# checks fuzz/Cargo.lock with this file too.
+exceptions = [
+    { allow = ["NCSA"], crate = "libfuzzer-sys" },
+]
 
 # Two versions of one crate are reported, not refused: most come from upstream crates.
 [bans]
