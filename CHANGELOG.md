@@ -176,7 +176,7 @@
   in `--out-dir` is a link to it. Before, `split in.pdf --every 1 --out-dir parts --overwrite`, with
   `parts/in-002.pdf` a link to `in.pdf`, replaced `in.pdf` with that part, and `render` and `save-images` replaced
   it with an image. Such a run is now refused with nothing written, with or without `--overwrite`, as an `-o`
-  naming the input is; so is a name that is a hard link to the input, except on Windows.
+  naming the input is; so is a name that is a hard link to the input.
 - An edited paragraph with a word too long for its frame (a long web address, a word that goes to another font,
   letters joined in a ligature) is now written as wide as it was laid out, so its lines stay inside the frame.
   Before, the line holding the word's first letter was laid out as if it held the whole word, and the next line as
@@ -369,6 +369,24 @@
   for each signature), and an embedded timestamp relying on SHA-1 gets a warning ("the embedded timestamp uses
   SHA-1, which is no longer safe against forgery"). Core: `DigitalSignature::signature_digest` and `digest_text`,
   `Timestamp::digest`, `signature_digest` and `digest_text`, `SigWarning::WeakTimestampDigest`.
+- `limarepdf-cli` no longer writes its output over another file the command reads. An output that names the
+  picture `stamp`, `watermark`, `insert-images` or `sign` puts on the page, a password file, the values
+  `form fill` reads, a trust list, the certificate `trust add` reads or the digital ID used, by any path or link
+  to it, is refused with nothing written, as one naming the input is. Before, `sign in.pdf -o pic.png --image
+  pic.png …` replaced the picture with the signed document.
+- On Windows, a hard link to a file is known as that file, as on Linux and macOS: opening a file again through a
+  hard link to it brings its tab to the front, Save As and exports refuse a hard link to a file open in another
+  tab, and `limarepdf-cli` refuses an output that is a hard link to its input. Before, Windows opened it in a
+  second tab, and the command line gave such an output a file of its own.
+- A change another app makes to a file while LimarePDF saves or signs over it is noticed even when it keeps the
+  file's size and time, as some sync and copy tools do: the last check before the file is replaced now compares
+  its contents, and Save asks first, as for any other change. Before, such a change was replaced with nothing
+  said. Reading the old file back adds under a second to saving over a 200 MB file.
+- Two digital IDs added at the same moment under one name (from two LimarePDF windows, or the app and
+  `limarepdf-cli id import`) are both kept. Before, the second could replace the first.
+- The copy LimarePDF keeps of a signature or initials picture it remembers is now readable by you alone on Linux
+  and macOS, in a folder only you can open, as your digital IDs are. Before, other users of the computer could
+  read it.
 
 ### Changed
 

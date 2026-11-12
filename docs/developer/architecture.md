@@ -1339,7 +1339,11 @@ IDs are in `ids.rs` (the ID folder, making self-signed certificates with `x509-c
 certificate by checking a signature made with its key rather than by labels) over `pkcs12.rs`, LimarePDF's own PKCS#12
 reader and writer on `asn1.rs` (which also writes DER): it derives and wipes the password keys itself (`pbkdf2`,
 `hmac`, the PKCS#12 derivation), so `pkcs5` isn't needed, and reads BER as Windows writes it. Private files (ID
-files, the trust list) go through `limarepdf_core::write_private`. It and every document save (`Pdf::save`,
+files, the trust list, the copy of a signature picture kept for next time, O-06) go through
+`limarepdf_core::write_private`. A new ID's file goes through `write_private_new` (`atomic::create_new`), which
+never replaces: the temporary file is linked to the name, which fails when the name is taken (where the disk has no
+hard links, a check and then a rename), and `IdStore` tries the next free name, so two stores choosing one name at
+once both keep their IDs (PB-134). It and every document save (`Pdf::save`,
 `write_file`, which the app's settings, recent files and signing settings, page images, exported certificates and
 text files also use) replace files through `atomic.rs`:
 a temporary file beside the target, always created new under a fresh name (never one already there), private to the
@@ -1366,8 +1370,10 @@ replace one unasked: the whole list is worked out first (`Pdf::split_files`, `re
 check and the write is still replaced.
 
 A file is open in one tab at a time, and a save never replaces changes it didn't read (BUG-06, the fourth audit's
-A13). `limarepdf_core::disk::same_file` says whether two paths name one file (the same path, or the same once
-canonicalised; on Unix also the same device and inode, so a hard link counts; the CLI's input checks use it too).
+A13). A file is known by its `disk::identity` (below, with the destinations): `App::tab_of` finds the tab whose
+file a path names and `App::reading` a file being read or asking for its password (`app/destinations.rs`), and
+`limarepdf_core::disk::same_file`, for the CLI's checks, is two identities matching. A link and a hard link count,
+on Windows too (D-02).
 `App::spawn_open` brings an open tab of the file to the front, and skips a file in `App::opening`, the reads in
 flight; a result checks again, for a tab that got the file meanwhile. Each tab keeps `Tab::disk`, the
 `disk::Version` of its file as last read (`disk::read`, the bytes and their metadata through one handle) or
@@ -1396,14 +1402,18 @@ Reload was asked for is kept first (`Act::uses_document`), so the revision cover
 changes made before still reloads. The save's thread checks once more at the replacement boundary (S1-04, PB-99):
 `atomic::replace` takes the version it may replace (`expect`, given by `Pdf::save_expecting` and
 `write_file_expecting`; `save_target` returns the one its stale check accepted, for the tab's own file only) and,
-with the temporary file written and synced, compares the target just before the rename. A changed target isn't
+with the temporary file written and synced, compares the target just before the rename, always by its bytes
+(`disk::compare_bytes`, checksummed as they are read; PB-28 (2): `disk::compare` trusts a settled file's size, time
+and inode, which an in-place change of the same size whose time is put back keeps). After that reading it looks at
+the size, time and inode once more, and reads a file that changed meanwhile again, three times at most, so the gap
+before the rename is no wider than a look at the file. A changed target isn't
 replaced (the temporary file removed, the folder not synced): the error is a `ChangedOnDisk`, found in the chain as
 `NotConfirmed` is. `App::saved` asks `ConfirmStale` again with the version now there, through `App::show`, so a Save
 chosen meanwhile is answered by it; signing over the tab's own file says it in the signing window. Tests hold a
 replace just before that comparison with `atomic::commit_seam` (`hold`, `arrived`, `release`; built as `sync_seam`
 is, and every replace in the held folder waits, the test's own too). There is still no locking: a change landing
-between that comparison and the rename is replaced, so is one a program makes by writing the old file in place,
-and a change of the same size whose time is put back isn't seen (PB-28 (2)).
+between that comparison and the rename is replaced, and so is one a program that kept the old file open writes
+into it after the rename (both accepted, D-15 (d); [contracts](contracts.md#file-identity-and-destinations)).
 
 Files reach the app from the command line (`read_args` in main.rs; on macOS an older system's `-psn_…` process
 number is skipped), drops on the window, and on macOS from Finder (BUG-28): Open With, a double-click and a drop on
@@ -1880,9 +1890,11 @@ both be admitted, the file ending as either tab's, both tabs marked saved). `App
 (`app/destinations.rs`) holds each claimed file's `disk::Identity` with its `Owner`: a save (`Owner::Save`, its tab
 and number), a background job (`Owner::Job`, numbered by `App::jobs_made` and carried in `Loaded::Job`) or the
 signing window (`Owner::Signing`). `disk::identity` takes the path canonicalised (for a file not there yet, its
-folder canonicalised with the name), on Unix the device and inode, and the path in lower case; `matches` is the
-same path or the same inode, so a file named before it exists, and one a save renames a new file over, are still
-the same. `App::conflict` checks a path against the open tabs exactly (`in_other_tab`) and against the claims
+folder canonicalised with the name), the file's own number when it is there (on Unix the device and inode; on
+Windows the volume's serial number and the 128-bit file ID, from `GetFileInformationByHandleEx`'s `FileIdInfo` on a
+handle opened with no access to the contents, D-02), and the path in lower case; `matches` is the same path or the
+same number, so a file named before it exists, one a save renames a new file over, and a hard link are still the
+same. `App::conflict` checks a path against the open tabs exactly (`in_other_tab`) and against the claims
 ignoring case (`matches_ignoring_case`), on every system: Windows, macOS, FAT, exFAT and shared folders ignore
 case, and a name not there yet can't tell which. A refusal names the file and its writer ("is being saved from
 another tab", "is being written"), and nothing is written. The writer is admitted and claims on the window's
@@ -1893,9 +1905,12 @@ job writes (every part of a split from `split_names`, every image from `image_fi
 claims its file once `SignWindow::start` is signing, released by `digital_windows` on the first frame the window
 isn't (signed, failed or cancelled). The split, image export and save-all-pictures check before asking to replace
 files too. Exporting text and saving the selection write on the window's thread, so they only check. Debug builds
-assert at exit, after `finish_saves`, that no save's claim is left. Not covered (for WP-01): exporting a digital
-ID or certificate, the recovery store's private folder, other apps; `disk::same_file` still serves opening and the
-CLI.
+assert at exit, after `finish_saves`, that no save's claim is left. Not covered: exporting a digital ID or
+certificate, the recovery store's private folder, other apps. Opening (`tab_of`, `reading`) and the CLI
+(`same_file`, in `not_an_input` and `not_taken`) know a file by the same identity. The CLI's `not_an_input` takes
+every file a command reads besides the document (a picture, a password file, form values, a trust list, a
+certificate, the digital ID used) and refuses an output that is one of them (PB-139). The contract, its tests and
+limits: [contracts](contracts.md#file-identity-and-destinations).
 
 Listing annotations (`Pdf::annotations`, and `every_annotation` for the redaction marks counted after every change
 and before every save) passes each page's id to `annotations_in`; looked up by number (`page_id_at`, which builds

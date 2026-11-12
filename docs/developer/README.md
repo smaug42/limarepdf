@@ -9,6 +9,8 @@ user docs, one folder up ([the list](../../README.md#documentation)).
   and what is planned.
 - [How it is built](architecture.md): the crates and the libraries used, and how each part works, with the code
   it is in.
+- [Contracts](contracts.md): the rules several parts rely on (which files are the same file, who may write
+  where), with the tests that check each, its limits and the code that owns it.
 - [Testing and platforms](testing.md): the platforms, the automated tests, how each feature was checked, and the
   acceptance checks by hand with their results.
 - [Performance](performance.md): measured times and memory, and how the desktop app stays responsive.

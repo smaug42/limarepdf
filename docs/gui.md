@@ -290,12 +290,12 @@ A file is open in one tab at a time: opening it again, by any path or link to it
 Before saving over the file, LimarePDF checks it still holds what LimarePDF last read or saved there. If another
 app (or another LimarePDF window) changed it since, Save asks first: **Save as…** writes your version to a new
 file and keeps theirs, **Replace** puts your version in its place, and Cancel keeps both the file and your
-changes. It checks once more just before the file is replaced, so a change made while it is being saved isn't
-written over either: Save asks the same question. Signing over the file says so in the signing window instead.
-Save As, saving selected text, exporting text or images, saving pictures, splitting and signing don't
-write over a file that is open in another tab: close that tab first, or choose another name. Nor do they write a
-file LimarePDF is still saving or writing from another tab, by any name for it (in capitals too): wait until it
-is done, or choose another name.
+changes. It checks once more, by the file's contents, just before the file is replaced, so a change made while
+it is being saved isn't written over either: Save asks the same question. Signing over the file says so in the
+signing window instead. Save As, saving selected text, exporting text or images, saving pictures, splitting and
+signing don't write over a file that is open in another tab: close that tab first, or choose another name. Nor
+do they write a file LimarePDF is still saving or writing from another tab, by any name for it (in capitals
+too): wait until it is done, or choose another name.
 
 When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
 **Reload**. ☰ > **Reload from disk** reads the file again as it now is; with unsaved changes it asks
