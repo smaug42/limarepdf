@@ -1030,8 +1030,8 @@ fn a_word_deleted_pulls_the_next_up_only_where_it_fits_now_and_didnt_before() {
     // The line before takes the word, and the lines after it are set again.
     assert_eq!(texts[k], format!("{} {}", lines[k], words[k + 1][1]));
     assert_eq!(set.lines[k].kept, None);
-    for n in 0..k {
-        assert_eq!(set.lines[n].kept, Some(n));
+    for (n, line) in set.lines.iter().enumerate().take(k) {
+        assert_eq!(line.kept, Some(n));
     }
     for l in &set.lines {
         assert!(l.width <= room + 0.01, "{l:?}");

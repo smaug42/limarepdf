@@ -544,6 +544,7 @@ fn jpeg_in(cm: &str, cs: impl FnOnce(&mut Pdf) -> Object) -> (Pdf, ObjectId) {
     let cs = cs(&mut p);
     let s = p.doc.get_object_mut(im).unwrap().as_stream_mut().unwrap();
     s.dict.set("ColorSpace", cs);
+    common::seeds::pdf(&p);
     (p, im)
 }
 

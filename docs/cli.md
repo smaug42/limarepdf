@@ -8,11 +8,12 @@ adding comments, and Fill and sign are in the app only: from the command line, p
 `limarepdf-cli <command> --help`.
 
 Commands that change a document take the input file first and write the result to `-o out.pdf`; the input is
-never changed: an `-o` that names the input, by any path or link to it, is refused with nothing written, and so
-are `split`, `render` and `save-images` when one of the files they name in `--out-dir` is the input, even with
-`--overwrite` (on Windows a hard link to the input isn't recognised, and gets a file of its own instead). The result is written
-whole or not at all: it goes to a new file that is then put in place in one step, so a name that is a hard link
-to another file gets a file of its own, and the other file keeps its bytes. Add `--password` to open a protected
+never changed: an `-o` that names the input, by any path or link to it (a hard link too), is refused with nothing
+written, and so are `split`, `render` and `save-images` when one of the files they name in `--out-dir` is the
+input, even with `--overwrite`. No other file a command reads is written over either: an output that names its
+picture, password file, form values, trust list, certificate or digital ID is refused the same way. The result
+is written whole or not at all: it goes to a new file that is then put in place in one step, so a name that is a
+hard link to another file gets a file of its own, and the other file keeps its bytes. Add `--password` to open a protected
 input. Every command but `encrypt` writes its output without a password, so protect it again with
 `limarepdf-cli encrypt` if it needs one ([Properties and security](#properties-and-security)). A damaged input is
 repaired to read it, as in the app, and a note on stderr says so; some of its content may be missing ([details](rendering.md#damaged-files)). An input

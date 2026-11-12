@@ -4,6 +4,10 @@
 #[path = "common/tool.rs"]
 mod tool;
 
+#[allow(dead_code)]
+#[path = "common/seeds.rs"]
+mod seeds;
+
 use image::codecs::jpeg::{JpegEncoder, PixelDensity};
 use image::metadata::Orientation;
 use image::{DynamicImage, GrayImage, Rgb, RgbImage, Rgba, RgbaImage};
@@ -724,6 +728,7 @@ fn pictures_too_large_together_are_refused_with_nothing_added() {
     let png = encode_png(&DynamicImage::ImageRgb8(RgbImage::new(8, 8)));
     let jpeg = encode_jpeg(&DynamicImage::ImageRgb8(RgbImage::new(8, 8)), None);
     let files = [rgb_tiff(3), png, jpeg.clone()];
+    seeds::seed("images", &files[0]);
     let total = 4 * 192 + jpeg.len() as u64;
     let one = || {
         let mut p = Pdf::new();

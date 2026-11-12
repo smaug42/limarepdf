@@ -5,4 +5,5 @@ pub mod apart;
 pub mod compare;
 pub mod corpus;
 pub mod saved;
+pub mod seeds;
 pub mod tool;

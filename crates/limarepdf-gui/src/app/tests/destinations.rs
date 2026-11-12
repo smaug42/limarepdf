@@ -3,7 +3,8 @@
 //! selection or the text saved there, a signed copy and a split's part are refused, by any
 //! spelling of its name, and the save goes on as it would alone. However the save ends,
 //! the name is free again (the open tab's own check aside). A split never writes over a
-//! file open in another tab.
+//! file open in another tab. The Digital IDs window's exports keep apart from the tabs'
+//! files, and an ID's export from the files tabs save (PB-167).
 
 use super::*;
 
@@ -238,6 +239,58 @@ fn signings_file_is_free_again_once_it_ends() {
     assert!(why.contains("\"signed.pdf\" is being written"), "{why}");
     app.digital_windows(&ctx);
     assert!(app.conflict(&path, tab, true).is_none());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The Digital IDs window's exports, from no tab, are refused a tab's file and a file being
+/// saved; an ID's export is being written until it ends, so a tab saving as its file is
+/// refused until then (PB-167).
+#[test]
+fn id_exports_and_the_tabs_files_keep_apart() {
+    let ctx = egui::Context::default();
+    let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+    let dir = test_dir("destination-id-export");
+    let open = dir.join("doc.pdf");
+    form_file(&open, "Kept");
+    open_and_wait(&mut app, &ctx, &open, 1);
+    let why = app
+        .export_conflict(&open)
+        .expect("a tab's file let through");
+    assert!(why.contains("\"doc.pdf\" is open in a tab"), "{why}");
+    let saved = dir.join("saved.pdf");
+    unsaved_tab(&mut app, &ctx, None);
+    let go = held_save_as(&mut app, &ctx, &saved);
+    let why = app
+        .export_conflict(&saved)
+        .expect("a file being saved let through");
+    let said = "\"saved.pdf\" is being saved from a tab";
+    assert!(why.contains(said), "{why}");
+    drop(go);
+    saves_done(&mut app, &ctx);
+
+    let p12 = dir.join("jane.p12");
+    let store = limarepdf_core::IdStore::new(dir.join("ids"));
+    let (w, go) = IdsWindow::test_export(&ctx, store, p12.clone());
+    app.ids_window = Some(w);
+    ctx.enable_accesskit();
+    window(&mut app, &ctx, 1400.0, vec![]);
+    SAVE_AS.with(|s| s.set(Some(dir.join("JANE.p12"))));
+    app.act(&ctx, Act::SaveAs);
+    let (_, why) = message(&app);
+    assert!(why.contains("\"JANE.p12\" is being written"), "{why}");
+    assert!(app.saves.is_empty());
+    app.dialog = Dialog::None;
+    go.send(()).unwrap();
+    for _ in 0..500 {
+        window(&mut app, &ctx, 1400.0, vec![]);
+        if !app.ids_window.as_ref().is_some_and(IdsWindow::busy) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let tab = app.tabs[app.active].id;
+    let left = app.conflict(&p12, tab, false);
+    assert!(left.is_none(), "claimed after the export");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

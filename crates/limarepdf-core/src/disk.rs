@@ -64,23 +64,10 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     d.try_into().expect("SHA-256 gives 32 bytes")
 }
 
-/// Whether `a` and `b` name the same file: the same path, or the same once links and `..`
-/// are followed, or on Unix the same device and inode, as a hard link is.
+/// Whether `a` and `b` name the same file, by any path or link to it: their [`identity`]
+/// matches.
 pub fn same_file(a: &Path, b: &Path) -> bool {
-    if a == b
-        || a.canonicalize()
-            .is_ok_and(|a| b.canonicalize().is_ok_and(|b| a == b))
-    {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) {
-            return a.dev() == b.dev() && a.ino() == b.ino();
-        }
-    }
-    false
+    identity(a).matches(&identity(b))
 }
 
 /// A file about to be written, as an app tells whether two of its writers name one file
@@ -92,9 +79,9 @@ pub struct Identity {
     /// not there yet, its folder's with its name (or the deepest folder's that is there,
     /// with the names below it).
     path: PathBuf,
-    /// The device and inode of a file that is there, as a hard link to it shares.
-    #[cfg(unix)]
-    node: Option<(u64, u64)>,
+    /// The [`Node`] of a file that is there, as a hard link to it shares.
+    #[cfg(any(unix, windows))]
+    node: Option<Node>,
     /// The path in lower case, as a disk that ignores case compares names.
     folded: String,
 }
@@ -105,12 +92,12 @@ impl Identity {
         &self.path
     }
 
-    /// Whether the two name one file: the same path, or on Unix the same device and inode.
+    /// Whether the two name one file: the same path, or the same [`Node`].
     pub fn matches(&self, other: &Identity) -> bool {
         if self.path == other.path {
             return true;
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let (Some(a), Some(b)) = (self.node, other.node) {
             return a == b;
         }
@@ -138,18 +125,58 @@ pub fn identity(path: &Path) -> Identity {
             _ => lexical(path),
         }
     });
-    #[cfg(unix)]
-    let node = {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino()))
-    };
+    #[cfg(any(unix, windows))]
+    let node = node(&path);
     let folded = path.to_string_lossy().to_lowercase();
     Identity {
         path,
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         node,
         folded,
     }
+}
+
+/// A file's own number on its disk, which every hard link to it shares: the device and
+/// inode on Unix, the volume's serial number and the file's ID on Windows.
+#[cfg(unix)]
+type Node = (u64, u64);
+#[cfg(windows)]
+type Node = (u64, [u8; 16]);
+
+/// The [`Node`] of the file at `path`, if it is there.
+#[cfg(unix)]
+fn node(path: &Path) -> Option<Node> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// The [`Node`] of the file at `path`, if it is there. The 128-bit ID, as ReFS (a Dev
+/// Drive's file system) has no unique 64-bit one.
+#[cfg(windows)]
+fn node(path: &Path) -> Option<Node> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO,
+    };
+    // Opened only to ask, with no access to its contents; a folder opens too.
+    let f = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: the handle is open for the call, and `info` is a buffer of the size given for
+    // the class asked for.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            f.as_raw_handle(),
+            FileIdInfo,
+            (&raw mut info).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    (ok != 0).then_some((info.VolumeSerialNumber, info.FileId.Identifier))
 }
 
 /// `path` made absolute with `.` and `..` taken out by their names alone, for a path whose
@@ -207,7 +234,7 @@ pub struct Version {
 }
 
 impl Version {
-    fn of(m: &Metadata, bytes: &[u8], read: SystemTime) -> Self {
+    fn of(m: &Metadata, sum: [u8; 32], read: SystemTime) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         Self {
@@ -215,14 +242,13 @@ impl Version {
             modified: m.modified().ok(),
             #[cfg(unix)]
             node: (m.dev(), m.ino()),
-            sum: sha256(bytes),
+            sum,
             read,
         }
     }
 
-    /// Whether `m` shows the file as this version knew it, so it needn't be read. A time
-    /// too close to the reading isn't trusted: the file is read and its checksum compared.
-    fn stamp_is(&self, m: &Metadata) -> bool {
+    /// Whether `m` has this version's size, time and (Unix) inode, however recent its time.
+    fn unmoved(&self, m: &Metadata) -> bool {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -230,11 +256,17 @@ impl Version {
                 return false;
             }
         }
+        self.len == m.len() && self.modified == m.modified().ok()
+    }
+
+    /// Whether `m` shows the file as this version knew it, so it needn't be read. A time
+    /// too close to the reading isn't trusted: the file is read and its checksum compared.
+    fn stamp_is(&self, m: &Metadata) -> bool {
         let settled = self
             .modified
             .and_then(|t| t.checked_add(SETTLED))
             .is_some_and(|t| t <= self.read);
-        settled && self.len == m.len() && self.modified == m.modified().ok()
+        settled && self.unmoved(m)
     }
 
     /// Whether the two hold the same bytes.
@@ -252,8 +284,28 @@ pub fn read(path: &Path) -> std::io::Result<(Vec<u8>, Version)> {
     let m = f.metadata()?;
     let mut bytes = Vec::with_capacity(usize::try_from(m.len()).unwrap_or(0));
     f.read_to_end(&mut bytes)?;
-    let v = Version::of(&m, &bytes, read);
+    let v = Version::of(&m, sha256(&bytes), read);
     Ok((bytes, v))
+}
+
+/// The version of the file at `path` now, as [`read`] gives it, without keeping the bytes:
+/// they are checksummed as they are read.
+fn hashed(path: &Path) -> std::io::Result<Version> {
+    use sha2::Digest;
+    let mut f = File::open(path)?;
+    let read = SystemTime::now();
+    let m = f.metadata()?;
+    let mut sum = sha2::Sha256::new();
+    let mut buf = vec![0; 1 << 16];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => sum.update(&buf[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Version::of(&m, sum.finalize().into(), read))
 }
 
 /// The version of the file at `path` now.
@@ -294,6 +346,34 @@ pub fn compare(path: &Path, known: &Version) -> std::io::Result<OnDisk> {
     })
 }
 
+/// Compares the file at `path` with `known` by its bytes, whatever its size and time say: a
+/// change at the same size whose time was put back keeps both (PB-28 (2)), which [`compare`]
+/// trusts once settled. For the moment before replacing a file: its size, time and inode are
+/// looked at once more after the reading, and a file changed meanwhile is read again, a few
+/// times at most; one still changing then is changed.
+pub fn compare_bytes(path: &Path, known: &Version) -> std::io::Result<OnDisk> {
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let now = match hashed(path) {
+            Ok(v) => v,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(OnDisk::Gone),
+            Err(e) => return Err(e),
+        };
+        let unmoved = match std::fs::metadata(path) {
+            Ok(m) => now.unmoved(&m),
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(OnDisk::Gone),
+            Err(e) => return Err(e),
+        };
+        if unmoved && now.same_bytes(known) {
+            return Ok(OnDisk::Same(now));
+        }
+        if unmoved || tries == 3 {
+            return Ok(OnDisk::Changed(now));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,8 +401,13 @@ mod tests {
         {
             std::os::unix::fs::symlink(&a, dir.join("link.pdf")).unwrap();
             assert!(same_file(&dir.join("link.pdf"), &a));
+        }
+        // D-02: on Windows too, by the file's ID.
+        #[cfg(any(unix, windows))]
+        {
             std::fs::hard_link(&a, dir.join("hard.pdf")).unwrap();
             assert!(same_file(&dir.join("hard.pdf"), &a));
+            assert!(!same_file(&dir.join("hard.pdf"), &b));
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -386,7 +471,7 @@ mod tests {
     }
 
     /// A hard link is another path to the same file.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn identity_through_a_hard_link() {
         let dir = test_dir("identity-hard");

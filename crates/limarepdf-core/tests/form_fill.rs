@@ -619,6 +619,7 @@ fn a_fallback_name_holding_another_font_isnt_used() {
     let mut p = page();
     let (_, symbol) = in_symbol(&mut p, &["Name"]);
     form_fonts_mut(&mut p).set("LimareHelvetica", symbol);
+    common::seeds::pdf(&p);
     let hello = FieldValue::Text("HELLO".into());
     p.set_field("Name", hello.clone()).unwrap();
     let q = reopened(&mut p);
@@ -641,6 +642,7 @@ fn fallback_name_holding(taken: Dictionary, in_place: bool) {
         false => p.doc.add_object(taken.clone()).into(),
     };
     form_fonts_mut(&mut p).set("LimareHelvetica", entry);
+    common::seeds::pdf(&p);
     let cafe = FieldValue::Text("Café".into());
     p.set_field("Name", cafe.clone()).unwrap();
     let q = reopened(&mut p);
@@ -775,6 +777,7 @@ fn a_fill_where_the_fallback_name_is_taken_that_cant_be_drawn_changes_nothing() 
     ];
     let field = dictionary! { "FT" => "Tx", "T" => text("two"), "DA" => text("/Orig 12 Tf 0 g") };
     family(&mut p, field, kids);
+    common::seeds::pdf(&p);
     let before = p.state_before();
     let e = p.set_field("two", FieldValue::Text("HELLO".into()));
     assert!(e.unwrap_err().to_string().contains("rectangle"));
@@ -786,6 +789,7 @@ fn check_with_zadb(p: &mut Pdf, zadb: Object) {
     let c = dictionary! { "FT" => "Btn", "T" => text("c"), "Rect" => rect(30.0, 10.0, 12.0, 12.0) };
     form(p, vec![c]);
     form_fonts_mut(p).set("ZaDb", zadb);
+    common::seeds::pdf(p);
 }
 
 /// A checkbox LimarePDF draws puts its mark in ZapfDingbats, `/ZaDb` in its own drawing, even
@@ -868,6 +872,7 @@ fn a_value_that_cant_be_written_changes_nothing() {
         kids[broken].set("Rect", Object::Null);
         let field = dictionary! { "FT" => "Tx", "T" => text("two"), "V" => text("old") };
         let ids = family(&mut p, field, kids);
+        common::seeds::pdf(&p);
         let before = p.state_before();
         let e = p.set_field("two", FieldValue::Text("new".into()));
         assert!(e.unwrap_err().to_string().contains("rectangle"));
@@ -895,6 +900,7 @@ fn a_list_that_cant_be_drawn_changes_nothing() {
         vec![dictionary! { "FT" => "Ch", "T" => text("list"),
         "Opt" => vec![text("a"), utf16("\u{2FFFE}")], "Rect" => rect(10.0, 60.0, 100.0, 60.0) }],
     );
+    common::seeds::pdf(&p);
     let before = p.state_before();
     let e = p.set_field("list", FieldValue::Choice(vec!["a".into()]));
     let e = e.unwrap_err().to_string();
@@ -915,6 +921,7 @@ fn a_reset_that_cant_be_drawn_changes_nothing() {
             dictionary! { "FT" => "Tx", "T" => text("c"), "V" => text("z"), "Rect" => rect(0.0, 60.0, 80.0, 20.0) },
         ],
     );
+    common::seeds::pdf(&p);
     let before = p.state_before();
     assert!(p.reset_form().is_err());
     assert_eq!(p.state_since(&before), []);
@@ -933,7 +940,9 @@ fn under_old(p: &mut Pdf, dv: Option<&str>) -> ObjectId {
     }
     let child =
         dictionary! { "T" => text("c"), "Rect" => rect(10.0, 150.0, 100.0, 20.0), "F" => 4 };
-    family(p, parent, vec![child])[0]
+    let id = family(p, parent, vec![child])[0];
+    common::seeds::pdf(p);
+    id
 }
 
 /// A choice emptied under a parent field holding a value stays empty, rather than the

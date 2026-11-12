@@ -1,8 +1,8 @@
 #!/bin/sh
 # Fills fuzz/corpus/<target> with starting inputs from the repository's own test files (made-up
-# documents, the signature samples, test certificates and digital IDs, all committed) and a few
-# content streams and printing-service answers. The fuzzer adds to these folders as it runs;
-# they are git-ignored.
+# documents, the signature samples, test certificates and digital IDs, all committed), a few
+# content streams and printing-service answers, and the inputs the audit's regression tests
+# build (O-04). The fuzzer adds to these folders as it runs; they are git-ignored.
 #
 # Usage, from the repository: sh fuzz/seed.sh
 set -eu
@@ -136,4 +136,24 @@ database = [media_col(b"media-col-database", 21590, 27940, [423, 423, 1000, 423]
 print(f"{n} signatures, 1 trust list, "
       f"{len(list((corpus / 'pkcs12').iterdir()))} digital IDs, 2 printing answers")
 EOF
-echo "seeded: $(ls corpus/open | wc -l) PDFs, $n content streams, $(ls corpus/images | wc -l) pictures"
+
+# The inputs the audit's regression tests build, each test writing its own into the folders of
+# the targets that read it (crates/limarepdf-core/tests/common/seeds.rs). A test failing is the
+# test run's to report: here it is a warning, and fuzzing goes on with the seeds written
+# (PB-169).
+corpus=$PWD/corpus
+if ! (cd .. && LIMAREPDF_FUZZ_SEEDS="$corpus" cargo test -q --locked -p limarepdf-core \
+    --test signatures --test signature_trust --test signature_changes --test signing \
+    --test too_complex --test redact --test sanitise --test compact --test form_fill \
+    --test many_annotations --test blank --test import --test pictures --test render_region)
+then
+    warning="the regression tests that build seeds failed, so some of their seeds may be missing"
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+        echo "::warning title=fuzz/seed.sh::$warning"
+    else
+        echo "warning: $warning" >&2
+    fi
+fi
+
+echo "seeded: $(ls corpus/open | wc -l) PDFs, $(ls corpus/verify | wc -l) signed PDFs," \
+    "$(ls corpus/signature | wc -l) signatures, $n content streams, $(ls corpus/images | wc -l) pictures"

@@ -5,6 +5,9 @@
 #[path = "common/tool.rs"]
 mod tool;
 
+#[path = "common/seeds.rs"]
+mod seeds;
+
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::render::{self, Bitmap, Region};
 use limarepdf_core::Pdf;
@@ -293,6 +296,7 @@ fn a_page_too_tall_or_wide_for_its_bitmap_is_refused_whole() {
         ((10.0, 10_000.0), 90),
     ] {
         let mut p = red_far_off(&[size], rotate);
+        seeds::pdf(&p);
         let hp = render::load(p.snapshot().unwrap(), None).unwrap();
         let e = render::encode_pages(&hp, &[0], 576.0, render::ImageFormat::Png)
             .expect_err("too large");

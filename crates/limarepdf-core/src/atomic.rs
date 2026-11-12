@@ -88,6 +88,38 @@ pub(crate) fn replace(
     expect: Option<&crate::disk::Version>,
     write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
 ) -> Result<()> {
+    commit(path, access, Over::Replace { expect }, write)
+}
+
+/// Writes a new file through `write` for this user only, as [`replace`] does, but never over
+/// anything at `path`: when something is there by the time the file is written, nothing is
+/// put there and the error is an [`ErrorKind::AlreadyExists`], so the caller can choose
+/// another name (PB-134).
+pub(crate) fn create_new(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
+) -> Result<()> {
+    commit(path, Access::Private, Over::Never, write)
+}
+
+/// What a new file does to one already at its name.
+#[derive(Clone, Copy)]
+enum Over<'a> {
+    /// Replaces it, when it is still as `expect` found it ([`replace`]).
+    Replace {
+        expect: Option<&'a crate::disk::Version>,
+    },
+    /// Never: the new file isn't put there ([`create_new`]).
+    Never,
+}
+
+/// [`replace`] or [`create_new`], as `over` says.
+fn commit(
+    path: &Path,
+    access: Access,
+    over: Over,
+    write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
+) -> Result<()> {
     let path = match access {
         Access::Keep => std::fs::canonicalize(path).unwrap_or_else(|_| path.into()),
         Access::Private => path.into(),
@@ -119,10 +151,18 @@ pub(crate) fn replace(
         drop(f);
         #[cfg(any(test, feature = "test-seams"))]
         commit_seam::wait(&path);
-        // Checked as late as possible: a change after this, before the rename, is still
-        // replaced (there is no locking).
+        let expect = match over {
+            Over::Replace { expect } => expect,
+            Over::Never => {
+                place_new(&tmp, &path).with_context(|| format!("saving {}", path.display()))?;
+                return Ok(());
+            }
+        };
+        // Checked as late as possible, by the bytes (PB-28 (2)): a change after this, before
+        // the rename, is still replaced (there is no locking).
         if let Some(known) = expect {
-            if let Ok(crate::disk::OnDisk::Changed(now)) = crate::disk::compare(&path, known) {
+            if let Ok(crate::disk::OnDisk::Changed(now)) = crate::disk::compare_bytes(&path, known)
+            {
                 return Err(ChangedOnDisk {
                     path: path.clone(),
                     now,
@@ -307,6 +347,23 @@ pub mod commit_seam {
             s = gate.changed.wait(s).unwrap_or_else(|e| e.into_inner());
         }
         s.released = s.released.saturating_sub(1);
+    }
+}
+
+/// Puts the written temporary file `tmp` at `path` only when nothing is there. Where the file
+/// system has hard links, in one step: linked there, which fails when the name is taken, then
+/// its temporary name removed. Without them, `path` is looked at just before the rename, which
+/// leaves a moment for another writer to take the name.
+fn place_new(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(tmp, path) {
+        Ok(()) => {
+            // The file is in place: a temporary name left behind only takes room.
+            let _ = std::fs::remove_file(tmp);
+            Ok(())
+        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(e),
+        Err(_) if std::fs::symlink_metadata(path).is_ok() => Err(ErrorKind::AlreadyExists.into()),
+        Err(_) => std::fs::rename(tmp, path),
     }
 }
 
@@ -949,6 +1006,38 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         assert_eq!(syncs.get(), 0);
         unwatch();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// PB-28 (2): a file changed in place at the same size, its time then put back, isn't
+    /// replaced. Its size, time and inode are as they were read, long enough ago to be
+    /// trusted, so only its bytes tell the change; the boundary always compares them.
+    #[test]
+    fn a_change_that_keeps_the_size_and_time_is_not_replaced() {
+        let dir = folder("kept-time");
+        let doc = dir.join("doc.pdf");
+        std::fs::write(&doc, "old").unwrap();
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let open = || std::fs::OpenOptions::new().write(true).open(&doc).unwrap();
+        open().set_modified(hour_ago).unwrap();
+        let known = crate::disk::version(&doc).unwrap();
+        let e = at_the_boundary(
+            &dir,
+            || {
+                let f = open();
+                (&f).write_all(b"0ld").unwrap();
+                f.set_modified(hour_ago).unwrap();
+                // The quick check alone takes it as unchanged.
+                let quick = crate::disk::compare(&doc, &known).unwrap();
+                assert!(matches!(quick, crate::disk::OnDisk::Same(_)), "{quick:?}");
+            },
+            || crate::write_file_expecting(&doc, b"new", Some(&known)),
+        )
+        .unwrap_err();
+        let changed = e.downcast_ref::<ChangedOnDisk>().expect("changed on disk");
+        assert!(changed.now.same_bytes(&crate::disk::version(&doc).unwrap()));
+        assert_eq!(std::fs::read(&doc).unwrap(), b"0ld");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

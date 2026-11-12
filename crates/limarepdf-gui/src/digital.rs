@@ -410,6 +410,9 @@ pub struct IdsWindow {
     note: Option<(Said, String)>,
     /// Remove was clicked once; the second click removes.
     remove_armed: bool,
+    /// The file an ID's export started writing, until the window is next drawn and hands
+    /// it to the app ([`IdsOut::exporting`]).
+    exporting: Option<PathBuf>,
 }
 
 /// What the Digital IDs window did this frame.
@@ -418,11 +421,17 @@ pub struct IdsOut {
     pub close: bool,
     /// IDs were made, imported, removed or the default changed.
     pub changed: bool,
+    /// An ID's export started writing this file, written until the window is no longer
+    /// busy.
+    pub exporting: Option<PathBuf>,
 }
 
 impl IdsWindow {
     pub fn new() -> Self {
-        let store = store();
+        Self::with_store(store())
+    }
+
+    fn with_store(store: Result<IdStore, String>) -> Self {
         let list = list_of(&store);
         let pick = list.ids.iter().position(|i| i.default).unwrap_or(0);
         Self {
@@ -433,7 +442,13 @@ impl IdsWindow {
             task: None,
             note: None,
             remove_armed: false,
+            exporting: None,
         }
+    }
+
+    /// Whether work runs: the window can't be closed until it ends.
+    pub fn busy(&self) -> bool {
+        self.task.is_some()
     }
 
     fn reload(&mut self, pick: Option<&str>) {
@@ -445,7 +460,14 @@ impl IdsWindow {
         self.remove_armed = false;
     }
 
-    pub fn ui(&mut self, ctx: &Context, author: &str) -> IdsOut {
+    /// Draws the window. `taken` says why the app won't have a file written, if it won't:
+    /// it is open in a tab, or being written.
+    pub fn ui(
+        &mut self,
+        ctx: &Context,
+        author: &str,
+        taken: &dyn Fn(&Path) -> Option<String>,
+    ) -> IdsOut {
         let mut out = IdsOut::default();
         if let Some(r) = self.task.as_ref().and_then(|t| poll(&t.rx)) {
             let task = self.task.take().expect("the task polled");
@@ -471,11 +493,12 @@ impl IdsWindow {
                 Page::List => self.list_ui(ui, author, &mut out),
                 Page::Create(f) => self.create_ui(ui, f),
                 Page::Import(f) => self.import_ui(ui, f),
-                Page::Export(f) => self.export_ui(ui, f),
+                Page::Export(f) => self.export_ui(ui, f, taken),
             }
         });
         // Stays open while work runs, so its result is seen.
         out.close = (out.close || esc) && self.task.is_none();
+        out.exporting = self.exporting.take();
         out
     }
 
@@ -815,7 +838,12 @@ impl IdsWindow {
         });
     }
 
-    fn export_ui(&mut self, ui: &mut Ui, mut f: Box<ExportForm>) {
+    fn export_ui(
+        &mut self,
+        ui: &mut Ui,
+        mut f: Box<ExportForm>,
+        taken: &dyn Fn(&Path) -> Option<String>,
+    ) {
         dialogs::content(ui, |ui| {
             dialogs::group(ui, "What to export", |ui| {
                 ui.radio_value(
@@ -883,7 +911,7 @@ impl IdsWindow {
             match f.kind {
                 ExportKind::Certificate => {
                     if let Some(path) = save_path(&f.id.name, "cer", "Certificate") {
-                        self.export_certificate(f, &path);
+                        self.export_certificate(f, &path, taken);
                         return;
                     }
                 }
@@ -910,7 +938,7 @@ impl IdsWindow {
                     if let Some((field, why)) = problem {
                         f.error = Some((field, capital(&why)));
                     } else if let Some(path) = save_path(&f.id.name, "p12", "Digital ID") {
-                        self.export_key(ui.ctx(), f, path);
+                        self.export_key(ui.ctx(), f, path, taken);
                         return;
                     }
                 }
@@ -919,9 +947,41 @@ impl IdsWindow {
         self.page = Page::Export(f);
     }
 
+    /// Why nothing is exported to `path`: it is in the ID store's folder, where it would
+    /// take the place of an ID or the note of the default (PB-167), or `taken` says why.
+    fn refused(&self, path: &Path, taken: &dyn Fn(&Path) -> Option<String>) -> Option<String> {
+        use limarepdf_core::disk;
+        // By any path or link to it, as a certificate is written where a link leads.
+        let file = disk::identity(path);
+        let in_store = self.store.as_ref().is_ok_and(|s| {
+            let dir = disk::identity(s.dir());
+            file.path()
+                .ancestors()
+                .any(|a| disk::identity(a).matches(&dir))
+        });
+        if in_store {
+            return Some(
+                "LimarePDF keeps its digital IDs in that folder: choose another. Nothing was \
+                 saved."
+                    .into(),
+            );
+        }
+        taken(path)
+    }
+
     /// Saves the form's certificate to `path`. The form stays, with the error, if that
-    /// fails.
-    fn export_certificate(&mut self, mut f: Box<ExportForm>, path: &Path) {
+    /// fails or the file may not be written ([`Self::refused`]).
+    fn export_certificate(
+        &mut self,
+        mut f: Box<ExportForm>,
+        path: &Path,
+        taken: &dyn Fn(&Path) -> Option<String>,
+    ) {
+        if let Some(why) = self.refused(path, taken) {
+            f.error = Some((Field::Form, why));
+            self.page = Page::Export(f);
+            return;
+        }
         match unconfirmed(limarepdf_core::write_file(path, &f.id.cert.der)) {
             Ok(unsure) => {
                 let head = format!(
@@ -945,8 +1005,22 @@ impl IdsWindow {
         }
     }
 
-    /// Starts saving the form's ID with its key to `path`.
-    fn export_key(&mut self, ctx: &Context, mut f: Box<ExportForm>, path: PathBuf) {
+    /// Starts saving the form's ID with its key to `path`, which the app claims until it
+    /// ends. The form stays, with the error, if the file may not be written
+    /// ([`Self::refused`]).
+    fn export_key(
+        &mut self,
+        ctx: &Context,
+        mut f: Box<ExportForm>,
+        path: PathBuf,
+        taken: &dyn Fn(&Path) -> Option<String>,
+    ) {
+        if let Some(why) = self.refused(&path, taken) {
+            f.error = Some((Field::Form, why));
+            self.page = Page::Export(f);
+            return;
+        }
+        let claim = path.clone();
         let password = std::mem::take(&mut f.password);
         let new_password = std::mem::take(&mut f.new_password);
         f.again = Secret::default();
@@ -970,6 +1044,27 @@ impl IdsWindow {
             let warnings: Vec<String> = unsure.iter().map(|w| unconfirmed_text(w)).collect();
             Ok(told(&head, &warnings, "Keep it safe."))
         });
+        if self.busy() {
+            self.exporting = Some(claim);
+        }
+    }
+
+    /// For the app's tests: a window for `store`, exporting to `path` as
+    /// [`Self::export_key`] does, until the sender sends or is dropped.
+    #[cfg(test)]
+    pub(crate) fn test_export(
+        ctx: &Context,
+        store: IdStore,
+        path: PathBuf,
+    ) -> (Self, std::sync::mpsc::Sender<()>) {
+        let (go, gate) = channel::<()>();
+        let mut w = Self::with_store(Ok(store));
+        w.start(ctx, "Exporting the digital ID…", Page::List, move |_| {
+            let _ = gate.recv();
+            Ok((Said::Done, "Exported.".into()))
+        });
+        w.exporting = Some(path);
+        (w, go)
     }
 }
 
@@ -1977,17 +2072,12 @@ mod tests {
     }
 
     fn ids_window(store: IdStore) -> IdsWindow {
-        let mut w = IdsWindow {
-            store: Ok(store),
-            list: IdList::default(),
-            pick: 0,
-            page: Page::List,
-            task: None,
-            note: None,
-            remove_armed: false,
-        };
-        w.reload(None);
-        w
+        IdsWindow::with_store(Ok(store))
+    }
+
+    /// The app's check when no file is open in a tab or being written.
+    fn free(_: &Path) -> Option<String> {
+        None
     }
 
     /// The running task's form, which must hold no passwords.
@@ -2009,7 +2099,7 @@ mod tests {
         ctx.enable_accesskit();
         crate::theme::install(&ctx);
         let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
-            w.ui(ui.ctx(), "");
+            w.ui(ui.ctx(), "", &free);
         });
         frame.textures_delta.clear();
         assert!(w.task.is_none());
@@ -2034,7 +2124,7 @@ mod tests {
         ctx.enable_accesskit();
         crate::theme::install(&ctx);
         let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
-            w.ui(ui.ctx(), "");
+            w.ui(ui.ctx(), "", &free);
         });
         frame.textures_delta.clear();
         frame.platform_output.accesskit_update.unwrap()
@@ -2134,7 +2224,7 @@ mod tests {
             ] {
                 w.page = page;
                 let (tree, window) = drawn_window(size, |ctx| {
-                    w.ui(ctx, "");
+                    w.ui(ctx, "", &free);
                 });
                 fits(&tree, window, size, buttons).unwrap();
                 assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
@@ -2149,7 +2239,7 @@ mod tests {
                 rx,
             });
             let (tree, window) = drawn_window(size, |ctx| {
-                w.ui(ctx, "");
+                w.ui(ctx, "", &free);
             });
             fits(&tree, window, size, &[]).unwrap();
             let busy = tree
@@ -2164,16 +2254,16 @@ mod tests {
                 .count();
             assert_eq!(buttons, 0, "{size:?}: buttons while busy");
             assert!(
-                !esc_closes(|ctx| w.ui(ctx, "").close),
+                !esc_closes(|ctx| w.ui(ctx, "", &free).close),
                 "{size:?}: Esc while busy"
             );
             w.task = None;
         }
         // Esc: the list closes; a form doesn't.
         w.page = Page::List;
-        assert!(esc_closes(|ctx| w.ui(ctx, "").close));
+        assert!(esc_closes(|ctx| w.ui(ctx, "", &free).close));
         w.page = Page::Create(create());
-        assert!(!esc_closes(|ctx| w.ui(ctx, "").close));
+        assert!(!esc_closes(|ctx| w.ui(ctx, "", &free).close));
         let _ = std::fs::remove_dir_all(&dir);
 
         let (mut w, dir) = window("short");
@@ -2312,7 +2402,7 @@ mod tests {
             ] {
                 w.page = page;
                 let tree = settled(size, |ctx| {
-                    w.ui(ctx, "");
+                    w.ui(ctx, "", &free);
                 });
                 let shown = tree.nodes.iter().any(|(_, n)| n.value() == Some(title));
                 assert!(shown, "{size:?}: no title {title:?}");
@@ -2499,7 +2589,12 @@ mod tests {
         let out = dir.join("jane.p12");
 
         // A wrong password for the ID: said beside it; every password is to be typed again.
-        w.export_key(&ctx, form(ExportKind::Key, "not the password"), out.clone());
+        w.export_key(
+            &ctx,
+            form(ExportKind::Key, "not the password"),
+            out.clone(),
+            &free,
+        );
         let Page::Export(f) = running(&w) else {
             panic!("not exporting")
         };
@@ -2518,7 +2613,12 @@ mod tests {
         // Nowhere to write it: said at the form's end.
         let nowhere = dir.join("blocker").join("jane.p12");
         w.page = Page::List;
-        w.export_key(&ctx, form(ExportKind::Key, PASSWORD), nowhere.clone());
+        w.export_key(
+            &ctx,
+            form(ExportKind::Key, PASSWORD),
+            nowhere.clone(),
+            &free,
+        );
         finish(&mut w);
         let Page::Export(f) = &w.page else {
             panic!("not back at the form")
@@ -2532,7 +2632,7 @@ mod tests {
 
         // The certificate alone, nowhere to write it: the form stays too.
         w.page = Page::List;
-        w.export_certificate(form(ExportKind::Certificate, ""), &nowhere);
+        w.export_certificate(form(ExportKind::Certificate, ""), &nowhere, &free);
         let Page::Export(f) = &w.page else {
             panic!("not back at the form")
         };
@@ -2541,7 +2641,7 @@ mod tests {
 
         // Tried again: saved under the new password.
         w.page = Page::List;
-        w.export_key(&ctx, form(ExportKind::Key, PASSWORD), out.clone());
+        w.export_key(&ctx, form(ExportKind::Key, PASSWORD), out.clone(), &free);
         finish(&mut w);
         assert!(matches!(w.page, Page::List));
         let (said, text) = w.note.clone().unwrap();
@@ -2571,7 +2671,7 @@ mod tests {
             focus: None,
         });
         let out = dir.join("jane.cer");
-        w.export_certificate(form, &out);
+        w.export_certificate(form, &out, &free);
         assert!(out.exists());
         let (said, text) = w.note.clone().unwrap();
         assert_eq!(said, Said::Done, "{text}");
@@ -2579,6 +2679,166 @@ mod tests {
         let way = "Forms and sign > Digital signatures > Trusted certificates… > Add certificate \
                    file…";
         assert!(text.contains(way), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PB-167: nothing is exported into the ID store's folder, where a certificate would
+    /// take the place of an ID's file and its key: the form stays and says why, and the ID
+    /// still opens.
+    #[test]
+    fn an_export_never_goes_in_the_id_stores_folder() {
+        let dir = scratch("export-store");
+        let (store, id) = store_with_id(&dir);
+        let kept = std::fs::read(&id.path).unwrap();
+        let mut w = ids_window(store.clone());
+        let ctx = Context::default();
+        let form = |kind| {
+            Box::new(ExportForm {
+                id: id.clone(),
+                kind,
+                password: Secret(PASSWORD.into()),
+                fresh: false,
+                new_password: Secret::default(),
+                again: Secret::default(),
+                error: None,
+                focus: None,
+            })
+        };
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut places = vec![
+            id.path.clone(),
+            store.dir().join("default.txt"),
+            store.dir().join("jane.cer"),
+        ];
+        // By a link to the folder: a certificate is written where a link leads.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(store.dir(), dir.join("link")).unwrap();
+            places.push(dir.join("link").join(id.path.file_name().unwrap()));
+        }
+        for path in places {
+            for (what, kind) in [
+                ("certificate", ExportKind::Certificate),
+                ("ID", ExportKind::Key),
+            ] {
+                w.page = Page::List;
+                match kind {
+                    ExportKind::Certificate => w.export_certificate(form(kind), &path, &free),
+                    ExportKind::Key => w.export_key(&ctx, form(kind), path.clone(), &free),
+                }
+                if w.task.is_some() {
+                    finish(&mut w);
+                }
+                let Page::Export(f) = &w.page else {
+                    panic!("{what} written to {}: {:?}", path.display(), w.note)
+                };
+                let (field, text) = f.error.clone().unwrap();
+                assert_eq!(field, Field::Form);
+                let why = "LimarePDF keeps its digital IDs in that folder";
+                let to = path.display();
+                assert!(text.starts_with(why), "{what} to {to}: {text}");
+            }
+        }
+        assert!(w.note.is_none());
+        assert_eq!(std::fs::read(&id.path).unwrap(), kept);
+        assert!(!store.dir().join("jane.cer").exists());
+        store.unlock(&id, PASSWORD).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PB-167: an export is refused a file the app holds (open in a tab, or being written),
+    /// asked by the name chosen: the form stays with the app's reason and its passwords,
+    /// and the file is left as it was.
+    #[test]
+    fn an_export_is_refused_a_file_the_app_holds() {
+        let dir = scratch("export-taken");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        let ctx = Context::default();
+        let held = dir.join("doc.pdf");
+        std::fs::write(&held, "a document open in a tab").unwrap();
+        let why = "\"doc.pdf\" is open in a tab. Close that tab first, or choose another name. \
+                   Nothing was saved.";
+        let asked = std::cell::RefCell::new(Vec::new());
+        let taken = |p: &Path| {
+            asked.borrow_mut().push(p.to_path_buf());
+            Some(why.to_string())
+        };
+        for kind in [ExportKind::Certificate, ExportKind::Key] {
+            let form = Box::new(ExportForm {
+                id: id.clone(),
+                kind,
+                password: Secret(PASSWORD.into()),
+                fresh: false,
+                new_password: Secret::default(),
+                again: Secret::default(),
+                error: None,
+                focus: None,
+            });
+            w.page = Page::List;
+            match kind {
+                ExportKind::Certificate => w.export_certificate(form, &held, &taken),
+                ExportKind::Key => w.export_key(&ctx, form, held.clone(), &taken),
+            }
+            assert!(!w.busy(), "the export started");
+            let Page::Export(f) = &w.page else {
+                panic!("not back at the form: {:?}", w.note)
+            };
+            assert_eq!(f.error, Some((Field::Form, why.to_string())));
+            assert_eq!(f.password.0, PASSWORD);
+        }
+        assert_eq!(*asked.borrow(), [held.clone(), held.clone()]);
+        let left = std::fs::read_to_string(&held).unwrap();
+        assert_eq!(left, "a document open in a tab");
+        assert!(w.note.is_none() && w.exporting.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PB-167: an ID's export hands its file to the app once, the first time the window is
+    /// drawn after it starts, for the app to claim until the window is no longer busy. A
+    /// certificate, written at once, and an export refused hand nothing.
+    #[test]
+    fn an_id_exports_file_is_handed_to_the_app() {
+        let dir = scratch("export-claim");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        let ctx = Context::default();
+        let form = |kind| {
+            Box::new(ExportForm {
+                id: id.clone(),
+                kind,
+                password: Secret(PASSWORD.into()),
+                fresh: false,
+                new_password: Secret::default(),
+                again: Secret::default(),
+                error: None,
+                focus: None,
+            })
+        };
+        // The files handed over a frame, however many times egui draws it.
+        let handed = |w: &mut IdsWindow| {
+            let ctx = Context::default();
+            let mut files = Vec::new();
+            let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+                files.extend(w.ui(ui.ctx(), "", &free).exporting);
+            });
+            frame.textures_delta.clear();
+            files
+        };
+        let out = dir.join("jane.p12");
+        w.export_key(&ctx, form(ExportKind::Key), out.clone(), &free);
+        assert!(w.busy());
+        assert_eq!(handed(&mut w), std::slice::from_ref(&out));
+        if w.busy() {
+            finish(&mut w);
+        }
+        assert!(handed(&mut w).is_empty() && !w.busy());
+        assert!(out.exists());
+
+        w.export_certificate(form(ExportKind::Certificate), &dir.join("jane.cer"), &free);
+        assert!(dir.join("jane.cer").exists());
+        w.export_key(&ctx, form(ExportKind::Key), id.path.clone(), &free);
+        assert!(handed(&mut w).is_empty() && !w.busy());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

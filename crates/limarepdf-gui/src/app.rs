@@ -1099,7 +1099,7 @@ impl App {
         password: Option<String>,
         page: Option<usize>,
     ) {
-        if let Some(i) = self.tab_of(&path) {
+        if let Some(i) = self.tab_of(&path, None) {
             self.active = i;
             if let Some(p) = page {
                 self.tabs[i].go_to(p.saturating_sub(1));
@@ -1110,17 +1110,6 @@ impl App {
         if !self.reading(&path) {
             self.read_file(ctx, path, password, page, None);
         }
-    }
-
-    /// Whether the file at `path`, by any path or link to it, is being read for a tab, or
-    /// its password is asked for to read it.
-    fn reading(&self, path: &Path) -> bool {
-        let asks = |d: &Dialog| match d {
-            Dialog::Password(s, Unlock::Tab(..)) => disk::same_file(&s.path, path),
-            _ => false,
-        };
-        let asking = std::iter::once(&self.dialog).chain(&self.waiting).any(asks);
-        asking || self.opening.iter().any(|p| disk::same_file(p, path))
     }
 
     /// Shows `d` once the dialog open now, and those waiting before it, are answered: a
@@ -1166,13 +1155,6 @@ impl App {
                 self.dialog = d;
             }
         }
-    }
-
-    /// The tab whose file is at `path`, by any path or link to it.
-    fn tab_of(&self, path: &Path) -> Option<usize> {
-        self.tabs
-            .iter()
-            .position(|t| t.path.as_deref().is_some_and(|p| disk::same_file(p, path)))
     }
 
     /// The file at `path` was read, or couldn't be: it isn't being opened any more.
@@ -1649,7 +1631,13 @@ impl App {
             self.destinations.release(Owner::Signing);
         }
         if let Some(mut w) = self.ids_window.take() {
-            let out = w.ui(ctx, &self.settings.author());
+            // Never over a tab's file or one being written (PB-167).
+            let taken = |p: &Path| self.export_conflict(p);
+            let out = w.ui(ctx, &self.settings.author(), &taken);
+            // Released once the window is no longer busy, below.
+            if let Some(path) = out.exporting {
+                self.destinations.claim(&[path], Owner::IdExport);
+            }
             if out.changed {
                 if let Some(s) = self.sign_window.as_mut() {
                     s.reload();
@@ -1658,6 +1646,11 @@ impl App {
             if !out.close {
                 self.ids_window = Some(w);
             }
+        }
+        // However the export ended, its file is free again; the window isn't closed while
+        // it runs.
+        if !self.ids_window.as_ref().is_some_and(IdsWindow::busy) {
+            self.destinations.release(Owner::IdExport);
         }
     }
 
@@ -1916,7 +1909,7 @@ impl App {
                             ready
                         }
                         // A tab got the file meanwhile (its Save as, say): that one is shown.
-                        None => match self.tab_of(&path) {
+                        None => match self.tab_of(&path, None) {
                             Some(i) => {
                                 self.active = i;
                                 continue;
@@ -3007,28 +3000,6 @@ impl App {
                 None
             }
         }
-    }
-
-    /// Why nothing is written to `path` when it is the file of a tab other than `except`:
-    /// that tab would be left with an older copy, to save back over it.
-    fn in_other_tab(&self, path: &Path, except: Option<u64>) -> Option<String> {
-        let want = disk::identity(path);
-        let t = self.tabs.iter().find(|t| {
-            Some(t.id) != except
-                && t.path
-                    .as_deref()
-                    .is_some_and(|p| disk::identity(p).matches(&want))
-        })?;
-        let which = if except.is_some() {
-            "another tab"
-        } else {
-            "a tab"
-        };
-        Some(format!(
-            "\"{}\" is open in {which}. Close that tab first, or choose another name. Nothing \
-             was saved.",
-            t.title()
-        ))
     }
 
     /// Whether tab `i` may replace the file at `path`. `Err`, with the file as it now is,
@@ -8810,7 +8781,7 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
 mod tests {
     use super::*;
     use crate::page_text;
-    use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
+    use limarepdf_core::{password_seam, Cipher, Encryption, FontChoice, Restrictions, SignPlace};
 
     mod align;
     mod backdrop;
@@ -19060,14 +19031,19 @@ mod tests {
         let other = dir.join("other.pdf");
         form_file(&other, "Other");
         std::fs::create_dir(dir.join("sub")).unwrap();
-        // Links are added on Unix only.
-        #[cfg_attr(not(unix), allow(unused_mut))]
+        // A symbolic link on Unix only (Windows needs a privilege for one); a hard link on
+        // Windows too (D-02).
+        #[cfg_attr(not(any(unix, windows)), allow(unused_mut))]
         let mut paths = vec![path.clone(), dir.join("sub/../form.pdf")];
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&path, dir.join("link.pdf")).unwrap();
+            paths.push(dir.join("link.pdf"));
+        }
+        #[cfg(any(unix, windows))]
+        {
             std::fs::hard_link(&path, dir.join("hard.pdf")).unwrap();
-            paths.extend([dir.join("link.pdf"), dir.join("hard.pdf")]);
+            paths.push(dir.join("hard.pdf"));
         }
         for p in &paths {
             app.spawn_open(&ctx, p.clone(), None, None);
@@ -19415,6 +19391,58 @@ mod tests {
         opened.sort_by(f32::total_cmp);
         assert_eq!(opened, [100.0, 200.0]);
         assert!(matches!(app.dialog, Dialog::None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A protected file whose password is asked for, or waits to be, isn't read again when
+    /// opened by another path or link to it: each password is asked for once, and each file
+    /// opens in one tab (BUG-06, BUG-07).
+    #[test]
+    fn a_file_asking_for_its_password_is_opened_once_by_any_path_to_it() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("aliases-locked");
+        let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
+        let (pa, pb) = (password_seam::made_up(), password_seam::made_up());
+        pages_file(&a, 100.0, 1, Some(&pa));
+        pages_file(&b, 200.0, 1, Some(&pb));
+        let pass = |p: &Path| if p == a { &pa } else { &pb };
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        // Links are added on Unix only.
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut aliases = vec![dir.join("sub/../a.pdf"), dir.join("sub/../b.pdf")];
+        #[cfg(unix)]
+        for f in ["a", "b"] {
+            let file = dir.join(format!("{f}.pdf"));
+            let (link, hard) = (
+                dir.join(format!("{f}-link.pdf")),
+                dir.join(format!("{f}-hard.pdf")),
+            );
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            std::fs::hard_link(&file, &hard).unwrap();
+            aliases.extend([link, hard]);
+        }
+        app.spawn_open(&ctx, a.clone(), None, None);
+        app.spawn_open(&ctx, b.clone(), None, None);
+        // One password asked for, the other waiting.
+        wait_for(&mut app, &ctx, |a| {
+            a.opening.is_empty() && a.waiting.len() == 1
+        });
+        assert!(asked_password(&app).is_some());
+        for p in &aliases {
+            app.spawn_open(&ctx, p.clone(), None, None);
+            assert!(app.opening.is_empty(), "{p:?} read again");
+        }
+        assert_eq!(app.waiting.len(), 1, "a password asked for twice");
+        let first = asked_password(&app).unwrap();
+        answer(&mut app, &ctx, pass(&first), "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 1);
+        let second = asked_password(&app).expect("the second file's request was lost");
+        assert_ne!(second, first);
+        answer(&mut app, &ctx, pass(&second), "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 2);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.waiting.is_empty(), "a password asked for twice");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

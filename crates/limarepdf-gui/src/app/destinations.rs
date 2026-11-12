@@ -1,16 +1,22 @@
 //! Files being written, reserved until their writers end (S1-03: H-05, PB-86). A save, a
-//! background job and signing claim the files they write as they start, and until each
-//! ends, nothing else in the app writes those files: two writers to one file would leave it
-//! holding either one's, or a mix. Writers are admitted and claim on the window's thread,
-//! so nothing comes between the check and the claim. A file written at once on the window's
-//! thread (the text exported, the selection saved) is checked but never claimed: nothing
-//! else runs while it is written.
+//! background job, signing and a digital ID's export claim the files they write as they
+//! start, and until each ends, nothing else in the app writes those files: two writers to
+//! one file would leave it holding either one's, or a mix. Writers are admitted and claim
+//! on the window's thread, so nothing comes between the check and the claim. A file written
+//! at once on the window's thread (the text exported, the selection saved, a certificate
+//! exported) is checked but never claimed: nothing else runs while it is written.
 //!
 //! The claims compare names without case, as a disk that ignores case does; another tab's
-//! open file is told exactly, by its path or (on Unix) its inode. Not covered: exporting a
-//! digital ID or certificate, the recovery store's private folder, and other apps.
+//! open file is told exactly, by its path or its file's own number (the inode on Unix, the
+//! file ID on Windows). The Digital IDs window's exports are checked from no tab
+//! ([`App::export_conflict`]), and kept out of the ID store's own folder there (PB-167).
+//! Not covered: the recovery store's private folder, and other apps.
+//!
+//! Opening is checked here too: a file open in a tab, being read for one or asking for its
+//! password, by any path or link to it, isn't read again (BUG-06). Every check here knows a
+//! file by its [`disk::identity`].
 
-use super::App;
+use super::{App, Dialog, Unlock};
 use limarepdf_core::disk::{self, Identity};
 use std::path::{Path, PathBuf};
 
@@ -23,6 +29,8 @@ pub(super) enum Owner {
     Job { id: u64 },
     /// The signing window's signing (there is one window at most).
     Signing,
+    /// The Digital IDs window's export of an ID with its key (one window at most).
+    IdExport,
 }
 
 /// The files claimed, with their writers.
@@ -62,6 +70,43 @@ impl Destinations {
 }
 
 impl App {
+    /// The tab, other than tab `except`, whose file is at `path`, by any path or link to it.
+    pub(super) fn tab_of(&self, path: &Path, except: Option<u64>) -> Option<usize> {
+        let want = disk::identity(path);
+        self.tabs.iter().position(|t| {
+            Some(t.id) != except
+                && t.path
+                    .as_deref()
+                    .is_some_and(|p| disk::identity(p).matches(&want))
+        })
+    }
+
+    /// Whether the file at `path`, by any path or link to it, is being read for a tab, or
+    /// its password is asked for to read it.
+    pub(super) fn reading(&self, path: &Path) -> bool {
+        let want = disk::identity(path);
+        let is = |p: &Path| disk::identity(p).matches(&want);
+        let asks = |d: &Dialog| matches!(d, Dialog::Password(s, Unlock::Tab(..)) if is(&s.path));
+        let asking = std::iter::once(&self.dialog).chain(&self.waiting).any(asks);
+        asking || self.opening.iter().any(|p| is(p))
+    }
+
+    /// Why nothing is written to `path` when it is the file of a tab other than `except`:
+    /// that tab would be left with an older copy, to save back over it.
+    pub(super) fn in_other_tab(&self, path: &Path, except: Option<u64>) -> Option<String> {
+        let t = &self.tabs[self.tab_of(path, except)?];
+        let which = if except.is_some() {
+            "another tab"
+        } else {
+            "a tab"
+        };
+        Some(format!(
+            "\"{}\" is open in {which}. Close that tab first, or choose another name. Nothing \
+             was saved.",
+            t.title()
+        ))
+    }
+
     /// Why tab `tab` may not write the file at `path`, with the message's title: it is open
     /// in a tab (other than `tab`, when `own_file`, as a tab saves over its own file), or
     /// it is being written.
@@ -71,7 +116,23 @@ impl App {
         tab: u64,
         own_file: bool,
     ) -> Option<(&'static str, String)> {
-        if let Some(why) = self.in_other_tab(path, own_file.then_some(tab)) {
+        self.writer_conflict(path, Some(tab), own_file)
+    }
+
+    /// Why the Digital IDs window, writing for no tab, may not export to the file at
+    /// `path`: it is open in a tab, or being written (PB-167).
+    pub(super) fn export_conflict(&self, path: &Path) -> Option<String> {
+        self.writer_conflict(path, None, false).map(|(_, why)| why)
+    }
+
+    /// [`Self::conflict`], for a writer from tab `tab` or from none.
+    fn writer_conflict(
+        &self,
+        path: &Path,
+        tab: Option<u64>,
+        own_file: bool,
+    ) -> Option<(&'static str, String)> {
+        if let Some(why) = self.in_other_tab(path, tab.filter(|_| own_file)) {
             let title = if own_file {
                 "Open in another tab"
             } else {
@@ -86,7 +147,11 @@ impl App {
             .to_string_lossy();
         Some(match holder {
             Owner::Save { tab: from, .. } => {
-                let which = if from == tab { "this" } else { "another" };
+                let which = match tab {
+                    Some(t) if t == from => "this",
+                    Some(_) => "another",
+                    None => "a",
+                };
                 (
                     "Being saved",
                     format!(
@@ -95,7 +160,7 @@ impl App {
                     ),
                 )
             }
-            Owner::Job { .. } | Owner::Signing => (
+            Owner::Job { .. } | Owner::Signing | Owner::IdExport => (
                 "Being written",
                 format!(
                     "\"{name}\" is being written. Wait until it is written, or choose another \

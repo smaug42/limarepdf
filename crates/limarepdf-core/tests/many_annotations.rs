@@ -339,6 +339,7 @@ fn flattening_draws_a_text_box_past_those_shown() {
     let mut p = page("");
     fill_drawn(&mut p);
     push(&mut p, text_box([20, 100, 200, 140], "LAST-LOST"));
+    common::seeds::pdf(&p);
 
     let done = p.flatten_annotations(None).unwrap();
     assert_eq!((done.drawn, done.kept), (SHOWN + 1, vec![]));
@@ -507,6 +508,7 @@ fn flattening_looks_once_at_a_kept_mark_listed_many_times() {
         list.push(add(&mut p, r).into());
     }
     set_annots(&mut p, list);
+    common::seeds::pdf(&p);
 
     let (done, taken) = budget_seam::with_limit(u64::MAX, || p.flatten_annotations(None));
     // The check before anything changes, then the page's own walk.
@@ -554,6 +556,7 @@ fn flattening_looks_once_at_a_reply_listed_many_times() {
         list.push(add(&mut p, r).into());
     }
     set_annots(&mut p, list);
+    common::seeds::pdf(&p);
 
     let (done, taken) = budget_seam::with_limit(u64::MAX, || p.flatten_annotations(None));
     let steps = 5 + 2 * (K + J) as u64;
@@ -594,6 +597,7 @@ fn three_pages() -> Pdf {
         let r = reply([100, 100, 110, 110], &format!("MARKER-REPLY-{k}"), mark);
         push_on(&mut p, 2, r);
     }
+    common::seeds::pdf(&p);
     p
 }
 
@@ -663,6 +667,7 @@ fn printing_draws_a_text_box_past_those_shown() {
     let mut p = page("");
     fill_drawn(&mut p);
     push(&mut p, text_box([20, 100, 200, 140], "LAST-LOST"));
+    common::seeds::pdf(&p);
     let sheets = p.print_sheets(&[0], &as_is()).unwrap();
     let text = sheets.page_text(0);
     assert!(text.contains("LAST-LOST"), "{text}");
@@ -675,6 +680,7 @@ fn pictures_draw_a_text_box_past_those_shown() {
     let mut p = page("");
     fill_drawn(&mut p);
     push(&mut p, text_box([20, 100, 200, 140], "LAST-LOST"));
+    common::seeds::pdf(&p);
     for (what, bytes) in [
         ("render", p.render_snapshot().unwrap()),
         ("app", p.app_snapshot().unwrap()),
