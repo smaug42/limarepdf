@@ -1480,8 +1480,7 @@ impl Pdf {
                 // font and colour of each of its parts, for one) is set again after the
                 // Q, so the content after the line is drawn as before.
                 let mut state = Vec::new();
-                for j in obj.first..=obj.last {
-                    let o2 = &parsed.ops[j];
+                for (j, o2) in (obj.first..).zip(&parsed.ops[obj.first..=obj.last]) {
                     if let Some(run) = t.runs.iter().find(|r| r.op == j) {
                         if let Show::DQuote { aw, ac } = run.show {
                             let set = [op("Tw", vec![r(aw)]), op("Tc", vec![r(ac)])];

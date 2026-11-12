@@ -1691,9 +1691,7 @@ impl ParagraphSetting {
                     if word.ends_with('\u{AD}') {
                         m.shown[at + wn - 1] = setter.width("-", size) * th + tc * th;
                     }
-                    for k in at + wn..at + n {
-                        m.widths[k] = setter.width(" ", size) * th + tc * th;
-                    }
+                    m.widths[at + wn..at + n].fill(setter.width(" ", size) * th + tc * th);
                     at += n;
                 }
             }
