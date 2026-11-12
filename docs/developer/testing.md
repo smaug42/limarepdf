@@ -276,12 +276,17 @@ seconds): a media size whose height is near `i32::MIN` overflows when compared w
 
 The desktop app's startup and responsiveness figures in
 [Performance](performance.md#startup-and-responsiveness) (REL-07) come from the app's
-[timing log](architecture.md) and screenshot polling, driven by a script on an Xvfb display: each
-run starts the release app with its own settings and recovery folders, sends keys, clicks and the wheel through
-XTest (as `xdotool` does, without a process per key), reads the log as it grows, and captures a small part of the
-screen every 5 ms through Xlib to see when what the log reports is shown. The script and the reference set were
-kept under `target/perf/` (not in the repository) and the documents are described in performance.md with their
-checksums. Cold launches follow a page-cache drop (`echo 3 > /proc/sys/vm/drop_caches`, as root).
+[timing log](architecture.md) and screenshot polling, driven by `python3 -I tools/perf/drive.py MODE` on an Xvfb
+display of its own (Linux; Python's standard library, with libX11 and libXtst through `ctypes`): each launch
+starts the release app with its own settings, state and data folders, sends keys, clicks and the wheel through
+XTest (as `xdotool` does, without a process per key), reads the log as it grows, and captures the measured part of
+the window every 5 ms through Xlib to see when what the log reports is shown. Its usage lists the modes, one for
+each row of the build plan's accepted thresholds and each measured backlog item; `--check` runs a mode once with a
+picture after each step, for checking its click points when the window's layout changes, and `try` finds new
+ones. Printing meets stand-ins first on the app's path, so no real printer is listed or used. The documents, the
+reference set, come from `python3 crates/limarepdf-core/tools/measure.py --refset DIR` (the artwork page and the
+selection pages from `tools/fetch-render-samples.sh`); performance.md gives their checksums. Cold launches
+(`--cold`) drop the page cache before each one through `sudo -n`, so `sudo -v` comes first.
 
 ## The desktop app
 
