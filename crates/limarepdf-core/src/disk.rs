@@ -64,23 +64,10 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     d.try_into().expect("SHA-256 gives 32 bytes")
 }
 
-/// Whether `a` and `b` name the same file: the same path, or the same once links and `..`
-/// are followed, or on Unix the same device and inode, as a hard link is.
+/// Whether `a` and `b` name the same file, by any path or link to it: their [`identity`]
+/// matches.
 pub fn same_file(a: &Path, b: &Path) -> bool {
-    if a == b
-        || a.canonicalize()
-            .is_ok_and(|a| b.canonicalize().is_ok_and(|b| a == b))
-    {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) {
-            return a.dev() == b.dev() && a.ino() == b.ino();
-        }
-    }
-    false
+    identity(a).matches(&identity(b))
 }
 
 /// A file about to be written, as an app tells whether two of its writers name one file

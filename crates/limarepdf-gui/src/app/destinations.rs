@@ -9,8 +9,12 @@
 //! The claims compare names without case, as a disk that ignores case does; another tab's
 //! open file is told exactly, by its path or (on Unix) its inode. Not covered: exporting a
 //! digital ID or certificate, the recovery store's private folder, and other apps.
+//!
+//! Opening is checked here too: a file open in a tab, being read for one or asking for its
+//! password, by any path or link to it, isn't read again (BUG-06). Every check here knows a
+//! file by its [`disk::identity`].
 
-use super::App;
+use super::{App, Dialog, Unlock};
 use limarepdf_core::disk::{self, Identity};
 use std::path::{Path, PathBuf};
 
@@ -62,6 +66,43 @@ impl Destinations {
 }
 
 impl App {
+    /// The tab, other than tab `except`, whose file is at `path`, by any path or link to it.
+    pub(super) fn tab_of(&self, path: &Path, except: Option<u64>) -> Option<usize> {
+        let want = disk::identity(path);
+        self.tabs.iter().position(|t| {
+            Some(t.id) != except
+                && t.path
+                    .as_deref()
+                    .is_some_and(|p| disk::identity(p).matches(&want))
+        })
+    }
+
+    /// Whether the file at `path`, by any path or link to it, is being read for a tab, or
+    /// its password is asked for to read it.
+    pub(super) fn reading(&self, path: &Path) -> bool {
+        let want = disk::identity(path);
+        let is = |p: &Path| disk::identity(p).matches(&want);
+        let asks = |d: &Dialog| matches!(d, Dialog::Password(s, Unlock::Tab(..)) if is(&s.path));
+        let asking = std::iter::once(&self.dialog).chain(&self.waiting).any(asks);
+        asking || self.opening.iter().any(|p| is(p))
+    }
+
+    /// Why nothing is written to `path` when it is the file of a tab other than `except`:
+    /// that tab would be left with an older copy, to save back over it.
+    pub(super) fn in_other_tab(&self, path: &Path, except: Option<u64>) -> Option<String> {
+        let t = &self.tabs[self.tab_of(path, except)?];
+        let which = if except.is_some() {
+            "another tab"
+        } else {
+            "a tab"
+        };
+        Some(format!(
+            "\"{}\" is open in {which}. Close that tab first, or choose another name. Nothing \
+             was saved.",
+            t.title()
+        ))
+    }
+
     /// Why tab `tab` may not write the file at `path`, with the message's title: it is open
     /// in a tab (other than `tab`, when `own_file`, as a tab saves over its own file), or
     /// it is being written.

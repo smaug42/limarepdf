@@ -1099,7 +1099,7 @@ impl App {
         password: Option<String>,
         page: Option<usize>,
     ) {
-        if let Some(i) = self.tab_of(&path) {
+        if let Some(i) = self.tab_of(&path, None) {
             self.active = i;
             if let Some(p) = page {
                 self.tabs[i].go_to(p.saturating_sub(1));
@@ -1110,17 +1110,6 @@ impl App {
         if !self.reading(&path) {
             self.read_file(ctx, path, password, page, None);
         }
-    }
-
-    /// Whether the file at `path`, by any path or link to it, is being read for a tab, or
-    /// its password is asked for to read it.
-    fn reading(&self, path: &Path) -> bool {
-        let asks = |d: &Dialog| match d {
-            Dialog::Password(s, Unlock::Tab(..)) => disk::same_file(&s.path, path),
-            _ => false,
-        };
-        let asking = std::iter::once(&self.dialog).chain(&self.waiting).any(asks);
-        asking || self.opening.iter().any(|p| disk::same_file(p, path))
     }
 
     /// Shows `d` once the dialog open now, and those waiting before it, are answered: a
@@ -1166,13 +1155,6 @@ impl App {
                 self.dialog = d;
             }
         }
-    }
-
-    /// The tab whose file is at `path`, by any path or link to it.
-    fn tab_of(&self, path: &Path) -> Option<usize> {
-        self.tabs
-            .iter()
-            .position(|t| t.path.as_deref().is_some_and(|p| disk::same_file(p, path)))
     }
 
     /// The file at `path` was read, or couldn't be: it isn't being opened any more.
@@ -1916,7 +1898,7 @@ impl App {
                             ready
                         }
                         // A tab got the file meanwhile (its Save as, say): that one is shown.
-                        None => match self.tab_of(&path) {
+                        None => match self.tab_of(&path, None) {
                             Some(i) => {
                                 self.active = i;
                                 continue;
@@ -3007,28 +2989,6 @@ impl App {
                 None
             }
         }
-    }
-
-    /// Why nothing is written to `path` when it is the file of a tab other than `except`:
-    /// that tab would be left with an older copy, to save back over it.
-    fn in_other_tab(&self, path: &Path, except: Option<u64>) -> Option<String> {
-        let want = disk::identity(path);
-        let t = self.tabs.iter().find(|t| {
-            Some(t.id) != except
-                && t.path
-                    .as_deref()
-                    .is_some_and(|p| disk::identity(p).matches(&want))
-        })?;
-        let which = if except.is_some() {
-            "another tab"
-        } else {
-            "a tab"
-        };
-        Some(format!(
-            "\"{}\" is open in {which}. Close that tab first, or choose another name. Nothing \
-             was saved.",
-            t.title()
-        ))
     }
 
     /// Whether tab `i` may replace the file at `path`. `Err`, with the file as it now is,
