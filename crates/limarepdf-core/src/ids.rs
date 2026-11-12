@@ -984,22 +984,21 @@ mod tests {
     /// name rather than replacing the first.
     #[test]
     fn two_ids_stored_at_once_under_one_name_are_both_kept() {
-        let id = |name: &str| {
-            let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/signatures/ids");
-            std::fs::read(Path::new(dir).join(name)).unwrap()
+        let walrus = NewId {
+            name: "Walrus".into(),
+            ..NewId::default()
         };
-        let password = "mpe-test-password";
         let dir = std::env::temp_dir().join(format!("limarepdf-ids-once-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let hold = crate::atomic::commit_seam::hold(&dir);
-        let store = |file: Vec<u8>| {
-            let dir = dir.clone();
-            std::thread::spawn(move || IdStore::new(dir).import(&file, password, Some("Walrus")))
+        let store = || {
+            let (dir, walrus) = (dir.clone(), walrus.clone());
+            std::thread::spawn(move || IdStore::new(dir).create(&walrus, &password_seam::made_up()))
         };
-        let a = store(id("p256.p12"));
+        let a = store();
         assert_eq!(hold.arrived(), dir.join("walrus.p12"));
-        let b = store(id("p384.p12"));
+        let b = store();
         assert_eq!(hold.arrived(), dir.join("walrus.p12"));
         drop(hold);
         let (a, b) = (a.join().unwrap().unwrap(), b.join().unwrap().unwrap());

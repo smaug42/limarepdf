@@ -8781,7 +8781,7 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
 mod tests {
     use super::*;
     use crate::page_text;
-    use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
+    use limarepdf_core::{password_seam, Cipher, Encryption, FontChoice, Restrictions, SignPlace};
 
     mod align;
     mod backdrop;
@@ -19403,9 +19403,10 @@ mod tests {
         let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
         let dir = test_dir("aliases-locked");
         let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
-        pages_file(&a, 100.0, 1, Some("walrus-a"));
-        pages_file(&b, 200.0, 1, Some("walrus-b"));
-        let pass = |p: &Path| if p == a { "walrus-a" } else { "walrus-b" };
+        let (pa, pb) = (password_seam::made_up(), password_seam::made_up());
+        pages_file(&a, 100.0, 1, Some(&pa));
+        pages_file(&b, 200.0, 1, Some(&pb));
+        let pass = |p: &Path| if p == a { &pa } else { &pb };
         std::fs::create_dir(dir.join("sub")).unwrap();
         // Links are added on Unix only.
         #[cfg_attr(not(unix), allow(unused_mut))]
