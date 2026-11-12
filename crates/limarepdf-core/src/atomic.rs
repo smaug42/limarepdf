@@ -88,6 +88,38 @@ pub(crate) fn replace(
     expect: Option<&crate::disk::Version>,
     write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
 ) -> Result<()> {
+    commit(path, access, Over::Replace { expect }, write)
+}
+
+/// Writes a new file through `write` for this user only, as [`replace`] does, but never over
+/// anything at `path`: when something is there by the time the file is written, nothing is
+/// put there and the error is an [`ErrorKind::AlreadyExists`], so the caller can choose
+/// another name (PB-134).
+pub(crate) fn create_new(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
+) -> Result<()> {
+    commit(path, Access::Private, Over::Never, write)
+}
+
+/// What a new file does to one already at its name.
+#[derive(Clone, Copy)]
+enum Over<'a> {
+    /// Replaces it, when it is still as `expect` found it ([`replace`]).
+    Replace {
+        expect: Option<&'a crate::disk::Version>,
+    },
+    /// Never: the new file isn't put there ([`create_new`]).
+    Never,
+}
+
+/// [`replace`] or [`create_new`], as `over` says.
+fn commit(
+    path: &Path,
+    access: Access,
+    over: Over,
+    write: impl FnOnce(&mut BufWriter<File>) -> Result<()>,
+) -> Result<()> {
     let path = match access {
         Access::Keep => std::fs::canonicalize(path).unwrap_or_else(|_| path.into()),
         Access::Private => path.into(),
@@ -119,6 +151,13 @@ pub(crate) fn replace(
         drop(f);
         #[cfg(any(test, feature = "test-seams"))]
         commit_seam::wait(&path);
+        let expect = match over {
+            Over::Replace { expect } => expect,
+            Over::Never => {
+                place_new(&tmp, &path).with_context(|| format!("saving {}", path.display()))?;
+                return Ok(());
+            }
+        };
         // Checked as late as possible: a change after this, before the rename, is still
         // replaced (there is no locking).
         if let Some(known) = expect {
@@ -307,6 +346,23 @@ pub mod commit_seam {
             s = gate.changed.wait(s).unwrap_or_else(|e| e.into_inner());
         }
         s.released = s.released.saturating_sub(1);
+    }
+}
+
+/// Puts the written temporary file `tmp` at `path` only when nothing is there. Where the file
+/// system has hard links, in one step: linked there, which fails when the name is taken, then
+/// its temporary name removed. Without them, `path` is looked at just before the rename, which
+/// leaves a moment for another writer to take the name.
+fn place_new(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(tmp, path) {
+        Ok(()) => {
+            // The file is in place: a temporary name left behind only takes room.
+            let _ = std::fs::remove_file(tmp);
+            Ok(())
+        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(e),
+        Err(_) if std::fs::symlink_metadata(path).is_ok() => Err(ErrorKind::AlreadyExists.into()),
+        Err(_) => std::fs::rename(tmp, path),
     }
 }
 

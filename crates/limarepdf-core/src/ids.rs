@@ -791,10 +791,23 @@ impl IdStore {
         if back.cert.der != cert.der || back.key.to_pkcs8()? != pkcs8 {
             bail!("the ID file didn't read back the same; nothing was saved");
         }
-        let name = self.free_name(base);
-        let path = self.dir.join(format!("{name}.p12"));
+        // Another store may take the free name before this file is there: the next free one is
+        // tried then, as no ID is ever written over another (PB-134).
+        let taken = |e: &anyhow::Error| {
+            e.downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+        };
+        let mut tries = 0;
+        let (name, path, written) = loop {
+            let name = self.free_name(base);
+            let path = self.dir.join(format!("{name}.p12"));
+            match crate::write_private_new(&path, &file) {
+                Err(e) if taken(&e) && tries < 16 => tries += 1,
+                written => break (name, path, written),
+            }
+        };
         let mut warnings = Vec::new();
-        if let Err(e) = crate::write_private(&path, &file) {
+        if let Err(e) = written {
             match e.downcast_ref::<crate::NotConfirmed>() {
                 Some(n) => warnings.push(format!(
                     "your system couldn't confirm the ID's file is safely on disk ({})",
@@ -963,6 +976,42 @@ mod tests {
             assert!(w.ends_with("(test failure)"), "{w}");
         }
         assert_eq!(s.default_id().map(|i| i.name), Some(made.id.name));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// PB-134: two IDs stored at once under one name are both kept. Each finds the name
+    /// free, and both are about to be written there; the second written takes the next free
+    /// name rather than replacing the first.
+    #[test]
+    fn two_ids_stored_at_once_under_one_name_are_both_kept() {
+        let id = |name: &str| {
+            let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/signatures/ids");
+            std::fs::read(Path::new(dir).join(name)).unwrap()
+        };
+        let password = "mpe-test-password";
+        let dir = std::env::temp_dir().join(format!("limarepdf-ids-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let hold = crate::atomic::commit_seam::hold(&dir);
+        let store = |file: Vec<u8>| {
+            let dir = dir.clone();
+            std::thread::spawn(move || IdStore::new(dir).import(&file, password, Some("Walrus")))
+        };
+        let a = store(id("p256.p12"));
+        assert_eq!(hold.arrived(), dir.join("walrus.p12"));
+        let b = store(id("p384.p12"));
+        assert_eq!(hold.arrived(), dir.join("walrus.p12"));
+        drop(hold);
+        let (a, b) = (a.join().unwrap().unwrap(), b.join().unwrap().unwrap());
+        let mut paths = [a.id.path, b.id.path];
+        paths.sort();
+        assert_eq!(paths, [dir.join("walrus-2.p12"), dir.join("walrus.p12")]);
+        let kept = IdStore::new(&dir).list().ids;
+        let mut sums: Vec<_> = kept.iter().map(|i| &i.cert.sha256).collect();
+        let mut want = vec![&a.id.cert.sha256, &b.id.cert.sha256];
+        sums.sort();
+        want.sort();
+        assert_eq!(sums, want);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

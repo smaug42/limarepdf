@@ -225,6 +225,17 @@ pub fn settings_dir() -> Option<std::path::PathBuf> {
 /// there in one step, so a failure leaves the old file whole. Missing folders are made,
 /// private to this user on Unix.
 pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    save_private(path, bytes, false)
+}
+
+/// [`write_private`], for a new file: one at `path` is never replaced. When something is there
+/// by the time the file is written, the error is an [`std::io::ErrorKind::AlreadyExists`]
+/// (PB-134).
+pub(crate) fn write_private_new(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    save_private(path, bytes, true)
+}
+
+fn save_private(path: &std::path::Path, bytes: &[u8], new: bool) -> Result<()> {
     use anyhow::Context;
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         let mut b = std::fs::DirBuilder::new();
@@ -237,12 +248,16 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
         b.create(dir)
             .with_context(|| format!("making the folder {}", dir.display()))?;
     }
-    // A context, so that a `NotConfirmed` can still be told apart.
-    atomic::replace(path, atomic::Access::Private, None, |w| {
+    let write = |w: &mut std::io::BufWriter<std::fs::File>| {
         use std::io::Write;
         Ok(w.write_all(bytes)?)
-    })
-    .with_context(|| format!("saving {}", path.display()))
+    };
+    let written = match new {
+        true => atomic::create_new(path, write),
+        false => atomic::replace(path, atomic::Access::Private, None, write),
+    };
+    // A context, so that a `NotConfirmed` can still be told apart.
+    written.with_context(|| format!("saving {}", path.display()))
 }
 
 /// The most a page's content, a drawing's content or a text stream may decompress to, so a
