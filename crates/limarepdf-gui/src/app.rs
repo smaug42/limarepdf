@@ -1631,7 +1631,13 @@ impl App {
             self.destinations.release(Owner::Signing);
         }
         if let Some(mut w) = self.ids_window.take() {
-            let out = w.ui(ctx, &self.settings.author());
+            // Never over a tab's file or one being written (PB-167).
+            let taken = |p: &Path| self.export_conflict(p);
+            let out = w.ui(ctx, &self.settings.author(), &taken);
+            // Released once the window is no longer busy, below.
+            if let Some(path) = out.exporting {
+                self.destinations.claim(&[path], Owner::IdExport);
+            }
             if out.changed {
                 if let Some(s) = self.sign_window.as_mut() {
                     s.reload();
@@ -1640,6 +1646,11 @@ impl App {
             if !out.close {
                 self.ids_window = Some(w);
             }
+        }
+        // However the export ended, its file is free again; the window isn't closed while
+        // it runs.
+        if !self.ids_window.as_ref().is_some_and(IdsWindow::busy) {
+            self.destinations.release(Owner::IdExport);
         }
     }
 

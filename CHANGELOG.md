@@ -387,6 +387,11 @@
 - The copy LimarePDF keeps of a signature or initials picture it remembers is now readable by you alone on Linux
   and macOS, in a folder only you can open, as your digital IDs are. Before, other users of the computer could
   read it.
+- Exporting a digital ID or its certificate from the Digital IDs window never writes into the folder where
+  LimarePDF keeps its digital IDs, nor over a file open in a tab or still being written: the window says why, and
+  you choose another place. While an ID is exported, Save As and the app's other writers are refused its file.
+  Before, a certificate saved over the ID's own file replaced the ID, key and all, and an export could replace a
+  document open in a tab.
 
 ### Changed
 

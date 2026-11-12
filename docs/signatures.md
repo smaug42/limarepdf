@@ -143,7 +143,9 @@ it, but LimarePDF won't sign with it. Add ID files this way, not by copying them
    - **With its key (.p12)**: a backup, or to sign in another app. Type the ID's password; the file is protected
      with the same one, or tick **Protect the file with a new password**. Anyone with that file and its password
      can sign as you.
-3. Press **Export…** and choose where to save it.
+3. Press **Export…** and choose where to save it. Not in the folder where LimarePDF keeps its digital IDs, where it
+   could take the place of an ID, nor over a file open in a tab or still being written: the window says why, and
+   you choose another place.
 
 ### Removing a digital ID
 

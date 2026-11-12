@@ -15,11 +15,13 @@ where its code is, in [How it is built](architecture.md).
   not there yet is known by its folder's real path and its name.
 - A file is open in one tab at a time. Opening it again, by any path or link to it, brings its tab to the front,
   and a file being read for a tab, or asking for its password, isn't read a second time.
-- In the app, one writer at a time writes a file. A save, a background job (a split, page images, pictures saved)
-  and signing claim the files they write as they start, on the window's thread, and every other writer is refused
-  them until that writer ends, by any spelling of the name, in capitals too. Exporting text and saving the
-  selection write at once on the window's thread, so they check and don't claim. No writer writes the file another
-  tab has open; a tab saves over its own.
+- In the app, one writer at a time writes a file. A save, a background job (a split, page images, pictures saved),
+  signing and a digital ID's export claim the files they write as they start, on the window's thread, and every
+  other writer is refused them until that writer ends, by any spelling of the name, in capitals too. Exporting
+  text, saving the selection and exporting a certificate write at once on the window's thread, so they check and
+  don't claim. No writer writes the file another tab has open; a tab saves over its own.
+- The Digital IDs window exports nothing into the ID store's folder, by any path or link to it, where it would take
+  the place of an ID or the note of the default (PB-167).
 - On the command line, a command never writes over a file it reads. An output (an `-o`, the trust list `trust add`
   writes, or a file named in `--out-dir`) that is the input, a picture, a password file, form values, a trust
   list, a certificate or the digital ID used, by any path or link to it, is refused with nothing written,
@@ -47,7 +49,9 @@ where its code is, in [How it is built](architecture.md).
   `saving_never_silently_replaces_a_file_changed_since_it_was_read` and `save_asks_before_replacing_a_changed_file`;
   the claims in `app/tests/destinations.rs` (`every_writer_is_refused_a_file_being_saved` and the rest); saves and
   signing at the boundary in `app/tests/writers.rs`; `remembered_pictures_are_copied_and_deleted_with_their_entry`
-  for the picture's modes.
+  for the picture's modes. The exports: `id_exports_and_the_tabs_files_keep_apart` in
+  `app/tests/destinations.rs`, and `digital.rs`'s `an_export_never_goes_in_the_id_stores_folder`,
+  `an_export_is_refused_a_file_the_app_holds` and `an_id_exports_file_is_handed_to_the_app`.
 - The command line: `input_kept.rs` (`a_hard_link_to_the_input_is_refused`,
   `a_generated_file_hard_linked_to_the_input_is_refused`, `a_file_read_besides_the_input_is_refused_as_the_output`)
   and `verify.rs`'s `a_hard_link_to_the_input_leaves_it_unchanged`.
@@ -61,8 +65,8 @@ where its code is, in [How it is built](architecture.md).
   the file at the name is whole: one version or the other, never a mix.
 - The app's claims ignore case on every system, so on a disk that keeps case two names that differ only in case
   are refused to each other while one is written: a refusal that loses nothing.
-- Not claimed in the app: exporting a digital ID or certificate, the recovery store's private folder, and files
-  other apps write.
+- Not claimed in the app: the recovery store's private folder, and files other apps write. Only the exports are
+  kept out of the ID store's folder; the app's other writers aren't.
 - Where a disk has no hard links (some network and FAT drives), a digital ID's new file is put in place by a check
   and then a rename, which leaves a moment for another store to take the name.
 - A file Windows won't open, even only to ask its ID, is known by its path alone.
@@ -70,5 +74,6 @@ where its code is, in [How it is built](architecture.md).
 **Owner.** Core `disk::identity` and `Identity::matches` (`disk::same_file` is the two together); core
 `atomic::replace` with the version it expects (compared by `disk::compare_bytes`) and `atomic::create_new`, which
 never replaces; core `write_private`. The app's `app/destinations.rs`: `Destinations` for the claims, and
-`App::conflict`, `tab_of`, `reading` and `in_other_tab` for open tabs. The command line's `not_an_input` and
-`not_taken` (`limarepdf-cli/src/main.rs`).
+`App::conflict`, `export_conflict`, `tab_of`, `reading` and `in_other_tab` for open tabs; `IdsWindow::refused` in
+`digital.rs` for the ID store's folder. The command line's `not_an_input` and `not_taken`
+(`limarepdf-cli/src/main.rs`).

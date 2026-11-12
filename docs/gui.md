@@ -295,7 +295,9 @@ it is being saved isn't written over either: Save asks the same question. Signin
 signing window instead. Save As, saving selected text, exporting text or images, saving pictures, splitting and
 signing don't write over a file that is open in another tab: close that tab first, or choose another name. Nor
 do they write a file LimarePDF is still saving or writing from another tab, by any name for it (in capitals
-too): wait until it is done, or choose another name.
+too): wait until it is done, or choose another name. Exporting a digital ID or its certificate is refused the same
+files, and the folder where LimarePDF keeps its digital IDs; while an ID is being exported, nothing else writes its
+file.
 
 When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
 **Reload**. ☰ > **Reload from disk** reads the file again as it now is; with unsaved changes it asks
