@@ -3,7 +3,7 @@
 Every feature's status in detail, with its limits, what doesn't work yet and what is planned, for testers and
 people working on LimarePDF. The user guide's [Features](../features.md) is the short summary.
 
-**Status: 0.12, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
+**Status: 0.13, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
 can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures
 can be checked, made with your own or an imported digital ID, certified, and kept valid when a signed document is
@@ -42,7 +42,9 @@ with Acrobat are still to be tested.
   checks signatures, makes PDFs from images, shrinks and recognises scans, exports pages as images and text, and prints. Editing page
   content, adding comments and Fill and sign are in the app only: the command line lists page objects, and lists,
   removes and flattens comments ([Command line](../cli.md)).
-- **Private:** no network connections, accounts or licence checks.
+- **Private:** no accounts, licence checks or telemetry. The network is used only to print through CUPS (a
+  network printer or a configured print server) and, after you confirm, to open a web or email link in your browser
+  or email program.
 
 ## What doesn't work yet
 
@@ -404,7 +406,7 @@ available.
   crafted to look like objects isn't taken for the file's own content.
 - A file other PDF apps may show differently (parts it deletes still in use, data after its end, entries pointing
   at the wrong object) is shown as the PDF standard says, with a notice and a Save as… button that writes a copy
-  every app reads the same; the command line prints a note
+  without the parts other apps may read differently; the command line prints a note
   ([details](../rendering.md#files-other-apps-may-show-differently)).
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
@@ -413,8 +415,8 @@ available.
   error page. Redactions and removed hidden information are recorded with the change itself, so a later save of a
   signed document always writes the file out in full. `limarepdf-cli` prints such a failure as a plain error and
   exits with status 1.
-- Sizes a file states are capped before memory is set aside for them, so a small crafted file can't make LimarePDF
-  ask for gigabytes and close: a page image has at most 268 million pixels (A3 at 1152 dpi) and 65,280 a side, the
+- These sizes a file states are capped before memory is set aside for them, so a small crafted file can't make
+  LimarePDF ask for gigabytes for them: a page image has at most 268 million pixels (A3 at 1152 dpi) and 65,280 a side, the
   renderer's limit across, held for both sides (an export with a page past either is refused before any image is
   written; [export](../export-and-printing.md#pages-as-images)), Optimise scans skips pictures of more than 268 million pixels
   with the reason, redaction removes a fax picture of more than that whole, as it does any picture it can't read,
@@ -429,10 +431,15 @@ available.
   run out of stack (which closes a program outright, with no chance to catch it). Looking a name up in a document's
   list of named destinations (for a bookmark, link or the page to open at) reads each part of the list once and at
   most 100,000 parts, so a crafted list can't keep the app busy for hours; a name it gives up on is a destination
-  that can't be followed.
-- `limarepdf-cli` never changes a command's input: an output naming the input, by any path or link to it, is
+  that can't be followed. Each of these caps, like the limits on reading a page and on what is unpacked (above,
+  S1-06 to S1-08), bounds one thing; there is no single memory budget for a whole operation (WP-04). The
+  renderer's own memory requests aren't capped: on one test file hayro asks for 7.6 GB at once
+  ([below](#rendering)), which on Windows could close the app (not tried).
+- `limarepdf-cli` never changes a command's input PDF: an output naming it, by any path or link to it, is
   refused with nothing written, even with `--overwrite` (an `-o`, or a file `split`, `render` or `save-images`
-  names in `--out-dir`), and the result is written whole or not at all. When
+  names in `--out-dir`), and the result is written whole or not at all. A command's other input files aren't
+  checked against its output yet: the pictures of `insert-images --images` and of `--image` in `watermark`,
+  `stamp` and `sign`, and `sign --password-file` (PB-139). When
   the command's own output can't be written (a full disk), it stops with an error and status 1, saying whether its
   file was already saved; a reader that stops early (`… | head`) stops it quietly ([details](../cli.md)).
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and

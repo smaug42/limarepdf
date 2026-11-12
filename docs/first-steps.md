@@ -100,8 +100,8 @@ Help and **Settings…**, where what is set for every document is in one place.
 
 ## Good to know
 
-- **Privacy:** LimarePDF never connects to the network. A link to a website asks first, then opens in your
-  browser.
+- **Privacy:** LimarePDF works on your computer. It connects to the network only to print to a network printer or
+  print server. A link to a website asks first, then opens in your browser.
 - **An early version:** LimarePDF is being tested, mostly on Linux so far. Before relying on a feature, check
   [what doesn't work yet](developer/feature-status.md#what-doesnt-work-yet), and keep a copy of important
   documents.

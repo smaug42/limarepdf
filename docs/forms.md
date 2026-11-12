@@ -85,8 +85,8 @@ several lines wraps where it will be written, and the inspector names the words 
 and other right-to-left or shaped scripts, emoji made of several characters and characters no installed font has
 are refused with a message rather than saved wrongly, and stay typed in the field, which gets the keyboard back
 once you close the message, so you can change it. Fields that have a value but no drawing of their own are drawn
-when the file opens. A field set to centre or right-align its text shows it from the left while you type, and
-aligned once kept.
+when the file opens. A field set to centre or right-align its text shows it aligned that way while you type, as it
+will be written.
 
 A value that can't be written changes nothing: the field keeps its value and its drawing, wherever it appears on
 the pages. In a digitally signed document, a field written in Helvetica, Times or Courier because its own font

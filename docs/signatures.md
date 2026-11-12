@@ -249,7 +249,7 @@ The ones you are most likely to meet:
 - Trust comes from your own list only. LimarePDF doesn't include Adobe's list of trusted authorities (AATL) or the
   EU's trusted lists, so a signature from a commercial or government authority that Acrobat shows as trusted is
   *not confirmed* in LimarePDF until you trust its authority.
-- Revocation (whether a certificate was withdrawn) isn't checked: LimarePDF makes no network connections.
+- Revocation (whether a certificate was withdrawn) isn't checked: LimarePDF doesn't go online to check signatures.
 - Changes after signing are judged strictly where Acrobat's exact behaviour isn't documented, so LimarePDF may
   refuse changes Acrobat accepts. A refused change is listed by name, so you can judge it.
 - Signatures LimarePDF makes carry no timestamp from a timestamp authority, so their signing time is your

@@ -34,6 +34,10 @@ among them: `fr_FR/dictionaries/` in https://github.com/LibreOffice/dictionaries
 `DICTIONARY-LICENSE-French.txt` and `LICENSE-MPL-2.0.txt`. The MPL-2.0 also covers the `spellbook`
 crate that reads the dictionaries (https://github.com/helix-editor/spellbook), used unmodified.
 
+`fr.dic`'s first line declares 84,782 entries; the file holds 84,749 (recounted, no blank lines).
+The file is upstream's, unmodified (its sha256 is in the table below); the count is only a size
+hint when the dictionary is read, so the difference changes nothing.
+
 ## Files
 
 | File | sha256 |

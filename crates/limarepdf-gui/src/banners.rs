@@ -253,8 +253,8 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
             Kind::OtherApps,
             "This file isn't put together quite as the PDF format asks, so other PDF apps may \
              show it differently from LimarePDF: some content could be missing or different in \
-             them. Saving a copy writes it the way LimarePDF shows it, which every app reads \
-             the same.",
+             them. Saving a copy writes it the way LimarePDF shows it, without the parts other \
+             apps may read differently.",
         ));
     }
     if pdf.doc.was_encrypted() {
@@ -427,7 +427,7 @@ mod tests {
             b.text
         );
         assert_eq!(b.action().map(|a| a.1), Some(Act::SaveAs));
-        // Once saved, it reads the same everywhere.
+        // Once saved, nothing is left that other apps may read differently.
         let saved = Pdf::from_bytes(&p.clone().to_bytes().unwrap(), None).unwrap();
         assert!(kinds(&saved, None).is_empty());
     }

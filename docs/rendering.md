@@ -52,8 +52,8 @@ end-of-file marker, entries that point at the wrong object (which LimarePDF's PD
 other apps may correct differently), or cross-reference information that can't be read as written. LimarePDF shows
 such a file as the PDF standard says (the parts it deletes stay deleted). Since a crafted file can use this to show
 one thing in LimarePDF and another elsewhere, the app shows a notice saying other apps may show the file
-differently, with a Save as… button: the saved copy is written the way LimarePDF shows it, which every app reads
-the same. `limarepdf-cli` prints a note on stderr. Repaired files get the repair notice instead, and signed files
+differently, with a Save as… button: the saved copy is written the way LimarePDF shows it, without the parts other
+apps may read differently. `limarepdf-cli` prints a note on stderr. Repaired files get the repair notice instead, and signed files
 the signatures notice, whose signatures show *can't check* with the reason
 ([details](signatures-in-depth.md#security-notes)). Of about
 1,100 test files collected from bug reports, 31 that open without repair get the notice.

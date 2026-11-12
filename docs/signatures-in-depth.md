@@ -644,8 +644,6 @@ The full record, with the files used, is in [Testing](developer/testing.md#digit
   usage not marked critical, say); such a timestamp isn't trusted. An embedded timestamp so damaged that it can't
   be checked at all is reported as a warning, but doesn't stop `limarepdf-cli verify --require-trusted` from
   passing; the signer's own time is used.
-- An embedded timestamp's authority can't yet be trusted from the signature in the app; add its certificate file
-  instead (see [Signing times](#signing-times)).
 - Acrobat's `.fdf` certificate exchange files can't be imported; export the certificate as `.cer` or `.p7c`
   instead.
 - Changes after signing are judged strictly where Acrobat's exact behaviour isn't documented, so LimarePDF may refuse
@@ -663,7 +661,7 @@ The full record, with the files used, is in [Testing](developer/testing.md#digit
   even where another app calls them valid, and LimarePDF signs such a file only by writing it out in full first, which it
   can't do without breaking signatures already in it (see [What signing does](#what-signing-does)).
 - Revocation (whether a certificate was withdrawn) isn't checked. Acrobat checks it online for certificates from
-  authorities; LimarePDF makes no network connections.
+  authorities; LimarePDF doesn't go online to check signatures.
 - Algorithms: RSA (PKCS#1 v1.5 and PSS, up to 8192 bits), ECDSA on P-256 and P-384, with SHA-1, SHA-224, SHA-256,
   SHA-384 and SHA-512. Brainpool curves (used by some European ID cards), P-521, MD5 and RIPEMD-160 can't be
   checked. RSA-PSS signatures must use MGF1 with the signature's own digest, and name their parameters.

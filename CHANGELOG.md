@@ -370,6 +370,25 @@
   SHA-1, which is no longer safe against forgery"). Core: `DigitalSignature::signature_digest` and `digest_text`,
   `Timestamp::digest`, `signature_digest` and `digest_text`, `SigWarning::WeakTimestampDigest`.
 
+### Changed
+
+- Building LimarePDF needs the latest stable Rust (`rustup update stable`); older versions aren't supported. The
+  package no longer names a minimum Rust version.
+- The notice for a file other PDF apps may show differently says its Save as… button writes a copy "without the
+  parts other apps may read differently". Before, it said every app reads that copy the same, which LimarePDF can't
+  promise: other apps may still show it in their own ways.
+- Correction: earlier notes (0.8.0) said the copy that notice's Save as… writes is one every app reads the same.
+  It is written without the parts other apps may read differently, and no more is promised.
+- Correction: earlier notes (0.13.0) said underlines and strike-throughs other apps drew go with their words "in
+  their own colour, place and thickness". One drawn as a stroked line in a drawing that is scaled, turned or
+  slanted was drawn again thinner than it was; that is fixed above.
+- Correction: earlier notes (0.12.0) said a line being edited shows in the font's own letters "at the widths that
+  will be written". Rarely, the typing shows letters or widths from another use of the same font: in two documents
+  made from one template whose fonts differ only in their widths, or on two pages using different forms of the
+  same letter. What is saved is right; this isn't fixed yet.
+- Correction: earlier notes (0.3.0) said annotations flagged NoView are no longer shown. Form fields kept off
+  screen were still highlighted, and Tab and a click still reached them; that is fixed above.
+
 ## [0.13.0] - 2026-11-03
 
 ### Added

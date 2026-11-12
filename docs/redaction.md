@@ -238,7 +238,6 @@ of the file aren't kept in it.
   information and XMP metadata).
 - The removed text can still be in bookmarks, comments, file attachments or metadata; the check warns about the
   places it can search.
-- Redaction marks can't be moved or resized; delete one and mark again.
 - Removing hidden layers: any drawing whose compressed (Flate) data is cut off or damaged part way stops the
   command, even where other readers would show what comes before the damage, since what follows it can't be
   checked. A file with such damage can have its other kinds of hidden information removed with hidden layers left

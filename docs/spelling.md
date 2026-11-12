@@ -68,7 +68,9 @@ For another language, **Review > Spelling ▾ > Add a dictionary…** takes:
 LimarePDF keeps a copy in the `dictionaries` folder beside its settings, and lists the language
 in the menu; choose it there. On Linux, the dictionaries installed for the whole system (in
 `/usr/share/hunspell`, for example by a `hunspell-de` package) are listed too, without adding
-them. A dictionary LimarePDF can't read is not added, and it says why.
+them. A dictionary LimarePDF can't read is not added, and it says why. It reads dictionaries in
+UTF-8, ISO 8859-1 or ISO 8859-15; one in another character set, such as LibreOffice's Slovenian
+(ISO 8859-2), can't be read yet.
 
 The files added together may hold up to 256 dictionary files and 128 MB in all, and each
 dictionary file up to 64 MB, far more than real dictionaries need. An extension past that adds

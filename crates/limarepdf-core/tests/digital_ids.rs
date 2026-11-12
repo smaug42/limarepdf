@@ -192,9 +192,9 @@ fn files_limarepdf_cant_sign_with_are_refused() {
 
 #[test]
 fn damaged_files_never_panic() {
-    // Every truncation, and a byte changed at every position, of a legacy and a modern
-    // file: refused (or, where the change is outside what the integrity check covers and
-    // harmless, imported), never a panic.
+    // Truncations, and a byte changed, of a legacy and a modern file, sampled (every 7th
+    // length, every 3rd byte): refused (or, where the change is outside what the integrity
+    // check covers and harmless, imported), never a panic.
     let s = store("damaged");
     for name in ["legacy", "p256"] {
         let file = p12(name);

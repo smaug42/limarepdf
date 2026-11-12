@@ -2691,8 +2691,10 @@ impl Editor {
     /// word processor types over a selection, their line opens on the page and it goes in
     /// their place, an input method's first composition too (the input method is on while
     /// words are selected: [`Self::input_method_at_words`]); into a line just opened, before
-    /// it has the keyboard, it goes there. Across lines nothing is typed, and a note at the
-    /// selection's end says why. Whether it was taken.
+    /// it has the keyboard, it goes there. Across lines of one paragraph (one LimarePDF is
+    /// sure of, or with paragraph editing on) the paragraph opens with it there; across
+    /// paragraphs nothing is typed, and a note at the selection's end says why. Whether it
+    /// was taken.
     pub fn type_over(
         &mut self,
         ctx: &egui::Context,

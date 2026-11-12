@@ -3,7 +3,7 @@
 Features other PDF tools have that LimarePDF doesn't, collected from a comparison with PDF-XChange Editor, Stirling-PDF,
 pdfcpu, Acrobat and Foxit (October 2026). This is a pool to pick from as the app grows, not a plan or a promise.
 Items already planned are in [Features and status](feature-status.md#planned-and-proposed) and aren't repeated
-here.
+here; items that ship are taken out.
 
 Sizes are rough guesses: **S** small, **M** medium, **L** large. A dash means not yet judged.
 
@@ -18,7 +18,8 @@ Small or medium additions that build on what LimarePDF already has:
 
 ## Pages and layout
 
-- N-up, booklet imposition, poster tiling, cutting pages into parts, contact-sheet grids (M)
+- Saving pages per sheet or a booklet as a PDF (printing them is built), poster tiling, cutting pages into parts,
+  contact-sheet grids (M)
 - Resize or scale to a paper size, make all pages the same size, join everything into one tall page (M)
 - Overlay or underlay one PDF on another (M)
 - Page boxes: view, add and remove the trim, bleed and art boxes (S)
@@ -27,19 +28,20 @@ Small or medium additions that build on what LimarePDF already has:
 
 ## Structure and metadata
 
-- Bookmarks: move and sort; import and export as JSON; generate from headings or a table of contents (M)
+- Bookmarks: sort; import and export as JSON; generate from headings or a table of contents (M)
 - XMP metadata editing, keywords and custom properties (M)
 - Attachments (add, list, extract) and portfolios (M)
-- Create and edit links, turn URLs in text into links, links from bookmarks (M)
+- Turn URLs in text into links; links to a bookmark, a named destination or another PDF file (M)
 - A full report on a file: its fonts, images and structure, beyond today's `limarepdf-cli info` (S–M)
 
 ## Optimise and repair
 
-- General compression: downsample and recompress images, remove duplicates (M; today only scans are optimised)
+- Compression beyond Reduce file size: remove duplicate pictures and fonts, make fonts smaller, reduce the pictures
+  it leaves (CMYK, palette, black-and-white, JPEG 2000 and JBIG2 ones) and remove parts cropped away (M)
 - Linearise for fast web view (M)
 - A structure checker that lists what is wrong with a file (M–L; damaged files are already repaired when opened)
 - Rasterise pages; convert colours to grey or CMYK, invert or replace colours (M)
-- Extract or remove embedded images (S–M)
+- Remove every picture at once (S; saving them and deleting one are built)
 
 ## Content editing
 
@@ -47,15 +49,10 @@ Small or medium additions that build on what LimarePDF already has:
   macOS (PF-61; spell checking itself is built, NEW-06); `spelling` on the command line (S); `replace` on the
   command line (S–M, on Replace all's preparation, which is built: NEW-04b)
 - Layers: add, merge, reorder, flatten (L)
-- Right-to-left (Hebrew, Arabic) and shaped (Indic, Thai) text, beyond the Latin, Greek and Cyrillic written
-  today, and Chinese, Japanese and Korean outside installed fonts that have them (L: text shaping and
-  bidirectional layout, likely new crates)
+- Right-to-left (Hebrew, Arabic) and shaped (Indic, Thai) text, and emoji made of several characters (L:
+  bidirectional layout and these scripts' shaping); Chinese, Japanese and Korean when no installed font has them
 - Bold and italic made up for an installed family that lacks them, as word processors do: thicker strokes and a
   slant (M: the writers and the drawing while typing)
-- An installed font's characters filled in from another font when it lacks them, within one line (M: a line
-  written in several fonts)
-- Underline and strike-through (Ctrl+U), as word processors have (M: PDF text has none, so it is a drawn line that
-  has to move, stretch and go with the words it marks)
 - Background images (S: a picture watermark at 100%, opaque and behind the content comes close; filling the page
   edge to edge is what's missing)
 - QR codes and barcodes stamped onto pages (S–M, needs a crate)
@@ -132,14 +129,14 @@ Small or medium additions that build on what LimarePDF already has:
 
 ## Printing
 
-- Booklet printing, printing comments (M)
+- Printing pop-up notes or a comment summary with the pages (M)
 
 ## Automation and the app
 
 - Watch a folder and process what arrives (M)
 - Macros (L)
 - An MCP server so AI agents can run LimarePDF's operations (M)
-- Shell completions (S); renaming files by their content (M)
+- Renaming files by their content (M)
 - Sessions (reopen the last documents), custom shortcuts (M each)
 - File drops on Linux Wayland: a setting or environment variable to run under XWayland, which has drops, or the
   winit upgrade once it supports Wayland drops ([today's workaround](../troubleshooting.md#dropping-files-on-the-window-does-nothing)) (S)
