@@ -19418,6 +19418,57 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A protected file whose password is asked for, or waits to be, isn't read again when
+    /// opened by another path or link to it: each password is asked for once, and each file
+    /// opens in one tab (BUG-06, BUG-07).
+    #[test]
+    fn a_file_asking_for_its_password_is_opened_once_by_any_path_to_it() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("aliases-locked");
+        let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
+        pages_file(&a, 100.0, 1, Some("walrus-a"));
+        pages_file(&b, 200.0, 1, Some("walrus-b"));
+        let pass = |p: &Path| if p == a { "walrus-a" } else { "walrus-b" };
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        // Links are added on Unix only.
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut aliases = vec![dir.join("sub/../a.pdf"), dir.join("sub/../b.pdf")];
+        #[cfg(unix)]
+        for f in ["a", "b"] {
+            let file = dir.join(format!("{f}.pdf"));
+            let (link, hard) = (
+                dir.join(format!("{f}-link.pdf")),
+                dir.join(format!("{f}-hard.pdf")),
+            );
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            std::fs::hard_link(&file, &hard).unwrap();
+            aliases.extend([link, hard]);
+        }
+        app.spawn_open(&ctx, a.clone(), None, None);
+        app.spawn_open(&ctx, b.clone(), None, None);
+        // One password asked for, the other waiting.
+        wait_for(&mut app, &ctx, |a| {
+            a.opening.is_empty() && a.waiting.len() == 1
+        });
+        assert!(asked_password(&app).is_some());
+        for p in &aliases {
+            app.spawn_open(&ctx, p.clone(), None, None);
+            assert!(app.opening.is_empty(), "{p:?} read again");
+        }
+        assert_eq!(app.waiting.len(), 1, "a password asked for twice");
+        let first = asked_password(&app).unwrap();
+        answer(&mut app, &ctx, pass(&first), "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 1);
+        let second = asked_password(&app).expect("the second file's request was lost");
+        assert_ne!(second, first);
+        answer(&mut app, &ctx, pass(&second), "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 2);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.waiting.is_empty(), "a password asked for twice");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// BUG-28: files sent to open (Finder's Open With and double-click on macOS) open as the
     /// command line's do, sent before the window exists or while it runs: several at once,
     /// names with spaces and accents, one open already (its tab comes to the front), and a
