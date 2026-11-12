@@ -1283,6 +1283,7 @@ fn stored_next_lists() -> Pdf {
         "AcroForm",
         dictionary! { "Fields" => vec![Object::Reference(button)] }.into(),
     );
+    common::seeds::pdf(&p);
     p
 }
 
@@ -1357,6 +1358,7 @@ fn ruled(
     d.set("Type", "OCMD");
     let r = p.doc.add_object(d);
     page_res_set(&mut p, "Properties", dictionary! { "R" => r }.into());
+    common::seeds::pdf(&p);
     (p, r)
 }
 

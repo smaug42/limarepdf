@@ -4,6 +4,9 @@ use image::{DynamicImage, GrayImage, Luma};
 use limarepdf_core::{FontChoice, ImageImport, Pdf, BLANK_TOLERANCE};
 use lopdf::{dictionary, Dictionary, ObjectId, Stream};
 
+#[path = "common/seeds.rs"]
+mod seeds;
+
 fn png(img: GrayImage) -> Vec<u8> {
     let mut out = Vec::new();
     DynamicImage::ImageLuma8(img)
@@ -129,6 +132,7 @@ fn keeps_a_page_whose_picture_cant_be_read() {
     let im = broken_picture(&mut p);
     show(&mut p, 0, im);
     draw(&mut p, 1, "0 0 0 rg 30 30 100 100 re f", Dictionary::new());
+    seeds::pdf(&p);
     assert!(p.blank_pages(BLANK_TOLERANCE).unwrap().is_empty());
     assert!(p.remove_blank_pages(BLANK_TOLERANCE).unwrap().is_empty());
     let q = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();

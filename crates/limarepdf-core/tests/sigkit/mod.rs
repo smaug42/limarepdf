@@ -8,6 +8,11 @@ use limarepdf_core::Pdf;
 use lopdf::{dictionary, Dictionary, Document, IncrementalDocument, Object, StringFormat};
 use std::path::PathBuf;
 
+/// Every document made here is kept as a seed for the `verify` target, and its signature value
+/// for the `signature` target, when seeds are asked for (`common/seeds.rs`).
+#[path = "../common/seeds.rs"]
+pub mod seeds;
+
 pub fn data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/signatures")
 }
@@ -885,7 +890,7 @@ pub fn sign_with(input: &[u8], f: &Field, make: impl FnOnce(&[&[u8]]) -> Vec<u8>
         new.set_object(id, Object::Dictionary(d));
         let mut out = Vec::new();
         inc.save_to(&mut out).unwrap();
-        return fill(out, f.room, make);
+        return fill(out, f, make);
     }
     let rect: Vec<Object> = if f.invisible {
         vec![0.into(), 0.into(), 0.into(), 0.into()]
@@ -938,7 +943,7 @@ pub fn sign_with(input: &[u8], f: &Field, make: impl FnOnce(&[&[u8]]) -> Vec<u8>
 
     let mut out = Vec::new();
     inc.save_to(&mut out).unwrap();
-    fill(out, f.room, make)
+    fill(out, f, make)
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Vec<usize> {
@@ -949,8 +954,18 @@ fn find(hay: &[u8], needle: &[u8]) -> Vec<usize> {
         .collect()
 }
 
+/// The `/SubFilter`s in `fuzz/fuzz_targets/signature.rs`'s order: a seed's first byte picks one.
+const SUB_FILTERS: [&str; 5] = [
+    "adbe.pkcs7.detached",
+    "ETSI.CAdES.detached",
+    "adbe.pkcs7.sha1",
+    "ETSI.RFC3161",
+    "adbe.x509.rsa_sha1",
+];
+
 /// Patches the byte range and writes the signature value into the placeholder.
-fn fill(mut out: Vec<u8>, room: usize, make: impl FnOnce(&[&[u8]]) -> Vec<u8>) -> Vec<u8> {
+fn fill(mut out: Vec<u8>, f: &Field, make: impl FnOnce(&[&[u8]]) -> Vec<u8>) -> Vec<u8> {
+    let room = f.room;
     let zeros = format!("<{}>", "00".repeat(room));
     let [b] = find(&out, zeros.as_bytes())[..] else {
         panic!("placeholder not found once");
@@ -969,6 +984,10 @@ fn fill(mut out: Vec<u8>, room: usize, make: impl FnOnce(&[&[u8]]) -> Vec<u8>) -
     );
     let hex: String = value.iter().map(|x| format!("{x:02X}")).collect();
     out[b + 1..b + 1 + hex.len()].copy_from_slice(hex.as_bytes());
+    seeds::seed("verify", &out);
+    if let Some(pick) = SUB_FILTERS.iter().position(|&s| s == f.sub_filter) {
+        seeds::seed("signature", &[&[pick as u8][..], &value].concat());
+    }
     out
 }
 
@@ -1018,6 +1037,7 @@ pub fn append_update(bytes: &[u8], change: impl FnOnce(&mut IncrementalDocument)
     change(&mut inc);
     let mut out = Vec::new();
     inc.save_to(&mut out).unwrap();
+    seeds::seed("verify", &out);
     out
 }
 
@@ -1078,6 +1098,7 @@ pub fn append_raw(
         )
         .as_bytes(),
     );
+    seeds::seed("verify", &out);
     out
 }
 

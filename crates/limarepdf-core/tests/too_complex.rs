@@ -105,6 +105,7 @@ fn a_page_drawing_forms_over_and_over_is_refused_past_its_budget() {
     use limarepdf_core::{budget_seam, TooComplex};
     let mut p = zebras(1);
     draw_tree(&mut p, 0, 3, 4);
+    common::seeds::pdf(&p);
     let needed = zebra_steps() + tree_steps(3, 4);
     let (read, taken) = budget_seam::with_limit(u64::MAX, || p.page_objects(0).map(|_| ()));
     read.unwrap();
@@ -174,6 +175,7 @@ fn draw_each_other(p: &mut Pdf, page: usize) {
 fn forms_drawing_each_other_are_read_once() {
     let mut p = zebras(1);
     draw_each_other(&mut p, 0);
+    common::seeds::pdf(&p);
     let text = p.page_text(0);
     let words: Vec<&str> = text.split_whitespace().collect();
     assert_eq!(words, ["Zebra", "Alpha", "Beta"], "{text}");
@@ -191,6 +193,7 @@ fn too_complex_child() {
     }
     let mut p = zebras(1);
     draw_itself(&mut p, 0, 10);
+    common::seeds::pdf(&p);
     match p.page_objects(0) {
         Ok(objs) => {
             let text: Vec<_> = objs.into_iter().filter_map(|o| o.text).collect();
@@ -227,6 +230,7 @@ fn a_page_too_complex_to_read_isn_t_read_or_edited() {
     use limarepdf_core::{budget_seam, TooComplex};
     let mut p = zebras(1);
     draw_tree(&mut p, 0, 3, 4);
+    common::seeds::pdf(&p);
     let ((), _) = budget_seam::with_limit(40, || {
         let e = p.page_objects(0).unwrap_err();
         let too = e.downcast_ref::<TooComplex>().expect("too complex");

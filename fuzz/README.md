@@ -33,12 +33,19 @@ cargo install cargo-fuzz --locked
 
 From the repository, seed the corpus from the repository's own test files (made-up documents, the signature
 samples, test certificates and digital IDs, and a few content streams and printing-service answers; `seed.sh` needs
-Python 3), then run a target for a few minutes under a memory limit:
+Python 3) and the inputs the audit's regression tests build, then run a target for a few minutes under a memory
+limit:
 
 ```
 sh fuzz/seed.sh
 cargo +nightly fuzz run open -- -max_total_time=300 -rss_limit_mb=2048 -timeout=20 -max_len=262144
 ```
+
+For those inputs `seed.sh` runs core's tests that build them (O-04) with `LIMAREPDF_FUZZ_SEEDS` naming the corpus
+folder: each writes what it built into the folders of the targets that read it (`<test>-<digest>`), as
+`crates/limarepdf-core/tests/common/seeds.rs` says. Without the variable they write nothing. An input over
+`-max_len` is left out (the M-01 documents, about 370 KiB). A test added for a finding whose input a target reads
+keeps it the same way: a call to `common::seeds`, and its test file in `seed.sh`'s list.
 
 `cargo +nightly fuzz list` lists the targets. A failure is saved in `fuzz/artifacts/<target>/`; run it again with
 `cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<file>`, and shrink it with `cargo +nightly fuzz tmin`.

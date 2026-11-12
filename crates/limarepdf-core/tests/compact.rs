@@ -254,6 +254,7 @@ fn metadata_is_read_only_so_far() {
     // Part 2 named past the limit isn't seen.
     let mut p = with_metadata(xmp_of(MAX_XMP + 1, 2));
     let once = p.to_bytes().unwrap();
+    common::seeds::pdf_bytes(&once);
     assert!(is_classic(&once));
     assert_eq!(p.to_bytes().unwrap(), once);
     assert_eq!(Pdf::from_bytes(&once, None).unwrap().page_count(), 1);

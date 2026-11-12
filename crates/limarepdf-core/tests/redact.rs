@@ -1068,6 +1068,7 @@ fn alternative_text_in_a_named_property_goes() {
                 true => p.doc.add_object(dictionary! { "P1" => prop }).into(),
             };
             add_res(&mut p, 0, dictionary! { "Properties" => list });
+            common::seeds::pdf(&p);
             let marks = marks_on(&p, 0, "zebra");
             let rep = p.redact(&marks).unwrap();
             assert!(rep.left.is_empty(), "{key}: {:?}", rep.left);
@@ -1103,6 +1104,7 @@ fn alternative_text_in_a_form_s_named_property_goes() {
             0,
             dictionary! { "XObject" => dictionary! { "Fm1" => top } },
         );
+        common::seeds::pdf(&p);
         let marks = marks_on(&p, 0, "zebra");
         let rep = p.redact(&marks).unwrap();
         assert!(rep.left.is_empty(), "nested {nested}: {:?}", rep.left);
@@ -1130,6 +1132,7 @@ fn alternative_text_still_used_elsewhere_is_kept_and_reported() {
             dictionary! { "Properties" => dictionary! { "P1" => prop } },
         );
     }
+    common::seeds::pdf(&p);
     let marks = marks_on(&p, 0, "kudu");
     let rep = p.redact(&marks).unwrap();
     let saved = Saved::of(&mut p);
@@ -1154,6 +1157,7 @@ const FORM_SECRET: &str = "BT /F1 20 Tf 30 100 Td (FormSecretZebra) Tj ET \
 /// Redacts "FormSecretZebra" on page 1, then checks it's gone from the saved file and what
 /// was kept is still there.
 fn redact_form_secret(p: &mut Pdf) {
+    common::seeds::pdf(p);
     let marks = marks_on(p, 0, "formsecretzebra");
     let rep = p.redact(&marks).unwrap();
     assert!(rep.left.is_empty(), "{:?}", rep.left);
@@ -1258,6 +1262,7 @@ fn a_picture_drawn_only_inside_a_redacted_form_leaves_no_original() {
         0,
         dictionary! { "XObject" => dictionary! { "Fm1" => outer, "Fm2" => inner } },
     );
+    common::seeds::pdf(&p);
     let rep = p.redact(&[(0, [25.0, 90.0, 175.0, 110.0])]).unwrap();
     assert_eq!(rep.pages[0].images_cut, 1, "{:?}", rep.pages[0]);
     let saved = Saved::of(&mut p);
@@ -1278,6 +1283,7 @@ fn a_redacted_form_another_page_draws_is_kept_for_it() {
             dictionary! { "XObject" => dictionary! { "Fm1" => fm } },
         );
     }
+    common::seeds::pdf(&p);
     let before = drawn(&mut p, 1);
     let marks = marks_on(&p, 0, "formsecretzebra");
     let rep = p.redact(&marks).unwrap();
@@ -1331,6 +1337,7 @@ fn needs_through_a_redacted_form(chain: bool, shared: bool) -> Pdf {
         };
         add_res(&mut p, page, extra);
     }
+    common::seeds::pdf(&p);
     p
 }
 
@@ -3284,6 +3291,7 @@ fn indirect_alt(held: AltIn, two: Two) -> (Pdf, ObjectId, Marks) {
         }
     };
     let marks = marks_on(&p, 0, "zebra");
+    common::seeds::pdf(&p);
     (p, holder, marks)
 }
 
@@ -3457,6 +3465,7 @@ fn annotated(held: Held) -> (Pdf, ObjectId, Marks) {
         _ => secret,
     };
     let marks = marks_on(&p, 0, "zebra");
+    common::seeds::pdf(&p);
     (p, target, marks)
 }
 
@@ -3594,6 +3603,7 @@ fn picture_with_parts(page_2: &str) -> (Pdf, (ObjectId, ObjectId), Marks) {
         0,
         dictionary! { "XObject" => dictionary! { "Im" => original } },
     );
+    common::seeds::pdf(&p);
     (p, (alternate, mask), vec![(0, [0.0, 100.0, 75.0, 200.0])])
 }
 
