@@ -2,6 +2,7 @@
 
 Usage, from the repository: python3 crates/limarepdf-core/tools/measure.py [--runs N] [--only TEXT]
 [--timeout SECONDS] [--text-pages N]
+       python3 crates/limarepdf-core/tools/measure.py --refset DIR
 
 Builds the release CLI, makes the test files the chosen tasks need in target/tmp/measure (a 1,000-page
 text file and a 200-page colour scan at 300 dpi, each made once and kept), runs each task N times (3 by
@@ -11,6 +12,11 @@ name contains TEXT, and makes only the files those tasks use. --text-pages makes
 instead, for checking the script itself quickly (the table's numbers are then not comparable). Each run
 writes into an output folder of its own, empty when it starts and removed after, so a run never meets
 the files the one before wrote.
+
+--refset makes, in DIR (new or empty), the reference documents that tools/perf/drive.py opens in the
+app (performance.md's "Startup and responsiveness") and prints their SHA-256 checksums: a letter, a
+12-field form, text documents of 120, 300 and 10,000 pages, a 20-page grey scan and, when fetched, the
+complex-artwork page. They come out the same byte for byte each time on the same machine.
 
 A run that takes longer than SECONDS (600 by default) is stopped, and so is making the test files,
 with every program it started. A task that fails or runs out of time shows as such in the table, the
@@ -25,6 +31,7 @@ with ≤. Standard library only.
 """
 
 import argparse
+import hashlib
 import os
 import platform
 import random
@@ -64,25 +71,35 @@ WORDS = (
 ).split()
 
 
+HELVETICA = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+
+
+def stream(content):
+    data = zlib.compress(content)
+    return b"<< /Length %d /Filter /FlateDecode >>\nstream\n" % len(data) + data + b"\nendstream"
+
+
 def pdf_file(path, contents):
     """Write a PDF with one page per content stream, in Helvetica, on US Letter pages."""
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         None,  # the page tree, once the pages' numbers are known
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        HELVETICA,
     ]
     kids = []
     for content in contents:
-        data = zlib.compress(content)
-        objects.append(
-            b"<< /Length %d /Filter /FlateDecode >>\nstream\n" % len(data) + data + b"\nendstream"
-        )
+        objects.append(stream(content))
         objects.append(
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
             b"/Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>" % (len(objects))
         )
         kids.append(b"%d 0 R" % len(objects))
     objects[1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(kids), len(kids))
+    write_pdf(path, objects)
+
+
+def write_pdf(path, objects):
+    """Write the objects, numbered from 1 with the catalogue first, as a PDF file."""
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     offsets = []
     for number, body in enumerate(objects, 1):
@@ -111,9 +128,73 @@ def text_file(path, pages):
     pdf_file(path, contents)
 
 
-def png_file(path, width, height):
+def text(x, y, size, string):
+    return b"BT /F1 %d Tf %d %d Td (%s) Tj ET" % (size, x, y, string.encode())
+
+
+def letter_file(path):
+    """A one-page letter: the sender's address, a date, the recipient's, four paragraphs of words
+    and a signature, in Helvetica."""
+    rng = random.Random(3)
+    lines = [
+        text(400, 720 - 13 * n, 10, line)
+        for n, line in enumerate(("Northwind Survey Office", "1200 Harbour Street", "Halifax NS B3H 1A1"))
+    ]
+    lines.append(text(72, 660, 11, "12 November 2026"))
+    lines += [
+        text(72, 630 - 14 * n, 11, line)
+        for n, line in enumerate(("Records Committee", "45 Water Street", "St. John's NL A1C 1A1"))
+    ]
+    lines.append(text(72, 570, 11, "Dear committee members,"))
+    y = 545
+    for _ in range(4):
+        for _ in range(6):
+            words = " ".join(rng.choice(WORDS) for _ in range(rng.randint(9, 12)))
+            lines.append(text(72, y, 11, words[0].upper() + words[1:]))
+            y -= 14
+        y -= 10
+    lines.append(text(72, y - 10, 11, "Yours truly,"))
+    lines.append(text(72, y - 60, 11, "Survey Office"))
+    pdf_file(path, [b"\n".join(lines)])
+
+
+FORM_FIELDS = (
+    "Full name", "Street address", "City", "Province", "Postal code", "Telephone", "Email",
+    "Date of birth", "Account number", "Amount", "Reference", "Comments",
+)
+
+
+def form_file(path):
+    """A one-page form of 12 text fields with no appearances, each with its label and a printed box."""
+    lines = [text(72, 720, 16, "Application form")]
+    widgets = []
+    for n, label in enumerate(FORM_FIELDS):
+        y = 660 - 40 * n
+        lines.append(text(72, y + 6, 11, label))
+        lines.append(b"0.5 w 200 %d 340 20 re S" % y)
+        widgets.append(
+            b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (%s) /Rect [200 %d 540 %d] /F 4 /P 5 0 R "
+            b"/DA (/F1 11 Tf 0 g) >>" % (label.lower().replace(" ", "_").encode(), y, y + 20)
+        )
+    refs = b" ".join(b"%d 0 R" % (6 + n) for n in range(len(widgets)))
+    write_pdf(
+        path,
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [%s] "
+            b"/DR << /Font << /F1 3 0 R >> >> /DA (/F1 11 Tf 0 g) >> >>" % refs,
+            b"<< /Type /Pages /Kids [5 0 R] /Count 1 >>",
+            HELVETICA,
+            stream(b"\n".join(lines)),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R /Annots [%s] >>" % refs,
+            *widgets,
+        ],
+    )
+
+
+def png_file(path, width, height, seed=2):
     """A colour page like a scan: off-white paper with noise, and lines of dark word-shaped blocks."""
-    rng = random.Random(2)
+    rng = random.Random(seed)
     paper = bytes(246 + i % 6 for i in range(256))
     ink = bytes(30 + i % 8 for i in range(256))
     rows = []
@@ -150,18 +231,53 @@ def png_file(path, width, height):
     )
 
 
-def scan_file(path):
-    """One scanned page made with the CLI (picture to PDF, then a colour JPEG at 300 dpi),
-    merged SCAN_PAGES times."""
-    png = WORK / "scan-page.png"
-    one = WORK / "scan-page-flate.pdf"
-    jpeg = WORK / "scan-page.pdf"
-    png_file(png, SCAN_WIDTH, SCAN_HEIGHT)
+def scan_page(path, mode, seed=2):
+    """One scanned page made with the CLI: picture to PDF, then a JPEG at 300 dpi, in colour or grey
+    by mode."""
+    png = path.with_suffix(".png")
+    one = path.with_name(f"{path.stem}-flate.pdf")
+    png_file(png, SCAN_WIDTH, SCAN_HEIGHT, seed)
     cli("images", "--dpi", "300", "--output", one, png)
-    cli("optimize-scans", "--mode", "color", "--max-dpi", "300", "--no-deskew", "--output", jpeg, one)
-    cli("merge", "--output", path, *([jpeg] * SCAN_PAGES))
+    cli("optimize-scans", "--mode", mode, "--max-dpi", "300", "--no-deskew", "--output", path, one)
     png.unlink()
     one.unlink()
+
+
+def scan_file(path):
+    """One colour scanned page merged SCAN_PAGES times."""
+    jpeg = WORK / "scan-page.pdf"
+    scan_page(jpeg, "color")
+    cli("merge", "--output", path, *([jpeg] * SCAN_PAGES))
+
+
+def refset(folder):
+    """Make the reference documents of performance.md's "Startup and responsiveness" in folder, new or
+    empty, and print their SHA-256 checksums. The same byte for byte each time on the same machine."""
+    if folder.exists() and any(folder.iterdir()):
+        raise SystemExit(f"{folder} isn't empty: the reference set is made in a new or empty folder")
+    folder.mkdir(parents=True, exist_ok=True)
+    letter_file(folder / "letter.pdf")
+    form_file(folder / "form.pdf")
+    for pages in (120, 300):
+        text_file(folder / f"text-{pages}.pdf", pages)
+    # Twenty different pages, each made apart (a page merged 20 times would be one picture 20 times).
+    with tempfile.TemporaryDirectory(dir=folder) as work:
+        pages = [Path(work) / f"{n}.pdf" for n in range(20)]
+        for n, page in enumerate(pages):
+            scan_page(page, "gray", seed=2 + n)
+        cli("merge", "--output", folder / "scan-20.pdf", *pages)
+    names = ["letter.pdf", "form.pdf", "text-120.pdf", "text-300.pdf", "scan-20.pdf"]
+    artwork = CORPUS / "pdfjs" / "bug1791583.pdf"
+    if artwork.exists():
+        shutil.copyfile(artwork, folder / "artwork.pdf")
+        names.append("artwork.pdf")
+    else:
+        print("skipped artwork.pdf: run tools/fetch-render-samples.sh first", file=sys.stderr)
+    # PB-37's long document.
+    text_file(folder / "text-10000.pdf", 10000)
+    names.append("text-10000.pdf")
+    for name in names:
+        print(f"{hashlib.sha256((folder / name).read_bytes()).hexdigest()}  {name}")
 
 
 def cli(*args):
@@ -344,7 +460,14 @@ def main():
     parser.add_argument("--timeout", type=float, default=TIMEOUT)
     parser.add_argument("--text-pages", type=int, default=TEXT_PAGES, help=argparse.SUPPRESS)
     parser.add_argument("--make", nargs="+", choices=("text", "scan"), help=argparse.SUPPRESS)
+    parser.add_argument("--refset", type=Path, metavar="DIR")
     options = parser.parse_args()
+    if options.refset:
+        subprocess.run(
+            ["cargo", "build", "--release", "-p", "limarepdf-cli"], cwd=ROOT, check=True
+        )
+        refset(options.refset)
+        return
     pages = options.text_pages
     if pages < 1:
         parser.error("--text-pages needs at least 1")

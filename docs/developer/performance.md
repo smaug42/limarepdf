@@ -1,10 +1,12 @@
 # Performance
 
-Measured on 18 October 2026 on an Intel Core i5-9600K (6 cores) with 15 GB of memory, Linux, release build (LTO, one
-codegen unit), at commit 6b67145, with `limarepdf-cli` and the measuring script described in
-[Testing](testing.md#automated-tests). Each time is the median of three runs and includes starting the program. Peak
-memory is the most the program held in memory at once (its resident set) in any of the three runs; readings shown as
-"≤ 20 MB" are at the lowest the script can measure.
+Measured on 12 November 2026 (S2-16) on an Intel Core i5-9600K (6 cores) with 15 GB of memory, Linux 7.3, release
+build (LTO, one codegen unit), at commit 11d899c (the measuring script's `--refset` added, nothing else changed), with
+`limarepdf-cli` and the measuring script described in [Testing](testing.md#automated-tests). Each time is the median
+of three runs and includes starting the program. Peak memory is the most the program held in memory at once (its
+resident set) in any of the three runs; readings shown as "≤ 24 MB" are at the lowest the script can measure (the
+measuring process's own). The last column is the first measurement, on 18 October 2026 at commit 6b67145, where its
+floor was 20 MB.
 
 To measure again, run `python3 crates/limarepdf-core/tools/measure.py` from the repository (Linux or macOS): it
 builds the release CLI, makes the files and prints this table for the machine and commit. `--runs`, `--only` and
@@ -12,40 +14,46 @@ builds the release CLI, makes the files and prints this table for the machine an
 repeated runs of render and split measure the same work.
 
 The files: a generated 1,000-page text file (1.5 MB; a heading, 48 lines of text and a rule on each page), a generated
-200-page colour scan (139 MB; a 300 dpi Letter page of 694 KB JPEG, 200 times), and four public test files from the
-[comparison with poppler](testing.md#compared-with-poppler).
+200-page colour scan (a 300 dpi Letter page of 694 KB JPEG, merged 200 times), and four public test files from the
+[comparison with poppler](testing.md#compared-with-poppler). The scan was 139 MB on 18 October and is 0.7 MB now: the
+merge writes the page's picture once, shared by all 200 pages, so its rows now measure a much smaller file and aren't
+compared (when the merge started sharing it wasn't traced; PB-164).
 
-| Task | Time | Peak memory |
-| --- | --- | --- |
-| 1,000 text pages: document information | 0.01 s | ≤ 20 MB |
-| 1,000 text pages: extract all text | 1.32 s | ≤ 20 MB |
-| 1,000 text pages: search | 0.24 s | ≤ 20 MB |
-| 1,000 text pages: render at 100 dpi to PNG files (all cores) | 4.59 s | 75 MB |
-| 1,000 text pages: watermark | 0.09 s | 28 MB |
-| 1,000 text pages: merge 3 copies into 3,000 pages | 0.07 s | 34 MB |
-| 1,000 text pages: split into 20 files | 0.07 s | 125 MB |
-| 1,000 text pages: AES-256 encrypt | 0.03 s | 29 MB |
-| 200-page scan: document information | 0.06 s | 426 MB |
-| 200-page scan: render at 100 dpi | 2.20 s | 426 MB |
-| 200-page scan: watermark | 0.18 s | 569 MB |
-| 200-page scan: AES-256 encrypt | 0.41 s | 568 MB |
-| Complex drawing, 73,000 paths on one page (PDFBox 5134): render at 150 dpi | 58.5 s | 9,707 MB |
-| The same, drawn in bands (2026-10-19, one run) | 54.4 s | 1,520 MB |
-| Complex drawing, 27,000 paths on one page (pdf.js bug1791583): render at 150 dpi | 2.05 s | 642 MB |
-| Japanese fonts not embedded, drawn with installed stand-ins, 42 pages (PDFBox 1910): render at 150 dpi | 0.53 s | 562 MB |
-| The same, 203 pages (pdf.js bug1905623): render at 150 dpi | 2.69 s | 559 MB |
+| Task | Time | Peak memory | 18 October |
+| --- | --- | --- | --- |
+| 1,000 text pages: document information | 0.02 s | ≤ 24 MB | 0.01 s, ≤ 20 MB |
+| 1,000 text pages: extract all text | 1.81 s | ≤ 24 MB | 1.32 s, ≤ 20 MB |
+| 1,000 text pages: search | 0.19 s | 130 MB | 0.24 s, ≤ 20 MB |
+| 1,000 text pages: render at 100 dpi to PNG files (all cores) | 4.26 s | 88 MB | 4.59 s, 75 MB |
+| 1,000 text pages: watermark | 0.10 s | 39 MB | 0.09 s, 28 MB |
+| 1,000 text pages: merge 3 copies into 3,000 pages | 0.09 s | 48 MB | 0.07 s, 34 MB |
+| 1,000 text pages: split into 20 files | 0.07 s | 42 MB | 0.07 s, 125 MB |
+| 1,000 text pages: AES-256 encrypt | 0.04 s | 30 MB | 0.03 s, 29 MB |
+| 200-page scan: document information | 0.00 s | ≤ 24 MB | – |
+| 200-page scan: render at 100 dpi | 2.04 s | 236 MB | – |
+| 200-page scan: watermark | 0.03 s | ≤ 24 MB | – |
+| 200-page scan: AES-256 encrypt | 0.01 s | ≤ 24 MB | – |
+| Complex drawing, 73,000 paths on one page (PDFBox 5134): render at 150 dpi | 50.83 s | 1,672 MB | 58.5 s, 9,707 MB; drawn in bands (19 October, one run) 54.4 s, 1,520 MB |
+| Complex drawing, 27,000 paths on one page (pdf.js bug1791583): render at 150 dpi | 4.81 s | 667 MB | 2.05 s, 642 MB |
+| Japanese fonts not embedded, drawn with installed stand-ins, 42 pages (PDFBox 1910): render at 150 dpi | 0.50 s | 608 MB | 0.53 s, 562 MB |
+| The same, 203 pages (pdf.js bug1905623): render at 150 dpi | 2.08 s | 651 MB | 2.69 s, 559 MB |
 
 What the numbers show:
 
 - Text documents are fast and small, even at 1,000 pages.
-- Memory grows with the file: the 139 MB scan takes about three times its size to open, before any page is drawn,
-  and about four times to change and save.
-- Drawing cost grows with the number of paths and with resolution. The 73,000-path page takes 2.6 s and 707 MB at
-  36 dpi but nearly a minute and almost 10 GB at 150 dpi; poppler draws it at 150 dpi in 9 s with 329 MB. In the app,
-  zooming in on such a page is limited to the [tiles in view](../rendering.md#high-zoom), but the whole page at a normal
-  zoom costs the same as here. Since 2026-10-19 large pages are [drawn in bands](../rendering.md#large-drawings): the
-  same page at 150 dpi now takes 54 s and 1.5 GB, and at 72 dpi 9.9 s and 1.4 GB (was 10.4 s and 2.7 GB).
-- The reasons for the 560 to 640 MB of the last three files weren't looked into: the 27,000-path file has no fonts at
+- Three rows moved more than the runs' spread since 18 October: the 27,000-path page at 150 dpi takes 2.3 times as
+  long (4.81 s, was 2.05 s), extracting the 1,000 pages' text 37 % longer (1.81 s, was 1.32 s), and searching them
+  130 MB at its peak (was at the 20 MB floor). None was traced (PB-165); drawing in bands, since 19 October, is a
+  candidate for the first, not checked.
+- On 18 October memory grew with the file: the 139 MB scan took about three times its size to open, before any page
+  was drawn, and about four times to change and save. Today's 0.7 MB file can't show that.
+- Drawing cost grows with the number of paths and with resolution. On 18 October the 73,000-path page took 2.6 s
+  and 707 MB at 36 dpi but nearly a minute and almost 10 GB at 150 dpi; poppler draws it at 150 dpi in 9 s with
+  329 MB. In the app, zooming in on such a page is limited to the [tiles in view](../rendering.md#high-zoom), but the
+  whole page at a normal zoom costs the same as here. Since 2026-10-19 large pages are
+  [drawn in bands](../rendering.md#large-drawings): the same page at 150 dpi takes 51 s and 1.7 GB, and at 72 dpi
+  9.9 s and 1.4 GB (19 October; was 10.4 s and 2.7 GB).
+- The reasons for the 600 to 670 MB of the last three files weren't looked into: the 27,000-path file has no fonts at
   all, and one page of PDFBox 1910 at 36 dpi takes 114 MB.
 
 ### Splitting
@@ -715,6 +723,10 @@ rest is the thread starting and the frame.
 
 ## Startup and responsiveness
 
+The latest check against the accepted thresholds is [12 November 2026's](#the-release-check-12-november-2026), at
+the end of this section. The 26 October measurements below are the baseline the thresholds were set from: history,
+not compared with it.
+
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted
 the same day, for this machine and setup only; search's total wait after batch 22: ≤ 450 ms worst, and its
 processing ≤ 300 ms, both met below):
@@ -734,7 +746,9 @@ worst, each costing 0.2 ms, 1.4 ms at worst; a result is shown at most one inter
 capture that saw it). Each figure is **median / worst**: 10 warm runs after one discarded, 5 cold ones (each after
 the page cache was dropped), 200 keys for typing. No percentiles are given below 20 samples.
 
-The documents, made up or public, the same byte for byte each time they are made:
+The documents, made up or public. The scripts that made them (`target/perf/`, never committed) are gone, and these
+checksums were retired on 12 November: the set is now made by `measure.py --refset`, to the same descriptions but
+not the same bytes ([below](#the-release-check-12-november-2026)).
 
 | File | What it is |
 | --- | --- |
@@ -888,3 +902,131 @@ down, a search for a word with 3,650 matches, the tab closed; the app's resident
 313, 322, 327, 319, 324, 327, 325, 319, 328 and 334 MB. A line fitted to it rises 1.3 MB a cycle, within a 21 MB
 spread: too few cycles to tell a slow leak from the allocator keeping memory; whether the closed documents' own memory is all given back was not checked, as no heap
 profiler is installed here.
+
+### The release check, 12 November 2026
+
+REL-07's step 4 (S2-16): the release build of 11d899c against the accepted thresholds (the build plan's 6.3), on the
+same machine and display as above. What changed in the method:
+
+- The driver is `tools/perf/drive.py`, rebuilt for the current app, and the documents come from
+  `measure.py --refset` (both in [Testing](testing.md#automated-tests)). The 26 October baseline isn't compared.
+- Each launch had new settings, state and data folders. The app ran with no desktop bus, `CUPS_SERVER` at a socket
+  that isn't there, and stand-ins for `lpstat` (4 s for each list, one printer), `lpoptions`, `lp` and the file
+  chooser: no real printer was listed or used.
+- One mode at a time, nothing building beside it; the usual desktop session ran alongside.
+- Warm only: 10 runs after one discarded, typing 200 keys a run (2,000 a row). The cold launches are **not run**
+  (below).
+- The pictures were 5.0 ms apart at the median in every mode (7.5 ms in the 10,000-page redaction's). Each result
+  carries the driver's uncertainty, about ±5 to 15 ms shown and ±1 ms built; "borderline" is within it of a limit.
+  No gated result was borderline.
+
+| File | What it is |
+| --- | --- |
+| letter.pdf | a one-page letter: two addresses, a date, four paragraphs and a signature, in Helvetica |
+| form.pdf | one page, 12 labelled text fields without appearances |
+| text-120.pdf | 120 pages, each a heading, 48 lines of words and a rule |
+| text-300.pdf | the same, 300 pages |
+| text-10000.pdf | the same, 10,000 pages (15.5 MB; PB-37's long document) |
+| scan-20.pdf | 20 different Letter pages of 300 dpi grey JPEG, 11 MB |
+| artwork.pdf | pdf.js bug1791583, one page of 27,000 paths (fetched by `tools/fetch-render-samples.sh`) |
+
+```
+7042ef50cb9a73b6f62ca679f329b1f2d079b483b4df9f0d2e4fb2481e1b790c  letter.pdf
+f2f05a47652752edd25e26b379249fab9c362d7b49d8349c69ff51333a431397  form.pdf
+a688ea8c6464a0ca1eaac800bec03a5a81cc0a530bdb546bc3fb367a6f968157  text-120.pdf
+0d505ea8046a5cc6df89c8ca73f881e534f90b652ec01482a5cb6bbd859c0567  text-300.pdf
+ed9e789c4a7daaea6d39d464ccac068b2c5f8376aca8c9de4d5f0cd1bbf63075  scan-20.pdf
+40538a43f8eb3843a8667d9e01d2f31973749f490231b742805d567395a0b8fc  artwork.pdf
+60eb9938ad0f7f585581d0437a662ae1c17aec59b1d06ff905291625f1062204  text-10000.pdf
+```
+
+Made twice, the same both times.
+
+#### Against the accepted thresholds
+
+Median / worst.
+
+| Threshold | Measured | Result |
+| --- | --- | --- |
+| First useful page, letter.pdf, warm (shown): median ≤ 500 ms, worst ≤ 700 ms | 309.8 / 323.1 ms | passed |
+| The same, cold: median ≤ 1.2 s, worst ≤ 1.5 s | – | not run |
+| Typing (shown): median ≤ 50 ms, none over 100 ms | a form field 24.8 / 50.8 ms; Add text 25.6 / 49.1 ms; a line 26.5 / 71.6 ms (1,350 keys; 650 past the view, not seen); a paragraph, new, 26.4 / 50.8 ms | passed |
+| Typing (built, every key): none over 50 ms | worst 24.0, 21.8, 25.0 and 24.2 ms | passed |
+| Search processing, 120 pages (built): ≤ 300 ms worst | first search 50.4 ms, later 43.5 ms | passed |
+| Search total, 120 and 300 pages: ≤ 450 ms worst | built 271.5 and 271.0 ms first, 262.5 and 278.8 ms later; shown 296.5 and 297.1 ms first, 287.2 and 308.9 ms later | passed |
+| Working (built): none over 50 ms while a page draws, printers are looked for, or a search or save runs | while artwork.pdf's page draws 0.8 / **71.0** ms (5 of 132 over 50); while printers are looked for 1.1 / 4.3 ms; while text-10000.pdf is searched 22.6 / **54.9** ms (1 of 605); while it's saved 544.6 / **911.7** ms (all 71) | **failed** three of four |
+| Print dialog (built): ≤ 200 ms | 2.8 / 3.5 ms | passed |
+| Save, Ctrl+S to the busy sign: ≤ 100 ms | letter.pdf built 19.0 / 37.7 ms, shown 38.1 / 68.2 ms; text-300.pdf built 48.9 / 52.1 ms, shown 69.9 / 74.7 ms | passed |
+| Memory, 20 cycles: the last 10's median within 20 MB of cycles 3 to 10's | 361.0 against 357.2 MB, +3.8 MB (338 MB after the first cycle, 372 MB after the last) | passed |
+
+The search's "complete" (to the frame with every match) was 294.9 and 347.1 ms worst for the first search, 262.5 and
+278.8 ms later. The save wrote in 12.9 / 18.1 ms (letter.pdf) and 24.9 / 33.8 ms (text-300.pdf), and reached the
+saved frame in 37.6 / 44.1 and 72.7 / 75.1 ms.
+
+The three failures, each a keystroke or wheel turn every 100 ms while the work runs, and how each stands against the
+starting target (median ≤ 50 ms, none over 100 ms, shown):
+
+- **While a page draws:** shown 40.1 / 97.3 ms (14 over 50), within the starting target, its worst within the
+  uncertainty (±5.2 ms) of 100. In the worst built case the window built no frame for 99 ms while the page drew:
+  the key was taken 71 ms after it was sent, and its frame took 0.4 ms. So the wait was between frames, in the paint
+  or the event loop with the processor busy drawing; not traced (PB-160).
+- **While 10,000 pages are searched:** shown 60.6 / 98.2 ms (460 over 50): over the starting target's median. Not
+  traced (PB-161).
+- **While 10,000 pages are saved,** with an Add text box open: the window's thread took Ctrl+S, then spent
+  462.8 / 474.4 ms before the save started and 431.5 / 489.5 ms after it before the next frame: 894.3 / 963.9 ms
+  with no frame. The write, on the save's thread, took 264.6 / 371.7 ms of it. The wheel turns waited for it, and
+  the busy sign was first drawn after the save had ended: on 10,000 pages Save misses the starting target's 100 ms
+  for its sign too. Not traced (PB-158).
+
+#### The other documents' first page (no threshold)
+
+| File | Built | Shown |
+| --- | --- | --- |
+| form.pdf | 310.2 / 323.9 ms | 337.8 / 354.2 ms |
+| text-120.pdf | 336.8 / 387.8 ms | 364.1 / 418.4 ms |
+| text-300.pdf | 365.1 / 379.0 ms | 393.7 / 410.3 ms |
+| scan-20.pdf | 403.2 / 434.1 ms | 431.9 / 460.5 ms |
+| artwork.pdf | 2,811.5 / 2,909.8 ms | 2,837.9 / 2,936.5 ms |
+| text-10000.pdf | 4,742.5 / 4,789.6 ms | 4,779.3 / 4,830.1 ms |
+
+The first frame came 228 to 276 ms after the launch (the medians), the app made 8 to 19 ms before it. On text-10000.pdf the
+file was read in 116 ms, and then the window built no frame for 4.3 s (4,313.9 ms from the reading's end to the next
+frame, median), page 1 drawn just after; not traced (PB-157).
+
+#### Items with no threshold of their own
+
+PB-37, PB-43, PB-44 and PB-52 were judged at 100 ms from the key or click to the first visible result or busy sign
+(shown, worst; the user, S2-16's Q3 (a)), the time to finish recorded only. All failed, and none showed a busy sign
+first, so each misses the starting target for a heavy command's sign (≤ 100 ms) too.
+
+| Item | What | Built | Shown |
+| --- | --- | --- | --- |
+| PB-37 | text-10000.pdf in Organise: page 1 moved to the end | 1,010.9 / 1,050.2 ms | 1,048.0 / 1,087.4 ms |
+| | its Undo, Redo and Undo again | 811.7 / 829.0, 819.5 / 827.9, 818.4 / 838.5 ms | 848.7 / 866.0, 855.4 / 865.0, 851.5 / 871.8 ms |
+| | page 1 deleted | 932.2 / 949.0 ms | 969.2 / 989.3 ms |
+| | its Undo and Redo | 636.2 / 642.4, 636.5 / 657.1 ms | 672.0 / 678.9, 670.8 / 688.9 ms |
+| PB-43 | artwork.pdf, each in a launch of its own: a shape nudged with an arrow key | 980.3 / 1,022.9 ms | 1,303.1 / 1,376.7 ms |
+| | a picture placed | 991.7 / 1,003.1 ms | 1,353.8 / 1,396.5 ms |
+| | a redaction applied | 1,629.6 / 1,756.2 ms | 2,185.3 / 2,314.9 ms |
+| PB-44 | a redaction applied on text-10000.pdf | 87.9 / 89.5 s | 88.3 / 89.9 s |
+| PB-52 | the first line clicked in Edit text: issue2618.pdf | 347.8 / 360.5 ms | 1,577.9 / 1,968.5 ms |
+| | issue2956.pdf | 72.3 / 74.8 ms | 358.0 / 366.2 ms |
+
+- PB-44's apply built no frame for the whole 88 s (PB-163).
+- PB-52's "built" is the frame that took the click. The line shows selected a frame later, once its page's fonts
+  are read (`page_line_fonts`, in that frame), which is where the shown time goes.
+- **PB-61** is typing, judged by the typing thresholds: 中 typed into a new Add text box set in Times on letter.pdf,
+  built 105.7 / 107.3 ms, shown 131.8 / 136.0 ms. **Failed** all three, and the starting target. Warm only (the
+  font file in the page cache); cold not run.
+
+Also found while measuring, on text-10000.pdf: with the large-document notice and the notice of unapplied
+redactions both up, the window redraws without end, about 32 frames a second, two passes each (PB-159); marking a
+redaction, the drag's release is taken in a frame 257.1 / 261.7 ms later, and the next frame comes
+364.8 / 370.2 ms after that (PB-162). Neither traced.
+
+#### Not run
+
+- The cold launches of letter.pdf (5) and the first ideograph cold (5): dropping the page cache needs root. Run
+  `sudo -v`, then `python3 -I tools/perf/drive.py startup letter.pdf --cold` and
+  `python3 -I tools/perf/drive.py ideograph --cold`, with nothing else running.
+- The testers' Windows and macOS figures.
