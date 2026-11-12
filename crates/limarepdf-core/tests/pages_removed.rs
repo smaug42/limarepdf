@@ -372,8 +372,7 @@ fn deleted_pages_leave_nothing_behind() {
 #[test]
 fn split_parts_keep_nothing_of_the_other_parts() {
     let mut p = four_pages();
-    let dir = std::env::temp_dir().join(format!("limarepdf-split-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::tool::Scratch::new("split");
     let file = |n: usize, title: Option<&str>| dir.join(part_file_name("part", n, title));
     let read = |n: usize, title: Option<&str>| Saved::new(std::fs::read(file(n, title)).unwrap());
 
@@ -403,7 +402,6 @@ fn split_parts_keep_nothing_of_the_other_parts() {
         let saved = only_pages_in(read(i + 1, title.as_deref()), &[i + 1]);
         assert_eq!(saved.bookmarks()[0].0, title.unwrap());
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A part holds only what its pages use, before it is saved: splitting a large file into

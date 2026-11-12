@@ -1,0 +1,699 @@
+# Every ignored test (`#[ignore]`) in the workspace, each with its group, and the outside programs it
+# runs (cycle plan WP-11, V-10). tools/check-ignored-tests.py, in CI's lint job, fails when an ignored
+# test isn't here, is here twice, or is here but no longer ignored: a new ignored test is given a
+# group here. tools/run-cross-checks.sh runs group G6 by these exact names; docs/developer/testing.md
+# records when each group last ran.
+#
+# name:   the test's name as `cargo test -- --list --ignored` gives it
+# crate:  its package
+# target: its test target, as cargo selects it (--lib, --bin NAME or --test NAME)
+# file:   the file it's in
+# group:  one of [groups] below
+# needs:  the outside programs it runs
+
+[groups]
+G1 = "The renderer's limits: what hayro doesn't draw yet. Run by name at every hayro upgrade and at release preparation; each passes once hayro draws it."
+G2 = "Child processes: each started by a test that runs by default, in a process of its own (a timeout, a time zone, a stack size, a stand-in CUPS). Run on every CI run through that test."
+G3 = "Fetched samples: tests reading samples that aren't committed (tools/fetch-render-samples.sh, or dss/ fetched by hand). Run at release preparation."
+G4 = "Timings: measurements in a release build, for performance.md. Run at release preparation; not pass or fail."
+G5 = "CUPS: tests needing a running CUPS. Run by hand on a machine with CUPS at release preparation; recorded as not run until then."
+G6 = "Cross-checks: Poppler, Ghostscript and OpenSSL read what LimarePDF wrote. Run on every CI run, in the cross-check job."
+
+# G1: the renderer's limits
+
+[[test]]
+name = "annot_free_text_without_ap"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+[[test]]
+name = "annot_highlight_without_ap"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+[[test]]
+name = "annot_link_without_ap"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+[[test]]
+name = "annot_noview_flag_is_respected"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+[[test]]
+name = "annot_stamp_without_ap"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+[[test]]
+name = "annot_text_without_ap"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+[[test]]
+name = "annot_widget_without_ap"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+[[test]]
+name = "knockout_group_replaces_earlier_objects"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+[[test]]
+name = "non_isolated_group_blends_against_page_backdrop"
+crate = "limarepdf-core"
+target = "--test render_coverage"
+file = "crates/limarepdf-core/tests/render_coverage.rs"
+group = "G1"
+
+# G2: child processes
+
+[[test]]
+name = "print::tests::twenty_timeouts"
+crate = "limarepdf-core"
+target = "--lib"
+file = "crates/limarepdf-core/src/print.rs"
+group = "G2"
+
+[[test]]
+name = "huge_text_child"
+crate = "limarepdf-core"
+target = "--test decoration"
+file = "crates/limarepdf-core/tests/decoration.rs"
+group = "G2"
+
+[[test]]
+name = "harness_child"
+crate = "limarepdf-core"
+target = "--test harness"
+file = "crates/limarepdf-core/tests/harness.rs"
+group = "G2"
+
+[[test]]
+name = "print_comment_dates"
+crate = "limarepdf-core"
+target = "--test local_dates"
+file = "crates/limarepdf-core/tests/local_dates.rs"
+group = "G2"
+
+[[test]]
+name = "print_dates_made_now"
+crate = "limarepdf-core"
+target = "--test local_dates"
+file = "crates/limarepdf-core/tests/local_dates.rs"
+group = "G2"
+
+[[test]]
+name = "colour_spaces_naming_themselves_child"
+crate = "limarepdf-core"
+target = "--test reduce"
+file = "crates/limarepdf-core/tests/reduce.rs"
+group = "G2"
+
+[[test]]
+name = "too_complex_child"
+crate = "limarepdf-core"
+target = "--test too_complex"
+file = "crates/limarepdf-core/tests/too_complex.rs"
+group = "G2"
+
+[[test]]
+name = "app::tests::booklet_with_stand_in_cups"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app.rs"
+group = "G2"
+
+[[test]]
+name = "app::tests::page_setup_with_stand_in_cups"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app.rs"
+group = "G2"
+
+[[test]]
+name = "app::tests::print_discovery_with_stand_in_cups"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app.rs"
+group = "G2"
+
+[[test]]
+name = "app::tests::print_with_stand_in_cups"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app.rs"
+group = "G2"
+
+[[test]]
+name = "app::tests::printers_kept_with_stand_in_cups"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app.rs"
+group = "G2"
+
+[[test]]
+name = "app::tests::several_a_sheet_with_stand_in_cups"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app.rs"
+group = "G2"
+
+[[test]]
+name = "app::tests::timed_with_the_log_on"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app.rs"
+group = "G2"
+
+# G3: fetched samples
+
+[[test]]
+name = "compact_saving_on_the_corpus"
+crate = "limarepdf-core"
+target = "--test compact"
+file = "crates/limarepdf-core/tests/compact.rs"
+group = "G3"
+
+[[test]]
+name = "several_objects_on_real_pages_change_as_one_at_a_time"
+crate = "limarepdf-core"
+target = "--test edit"
+file = "crates/limarepdf-core/tests/edit.rs"
+group = "G3"
+
+[[test]]
+name = "paragraph_check"
+crate = "limarepdf-core"
+target = "--test paragraph_check"
+file = "crates/limarepdf-core/tests/paragraph_check.rs"
+group = "G3"
+
+# Fails today, and is recorded so (testing.md, "Finding paragraphs").
+[[test]]
+name = "paragraph_gate"
+crate = "limarepdf-core"
+target = "--test paragraph_check"
+file = "crates/limarepdf-core/tests/paragraph_check.rs"
+group = "G3"
+
+[[test]]
+name = "reduce_pictures_on_the_corpus"
+crate = "limarepdf-core"
+target = "--test reduce"
+file = "crates/limarepdf-core/tests/reduce.rs"
+group = "G3"
+
+[[test]]
+name = "render_compare"
+crate = "limarepdf-core"
+target = "--test render_compare"
+file = "crates/limarepdf-core/tests/render_compare.rs"
+group = "G3"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "save_and_reopen_the_corpus"
+crate = "limarepdf-core"
+target = "--test save_reopen"
+file = "crates/limarepdf-core/tests/save_reopen.rs"
+group = "G3"
+
+[[test]]
+name = "dss_samples"
+crate = "limarepdf-core"
+target = "--test signatures"
+file = "crates/limarepdf-core/tests/signatures.rs"
+group = "G3"
+
+[[test]]
+name = "a_panic_ends_in_a_plain_error"
+crate = "limarepdf-cli"
+target = "--test panics"
+file = "crates/limarepdf-cli/tests/panics.rs"
+group = "G3"
+
+# G4: timings
+
+[[test]]
+name = "layout::tests::speed_of_a_long_word"
+crate = "limarepdf-core"
+target = "--lib"
+file = "crates/limarepdf-core/src/layout.rs"
+group = "G4"
+
+[[test]]
+name = "layout::tests::speed_of_a_paragraph"
+crate = "limarepdf-core"
+target = "--lib"
+file = "crates/limarepdf-core/src/layout.rs"
+group = "G4"
+
+[[test]]
+name = "objects::tests::a_page_is_read_within_its_steps_and_refused_past_them"
+crate = "limarepdf-core"
+target = "--lib"
+file = "crates/limarepdf-core/src/objects.rs"
+group = "G4"
+
+[[test]]
+name = "redaction_timings_in_long_documents"
+crate = "limarepdf-core"
+target = "--test redact"
+file = "crates/limarepdf-core/tests/redact.rs"
+group = "G4"
+
+[[test]]
+name = "app::tests::paragraphs::speed_of_typing_in_a_paragraph"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app/tests/paragraphs.rs"
+group = "G4"
+
+[[test]]
+name = "app::tests::text_align::speed_of_aligning_300_pages"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app/tests/text_align.rs"
+group = "G4"
+
+[[test]]
+name = "editor::replace_all::tests::replace_all_speed_on_300_pages"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/editor/replace_all.rs"
+group = "G4"
+
+# G5: CUPS
+
+[[test]]
+name = "cross_check_paper_sizes_with_ipptool"
+crate = "limarepdf-core"
+target = "--test papers"
+file = "crates/limarepdf-core/tests/papers.rs"
+group = "G5"
+needs = ["ipptool"]
+
+[[test]]
+name = "cross_check_printers_listed_at_once_with_lpstat"
+crate = "limarepdf-core"
+target = "--test papers"
+file = "crates/limarepdf-core/tests/papers.rs"
+group = "G5"
+needs = ["lpstat"]
+
+[[test]]
+name = "cross_check_sheets_pass_cupsfilter_unscaled"
+crate = "limarepdf-core"
+target = "--test print"
+file = "crates/limarepdf-core/tests/print.rs"
+group = "G5"
+needs = ["cupsfilter", "pdftoppm"]
+
+# G6: cross-checks
+
+[[test]]
+name = "embed::tests::cross_check_installed_fonts_with_poppler_and_ghostscript"
+crate = "limarepdf-core"
+target = "--lib"
+file = "crates/limarepdf-core/src/embed.rs"
+group = "G6"
+needs = ["gs", "pdffonts", "pdftotext"]
+
+[[test]]
+name = "embed::tests::cross_check_with_poppler_and_ghostscript"
+crate = "limarepdf-core"
+target = "--lib"
+file = "crates/limarepdf-core/src/embed.rs"
+group = "G6"
+needs = ["gs", "pdffonts", "pdftotext"]
+
+[[test]]
+name = "cross_check_attached_text_after_edits_with_poppler"
+crate = "limarepdf-core"
+target = "--test actual_text"
+file = "crates/limarepdf-core/tests/actual_text.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_dashed_line_endings_with_poppler"
+crate = "limarepdf-core"
+target = "--test annots"
+file = "crates/limarepdf-core/tests/annots.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_a_staff_with_its_label_edited_with_poppler"
+crate = "limarepdf-core"
+target = "--test decoration"
+file = "crates/limarepdf-core/tests/decoration.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_carried_underlines_thickness_with_poppler"
+crate = "limarepdf-core"
+target = "--test decoration"
+file = "crates/limarepdf-core/tests/decoration.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_new_texts_underline_with_poppler"
+crate = "limarepdf-core"
+target = "--test decoration"
+file = "crates/limarepdf-core/tests/decoration.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_with_openssl"
+crate = "limarepdf-core"
+target = "--test digital_ids"
+file = "crates/limarepdf-core/tests/digital_ids.rs"
+group = "G6"
+needs = ["openssl"]
+
+[[test]]
+name = "cross_check_cleared_choice_with_poppler"
+crate = "limarepdf-core"
+target = "--test form_fill"
+file = "crates/limarepdf-core/tests/form_fill.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_appended_answers_with_poppler"
+crate = "limarepdf-core"
+target = "--test form_flatten"
+file = "crates/limarepdf-core/tests/form_flatten.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_upright_pictures_with_poppler"
+crate = "limarepdf-core"
+target = "--test import"
+file = "crates/limarepdf-core/tests/import.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_links_with_poppler"
+crate = "limarepdf-core"
+target = "--test links"
+file = "crates/limarepdf-core/tests/links.rs"
+group = "G6"
+needs = ["pdfinfo", "pdftoppm"]
+
+[[test]]
+name = "cross_check_crowded_pages_with_ghostscript"
+crate = "limarepdf-core"
+target = "--test many_annotations"
+file = "crates/limarepdf-core/tests/many_annotations.rs"
+group = "G6"
+needs = ["gs"]
+
+[[test]]
+name = "cross_check_flattening_past_those_shown_with_poppler"
+crate = "limarepdf-core"
+target = "--test many_annotations"
+file = "crates/limarepdf-core/tests/many_annotations.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_edited_lines_with_poppler"
+crate = "limarepdf-core"
+target = "--test own_font"
+file = "crates/limarepdf-core/tests/own_font.rs"
+group = "G6"
+needs = ["pdftoppm", "pdftotext"]
+
+[[test]]
+name = "cross_check_extracted_pages_with_poppler_and_ghostscript"
+crate = "limarepdf-core"
+target = "--test pages_removed"
+file = "crates/limarepdf-core/tests/pages_removed.rs"
+group = "G6"
+needs = ["gs", "pdftotext"]
+
+[[test]]
+name = "cross_check_an_accent_drawn_over_its_letter_reads_with_it_in_poppler"
+crate = "limarepdf-core"
+target = "--test paragraph"
+file = "crates/limarepdf-core/tests/paragraph.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_line_extents_with_poppler"
+crate = "limarepdf-core"
+target = "--test paragraph"
+file = "crates/limarepdf-core/tests/paragraph.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_written_paragraphs_with_pdftotext"
+crate = "limarepdf-core"
+target = "--test paragraph"
+file = "crates/limarepdf-core/tests/paragraph.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "poppler_shows_a_jpeg_in_a_colour_profile_as_it_is_saved"
+crate = "limarepdf-core"
+target = "--test pictures"
+file = "crates/limarepdf-core/tests/pictures.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_sheets_with_poppler"
+crate = "limarepdf-core"
+target = "--test print"
+file = "crates/limarepdf-core/tests/print.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_a_code_that_starts_a_mapped_pair_with_poppler"
+crate = "limarepdf-core"
+target = "--test redact"
+file = "crates/limarepdf-core/tests/redact.rs"
+group = "G6"
+needs = ["pdftoppm", "pdftotext"]
+
+[[test]]
+name = "cross_check_a_letter_whose_width_is_taken_back_with_poppler"
+crate = "limarepdf-core"
+target = "--test redact"
+file = "crates/limarepdf-core/tests/redact.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_a_redacted_form_s_copy_with_poppler"
+crate = "limarepdf-core"
+target = "--test redact"
+file = "crates/limarepdf-core/tests/redact.rs"
+group = "G6"
+needs = ["pdftoppm", "pdftotext"]
+
+[[test]]
+name = "cross_check_a_redacted_public_pdf_with_poppler_and_ghostscript"
+crate = "limarepdf-core"
+target = "--test redact"
+file = "crates/limarepdf-core/tests/redact.rs"
+group = "G6"
+needs = ["gs", "pdfimages", "pdftotext"]
+
+[[test]]
+name = "cross_check_redacted_output_with_poppler_and_ghostscript"
+crate = "limarepdf-core"
+target = "--test redact"
+file = "crates/limarepdf-core/tests/redact.rs"
+group = "G6"
+needs = ["gs", "pdftotext"]
+
+[[test]]
+name = "cross_check_what_redaction_keeps_for_drawings_left_as_they_are_with_poppler"
+crate = "limarepdf-core"
+target = "--test redact"
+file = "crates/limarepdf-core/tests/redact.rs"
+group = "G6"
+needs = ["pdftoppm", "pdftotext"]
+
+[[test]]
+name = "poppler_shows_a_picture_in_a_colour_space_named_g_as_grey"
+crate = "limarepdf-core"
+target = "--test reduce"
+file = "crates/limarepdf-core/tests/reduce.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_removed_information_with_poppler_and_ghostscript"
+crate = "limarepdf-core"
+target = "--test sanitise"
+file = "crates/limarepdf-core/tests/sanitise.rs"
+group = "G6"
+needs = ["gs", "pdfinfo", "pdftotext"]
+
+[[test]]
+name = "cross_check_rewritten_and_expression_rules_with_poppler"
+crate = "limarepdf-core"
+target = "--test sanitise"
+file = "crates/limarepdf-core/tests/sanitise.rs"
+group = "G6"
+needs = ["pdftoppm", "pdftotext"]
+
+[[test]]
+name = "cross_check_what_shows_after_removing_hidden_layers_with_poppler"
+crate = "limarepdf-core"
+target = "--test sanitise"
+file = "crates/limarepdf-core/tests/sanitise.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_readers_find_every_form"
+crate = "limarepdf-core"
+target = "--test saved_checker"
+file = "crates/limarepdf-core/tests/saved_checker.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "poppler_finds_a_tall_scan_keeps_its_resolution"
+crate = "limarepdf-core"
+target = "--test scan"
+file = "crates/limarepdf-core/tests/scan.rs"
+group = "G6"
+needs = ["pdfimages"]
+
+[[test]]
+name = "poppler_shows_a_profiled_scan_as_it_was"
+crate = "limarepdf-core"
+target = "--test scan"
+file = "crates/limarepdf-core/tests/scan.rs"
+group = "G6"
+needs = ["pdftoppm"]
+
+[[test]]
+name = "cross_check_with_openssl"
+crate = "limarepdf-core"
+target = "--test signature_trust"
+file = "crates/limarepdf-core/tests/signature_trust.rs"
+group = "G6"
+needs = ["openssl"]
+
+[[test]]
+name = "cross_check_mixed_digests_with_pdfsig_and_openssl"
+crate = "limarepdf-core"
+target = "--test signatures"
+file = "crates/limarepdf-core/tests/signatures.rs"
+group = "G6"
+needs = ["openssl", "pdfsig"]
+
+[[test]]
+name = "cross_check_rsa_pss_keys_with_openssl"
+crate = "limarepdf-core"
+target = "--test signatures"
+file = "crates/limarepdf-core/tests/signatures.rs"
+group = "G6"
+needs = ["openssl"]
+
+[[test]]
+name = "cross_check_with_pdfsig_and_openssl"
+crate = "limarepdf-core"
+target = "--test signatures"
+file = "crates/limarepdf-core/tests/signatures.rs"
+group = "G6"
+needs = ["openssl", "pdfsig"]
+
+[[test]]
+name = "cross_check_hidden_content_with_poppler"
+crate = "limarepdf-core"
+target = "--test signing"
+file = "crates/limarepdf-core/tests/signing.rs"
+group = "G6"
+needs = ["pdfsig", "pdftotext"]
+
+[[test]]
+name = "cross_check_with_pdfsig_and_openssl"
+crate = "limarepdf-core"
+target = "--test signing"
+file = "crates/limarepdf-core/tests/signing.rs"
+group = "G6"
+needs = ["openssl", "pdfsig"]
+
+[[test]]
+name = "cross_check_aligned_new_text_with_poppler"
+crate = "limarepdf-core"
+target = "--test text_pipeline"
+file = "crates/limarepdf-core/tests/text_pipeline.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_every_writer_with_pdftotext"
+crate = "limarepdf-core"
+target = "--test text_pipeline"
+file = "crates/limarepdf-core/tests/text_pipeline.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
+name = "cross_check_pdfdocencoding_with_poppler"
+crate = "limarepdf-core"
+target = "--test text_strings"
+file = "crates/limarepdf-core/tests/text_strings.rs"
+group = "G6"
+needs = ["pdfinfo"]
+
+[[test]]
+name = "cross_check_emoji_with_poppler"
+crate = "limarepdf-core"
+target = "--test unicode_text"
+file = "crates/limarepdf-core/tests/unicode_text.rs"
+group = "G6"
+needs = ["pdffonts", "pdftoppm", "pdftotext"]
+
+[[test]]
+name = "cross_check_every_writer_with_poppler_and_ghostscript"
+crate = "limarepdf-core"
+target = "--test unicode_text"
+file = "crates/limarepdf-core/tests/unicode_text.rs"
+group = "G6"
+needs = ["gs", "pdffonts", "pdftotext"]
+
+[[test]]
+name = "page_text::tests::cross_check_word_starts_with_pdftotext"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/page_text.rs"
+group = "G6"
+needs = ["pdftotext"]

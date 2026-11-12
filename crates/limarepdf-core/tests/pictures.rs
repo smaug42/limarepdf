@@ -485,8 +485,8 @@ fn every_picture_is_named_by_page_and_number_once() {
 #[test]
 fn every_picture_is_saved_to_a_folder() {
     let p = three_pages();
-    let dir = std::env::temp_dir().join(format!("limarepdf-pictures-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch = common::tool::Scratch::new("pictures");
+    let dir = scratch.join("pictures");
     let done = p.save_all_pictures(&dir, "report").unwrap();
     assert!(done.failed.is_empty(), "{:?}", done.failed);
     let names: Vec<String> = (done.written.iter())
@@ -498,7 +498,6 @@ fn every_picture_is_saved_to_a_folder() {
     assert_eq!(std::fs::read(&done.written[2]).unwrap(), jpeg(80, 40));
     let flat = png(&std::fs::read(&done.written[1]).unwrap());
     assert_eq!(flat.to_rgb8().into_raw(), corners(10, 10));
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 // ------------------------------------------ colour profiles and calibration (C-02)

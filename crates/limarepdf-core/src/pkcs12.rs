@@ -88,7 +88,12 @@ const MAX_FILE: usize = 4 << 20;
 const MAX_BAGS: usize = 256;
 /// The most key-derivation iterations reading one file may take, all derivations together,
 /// so a crafted file can't keep LimarePDF busy for minutes. LimarePDF's own files take 2,400,000.
+#[cfg(not(fuzzing))]
 const MAX_ITERATIONS: u64 = 20_000_000;
+/// Fuzzing (fuzz/, built with `--cfg fuzzing`): enough for the test IDs, which take 6,144 at
+/// most, while each run stays short. The integrity check is never skipped.
+#[cfg(fuzzing)]
+const MAX_ITERATIONS: u64 = 10_000;
 /// How deeply bags may hold other bags.
 const MAX_NESTING: usize = 4;
 

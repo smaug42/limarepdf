@@ -110,29 +110,21 @@ fn form(p: &mut Pdf) {
     p.doc.catalog_mut().unwrap().set("AcroForm", form);
 }
 
-/// The test digital IDs' password (as `signing.rs`'s).
-const PASSWORD: &str = "mpe-test-password";
-
 /// A page signed by a new digital ID named [`SHORT`], in a box across its top wide enough
 /// for the look's "Digitally signed by" line on one line, its form then flattened so the
 /// look is page content.
 fn signed_page() -> Pdf {
     static ID: OnceLock<UnlockedId> = OnceLock::new();
     let id = ID.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!(
-            "limarepdf-text-pipeline-{}-ids",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = IdStore::new(dir.clone());
+        let dir = common::tool::Scratch::new("text-pipeline");
+        let store = IdStore::new(dir.join("ids"));
         let new = NewId {
             name: SHORT.into(),
             ..NewId::default()
         };
-        let made = store.create(&new, PASSWORD).unwrap().id;
-        let id = store.unlock(&made, PASSWORD).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        id
+        let password = limarepdf_core::password_seam::made_up();
+        let made = store.create(&new, &password).unwrap().id;
+        store.unlock(&made, &password).unwrap()
     });
     let r = SignRequest {
         id,

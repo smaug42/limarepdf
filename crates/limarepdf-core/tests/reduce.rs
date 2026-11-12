@@ -672,10 +672,7 @@ fn a_page_past_the_end_is_refused() {
 #[ignore = "needs the fetched samples: sh tools/fetch-render-samples.sh"]
 fn reduce_pictures_on_the_corpus() {
     let only = std::env::var("REDUCE_ONLY").unwrap_or_default();
-    let every: usize = std::env::var("REDUCE_EVERY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
+    let every = common::corpus::every("REDUCE_EVERY");
     let samples: Vec<_> = common::corpus::samples(&only)
         .into_iter()
         .filter(|s| s.path().exists())

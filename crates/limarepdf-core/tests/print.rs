@@ -934,15 +934,19 @@ fn cross_check_sheets_with_poppler() {
 }
 
 /// The bytes of `http://localhost:631{path}`, asked without anything but the standard
-/// library.
+/// library. A CUPS that takes the call and then doesn't answer stops the test, rather than
+/// passing for one without the file.
 #[cfg(unix)]
 fn local_cups(path: &str) -> Option<Vec<u8>> {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect("localhost:631").ok()?;
+    s.set_read_timeout(Some(tool::TIMEOUT)).unwrap();
     let ask = format!("GET {path} HTTP/1.0\r\nHost: localhost\r\n\r\n");
     s.write_all(ask.as_bytes()).ok()?;
     let mut got = Vec::new();
-    s.read_to_end(&mut got).ok()?;
+    if let Err(e) = s.read_to_end(&mut got) {
+        panic!("CUPS didn't answer for {path}: {e}");
+    }
     let end = got.windows(4).position(|w| w == b"\r\n\r\n")?;
     let ok = got.starts_with(b"HTTP/1.1 200") || got.starts_with(b"HTTP/1.0 200");
     ok.then(|| got[end + 4..].to_vec())

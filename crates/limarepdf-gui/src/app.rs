@@ -671,7 +671,7 @@ fn trust_unsure(why: Option<String>) -> String {
 
 /// Why a document set to be saved with a password isn't signed: the signed file would be
 /// written without it.
-fn password_not_signed() -> String {
+fn protected_save_not_signed() -> String {
     format!(
         "You set a password that applies when you save, and LimarePDF can't sign \
          password-protected documents, so the signed file would be saved without it. To sign, \
@@ -1713,7 +1713,7 @@ impl App {
                 anyhow::bail!("LimarePDF can't sign encrypted (password-protected) documents");
             }
             if t.encryption.is_some() {
-                anyhow::bail!(password_not_signed());
+                anyhow::bail!(protected_save_not_signed());
             }
             // A document opened with signature fields kept its bytes: the signature is
             // added after them, with the edits made since. Any other document has no
@@ -3425,7 +3425,7 @@ impl App {
                         ),
                     );
                 } else if t.encryption.is_some() {
-                    self.dialog = Dialog::Message(title.into(), password_not_signed());
+                    self.dialog = Dialog::Message(title.into(), protected_save_not_signed());
                 } else if certify && t.pdf.signature_count() > 0 {
                     self.dialog = Dialog::Message(
                         title.into(),
@@ -16032,7 +16032,7 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         app.tabs[0].set_encryption(password());
         app.act(&ctx, Act::SignDigital);
-        let why = password_not_signed();
+        let why = protected_save_not_signed();
         assert_eq!(message(&app), ("Sign with digital ID", why.as_str()));
         assert!(why.contains("(Protect > Password security…)"), "{why}");
         assert!(app.tabs[0].ed.tool != Tool::DigitalSign);

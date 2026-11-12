@@ -1,7 +1,8 @@
 # Paragraph answer sets
 
 The answers the opt-in paragraph check judges paragraph detection by (`tests/paragraph_check.rs`, NEW-01; run with
-`cargo test -p limarepdf-core --test paragraph_check -- --ignored paragraph_check`). Made in batch 44 and written
+`cargo test -p limarepdf-core --test paragraph_check -- --ignored paragraph_check`, or asserted by its
+`paragraph_gate`, the top of that file). Made in batch 44 and written
 here in batch 45; the scripts that made them are outside the repository (they need LibreOffice, Chromium and
 groff).
 
@@ -28,4 +29,15 @@ Each answer file is lines of tab-separated fields:
 | `X` | element, page, rows | set 1: a tag element holding several paragraphs or a list, its lines left out of the figures and listed |
 
 The halves are fixed by the file name (the first byte of its SHA-1 even: tuning; `pdfjs-issue1133` tuning), so the
-detector's constants are tuned on one half and judged on the other.
+detector's constants are tuned on one half and judged on the other. The test halves' files and errors are listed
+only with `PARAGRAPH_CHECK_BLIND_OK=1`, so tuning doesn't see them by chance.
+
+The split's checksum, 48 files a half (11 November 2026), is
+`8792244f5b39ceb6936e48247d027f7e455ce97c61f9b69f994a9b43b9f3bb0d`, from this folder:
+
+```
+grep -h '^F' corpus.tsv madeup.tsv | cut -f2,3 | LC_ALL=C sort | sha256sum
+```
+
+The check's `the_halves_are_as_recorded` compares the two on every test run: a file added, or moved to the other
+half, is a change made on purpose and its new checksum written here.

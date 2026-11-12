@@ -1,6 +1,10 @@
 //! Drawing part of a page (`Renderer::render_region`), as the app does in tiles at high
 //! zoom: a region must match the same pixels of the whole page drawn at that scale.
 
+#[allow(dead_code)]
+#[path = "common/tool.rs"]
+mod tool;
+
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::render::{self, Bitmap, Region};
 use limarepdf_core::Pdf;
@@ -231,7 +235,7 @@ fn a_huge_page_is_an_error_not_a_huge_bitmap() {
     let t = r.render_region(0, 1.0, region(0, 0, 512, 512)).unwrap();
     assert_eq!((t.width, t.height), (512, 512));
     // Exporting it fails cleanly too.
-    let dir = std::env::temp_dir().join(format!("limarepdf-huge-{}", std::process::id()));
+    let (_scratch, dir) = export_dir("huge");
     let e = p
         .export_images(
             &[0],
@@ -243,7 +247,6 @@ fn a_huge_page_is_an_error_not_a_huge_bitmap() {
         )
         .expect_err("too large");
     assert!(e.to_string().contains("too large"), "{e}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A document of pages `sizes` (points), each with a red box 10 pt square in its far
@@ -265,11 +268,12 @@ fn red_far_off(sizes: &[(f32, f32)], rotate: i64) -> Pdf {
     p
 }
 
-/// A folder of its own for one test's export.
-fn export_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("limarepdf-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
+/// A folder of its own for one test's export, not made yet, in a scratch folder kept as long
+/// as the first.
+fn export_dir(name: &str) -> (tool::Scratch, std::path::PathBuf) {
+    let scratch = tool::Scratch::new(name);
+    let dir = scratch.join("export");
+    (scratch, dir)
 }
 
 /// The files in `dir`, none when it isn't there.
@@ -298,7 +302,7 @@ fn a_page_too_tall_or_wide_for_its_bitmap_is_refused_whole() {
         );
         let r = render::Renderer::new(&hp);
         assert!(r.render(0, 8.0).is_err(), "{size:?} {rotate}");
-        let dir = export_dir("too-long");
+        let (_scratch, dir) = export_dir("too-long");
         let e = p
             .export_images(
                 &[0],
@@ -314,7 +318,6 @@ fn a_page_too_tall_or_wide_for_its_bitmap_is_refused_whole() {
             "{size:?} {rotate}: {e}"
         );
         assert_eq!(files_in(&dir), 0, "{size:?} {rotate}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -374,7 +377,7 @@ fn a_bitmap_side_of_65280_pixels_is_drawn_whole_and_65281_refused() {
 #[test]
 fn an_export_with_one_page_too_large_writes_no_pages() {
     let mut p = red_far_off(&[(300.0, 200.0), (300.0, 200.0), (10.0, 10_000.0)], 0);
-    let dir = export_dir("one-too-long");
+    let (_scratch, dir) = export_dir("one-too-long");
     let e = p
         .export_images(
             &[0, 1, 2],
@@ -387,5 +390,4 @@ fn an_export_with_one_page_too_large_writes_no_pages() {
         .expect_err("too large");
     assert!(e.to_string().contains("page 3"), "{e}");
     assert_eq!(files_in(&dir), 0);
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -2317,7 +2317,9 @@ mod tests {
             assert!(text.contains(w), "poppler: {w:?} in {text:?}");
             assert!(gs_text.contains(w), "Ghostscript: {w:?} in {gs_text:?}");
         }
-        assert!(gs_errors.trim().is_empty(), "Ghostscript: {gs_errors}");
+        // Without Ghostscript 10.02's line about its own device (its bug 707132).
+        let gs_errors = crate::child_seam::ghostscript_errors(&gs_errors);
+        assert!(gs_errors.is_empty(), "Ghostscript: {gs_errors}");
 
         let (fonts, errors) = tool("pdffonts", &["{}"], &bytes);
         assert!(errors.trim().is_empty(), "pdffonts: {errors}");
@@ -2381,7 +2383,9 @@ mod tests {
             assert!(text.contains(w), "poppler: {w:?} in {text:?}");
             assert!(gs_text.contains(w), "Ghostscript: {w:?} in {gs_text:?}");
         }
-        assert!(gs_errors.trim().is_empty(), "Ghostscript: {gs_errors}");
+        // Without Ghostscript 10.02's line about its own device (its bug 707132).
+        let gs_errors = crate::child_seam::ghostscript_errors(&gs_errors);
+        assert!(gs_errors.is_empty(), "Ghostscript: {gs_errors}");
 
         let (fonts, errors) = tool("pdffonts", &["{}"], &bytes);
         assert!(errors.trim().is_empty(), "pdffonts: {errors}");

@@ -32,7 +32,8 @@ jobs:
   # cargo deny (deny.toml) against every crate in Cargo.lock, for every platform: known
   # security advisories (RustSec), licences, crates.io as the only source, duplicate versions
   # (reported only). The advisories set aside are in deny.toml, each with its reason. The
-  # release job waits for it: a release never ships with a known advisory.
+  # release job waits for it: a release never ships with a known advisory. fuzz/Cargo.lock,
+  # the fuzz targets' own workspace (never shipped), is checked against the same file.
   deny:
     runs-on: ubuntu-latest
     steps:
@@ -40,10 +41,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       # A set version, so a new cargo-deny can't change the check unseen; releasing.md says
       # when to move it.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.20.2
       - name: cargo deny
-        run: |
-          cargo install cargo-deny --locked --version 0.20.2
-          cargo deny --locked check
+        run: cargo deny --locked check
+      - name: cargo deny on fuzz/
+        run: cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked check
 
   # Formatting, and clippy with warnings refused, on every target (tests and examples too),
   # for the code of all three platforms. Clippy checks without linking, so one Linux runner
@@ -60,8 +63,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # No tracked code reading from a build folder and no audit scratch tracked; the docs'
       # relative links and anchors; the signing secrets only in release-signing jobs that no pull
-      # request starts. Each tool's self-test first, so a broken tool can't pass. The package
-      # check's self-test is here too; the packages themselves are checked where they're built.
+      # request starts; every ignored test listed once in tools/ignored-tests.toml, with its
+      # group. Each tool's self-test first, so a broken tool can't pass. The package check's
+      # self-test is here too; the packages themselves are checked where they're built.
       - name: Repository checks
         run: |
           python3 -I tools/check-scratch.py --self-test
@@ -70,6 +74,8 @@ jobs:
           python3 -I tools/check-doc-links.py
           python3 -I tools/check-workflows.py --self-test
           python3 -I tools/check-workflows.py
+          python3 -I tools/check-ignored-tests.py --self-test
+          python3 -I tools/check-ignored-tests.py
           python3 -I packaging/check-package.py --self-test
       - name: Formatting
         run: cargo fmt --all --check
@@ -86,6 +92,37 @@ jobs:
           if [ -n "$failed" ]; then
             echo "::error::clippy found problems on:$failed"; exit 1
           fi
+
+  # The cross-checks, group G6 of tools/ignored-tests.toml: Poppler, Ghostscript and OpenSSL
+  # read what LimarePDF wrote. tools/run-cross-checks.sh fails when one of them is missing, and
+  # when the tests that ran and passed aren't exactly the list's.
+  cross-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install Poppler, Ghostscript and OpenSSL
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends poppler-utils ghostscript openssl
+      - name: Cross-checks
+        run: bash tools/run-cross-checks.sh
+
+  # The fuzz targets (fuzz/, a workspace of their own) still build, checked with the cfg
+  # `cargo fuzz` sets, on stable and without libFuzzer's sanitizers; fuzz.yml runs them weekly.
+  fuzz-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+      - name: Check the fuzz targets
+        env:
+          RUSTFLAGS: --cfg fuzzing -D warnings
+        run: cargo check --manifest-path fuzz/Cargo.toml --locked --bins
 
   build:
     strategy:

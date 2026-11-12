@@ -54,3 +54,38 @@ path = "fuzz_targets/images.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "verify"
+path = "fuzz_targets/verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signature"
+path = "fuzz_targets/signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "trustfiles"
+path = "fuzz_targets/trustfiles.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pkcs12"
+path = "fuzz_targets/pkcs12.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipp"
+path = "fuzz_targets/ipp.rs"
+test = false
+doc = false
+bench = false

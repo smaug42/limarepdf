@@ -13,7 +13,6 @@ use limarepdf_core::{
     TrustRole, WrongPassword,
 };
 use sigkit::*;
-use std::path::PathBuf;
 
 const PASSWORD: &str = "mpe-test-password";
 
@@ -21,14 +20,11 @@ fn p12(name: &str) -> Vec<u8> {
     std::fs::read(data_dir().join("ids").join(format!("{name}.p12"))).unwrap()
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("limarepdf-ids-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
-
-fn store(name: &str) -> IdStore {
-    IdStore::new(scratch(name).join("ids"))
+/// An ID folder of one test's own, in a scratch folder kept as long as the first.
+fn store(name: &str) -> (tool::Scratch, IdStore) {
+    let dir = tool::Scratch::new(&format!("ids-{name}"));
+    let store = IdStore::new(dir.join("ids"));
+    (dir, store)
 }
 
 fn sha256_of(der: &[u8]) -> String {
@@ -66,7 +62,7 @@ fn jane() -> NewId {
 /// how many other certificates came with it, and that it opens again with the password.
 #[track_caller]
 fn imports(file: &str, password: &str, cert: &str, key: &str, chain: usize) -> DigitalId {
-    let s = store(&format!("import-{file}"));
+    let (_dir, s) = store(&format!("import-{file}"));
     let id = s.import(&p12(file), password, None).unwrap().id;
     assert_eq!(id.cert.sha256, sha256_of(&cert_der(cert)), "{file}");
     assert_eq!(id.cert.key, key, "{file}");
@@ -146,7 +142,7 @@ fn imports_expired_ids_but_marks_them() {
 
 #[test]
 fn import_takes_the_name_given() {
-    let s = store("import-named");
+    let (_dir, s) = store("import-named");
     let id = s
         .import(&p12("p256"), PASSWORD, Some("Work ID"))
         .unwrap()
@@ -162,7 +158,7 @@ fn import_takes_the_name_given() {
 
 #[test]
 fn wrong_passwords_are_refused() {
-    let s = store("wrong-password");
+    let (_dir, s) = store("wrong-password");
     wrong_password(s.import(&p12("modern"), "mpe-test-passwore", None));
     wrong_password(s.import(&p12("legacy"), "", None));
     wrong_password(s.import(&p12("pbmac1"), "MPE-TEST-PASSWORD", None));
@@ -173,7 +169,7 @@ fn wrong_passwords_are_refused() {
 
 #[test]
 fn files_limarepdf_cant_sign_with_are_refused() {
-    let s = store("refused");
+    let (_dir, s) = store("refused");
     let r = |f: &str| s.import(&p12(f), PASSWORD, None);
     refused(r("no-mac"), "no integrity check");
     refused(r("rsa1024"), "1024-bit RSA key");
@@ -195,7 +191,7 @@ fn damaged_files_never_panic() {
     // Truncations, and a byte changed, of a legacy and a modern file, sampled (every 7th
     // length, every 3rd byte): refused (or, where the change is outside what the integrity
     // check covers and harmless, imported), never a panic.
-    let s = store("damaged");
+    let (_dir, s) = store("damaged");
     for name in ["legacy", "p256"] {
         let file = p12(name);
         for n in (0..file.len()).step_by(7) {
@@ -221,7 +217,7 @@ fn damaged_files_never_panic() {
 
 #[test]
 fn creates_self_signed_ids() {
-    let s = store("create");
+    let (_dir, s) = store("create");
     let made = s.create(&jane(), "correct horse").unwrap();
     assert!(made.warnings.is_empty(), "{:?}", made.warnings);
     let id = made.id;
@@ -259,7 +255,7 @@ fn creates_self_signed_ids() {
 
 #[test]
 fn new_ids_need_a_good_password_and_name() {
-    let s = store("create-refused");
+    let (_dir, s) = store("create-refused");
     refused(s.create(&jane(), "short"), "at least 8 characters");
     refused(
         s.create(
@@ -287,7 +283,7 @@ fn new_ids_need_a_good_password_and_name() {
 
 #[test]
 fn several_ids_and_the_default() {
-    let s = store("several");
+    let (_dir, s) = store("several");
     let first = s.create(&jane(), "correct horse").unwrap().id;
     let second = s.create(&jane(), "battery staple").unwrap().id;
     assert_eq!(second.name, "jane-doe-2");
@@ -324,7 +320,7 @@ fn several_ids_and_the_default() {
 
 #[test]
 fn the_folder_lists_what_it_can() {
-    let s = store("folder");
+    let (_dir, s) = store("folder");
     assert!(s.list().ids.is_empty());
     let id = s.create(&jane(), "correct horse").unwrap().id;
     std::fs::write(s.dir().join("garbage.p12"), b"not a PKCS#12 file").unwrap();
@@ -373,22 +369,23 @@ fn the_folder_lists_what_it_can() {
 
 #[test]
 fn export_and_import_elsewhere() {
-    let s = store("export");
+    let (_dir, s) = store("export");
     let id = s.create(&jane(), "correct horse").unwrap().id;
     let u = s.unlock(&id, "correct horse").unwrap();
     refused(u.to_p12("short"), "at least 8 characters");
     let file = u.to_p12("new password").unwrap();
     // Certificates are encrypted in exported files, as other apps write them.
-    let elsewhere = store("export-elsewhere");
+    let (_elsewhere_dir, elsewhere) = store("export-elsewhere");
     wrong_password(elsewhere.import(&file, "correct horse", None));
     let again = elsewhere.import(&file, "new password", None).unwrap().id;
     assert_eq!(again.cert, id.cert);
     assert_eq!(again.name, "jane-doe");
     // An imported ID with an authority exports with it.
-    let s = store("export-chain");
+    let (_dir, s) = store("export-chain");
     let id = s.import(&p12("chain"), PASSWORD, None).unwrap().id;
     let file = s.unlock(&id, PASSWORD).unwrap().to_p12(PASSWORD).unwrap();
     let back = store("export-chain-back")
+        .1
         .import(&file, PASSWORD, None)
         .unwrap()
         .id;

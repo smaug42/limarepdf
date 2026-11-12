@@ -24,6 +24,18 @@ pub fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/render")
 }
 
+/// The setting `var` (`COMPACT_EVERY`, say): take every n-th sample, every one when it isn't
+/// set. Zero or a word stops the test saying so, rather than dividing by it.
+pub fn every(var: &str) -> usize {
+    match std::env::var(var) {
+        Ok(n) => match n.parse() {
+            Ok(n) if n > 0 => n,
+            _ => panic!("{var} is a whole number above 0, not {n:?}"),
+        },
+        Err(_) => 1,
+    }
+}
+
 /// The listed files whose name contains `only`, fetched or not.
 pub fn samples(only: &str) -> Vec<Sample> {
     let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/render-samples.txt");

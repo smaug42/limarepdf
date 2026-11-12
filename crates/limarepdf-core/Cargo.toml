@@ -12,6 +12,11 @@ publish.workspace = true
 # below, for its integration tests), never in a release build.
 test-seams = []
 
+# `cfg(fuzzing)`: set by `cargo fuzz` (fuzz/) for the fuzz targets' seam and limits (lib.rs's
+# `fuzz_seam`), never by a normal build.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [dependencies]
 lopdf.workspace = true
 hayro.workspace = true

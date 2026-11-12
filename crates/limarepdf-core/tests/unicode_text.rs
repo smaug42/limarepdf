@@ -527,7 +527,9 @@ fn cross_check_every_writer_with_poppler_and_ghostscript() {
         assert!(text.contains(&w), "poppler: {w:?} in {text:?}");
         assert!(gs_text.contains(&w), "Ghostscript: {w:?} in {gs_text:?}");
     }
-    assert!(gs_errors.trim().is_empty(), "Ghostscript: {gs_errors}");
+    // Without Ghostscript 10.02's line about its own device (its bug 707132).
+    let gs_errors = tool::ghostscript_errors(&gs_errors);
+    assert!(gs_errors.is_empty(), "Ghostscript: {gs_errors}");
     let (fonts, errors) = run_tool("pdffonts", &["{}"], &bytes);
     assert!(errors.trim().is_empty(), "pdffonts: {errors}");
     let embedded: Vec<&str> = fonts

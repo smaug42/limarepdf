@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Each test file uses only some of them.
 #[allow(unused_imports)]
-pub use limarepdf_core::child_seam::{output, output_with_input, output_within, TIMEOUT};
+pub use limarepdf_core::child_seam::{
+    ghostscript_errors, output, output_with_input, output_within, TIMEOUT,
+};
 
 /// A folder of one test's own in `target/tmp/tools`, its name unique to the run and the call.
 /// Removed when dropped, unless the test is failing: then it stays, to look at.
