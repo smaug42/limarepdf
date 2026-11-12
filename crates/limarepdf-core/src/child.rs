@@ -396,6 +396,7 @@ fn threaded(
 pub mod child_seam {
     pub use super::{run, run_to, Ran, CAP};
     use std::process::{Command, Output, Stdio};
+    use std::sync::OnceLock;
     use std::time::Duration;
 
     /// How long one run of a program may take; `LIMAREPDF_TOOL_TIMEOUT` (seconds) changes it.
@@ -432,6 +433,34 @@ pub mod child_seam {
         checked(cmd, None, Stdio::piped(), limit)
     }
 
+    /// What Ghostscript 10.02 writes after a `txtwrite` run whatever the file says: its bug
+    /// 707132, about its own device. Ubuntu 24.04, where the cross-check job runs, has 10.02.1.
+    const GS_10_02_DEVICE: &str = "Error: finalizing subclassing device while child refcount > 1";
+
+    /// What Ghostscript wrote to `stderr` that counts against the file it read, trimmed: all of
+    /// it, but without [`GS_10_02_DEVICE`]'s line when the installed `gs` is 10.02.
+    pub fn ghostscript_errors(stderr: &str) -> String {
+        static VERSION: OnceLock<String> = OnceLock::new();
+        let version = VERSION.get_or_init(|| {
+            let out = output(Command::new("gs").arg("--version"))
+                .unwrap_or_else(|e| panic!("gs installed: {e}"));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        });
+        errors_of(version, stderr)
+    }
+
+    /// [`ghostscript_errors`] for Ghostscript `version`.
+    fn errors_of(version: &str, stderr: &str) -> String {
+        let device = version == "10.02" || version.starts_with("10.02.");
+        stderr
+            .lines()
+            .filter(|line| !(device && line.trim() == GS_10_02_DEVICE))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_owned()
+    }
+
     fn checked(
         cmd: &mut Command,
         input: Option<&[u8]>,
@@ -455,5 +484,26 @@ pub mod child_seam {
             stdout: ran.stdout,
             stderr: ran.stderr,
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Ghostscript 10.02's line about its own device doesn't count against the file, and
+        /// only there; anything else it says still does.
+        #[test]
+        fn ghostscript_10_02s_device_line_is_not_counted() {
+            let device = format!("{GS_10_02_DEVICE}\n");
+            assert_eq!(errors_of("10.02.1", &device), "");
+            assert_eq!(errors_of("10.08.0", &device), GS_10_02_DEVICE);
+            assert_eq!(errors_of("10.03.0", &device), GS_10_02_DEVICE);
+            let both = format!("**** Error: syntax error in xref\n{device}");
+            assert_eq!(
+                errors_of("10.02.1", &both),
+                "**** Error: syntax error in xref"
+            );
+            assert_eq!(errors_of("10.02.1", "   \n"), "");
+        }
     }
 }

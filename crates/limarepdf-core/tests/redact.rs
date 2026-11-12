@@ -2172,11 +2172,14 @@ fn cross_check_a_letter_whose_width_is_taken_back_with_poppler() {
     }
 }
 
-/// A real public PDF: the Magick++ tutorial ImageMagick installs. Its page 14 has text, a
-/// picture and drawings (docs/developer/testing.md's redaction check uses it too), and its
-/// fonts are subsets, so its text isn't in the file as written and only a reader can tell
+/// A real public PDF: the Magick++ tutorial from ImageMagick's documentation, committed with its
+/// licence (`tests/data/documents/README.md`). Its page 14 has text, a picture and drawings, and
+/// its fonts are subsets, so its text isn't in the file as written and only a reader can tell
 /// it's gone.
-const TUTORIAL: &str = "/usr/share/doc/ImageMagick-7/www/magick++/tutorial/Magick++_tutorial.pdf";
+const TUTORIAL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/data/documents/Magick++_tutorial.pdf"
+);
 
 /// Redacting text through the whole tutorial and half of page 14's picture, read back by
 /// poppler and Ghostscript:
@@ -2184,8 +2187,7 @@ const TUTORIAL: &str = "/usr/share/doc/ImageMagick-7/www/magick++/tutorial/Magic
 #[test]
 #[ignore]
 fn cross_check_a_redacted_public_pdf_with_poppler_and_ghostscript() {
-    let original = std::fs::read(TUTORIAL)
-        .unwrap_or_else(|e| panic!("{TUTORIAL}, from ImageMagick's documentation: {e}"));
+    let original = std::fs::read(TUTORIAL).unwrap_or_else(|e| panic!("{TUTORIAL}: {e}"));
     let gone = ["imprevisible", "DrawableFillColor"];
     let kept = ["anti-aliasing", "fully transparent", "DrawableStrokeColor"];
     let mut p = Pdf::from_bytes(&original, None).unwrap();

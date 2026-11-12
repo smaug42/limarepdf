@@ -194,16 +194,22 @@ fn files_tell_whether_they_needed_a_password() {
         p.to_bytes().unwrap()
     };
     let locked = protect("user");
-    for password in ["user", "owner"] {
+    // The cases are said by name: the password itself isn't printed.
+    for (case, password) in [("the user password", "user"), ("the owner's", "owner")] {
         let p = Pdf::from_bytes(&locked, Some(password)).unwrap();
-        assert!(p.password_needed(), "{password}");
+        assert!(p.password_needed(), "{case}");
     }
     // Only a permissions password: it opens without one, even when one is given.
     let open = protect("");
-    for password in [None, Some(""), Some("owner"), Some("anything")] {
+    for (case, password) in [
+        ("no password", None),
+        ("an empty one", Some("")),
+        ("the owner's", Some("owner")),
+        ("another", Some("anything")),
+    ] {
         let p = Pdf::from_bytes(&open, password).unwrap();
-        assert!(p.doc.was_encrypted(), "{password:?}");
-        assert!(!p.password_needed(), "{password:?}");
+        assert!(p.doc.was_encrypted(), "{case}");
+        assert!(!p.password_needed(), "{case}");
     }
     let plain = Pdf::from_bytes(&doc_with_text().to_bytes().unwrap(), None).unwrap();
     assert!(!plain.password_needed());
@@ -257,9 +263,12 @@ fn encrypted_files_read_as_other_apps_read_them() {
             restrictions: Restrictions::default(),
         }));
         let bytes = p.to_bytes().unwrap();
-        for password in [Some(user), Some("owner")] {
+        for (case, password) in [
+            ("the user password", Some(user)),
+            ("the owner's", Some("owner")),
+        ] {
             let opened = Pdf::from_bytes(&bytes, password).unwrap();
-            assert_eq!(opened.differs(), None, "{cipher:?} {password:?}");
+            assert_eq!(opened.differs(), None, "{cipher:?}, {case}");
         }
     }
 }

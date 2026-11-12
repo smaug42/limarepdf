@@ -178,6 +178,17 @@ pub fn password_problem(password: &str) -> Option<String> {
     }
 }
 
+/// Passwords for the tests' new digital IDs and files, made up as they run rather than written
+/// in them. Built only for tests (core's own, and through the `test-seams` feature).
+#[cfg(any(test, feature = "test-seams"))]
+pub mod password_seam {
+    /// A new password on each call: 19 random digits, more than
+    /// [`MIN_PASSWORD`](super::MIN_PASSWORD).
+    pub fn made_up() -> String {
+        (getrandom::u64().unwrap() | 1 << 63).to_string()
+    }
+}
+
 // ------------------------------------------------------------------ keys
 
 /// A private key LimarePDF can sign with.

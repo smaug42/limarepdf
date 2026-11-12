@@ -122,6 +122,8 @@ pub use fonts::{winansi_byte, Family, FontChoice};
 pub use form_ap::BoxSetting;
 pub use forms::{Field, FieldKind, FieldValue, Widget};
 pub use history::{Before, Restore};
+#[cfg(any(test, feature = "test-seams"))]
+pub use ids::password_seam;
 pub use ids::{
     password_problem, DigitalId, IdList, IdStore, NewId, Stored, UnlockedId, WrongPassword,
     MIN_PASSWORD,

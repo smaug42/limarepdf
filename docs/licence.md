@@ -82,6 +82,12 @@ These are in the source repository only, never in release archives:
 - **Test fonts** in `crates/limarepdf-core/tests/data/fonts/`, for the tests of installed fonts written into
   PDFs: Source Serif 4 by Adobe (with Reserved Font Name "Source") and Cantarell by The Cantarell Authors, SIL Open
   Font License 1.1, included unmodified with their licences; the folder's README says where each is from.
+- **A public document** in `crates/limarepdf-core/tests/data/documents/`, for a redaction test with Poppler and
+  Ghostscript: *The ImageMagick graphics library: A gentle introduction to Magick++* (`Magick++_tutorial.pdf`, from
+  ImageMagick's documentation), © Information Technology Group (www.itgroup.ro) and © Alin Avasilcutei, Cornel
+  Paslariu, Lucian Ungureanu and Virgil Mager, under the GNU Free Documentation License 1.2 with no Invariant
+  Sections and no cover texts. It is included unmodified with that licence (`GFDL-1.2.txt`); the folder's README
+  says where it is from.
 - The EU DSS project's samples (LGPL-2.1) are not included: `crates/limarepdf-core/tools/fetch-dss-samples.sh`
   downloads them for an optional test.
 

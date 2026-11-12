@@ -974,7 +974,7 @@ mod tests {
 
     /// A one-page document drawing "Walrus text" inside `mark`'s area, with a title, an
     /// XMP stream and an attachment, each saying "Walrus" too.
-    fn secrets() -> Pdf {
+    fn walrus() -> Pdf {
         use lopdf::{dictionary, Dictionary, Object, Stream};
         let mut p = page();
         p.set_info(&limarepdf_core::Info {
@@ -1097,10 +1097,10 @@ mod tests {
     }
 
     /// An app keeping its copies on a disk that fails as told, with one tab of
-    /// [`secrets`]: opened, or `restored` from a crashed session's copy (its tab 7).
-    fn secrets_app(ctx: &egui::Context, restored: bool) -> (Model, Arc<Faulty>, App) {
+    /// [`walrus`]: opened, or `restored` from a crashed session's copy (its tab 7).
+    fn walrus_app(ctx: &egui::Context, restored: bool) -> (Model, Arc<Faulty>, App) {
         let m = if restored {
-            crashed_with(&secrets().to_bytes().unwrap(), DocInfo::default())
+            crashed_with(&walrus().to_bytes().unwrap(), DocInfo::default())
         } else {
             Model::new()
         };
@@ -1111,7 +1111,7 @@ mod tests {
             app.restore_copy(ctx, 0, TabId(7));
             app.close_restore(ctx);
         } else {
-            assert!(app.add_tab(ctx, secrets(), None, None, false));
+            assert!(app.add_tab(ctx, walrus(), None, None, false));
         }
         (m, f, app)
     }
@@ -1133,7 +1133,7 @@ mod tests {
                 for again in [false, true] {
                     let case = format!("{kind}, restored: {restored}, again: {again}");
                     let ctx = egui::Context::default();
-                    let (m, _, mut app) = secrets_app(&ctx, restored);
+                    let (m, _, mut app) = walrus_app(&ctx, restored);
                     if again {
                         // A removal of nothing secret first.
                         app.remove_hidden(&ctx, &[Hidden::Scripts]);
@@ -1184,7 +1184,7 @@ mod tests {
     fn a_redo_that_cant_withdraw_the_copy_changes_nothing() {
         for restored in [false, true] {
             let ctx = egui::Context::default();
-            let (m, f, mut app) = secrets_app(&ctx, restored);
+            let (m, f, mut app) = walrus_app(&ctx, restored);
             mark(&mut app, &ctx);
             app.apply_redactions(&ctx);
             let t0 = Instant::now();
@@ -1223,7 +1223,7 @@ mod tests {
     #[test]
     fn a_restored_copy_not_confirmed_withdrawn_stops_the_command_at_every_try() {
         let ctx = egui::Context::default();
-        let (m, f, mut app) = secrets_app(&ctx, true);
+        let (m, f, mut app) = walrus_app(&ctx, true);
         let session = app.rescue.found[0].crashed.dir.clone();
         mark(&mut app, &ctx);
         f.fail(Kind::Sync, &session.file_name().unwrap().to_string_lossy());
@@ -1262,7 +1262,7 @@ mod tests {
             let m = Model::new();
             let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
             app.start_recovery_in(&ctx, Arc::new(m.clone()), &root(), clock());
-            assert!(app.add_tab(&ctx, secrets(), None, None, false));
+            assert!(app.add_tab(&ctx, walrus(), None, None, false));
             mark(&mut app, &ctx);
             let t0 = Instant::now();
             copy_all(&mut app, &ctx, t0);
@@ -1507,7 +1507,7 @@ mod tests {
 
     #[test]
     fn removing_content_from_a_restored_tab_withdraws_the_copy_it_came_from() {
-        let bytes = secrets().to_bytes().unwrap();
+        let bytes = walrus().to_bytes().unwrap();
         let cases = [
             "applied the redactions",
             "removed the hidden information",

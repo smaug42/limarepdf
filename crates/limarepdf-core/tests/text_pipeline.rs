@@ -110,9 +110,6 @@ fn form(p: &mut Pdf) {
     p.doc.catalog_mut().unwrap().set("AcroForm", form);
 }
 
-/// The test digital IDs' password (as `signing.rs`'s).
-const PASSWORD: &str = "mpe-test-password";
-
 /// A page signed by a new digital ID named [`SHORT`], in a box across its top wide enough
 /// for the look's "Digitally signed by" line on one line, its form then flattened so the
 /// look is page content.
@@ -125,8 +122,9 @@ fn signed_page() -> Pdf {
             name: SHORT.into(),
             ..NewId::default()
         };
-        let made = store.create(&new, PASSWORD).unwrap().id;
-        store.unlock(&made, PASSWORD).unwrap()
+        let password = limarepdf_core::password_seam::made_up();
+        let made = store.create(&new, &password).unwrap().id;
+        store.unlock(&made, &password).unwrap()
     });
     let r = SignRequest {
         id,

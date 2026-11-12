@@ -159,9 +159,9 @@ impl<'a> Shell<'a> {
         }
     }
     /// Tells apart dialogs that may share a title.
-    pub fn id(self, salt: impl Hash + std::fmt::Debug) -> Self {
+    pub fn id(self, key: impl Hash + std::fmt::Debug) -> Self {
         Shell {
-            id: egui::Id::unique(("dialog", salt)),
+            id: egui::Id::unique(("dialog", key)),
             ..self
         }
     }

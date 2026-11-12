@@ -1542,6 +1542,7 @@ pub fn where_text(pdf: &Pdf, place: &SignPlace) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use limarepdf_core::password_seam;
     use std::path::Path;
 
     const PASSWORD: &str = "correct horse battery";
@@ -1590,8 +1591,10 @@ mod tests {
             Some(Field::Email)
         );
         assert_eq!(field(form("Jane", "", "", "other")), Some(Field::Again));
-        let mut short = form("Jane", "", "", "abc");
-        short.password = Secret("abc".into());
+        let mut too_short = password_seam::made_up();
+        too_short.truncate(limarepdf_core::MIN_PASSWORD - 1);
+        let mut short = form("Jane", "", "", &too_short);
+        short.password = Secret(too_short);
         let (field, text) = short.problem().unwrap();
         assert_eq!(field, Field::Password);
         assert!(text.starts_with(char::is_uppercase), "{text}");
@@ -2072,7 +2075,7 @@ mod tests {
             error: None,
             focus: None,
         };
-        let import = import_form(&dir.join("jane.p12"), "");
+        let import = blank_import_form(&dir.join("jane.p12"));
         for (what, page) in [
             ("the list", Page::List),
             ("a new ID", Page::Create(create)),
@@ -2122,7 +2125,7 @@ mod tests {
                 error: None,
                 focus: None,
             };
-            let import = import_form(&dir.join("jane.p12"), "");
+            let import = blank_import_form(&dir.join("jane.p12"));
             for (page, buttons) in [
                 (Page::List, &["Create…", "Import…", "Close"][..]),
                 (Page::Create(create()), &["Create", "Back"]),
@@ -2287,7 +2290,7 @@ mod tests {
                 error: None,
                 focus: None,
             };
-            let import = import_form(&dir.join("jane.p12"), "");
+            let import = blank_import_form(&dir.join("jane.p12"));
             for (title, page, labels) in [
                 (
                     "Create a digital ID",
@@ -2360,12 +2363,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn import_form(file: &Path, password: &str) -> ImportForm {
+    /// An import form for `file`, its password not typed yet.
+    fn blank_import_form(file: &Path) -> ImportForm {
         ImportForm {
             file: file.to_path_buf(),
-            password: Secret(password.into()),
+            password: Secret::default(),
             error: None,
             focus: None,
+        }
+    }
+
+    fn import_form(file: &Path, password: &str) -> ImportForm {
+        ImportForm {
+            password: Secret(password.into()),
+            ..blank_import_form(file)
         }
     }
 
@@ -2384,7 +2395,7 @@ mod tests {
         let ctx = Context::default();
 
         // A wrong password: said beside the password, which is to be typed again.
-        w.import(&ctx, import_form(&file, "not the password"));
+        w.import(&ctx, import_form(&file, &password_seam::made_up()));
         let Page::Import(f) = running(&w) else {
             panic!("not importing")
         };
@@ -2472,15 +2483,15 @@ mod tests {
         let (store, id) = store_with_id(&dir);
         let mut w = ids_window(store);
         let ctx = Context::default();
-        const NEW: &str = "a new file password";
+        let new = password_seam::made_up();
         let form = |kind, password: &str| {
             Box::new(ExportForm {
                 id: id.clone(),
                 kind,
                 password: Secret(password.into()),
                 fresh: true,
-                new_password: Secret(NEW.into()),
-                again: Secret(NEW.into()),
+                new_password: Secret(new.clone()),
+                again: Secret(new.clone()),
                 error: None,
                 focus: None,
             })
@@ -2539,7 +2550,7 @@ mod tests {
             "{text}"
         );
         let back = IdStore::new(dir.join("back"));
-        back.import(&std::fs::read(&out).unwrap(), NEW, None)
+        back.import(&std::fs::read(&out).unwrap(), &new, None)
             .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
