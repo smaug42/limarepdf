@@ -14218,9 +14218,9 @@ mod tests {
 
     /// The commands say what is in use: the Edit band's Select menu ticks the tool, and Edit
     /// text is pressed while the Text tool chosen with it is on (not Insert > Text's alone,
-    /// the user's finding on NEW-15's stage 3). A form field with the keyboard heads the
-    /// inspector, and the words selected before it are let go, so the band and Ctrl+B act
-    /// on one thing.
+    /// the user's finding on NEW-15's stage 3). With a form field holding the keyboard the
+    /// inspector stays headed "Document", as its rows are the document's (PB-42, D-14), and
+    /// the words selected before it are let go, so the band and Ctrl+B act on one thing.
     #[test]
     fn the_commands_and_inspector_say_what_is_in_use() {
         use egui::accesskit::{Role, Toggled};
@@ -14263,7 +14263,11 @@ mod tests {
             app.tabs[0].ed.selection.words().is_none(),
             "the words are still selected"
         );
-        assert_eq!(inspector::title(&app.tabs[0]), "Form field");
+        assert!(
+            app.tabs[0].ed.form.focused_field().is_some(),
+            "no field has the keyboard"
+        );
+        assert_eq!(inspector::title(&app.tabs[0]), "Document");
     }
 
     /// Ctrl+V with nothing being typed and no words to type over says where to click,

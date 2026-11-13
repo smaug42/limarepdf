@@ -35,6 +35,8 @@
   "3 signatures and other items" whatever they were.
 - The inspector's edge takes a drag from a press on its line, or just onto the pages, as from the panel's side.
   Before, the pages' scroll bar lay over that part of it, so such a press went to the pages.
+- While you type in a form field, the inspector stays headed **Document**, or the selected pages, as what it shows
+  is theirs. Before, it said "Form field" over the document's facts.
 - A drop-down field reached with Tab from a text field takes its keys: Space or Enter opens its list. Before, they
   did nothing there until the field was clicked. Shift+Tab from the first field goes round to the last, as Tab goes
   from the last to the first, and Space chooses a radio button reached so. Before, Shift+Tab left the form.

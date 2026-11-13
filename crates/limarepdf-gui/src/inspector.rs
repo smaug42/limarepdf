@@ -656,9 +656,6 @@ impl Tab {
 /// editor's section shows ("Selected text", "New rectangle"), else the task open, the
 /// selected pages or "Document".
 pub fn title(t: &Tab) -> String {
-    if t.ed.form.focused_field().is_some() {
-        return "Form field".into();
-    }
     if t.ed.owns_panel() {
         return t.ed.heading();
     }
