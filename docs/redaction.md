@@ -169,7 +169,7 @@ What is ticked at first:
   holds scripts); a form made only for Adobe Reader (XFA only) keeps it.
 - **Attached files:** files attached to the document or to comments.
 - **Hidden layers and their content:** the content of layers that are switched off is deleted, and so is content
-  a layer rule hides, wherever it is drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments'
+  a layer rule hides, wherever it is drawn: on the pages, in forms drawn inside forms (however deep), in comments'
   and fields' drawings, in patterns, soft masks and Type 3 fonts. A layer rule combines layers ("shown when layer A
   is on and layer B is off"), and rules can sit inside rules; LimarePDF reads them as other PDF readers do, so
   what a rule hides goes even when every layer it names is on. A picture or form only hidden content drew, and a
@@ -180,7 +180,7 @@ What is ticked at first:
   hidden content sets still applies to what is drawn after it, and hidden text is replaced by a gap as wide, so
   text after it on the line stays where it was. The number shown is the layers switched off plus the rules that
   hide content though every layer they name is on. If some drawing or layer rule can't be read (a rule with an
-  operator LimarePDF doesn't know, or containing itself), or is nested deeper, LimarePDF can't tell whether it
+  operator LimarePDF doesn't know, or containing itself), or a rule is nested too deep, LimarePDF can't tell whether it
   holds hidden content, so the command stops with a message saying what, and changes nothing; a rule that can't
   be read counts in the number, so Remove can say why. It stops in the same way for a drawing without resources
   of its own that is used in places giving its layers or fonts different meanings (hidden in one, shown in

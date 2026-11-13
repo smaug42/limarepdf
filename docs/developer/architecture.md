@@ -1070,6 +1070,13 @@ own, and the tiling patterns and soft masks painted with before and not after (`
 in the file, and a route still reaching one refuses, rolled back by `atomically`. Redaction passes no `painted`.
 Decoded content is cached by object (`reach::Decoded`) and shared by the walks before and after a redaction,
 which only adds objects; Remove hidden information edits streams in place, so its walk after starts afresh.
+Its scan for hidden content (`scan_layers`, WP-03) runs on `Pdf::reach_listed`: the same walk following every
+name the resources list, used or not, without reading the content, each set of resources (by fingerprint)
+followed once, so it costs a step per entry of each drawing's resources and per name listed, not per page. Each
+node carries its stream (`Node::stream`, `None` for a page's content) and the resources it draws with
+(`Node::res`); a drawing without resources of its own is looked into with the first and compared with the others
+(`check_shared`). Drawings are followed to any depth within the walk's budget; the scan's own recursion, with
+its 32-deep limit, is gone. `drop_hidden_properties` stays a scan of every object, the boundary's safe superset.
 
 The walk is charged against a `budget::Work` (`budget.rs`, `TooComplex`), one step per drawing reached, name
 looked up, page, annotation, holder and entry of inherited resources. `reach::STEPS` is 2²² (4,194,304): 32

@@ -1097,9 +1097,31 @@ fn refuses_unchanged(mut p: Pdf, why: &str) {
     assert_eq!(p.info().title, None);
 }
 
+/// Forms 40 deep, past the 32 the scan for hidden layers once stopped at: followed to the
+/// end, the hidden layer's content removed; with fewer steps than following them takes,
+/// refused with nothing changed.
 #[test]
-fn hidden_layers_nested_too_deep_to_look_at_are_refused() {
-    refuses_unchanged(nested_layers(40), "nested more than 32 deep");
+fn hidden_layers_in_forms_nested_40_deep_are_removed() {
+    use limarepdf_core::{budget_seam, TooComplex};
+    let mut p = nested_layers(40);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-DEEP"]);
+    saved.assert_kept(&["Visible deep", "Page text"]);
+    let users = saved.hidden_layer_users();
+    assert!(users.is_empty(), "{users:?}");
+    let mut p = nested_layers(40);
+    let before = p.state_before();
+    let (got, _) = budget_seam::with_limit(40, || p.remove_hidden(&[Hidden::HiddenLayers]));
+    let e = got.unwrap_err();
+    let too = e.downcast_ref::<TooComplex>().expect("too complex");
+    assert_eq!(
+        (too.what, too.limit),
+        ("checking the drawings", 40),
+        "{e:#}"
+    );
+    assert_eq!(p.state_since(&before), []);
 }
 
 #[test]
@@ -1831,7 +1853,8 @@ fn checking_layer_rules_has_a_step_limit() {
     let (got, taken) =
         budget_seam::with_limit(2001, || p.check_remove_hidden(&[Hidden::HiddenLayers]));
     got.unwrap();
-    assert_eq!(taken.first(), Some(&2001), "{taken:?}");
+    // The rules' steps; following the drawings has a budget of its own.
+    assert!(taken.contains(&2001), "{taken:?}");
     let mut p = wide_rule(2000);
     let before = p.state_before();
     let (got, _) = budget_seam::with_limit(2000, || p.remove_hidden(&[Hidden::HiddenLayers]));

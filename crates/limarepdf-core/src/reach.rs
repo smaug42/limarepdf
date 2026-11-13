@@ -7,6 +7,9 @@
 //! A drawing with resources of its own looks the same wherever it is drawn, so it is followed
 //! once; one without draws with the resources of where it is drawn, so it is followed once
 //! for each different set of them.
+//!
+//! [`Pdf::reach_listed`] follows every name the resources list instead, used or not, without
+//! reading the content: every drawing the pages keep in the file through them.
 
 use crate::budget::{self, TooComplex, Work};
 use crate::Pdf;
@@ -18,7 +21,7 @@ use std::rc::Rc;
 
 /// The steps a walk may take: one for each drawing reached, each time it is reached, one for
 /// each name looked up, and one for each entry of the resources a drawing without its own
-/// is told apart by. 32 times the most the test files take (129,066, a 109-page file from
+/// is told apart by (following every listed name, those of every drawing). 32 times the most the test files take (129,066, a 109-page file from
 /// pdf.js's tests; the 1,080 files that open, measured 2026-11-04), so a document like it of
 /// about 3,500 pages still passes.
 pub(crate) const STEPS: u64 = 1 << 22;
@@ -157,9 +160,17 @@ pub(crate) struct Reach {
     pub looks: HashMap<ObjectId, usize>,
 }
 
+/// What [`Pdf::reach_listed`] found: each drawing's stream, `None` for a page's content (page
+/// `i`'s the `i`th), and the resources it draws with.
+pub(crate) type Listed = Vec<(Option<ObjectId>, Rc<Dictionary>)>;
+
 /// A drawing [`Pdf::reach`] reached.
 #[derive(Default)]
 pub(crate) struct Node {
+    /// The stream it is; `None` for a page's content.
+    pub stream: Option<ObjectId>,
+    /// The resources it draws with: its own, else those of where it is drawn.
+    pub res: Rc<Dictionary>,
     /// The nodes of the drawings it draws.
     pub draws: Vec<usize>,
     /// The alternative text of its marked content.
@@ -257,6 +268,12 @@ struct Walk<'a> {
     held: HashSet<ObjectId>,
     /// Drawings to follow: the node, what its content uses, its resources.
     todo: Vec<(usize, Option<Rc<Uses>>, Rc<Dictionary>)>,
+    /// Every name the resources list is followed, as for content that can't be read, and
+    /// the content isn't read ([`Pdf::reach_listed`]).
+    listed: bool,
+    /// The resources followed, by fingerprint, when `listed`: what they list is the same
+    /// wherever they are, so each set is followed once.
+    followed: HashSet<u64>,
 }
 
 /// Resources told apart: the same entries, the same fingerprint.
@@ -305,8 +322,26 @@ impl Pdf {
     /// Follow every drawing the pages reach, charging `work`; `cache` keeps what each
     /// drawing's content uses, for a later walk while those streams are unchanged.
     pub(crate) fn reach(&self, work: &mut Work, cache: &mut Decoded) -> Result<Reach, TooComplex> {
+        self.reach_with(work, cache, false)
+    }
+
+    /// The drawings the pages reach following every name their resources list, used or not,
+    /// charging `work`: those a viewer may draw, now or after their content is edited, and
+    /// those listed that content which can't be read may draw. The content isn't read.
+    pub(crate) fn reach_listed(&self, work: &mut Work) -> Result<Listed, TooComplex> {
+        let reach = self.reach_with(work, &mut Decoded::new(), true)?;
+        Ok(reach.nodes.into_iter().map(|n| (n.stream, n.res)).collect())
+    }
+
+    /// [`Pdf::reach`], or with `listed` the walk of [`Pdf::reach_listed`].
+    fn reach_with(
+        &self,
+        work: &mut Work,
+        cache: &mut Decoded,
+        listed: bool,
+    ) -> Result<Reach, TooComplex> {
         let pages = self.page_ids();
-        let mut w = Walk::new(self, work, cache);
+        let mut w = Walk::new(self, work, cache, listed);
         w.reach.nodes.resize_with(pages.len(), Node::default);
         let no_resources = Rc::new(Dictionary::new());
         for (i, &page) in pages.iter().enumerate() {
@@ -318,13 +353,17 @@ impl Pdf {
                     .and_then(|d| d.get(b"Parent").ok())
                     .and_then(|o| o.as_reference().ok());
             }
-            let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-            let uses = (self.doc)
-                .get_page_content_with_limit(page, crate::MAX_CONTENT)
-                .ok()
-                .and_then(|d| Uses::of_data(&d))
-                .map(Rc::new);
-            w.todo.push((i, uses, Rc::new(res)));
+            let res = Rc::new(self.resolved_dict(self.inherited(page, b"Resources").as_ref()));
+            let uses = match listed {
+                true => None,
+                false => (self.doc)
+                    .get_page_content_with_limit(page, crate::MAX_CONTENT)
+                    .ok()
+                    .and_then(|d| Uses::of_data(&d))
+                    .map(Rc::new),
+            };
+            w.reach.nodes[i].res = res.clone();
+            w.todo.push((i, uses, res));
             for annot in self.all_annot_refs(page) {
                 w.work.take(1)?;
                 let looks = (self.doc.get_dictionary(annot).ok())
@@ -351,7 +390,7 @@ impl Pdf {
         work: &mut Work,
         cache: &mut Decoded,
     ) -> Result<HashSet<ObjectId>, TooComplex> {
-        let mut w = Walk::new(self, work, cache);
+        let mut w = Walk::new(self, work, cache, false);
         let no_resources = Rc::new(Dictionary::new());
         for &id in ids {
             w.drawing(id, &no_resources)?;
@@ -362,7 +401,7 @@ impl Pdf {
 }
 
 impl<'a> Walk<'a> {
-    fn new(pdf: &'a Pdf, work: &'a mut Work, cache: &'a mut Decoded) -> Self {
+    fn new(pdf: &'a Pdf, work: &'a mut Work, cache: &'a mut Decoded, listed: bool) -> Self {
         Walk {
             pdf,
             work,
@@ -371,6 +410,8 @@ impl<'a> Walk<'a> {
             seen: HashMap::new(),
             held: HashSet::new(),
             todo: Vec::new(),
+            listed,
+            followed: HashSet::new(),
         }
     }
 }
@@ -408,7 +449,10 @@ impl Walk<'_> {
             return Ok(Some(n));
         }
         let n = self.reach.nodes.len();
-        self.reach.nodes.push(Node::default());
+        self.reach.nodes.push(Node {
+            stream: Some(id),
+            ..Node::default()
+        });
         self.seen.insert(key, n);
         let res = match own {
             Some(o) => {
@@ -417,7 +461,11 @@ impl Walk<'_> {
             }
             None => outer.clone(),
         };
-        let uses = pdf.uses_of(id, self.cache);
+        self.reach.nodes[n].res = res.clone();
+        let uses = match self.listed {
+            true => None,
+            false => pdf.uses_of(id, self.cache),
+        };
         self.todo.push((n, uses, res));
         Ok(Some(n))
     }
@@ -426,6 +474,12 @@ impl Walk<'_> {
     fn run(&mut self) -> Result<(), TooComplex> {
         let pdf = self.pdf;
         while let Some((n, uses, res)) = self.todo.pop() {
+            if self.listed {
+                self.work.take(res.len() as u64)?;
+                if !self.followed.insert(fingerprint(&res)) {
+                    continue;
+                }
+            }
             let entries = |key: &[u8]| pdf.resolved_dict(res.get(key).ok());
             let listed;
             let u = match &uses {
@@ -569,6 +623,36 @@ mod tests {
         // The same walk with one step fewer is refused.
         let mut less = Work::new("walking", taken - 1);
         assert!(p.reach(&mut less, &mut Decoded::new()).is_err());
+    }
+
+    /// A hundred pages sharing resources that list a hundred forms none draws: only the
+    /// listed walk reaches them, each once, drawing with the pages' resources; and those are
+    /// followed once, not for each page (10,000 names), so 5,000 steps are enough.
+    #[test]
+    fn listed_drawings_are_reached_with_their_resources() {
+        let mut p = Pdf::new();
+        let mut forms = Dictionary::new();
+        for i in 0..100 {
+            p.insert_blank(i, 300.0, 200.0).unwrap();
+            let form = Stream::new(
+                dictionary! { "Type" => "XObject", "Subtype" => "Form" },
+                b"0 0 10 10 re f".to_vec(),
+            );
+            forms.set(format!("Fm{i}"), p.doc.add_object(form));
+        }
+        let res = p.doc.add_object(dictionary! { "XObject" => forms });
+        for page in p.page_ids() {
+            (p.doc.get_dictionary_mut(page).unwrap()).set("Resources", res);
+        }
+        let reach = p.reach(&mut work(), &mut Decoded::new()).unwrap();
+        assert_eq!(reach.nodes.len(), 100);
+        let listed = p.reach_listed(&mut Work::new("walking", 5_000)).unwrap();
+        assert_eq!(listed.len(), 200);
+        assert!(listed[..100].iter().all(|(s, _)| s.is_none()));
+        for (s, r) in &listed[100..] {
+            assert!(s.is_some());
+            assert!(Rc::ptr_eq(r, &listed[0].1));
+        }
     }
 
     #[test]

@@ -13,6 +13,7 @@ use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// A kind of hidden information.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -150,8 +151,7 @@ const ACTIVE: [&[u8]; 6] = [
     b"GoToE",
 ];
 
-/// Deepest nesting of drawings (forms, patterns, glyphs, soft masks) looked into for hidden
-/// layers, and of the expressions in a layer rule. Deeper ones make the removal refuse
+/// Deepest nesting of the expressions in a layer rule. Deeper ones make the removal refuse
 /// rather than leave them.
 const MAX_NESTING: usize = 32;
 
@@ -601,13 +601,12 @@ struct LayerScan {
     faults: bool,
 }
 
-/// A drawing the layer scan has looked into. One without resources of its own draws with
-/// those of where it is used, so its layer names can mean other layers there: for such a
-/// drawing, the resources it was first looked into with, and the names each set of resources
-/// it has been checked against gives hidden layers.
-#[derive(Default)]
+/// A drawing without resources of its own that the layer scan has looked into: it draws with
+/// those of where it is used, so its layer names can mean other layers there. The resources
+/// it was first looked into with, and the names each set of resources it has been checked
+/// against gives hidden layers.
 struct Seen {
-    first: Option<Dictionary>,
+    first: Rc<Dictionary>,
     checked: Vec<HiddenNames>,
 }
 
@@ -835,7 +834,7 @@ impl Pdf {
     /// Remove the kinds of hidden information in `what`. Unused objects go when the
     /// document is saved, which rewrites the whole file, so nothing removed is kept in it.
     /// Refuses, with nothing changed, when it couldn't remove all of a kind: hidden layers
-    /// in drawings it can't read or nested too deep, a layer rule it can't read, something
+    /// in drawings it can't read or too complex to follow, a layer rule it can't read, something
     /// only hidden layers drew that the file still keeps another way (the tag tree, say), a
     /// form nested too deep, content outside the crop box redaction's check finds left.
     pub fn remove_hidden(&mut self, what: &[Hidden]) -> Result<HiddenReport> {
@@ -1352,44 +1351,45 @@ impl Pdf {
     }
 
     /// Every drawing that can hold content `layers` hide, without it: the pages' content,
-    /// then what their resources and their annotations' appearances draw (forms, tiling
-    /// patterns, Type 3 glyphs, soft masks), nested up to [`MAX_NESTING`], each once (layer
-    /// states are the document's, so a drawing with its own resources looks the same
-    /// wherever it is used). One without resources of its own is checked against every
-    /// place it is used from. What couldn't be read (a layer rule too), is nested deeper,
-    /// or would lose different content in different places, goes in `blocked`. Refuses when
-    /// working out the layer rules would take too many steps.
+    /// and every drawing their resources and their annotations' appearances list, at any
+    /// depth ([`Pdf::reach_listed`]: forms, tiling patterns, Type 3 glyphs, soft masks),
+    /// each once (layer states are the document's, so a drawing with its own resources
+    /// looks the same wherever it is used). One without resources of its own is checked
+    /// against every place it is used from. What couldn't be read (a layer rule too), or
+    /// would lose different content in different places, goes in `blocked`. Refuses when
+    /// following the drawings or working out the layer rules would take too many steps.
     fn scan_layers(&self, layers: &mut Layers) -> std::result::Result<LayerScan, TooComplex> {
         let mut scan = LayerScan::default();
         self.read_rules(layers, &mut scan);
-        let mut seen = HashMap::new();
-        for (i, page) in self.page_ids().into_iter().enumerate() {
-            let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-            let content = self.page_content(page);
-            let name = format!("page {}'s content", i + 1);
-            self.scan_read(Drawn::Page(page), content, &res, layers, &name, &mut scan);
-            self.scan_resources(&res, layers, &mut seen, 0, &mut scan);
-            for annot in self.all_annot_refs(page) {
-                let ap = self
-                    .doc
-                    .get_dictionary(annot)
-                    .ok()
-                    .and_then(|d| d.get(b"AP").ok())
-                    .map(|o| self.resolved_dict(Some(o)));
-                for (_, look) in ap.iter().flat_map(|ap| ap.iter()) {
-                    // A drawing, or a dictionary of drawings by state.
-                    let ids: Vec<ObjectId> = match self.doc.dereference(look) {
-                        Ok((_, Object::Dictionary(states))) => states
-                            .iter()
-                            .filter_map(|(_, s)| s.as_reference().ok())
-                            .collect(),
-                        _ => look.as_reference().ok().into_iter().collect(),
-                    };
-                    for id in ids {
-                        self.scan_drawing(id, &Dictionary::new(), layers, &mut seen, 0, &mut scan);
-                    }
+        let drawings = match self.reach_listed(&mut reach::work()) {
+            Ok(drawings) => drawings,
+            Err(too) => return Err(layers.too.take().unwrap_or(too)),
+        };
+        let pages = self.page_ids();
+        let mut seen: HashMap<ObjectId, Seen> = HashMap::new();
+        for (i, (stream, res)) in drawings.into_iter().enumerate() {
+            let Some(id) = stream else {
+                let page = pages[i];
+                let content = self.page_content(page);
+                let name = format!("page {}'s content", i + 1);
+                self.scan_read(Drawn::Page(page), content, &res, layers, &name, &mut scan);
+                continue;
+            };
+            let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) else {
+                continue;
+            };
+            if !s.dict.has(b"Resources") {
+                if let Some(was) = seen.get_mut(&id) {
+                    self.check_shared(id, s, &res, layers, was, &mut scan);
+                    continue;
                 }
+                let checked = vec![self.hidden_names(&res, layers)];
+                let first = res.clone();
+                seen.insert(id, Seen { first, checked });
             }
+            let read = readable(s);
+            let name = format!("a drawing in the file (object {})", id.0);
+            self.scan_read(Drawn::Stream(id), read, &res, layers, &name, &mut scan);
         }
         let mut once = HashSet::new();
         scan.blocked.retain(|b| once.insert(b.clone()));
@@ -1440,109 +1440,6 @@ impl Pdf {
         }
     }
 
-    /// [`Pdf::scan_layers`] for the drawings resources `res` hold, at nesting `depth`.
-    fn scan_resources(
-        &self,
-        res: &Dictionary,
-        layers: &mut Layers,
-        seen: &mut HashMap<ObjectId, Seen>,
-        depth: usize,
-        scan: &mut LayerScan,
-    ) {
-        let entries = |key: &[u8]| self.resolved_dict(res.get(key).ok());
-        let stream = |o: &Object| -> Option<(ObjectId, &lopdf::Stream)> {
-            let id = o.as_reference().ok()?;
-            Some((id, self.doc.get_object(id).ok()?.as_stream().ok()?))
-        };
-        let name_is = |d: &Dictionary, key: &[u8], v: &[u8]| {
-            d.get(key).and_then(|o| o.as_name()).ok() == Some(v)
-        };
-        let mut drawings: Vec<ObjectId> = Vec::new();
-        for (_, e) in entries(b"XObject").iter() {
-            if let Some((id, s)) = stream(e) {
-                if name_is(&s.dict, b"Subtype", b"Form") {
-                    drawings.push(id);
-                }
-            }
-        }
-        for (_, e) in entries(b"Pattern").iter() {
-            if let Some((id, _)) = stream(e) {
-                drawings.push(id);
-            }
-        }
-        for (_, e) in entries(b"ExtGState").iter() {
-            let gs = self.resolved_dict(Some(e));
-            let mask = self.resolved_dict(gs.get(b"SMask").ok());
-            if let Some((id, _)) = mask.get(b"G").ok().and_then(stream) {
-                drawings.push(id);
-            }
-        }
-        let mut glyphs: Vec<(ObjectId, Dictionary)> = Vec::new();
-        for (_, e) in entries(b"Font").iter() {
-            let font = self.resolved_dict(Some(e));
-            if !name_is(&font, b"Subtype", b"Type3") {
-                continue;
-            }
-            let fres = font
-                .get(b"Resources")
-                .ok()
-                .map_or_else(|| res.clone(), |o| self.resolved_dict(Some(o)));
-            let procs = self.resolved_dict(font.get(b"CharProcs").ok());
-            for (_, g) in procs.iter() {
-                if let Some((id, _)) = stream(g) {
-                    glyphs.push((id, fres.clone()));
-                }
-            }
-        }
-        let todo = drawings
-            .into_iter()
-            .map(|id| (id, res.clone()))
-            .chain(glyphs);
-        for (id, outer) in todo {
-            if !seen.contains_key(&id) && depth >= MAX_NESTING {
-                scan.blocked
-                    .push(format!("drawings are nested more than {MAX_NESTING} deep"));
-                return;
-            }
-            self.scan_drawing(id, &outer, layers, seen, depth + 1, scan);
-        }
-    }
-
-    /// [`Pdf::scan_layers`] for drawing `id`, which draws with its own resources, else with
-    /// `outer`. One looked into already is only checked against `outer`, when it draws with
-    /// it.
-    fn scan_drawing(
-        &self,
-        id: ObjectId,
-        outer: &Dictionary,
-        layers: &mut Layers,
-        seen: &mut HashMap<ObjectId, Seen>,
-        depth: usize,
-        scan: &mut LayerScan,
-    ) {
-        let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) else {
-            seen.entry(id).or_default();
-            return;
-        };
-        let own = s.dict.get(b"Resources").ok();
-        if let Some(was) = seen.get_mut(&id) {
-            if own.is_none() {
-                self.check_shared(id, s, outer, layers, was, scan);
-            }
-            return;
-        }
-        let res = own.map_or_else(|| outer.clone(), |o| self.resolved_dict(Some(o)));
-        let mut was = Seen::default();
-        if own.is_none() {
-            was.first = Some(res.clone());
-            was.checked.push(self.hidden_names(&res, layers));
-        }
-        seen.insert(id, was);
-        let name = format!("a drawing in the file (object {})", id.0);
-        self.scan_read(Drawn::Stream(id), readable(s), &res, layers, &name, scan);
-        self.scan_resources(&res, layers, seen, depth, scan);
-    }
-
     /// Check drawing `id` (stream `s`), which has no resources of its own and was looked
     /// into with `was.first`, against resources `res` of another place it is used from.
     /// Where it would lose other content, the removal can't be done on the one drawing:
@@ -1561,10 +1458,10 @@ impl Pdf {
             return;
         }
         was.checked.push(names);
-        let (Some(first), Ok((data, _))) = (&was.first, readable(s)) else {
+        let Ok((data, _)) = readable(s) else {
             return;
         };
-        let looks = [first, res].map(|r| self.without_hidden(&data, r, layers, false));
+        let looks = [&*was.first, res].map(|r| self.without_hidden(&data, r, layers, false));
         let name = format!("a drawing in the file (object {})", id.0);
         if let Some(why) = looks
             .iter()

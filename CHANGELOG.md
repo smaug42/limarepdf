@@ -448,6 +448,9 @@
   pattern stayed in the saved file with its text, and a picture in a hidden layer stayed when a pattern nothing
   paints with listed it too. When the file keeps one of them another way, as when the tag tree points at it, the
   command stops and changes nothing, as redaction does, and says so.
+- Removing hidden layers looks into forms drawn inside forms however deep they go. Before, forms nested more than
+  32 deep made it stop and change nothing. Like redaction, it still stops, changing nothing, when following the
+  document's drawings would take too long.
 
 ### Changed
 
