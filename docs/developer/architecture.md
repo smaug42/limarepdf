@@ -1819,7 +1819,9 @@ by more than 5% it is decoded through `redact_img::decode`, scaled with Catmull-
 through `redact_img::encode` (which now writes the new `/Width` and `/Height`): a JPEG as JPEG at the lower of its
 own quality (`imgs::jpeg_quality`) and the choice's, a picture of at most 256 colours losslessly (Flate), others
 as JPEG at the choice's (HD and High fidelity 90, Print 85, Web 80, Email 75). A soft mask is scaled with it (to
-the picture's new size when it had the picture's, as `/Matte` needs) into a new object, Flate. The new picture
+the picture's new size when it had the picture's, as `/Matte` needs) into a new object, Flate; the pictures are
+gone through in object order (`wanted` is a `BTreeSet`, PB-176), so the masks take the same numbers each run and
+the same file comes out. The new picture
 replaces the old in place (`objects.insert`, so Undo's comparison keeps the old), only when it and its mask are
 smaller than before. Left and counted by `KeptWhy`: other spaces than grey and RGB (`plain_components`:
 `imgs::device_equivalent`'s `Plain` or `Calibrated`, so Device, Cal, ICCBased of 1 or 3, saved again in that space;
@@ -1827,7 +1829,7 @@ never Indexed, Separation, DeviceN, Lab; a name followed through the page's colo
 most 8 times and never back to one already met, S1-08, M-01), not 8 bits, `/Decode`, `/Mask`, `/ImageMask`,
 filters other than DCT, Flate, LZW, run length and the ASCII ones, a JPEG whose components don't match its space,
 a mask that isn't 8-bit grey, inline pictures. `Reduced::most` names the picture that lost the most bytes, for the
-app's preview.
+app's preview; of several that lost as much, the first in object order.
 
 **Reduce file size in the app** (ENH-19's stage 2): `Act::ReduceSize` (File group, so no band place; greyed by
 `reducible` while busy, saving or for a signed tab, `Ctx::signed` from `Tab::signed`, whose `why_not` fix gives

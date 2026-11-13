@@ -454,6 +454,9 @@
 - Reduce file size leaves a picture also drawn inside drawings nested more than 8 deep, too deep to measure, and
   counts it among those shared. Before, a picture drawn small on a page and large inside drawings nested more than
   12 deep was made as small as the small place allowed, and showed blurred where it was drawn large.
+- Reducing the same file the same way gives the same file each time. Before, the pictures' soft masks could be
+  numbered in a different order from one time to the next, and of pictures that lost as much, the one previewed
+  could differ.
 
 ### Changed
 

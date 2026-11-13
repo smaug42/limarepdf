@@ -331,6 +331,37 @@ fn a_soft_mask_is_scaled_with_its_picture() {
     assert_eq!(filter_of(&p, m), b"FlateDecode");
 }
 
+/// Eight alike pictures with soft masks, each an inch wide (240 ppi): reduced twice, the
+/// same masks get the same numbers, so the same file comes out, and of the eight that lose
+/// as much, the first is named as losing most.
+#[test]
+fn reducing_twice_gives_the_same_file() {
+    let mut p = pages(1);
+    let mut xobjects = Dictionary::new();
+    let mut content = String::new();
+    let mut first = None;
+    for i in 0..8 {
+        let mask: Vec<u8> = (0..240 * 160).map(|i| (i % 240) as u8).collect();
+        let mask = p.doc.add_object(picture(240, 160, "DeviceGray", mask));
+        let mut pic = photo(240, 160);
+        pic.dict.set("SMask", mask);
+        let im = p.doc.add_object(pic);
+        first.get_or_insert(im);
+        xobjects.set(format!("Im{i}"), im);
+        content += &format!("q 72 0 0 48 {} 100 cm /Im{i} Do Q ", 72 * (i % 4 + 1));
+    }
+    draw(&mut p, 0, &content, xobjects);
+    let mut q = p.clone();
+    let (a, b) = (
+        reduce(&mut p, &[0], PictureQuality::Email),
+        reduce(&mut q, &[0], PictureQuality::Email),
+    );
+    assert_eq!(a.pictures, 8, "{a:?}");
+    assert_eq!(a, b);
+    assert_eq!(a.most.map(|m| m.picture), first);
+    assert!(p.to_bytes().unwrap() == q.to_bytes().unwrap());
+}
+
 #[test]
 fn a_drawing_of_few_colours_stays_lossless() {
     let mut p = pages(1);

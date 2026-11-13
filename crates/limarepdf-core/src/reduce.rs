@@ -20,7 +20,7 @@ use image::{GrayImage, RgbImage};
 use lopdf::content::Content;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// A picture within this share above the resolution is left as it is: scaling it down that
 /// little would cost a round of compression for next to nothing.
@@ -245,7 +245,9 @@ impl Pdf {
                 *report.kept.entry(KeptWhy::Inline).or_default() += n;
             }
         }
-        let wanted: HashSet<ObjectId> = walk
+        // In order, so the masks added take the same numbers each time, and a tie for the
+        // picture losing most goes to the first.
+        let wanted: BTreeSet<ObjectId> = walk
             .uses
             .iter()
             .filter(|(_, u)| u.iter().any(|u| chosen.contains(&u.page)))
@@ -611,7 +613,7 @@ pub(crate) fn shown_ppi(w: f32, h: f32, ctm: M) -> Option<f32> {
 }
 
 /// For each of `ids`, the objects whose values refer to it.
-fn referrers(doc: &Document, ids: &HashSet<ObjectId>) -> HashMap<ObjectId, HashSet<ObjectId>> {
+fn referrers(doc: &Document, ids: &BTreeSet<ObjectId>) -> HashMap<ObjectId, HashSet<ObjectId>> {
     fn each(o: &Object, f: &mut dyn FnMut(ObjectId)) {
         match o {
             Object::Reference(r) => f(*r),
