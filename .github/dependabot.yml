@@ -1,7 +1,8 @@
 # Updates for the GitHub Actions the workflows use, each pinned by commit SHA with its version
 # in a comment. Cargo updates stay with each release's preparation (docs/developer/releasing.md),
-# since some crates are pinned to exact versions on purpose. dtolnay/rust-toolchain follows its
-# `stable` branch, which Dependabot can't update: releasing.md says how to update it by hand.
+# since some crates are pinned to exact versions on purpose. dtolnay/rust-toolchain has no
+# releases: Dependabot moves it to its `stable` branch's latest commit, and each step names its
+# toolchain, so a moved pin can't change what is installed (releasing.md).
 version: 2
 updates:
   - package-ecosystem: github-actions
