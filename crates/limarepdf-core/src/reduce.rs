@@ -22,8 +22,6 @@ use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// Deepest nesting of drawings followed.
-const MAX_NESTING: usize = 12;
 /// A picture within this share above the resolution is left as it is: scaling it down that
 /// little would cost a round of compression for next to nothing.
 const SLACK: f32 = 1.05;
@@ -116,7 +114,8 @@ pub enum KeptWhy {
     /// Saved again, it was no smaller.
     NotSmaller,
     /// Drawn only through something shared with what isn't being reduced: a drawing on pages
-    /// not chosen, a comment's or field's drawing, a pattern.
+    /// not chosen, a comment's or field's drawing, a pattern; or also where drawings are
+    /// nested too deep to follow.
     Shared,
     /// Its data couldn't be read.
     Unreadable,
@@ -193,6 +192,9 @@ pub(crate) struct Walk {
     spaces: HashMap<ObjectId, Dictionary>,
     /// Inline pictures on each page.
     inline: HashMap<usize, usize>,
+    /// The pictures (and drawings) that drawings nested deeper than
+    /// [`crate::MAX_FORM_NESTING`] may draw: where and how large isn't known.
+    deep: HashSet<ObjectId>,
     /// Every picture drawn, in the pages' drawing order.
     pub seen: Vec<Seen>,
 }
@@ -264,6 +266,7 @@ impl Pdf {
             let uses = &walk.uses[&id];
             let homes: HashSet<ObjectId> = uses.iter().map(|u| u.home).collect();
             let alone = uses.iter().all(|u| chosen.contains(&u.page))
+                && !walk.deep.contains(&id)
                 && referrers
                     .get(&id)
                     .is_none_or(|r| r.iter().all(|h| homes.contains(h)));
@@ -459,8 +462,35 @@ impl Pdf {
         })
     }
 
+    /// Record in `walk.deep` every picture `res` lists, and those the drawings it lists list,
+    /// however deep: a drawing too deeply nested to follow draws with `res`.
+    fn unfollowed(&self, res: &Res, walk: &mut Walk) {
+        let mut todo = vec![res.dict.clone()];
+        while let Some(dict) = todo.pop() {
+            let xo = dict.get(b"XObject").and_then(|o| self.doc.dereference(o));
+            let Ok(xo) = xo.and_then(|(_, o)| o.as_dict()) else {
+                continue;
+            };
+            for (_, o) in xo.iter() {
+                let Ok(id) = o.as_reference() else {
+                    continue;
+                };
+                if !walk.deep.insert(id) {
+                    continue;
+                }
+                let Ok(s) = self.doc.get_object(id).and_then(Object::as_stream) else {
+                    continue;
+                };
+                if let Some(own) = self.resources_of(id, s.dict.get(b"Resources").ok()) {
+                    todo.push(own.dict);
+                }
+            }
+        }
+    }
+
     /// Record every picture `data` draws (with resources `res`, from transform `ctm`) in
-    /// `walk`, following drawings it uses; `forms` are the drawings being walked.
+    /// `walk`, following drawings it uses (as deep as [`crate::MAX_FORM_NESTING`]); `forms`
+    /// are the drawings being walked.
     fn walk(
         &self,
         page: usize,
@@ -524,7 +554,11 @@ impl Pdf {
                                 picture: Drawn::Object(*id),
                             });
                         }
-                        Ok(b"Form") if forms.len() < MAX_NESTING && !forms.contains(id) => {
+                        Ok(b"Form") if forms.len() >= crate::MAX_FORM_NESTING => {
+                            let own = self.resources_of(*id, s.dict.get(b"Resources").ok());
+                            self.unfollowed(own.as_ref().unwrap_or(res), walk);
+                        }
+                        Ok(b"Form") if !forms.contains(id) => {
                             let Ok(inner) = s.get_plain_content_with_limit(crate::MAX_CONTENT)
                             else {
                                 continue;

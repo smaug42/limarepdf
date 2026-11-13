@@ -252,7 +252,7 @@ To copy one picture to another app instead, select it and press Ctrl+C
 To save every picture in the document, choose ☰ > Export > **Save all images…** and pick a folder. The files are
 named after the document, the page and the picture's place on that page (`report-page-003-image-2.jpg`), so they
 sort in page order. A picture shown on several pages, such as a logo, is saved once, with the first page that
-shows it. Saving runs in the background and asks before replacing files.
+shows it. Pictures drawn only inside drawings nested more than 8 deep aren't found. Saving runs in the background and asks before replacing files.
 
 How each picture is saved:
 

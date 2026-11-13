@@ -3,7 +3,7 @@
 
 use crate::annots::NO_VIEW;
 use crate::budget::{self, TooComplex, Work};
-use crate::forms::{FieldValue, Reach};
+use crate::forms::{FieldValue, Reach, MAX_DEPTH};
 use crate::matrix::{self as mx, M};
 use crate::{quoted_list, Pdf, Result};
 use anyhow::bail;
@@ -14,7 +14,6 @@ use std::collections::{HashMap, HashSet};
 const HIDDEN: i64 = 1 << 1;
 /// Annotation flag (`/F`) for an annotation that is printed.
 const PRINT: i64 = 1 << 2;
-const MAX_DEPTH: usize = 32;
 
 /// The steps finding what goes with the annotations kept may take: one for each annotation
 /// looked at and one for each popup or reply followed, about two for each annotation entry.

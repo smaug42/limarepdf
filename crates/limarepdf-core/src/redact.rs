@@ -122,8 +122,6 @@ const MOSTLY: f32 = 0.5;
 const CHAR_SHARE: f32 = 0.25;
 /// Half the size of the clip rectangle that a mark is cut out of, in points.
 const FAR: f32 = 1.0e5;
-/// Deepest nesting of form XObjects redacted inside; deeper ones under a mark go whole.
-const MAX_NESTING: usize = 8;
 /// Places listed for each piece of removed text found elsewhere.
 const MAX_PLACES: usize = 10;
 
@@ -607,7 +605,9 @@ impl<'a> Redactor<'a> {
                                 .unwrap_or(mx::ID);
                             let fctm = mul(fm, gs.ctm);
                             if self.hit(mx::transform_rect(fctm, bbox)) {
-                                let redone = if nesting + 1 < MAX_NESTING {
+                                // Redacted inside as deep as drawings are followed; deeper
+                                // ones under a mark go whole.
+                                let redone = if nesting < crate::MAX_FORM_NESTING {
                                     self.form(s, &res, fctm, nesting + 1)?
                                 } else {
                                     None

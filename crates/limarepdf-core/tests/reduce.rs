@@ -207,6 +207,45 @@ fn the_resolution_is_measured_where_the_picture_is_drawn_largest_through_drawing
     assert_eq!(size_of(&p, im), (600, 400));
 }
 
+/// A page draws a picture an inch wide (1,200 ppi) and, from inside forms nested `depth`
+/// deep that draw with the page's resources, four inches wide (300 ppi). Forms 8 deep are
+/// followed, so it is measured at 300 ppi; deeper, it is left, not measured at 1,200 ppi
+/// without the place it is drawn largest.
+#[test]
+fn a_picture_drawn_deeper_than_drawings_are_followed_is_left() {
+    // 13 deep, past the 12 once followed, before 9.
+    for depth in [8, 13, 9] {
+        let mut p = pages(1);
+        let im = p.doc.add_object(photo(1200, 800));
+        let mut xobjects = dictionary! {"Im1" => im};
+        for i in 1..=depth {
+            let content = match i == depth {
+                true => AT_300.to_string(),
+                false => format!("/Fm{} Do", i + 1),
+            };
+            let bbox = vec![0.into(), 0.into(), W.into(), H.into()];
+            let fm = p.doc.add_object(Stream::new(
+                dictionary! {"Type" => "XObject", "Subtype" => "Form", "BBox" => bbox},
+                content.into_bytes(),
+            ));
+            xobjects.set(format!("Fm{i}"), fm);
+        }
+        let page = "q 72 0 0 48 72 100 cm /Im1 Do Q /Fm1 Do";
+        draw(&mut p, 0, page, xobjects);
+        let before = p.doc.objects.clone();
+        let r = reduce(&mut p, &[0], PictureQuality::Web);
+        if depth == 8 {
+            assert_eq!(r.pictures, 1, "{r:?}");
+            assert_eq!(size_of(&p, im), (600, 400));
+            continue;
+        }
+        assert_eq!(r.pictures, 0, "{depth} deep: {:?}, {r:?}", size_of(&p, im));
+        let shared = r.kept.get(&KeptWhy::Shared);
+        assert_eq!(shared, Some(&1), "{depth} deep: {r:?}");
+        assert!(p.doc.objects == before, "{depth} deep");
+    }
+}
+
 /// A smaller copy beside the original the other page still needs would make the file
 /// larger, so the picture is left (pdfbox's `2990` grew by half when copies were made).
 #[test]

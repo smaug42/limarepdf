@@ -268,3 +268,8 @@ fn save_private(path: &std::path::Path, bytes: &[u8], new: bool) -> Result<()> {
 /// The most a page's content, a drawing's content or a text stream may decompress to, so a
 /// small crafted stream can't use up memory. Fonts and scanned images have their own limits.
 pub(crate) const MAX_CONTENT: usize = 256 << 20;
+
+/// Deepest nesting of drawings (form XObjects) that reading or rewriting content where it is
+/// drawn follows: reading a page's text, redacting inside drawings, reducing pictures. Each
+/// says what it does with deeper ones.
+pub(crate) const MAX_FORM_NESTING: usize = 8;

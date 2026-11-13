@@ -1242,6 +1242,34 @@ fn redacted_forms_nested_three_deep_leave_no_originals() {
     redact_form_secret(&mut p);
 }
 
+/// Forms nested 8 deep, each drawing the next with the page's resources, the last with the
+/// text under the mark: redacted inside, as deep as a page's text is read. Nested 9 deep, the
+/// text isn't read, and the form under the mark goes whole.
+#[test]
+fn forms_are_redacted_inside_as_deep_as_text_is_read() {
+    let nested = |depth: usize| {
+        let mut p = make(&["q /Fm1 Do Q"]);
+        let mut xobjects = Dictionary::new();
+        for i in 1..=depth {
+            let content = match i == depth {
+                true => FORM_SECRET.to_string(),
+                false => format!("q /Fm{} Do Q", i + 1),
+            };
+            xobjects.set(format!("Fm{i}"), form_with(&mut p, &content, None));
+        }
+        add_res(&mut p, 0, dictionary! { "XObject" => xobjects });
+        p
+    };
+    let mut p = nested(8);
+    let marks = marks_on(&p, 0, "formsecretzebra");
+    redact_form_secret(&mut p);
+    let mut p = nested(9);
+    assert_eq!(p.find_redaction_marks("formsecretzebra").unwrap(), []);
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    Saved::of(&mut p).assert_gone(&["FormSecretZebra", "Kept"]);
+}
+
 /// A picture drawn only inside a form nested in a form without resources of its own, wholly
 /// under a mark: neither the picture nor the forms it was drawn from stay in the file.
 #[test]

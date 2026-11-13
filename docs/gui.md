@@ -276,8 +276,8 @@ the file is changed when you save. Text, fonts, form fields and comments stay as
 
 Each picture is measured where the pages show it largest. Pictures already at or under the quality chosen are
 left as they are, and so are those of kinds LimarePDF can't make smaller (CMYK, palette and black-and-white
-pictures among them) and those also drawn where they aren't being reduced; the message after says how many and
-why. A digitally signed document can't be reduced: its saves keep exactly what was signed. On the command line:
+pictures among them) and those also drawn where they aren't being reduced, or inside drawings nested more than 8
+deep, too deep to measure; the message after says how many and why. A digitally signed document can't be reduced: its saves keep exactly what was signed. On the command line:
 `limarepdf-cli reduce` ([command line](cli.md#images-and-scans)).
 
 The file is written in the background: while it is, the status bar shows **Saving** with the file's name, and you

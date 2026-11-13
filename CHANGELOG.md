@@ -451,11 +451,18 @@
 - Removing hidden layers looks into forms drawn inside forms however deep they go. Before, forms nested more than
   32 deep made it stop and change nothing. Like redaction, it still stops, changing nothing, when following the
   document's drawings would take too long.
+- Reduce file size leaves a picture also drawn inside drawings nested more than 8 deep, too deep to measure, and
+  counts it among those shared. Before, a picture drawn small on a page and large inside drawings nested more than
+  12 deep was made as small as the small place allowed, and showed blurred where it was drawn large.
 
 ### Changed
 
 - Building LimarePDF needs the latest stable Rust (`rustup update stable`); older versions aren't supported. The
   package no longer names a minimum Rust version.
+- Redaction, Reduce file size and Save all images follow drawings inside drawings as deep as reading a page's text
+  does, 8 deep. Redaction redacts inside the 8th as well (before, a drawing that deep under a mark was removed
+  whole), and Reduce file size and Save all images stop at the 8th instead of the 12th: a picture drawn only deeper
+  isn't saved.
 - The notice for a file other PDF apps may show differently says its Save as… button writes a copy "without the
   parts other apps may read differently". Before, it said every app reads that copy the same, which LimarePDF can't
   promise: other apps may still show it in their own ways.

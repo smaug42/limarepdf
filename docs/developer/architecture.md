@@ -1023,7 +1023,8 @@ colours side by side when mixed), the bar outlined in the text colour so black s
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with
-spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
+spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies, as deep as a page's text
+is read (`crate::MAX_FORM_NESTING`, 8; WP-03, 7 before); a deeper form under a mark goes whole. Pictures are decoded,
 blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed again to check that nothing readable
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
 `sanitise.rs`. See [Redaction](../redaction.md).
@@ -1101,7 +1102,8 @@ S1-01's 32 times by the user's choice (2026-11-05, at 12.9 times; CP-05 brought 
 more of the same reading, the limit unchanged): 32 times would be about 16 s, and the editor reads a page more
 than once. An edit reads its own new content back before writing it (`parse_as_page`) within the same limit, so no
 edit makes a page that can't then be read. A form drawn again inside itself is passed over where it repeats
-(each form read once on the way down, as pdf.js does; its `issue19800-eq.pdf`), and the nesting limit, 8, stays.
+(each form read once on the way down, as pdf.js does; its `issue19800-eq.pdf`), and the nesting limit, 8, stays:
+`crate::MAX_FORM_NESTING`, which redacting inside drawings and reducing pictures follow too (WP-03).
 A form whose content can't be decoded is passed over too; only a `TooComplex` refusal goes up to the page. Then
 editing refuses (`page_objects` fails), redaction reads the text under every mark before changing any page and
 refuses, search names each page it can't read, with why (`Matches::unread`, shown under Search results), and
@@ -1801,12 +1803,15 @@ render copies don't go through it. The saved-output checker (`tests/common/saved
 an object stream by the stream's header, and searches object streams decoded as every Flate segment.
 
 **Reducing pictures** (ENH-19's stage 1; `reduce.rs`, `Pdf::reduce_pictures`, `limarepdf-cli reduce`): every page
-is walked (its content after `inline::extract`, through the form XObjects it draws, 12 deep, with `q`/`Q`/`cm` and
-each form's `/Matrix`), recording for each picture where it is drawn (`Use`: page, transform, and the object
-holding the `/XObject` dictionary its name was found in: a resources object, the `/XObject` dictionary's own, or
-the page or form holding it directly). A picture with a use on a chosen page is reduced only when every use is on
-a chosen page and every object referring to it (`referrers`, one pass over the objects) is one of those holders;
-otherwise (a page not chosen, a comment's or field's appearance, a pattern) it is counted `Shared` and left, since
+is walked (its content after `inline::extract`, through the form XObjects it draws, 8 deep as a page's text is read,
+`crate::MAX_FORM_NESTING`, 12 before WP-03, with `q`/`Q`/`cm` and each form's `/Matrix`), recording for each
+picture where it is drawn (`Use`: page, transform, and the object holding the `/XObject` dictionary its name was
+found in: a resources object, the `/XObject` dictionary's own, or the page or form holding it directly). A form
+deeper than that isn't walked: every picture its resources list, and those of the forms they list at any depth,
+goes in `Walk::deep` (`unfollowed`, PB-175), as where and how large it is drawn there isn't known. A picture with a
+use on a chosen page is reduced only when every use is on a chosen page, it isn't in `Walk::deep`, and every object
+referring to it (`referrers`, one pass over the objects) is one of those holders; otherwise (a page not chosen, a
+comment's or field's appearance, a pattern, a drawing too deep) it is counted `Shared` and left, since
 a copy beside the original the rest still needs makes the file larger (pdfbox's `2990` grew by half when copies
 were tried). Its resolution is the lowest over its uses of `min(width / drawn width, height / drawn height)` in
 pixels per inch (`shown_ppi`, the lengths of the transform's axes, so turns and skews count); above the choice's
