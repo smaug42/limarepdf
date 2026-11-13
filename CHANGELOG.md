@@ -12,6 +12,10 @@
 - Add a dictionary, replacing one added before, keeps the one before as it was when the new one can't be saved
   whole. Before, a failure between its two files could leave the new spelling rules with the old words, checking
   spelling against a mix of the two.
+- Save As, saving selected text, exporting text or images, saving pictures, splitting and signing never write in
+  the folder where LimarePDF keeps its digital IDs: a message says so, and you choose another folder. Before, only
+  the Digital IDs window's exports were kept out, and saving there could take the place of an ID or of the note
+  naming the default one.
 - Editing a line keeps the text other apps read in place of some of its letters (a file's attached text, such as
   a whole word given for an abbreviation) with those letters when the edit leaves them as they were, and drops it
   from letters the edit changes or removes. Before, other apps went on reading the old text in place of the letters
