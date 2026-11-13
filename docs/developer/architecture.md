@@ -1350,8 +1350,9 @@ reader and writer on `asn1.rs` (which also writes DER): it derives and wipes the
 files, the trust list, the copy of a signature picture kept for next time, O-06) go through
 `limarepdf_core::write_private`. A new ID's file goes through `write_private_new` (`atomic::create_new`), which
 never replaces: the temporary file is linked to the name, which fails when the name is taken (where the disk has no
-hard links, a check and then a rename), and `IdStore` tries the next free name, so two stores choosing one name at
-once both keep their IDs (PB-134). It and every document save (`Pdf::save`,
+hard links, a check and then a rename, which a test reaches through a seam failing the link: PB-168), and `IdStore`
+tries the next free name, so two stores choosing one name at once both keep their IDs (PB-134). It and every
+document save (`Pdf::save`,
 `write_file`, which the app's settings, recent files and signing settings, page images, exported certificates and
 text files also use) replace files through `atomic.rs`:
 a temporary file beside the target, always created new under a fresh name (never one already there), private to the

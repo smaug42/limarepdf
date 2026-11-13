@@ -43,7 +43,9 @@ where its code is, in [How it is built](architecture.md).
   `identity_of_a_file_not_there_yet_follows_the_folders_that_are`, `identity_lasts_through_writing_and_replacing`
   and `identity_through_a_hard_link` (Unix and Windows); `atomic.rs`'s
   `a_file_changed_while_it_is_saved_is_not_replaced`, `a_change_that_keeps_the_size_and_time_is_not_replaced` and
-  `an_expected_file_is_replaced`; `ids.rs`'s `two_ids_stored_at_once_under_one_name_are_both_kept`.
+  `an_expected_file_is_replaced`; `ids.rs`'s `two_ids_stored_at_once_under_one_name_are_both_kept` and, through a
+  seam that fails the link as a disk without hard links does, `without_hard_links_an_id_there_first_is_kept`
+  (PB-168).
 - The app: `opening_a_file_twice_never_loses_a_saved_change`, `a_file_is_opened_once_by_any_path_to_it`,
   `a_file_asking_for_its_password_is_opened_once_by_any_path_to_it`, `nothing_is_saved_over_another_tabs_file`,
   `saving_never_silently_replaces_a_file_changed_since_it_was_read` and `save_asks_before_replacing_a_changed_file`;

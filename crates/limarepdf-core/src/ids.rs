@@ -1014,6 +1014,46 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// PB-168: on a disk without hard links, a new ID is put in place by a rename once its
+    /// name is found free. An ID that takes the name while the new one is being written is
+    /// kept as it was, and the new ID takes the next free name.
+    #[test]
+    fn without_hard_links_an_id_there_first_is_kept() {
+        let walrus = NewId {
+            name: "Walrus".into(),
+            ..NewId::default()
+        };
+        let dir = std::env::temp_dir().join(format!("limarepdf-ids-nolink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let other = IdStore::new(dir.join("other"))
+            .create(&walrus, &password_seam::made_up())
+            .unwrap();
+        let first = std::fs::read(&other.id.path).unwrap();
+        let store = dir.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        crate::atomic::tests::no_links_in(&store);
+        let hold = crate::atomic::commit_seam::hold(&store);
+        let made = {
+            let (store, walrus) = (store.clone(), walrus.clone());
+            std::thread::spawn(move || {
+                IdStore::new(store).create(&walrus, &password_seam::made_up())
+            })
+        };
+        assert_eq!(hold.arrived(), store.join("walrus.p12"));
+        std::fs::write(store.join("walrus.p12"), &first).unwrap();
+        drop(hold);
+        let made = made.join().unwrap().unwrap();
+        assert_eq!(made.id.path, store.join("walrus-2.p12"));
+        assert_eq!(std::fs::read(store.join("walrus.p12")).unwrap(), first);
+        let kept = IdStore::new(&store).list().ids;
+        let mut sums: Vec<_> = kept.iter().map(|i| &i.cert.sha256).collect();
+        let mut want = vec![&other.id.cert.sha256, &made.id.cert.sha256];
+        sums.sort();
+        want.sort();
+        assert_eq!(sums, want);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn file_stems() {
         assert_eq!(file_stem("Jane Doe"), "jane-doe");

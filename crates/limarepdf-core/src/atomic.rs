@@ -355,7 +355,14 @@ pub mod commit_seam {
 /// its temporary name removed. Without them, `path` is looked at just before the rename, which
 /// leaves a moment for another writer to take the name.
 fn place_new(tmp: &Path, path: &Path) -> std::io::Result<()> {
-    match std::fs::hard_link(tmp, path) {
+    #[cfg(test)]
+    let linked = match tests::links_fail(path) {
+        true => Err(std::io::Error::other("a test made the link fail")),
+        false => std::fs::hard_link(tmp, path),
+    };
+    #[cfg(not(test))]
+    let linked = std::fs::hard_link(tmp, path);
+    match linked {
         Ok(()) => {
             // The file is in place: a temporary name left behind only takes room.
             let _ = std::fs::remove_file(tmp);
@@ -473,6 +480,22 @@ pub(crate) mod tests {
         #[allow(clippy::type_complexity)]
         static FOLDER_SYNC: RefCell<Option<Box<dyn FnMut(&Path) -> std::io::Result<()>>>> =
             const { RefCell::new(None) };
+    }
+
+    /// The folders where linking a new file into place fails.
+    static NO_LINKS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+    /// From now on, linking a new file into place in `dir` fails on every thread, as on a disk
+    /// without hard links (PB-168).
+    pub(crate) fn no_links_in(dir: &Path) {
+        let mut d = NO_LINKS.lock().unwrap_or_else(|e| e.into_inner());
+        d.push(dir.to_path_buf());
+    }
+
+    /// Whether linking a new file to `path` is to fail ([`no_links_in`]).
+    pub(super) fn links_fail(path: &Path) -> bool {
+        let d = NO_LINKS.lock().unwrap_or_else(|e| e.into_inner());
+        path.parent().is_some_and(|p| d.iter().any(|d| d == p))
     }
 
     /// What a test made of the sync of the folder holding `path`, in place of the real one.
