@@ -56,9 +56,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 # winit; keep the version in step with eframe's.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 winit = "0.30.13"
-# The desktop's accent colour from the desktop portal over D-Bus (accent.rs); accesskit's
-# screen reader support already uses it.
-zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+# The desktop's accent colour from the desktop portal over D-Bus (accent.rs), on zbus's own
+# runtime, driven by the thread that asks.
+zbus = { version = "6.2", default-features = false, features = ["default-rt"] }
 
 [build-dependencies]
 # Embeds the icon in limarepdf.exe on Windows; does nothing on other platforms.

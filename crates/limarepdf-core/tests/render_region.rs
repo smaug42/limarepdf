@@ -15,11 +15,24 @@ use lopdf::{dictionary, Object, Stream};
 
 /// A 300 × 200 page: a red box at (100, 50)–(200, 150), a diagonal blue line, and text.
 fn vector_page() -> Vec<u8> {
+    vector_page_at(1.0, false)
+}
+
+/// The vector page `k` times the size, all it draws too; `masked`, drawn through two soft
+/// masks that hide nothing, so that its passes are weighed.
+fn vector_page_at(k: f32, masked: bool) -> Vec<u8> {
     let mut p = Pdf::new();
-    p.insert_blank(0, 300.0, 200.0).unwrap();
-    let content = "1 0 0 rg 100 50 100 100 re f \
-                   0 0 1 RG 2 w 10 10 m 290 190 l S \
-                   BT /F1 18 Tf 0 g 20 170 Td (Tiles) Tj ET";
+    p.insert_blank(0, 300.0 * k, 200.0 * k).unwrap();
+    let (m0, m1) = if masked {
+        ("/M0 gs ", "/M1 gs ")
+    } else {
+        ("", "")
+    };
+    let content = format!(
+        "{k} 0 0 {k} 0 0 cm {m0}1 0 0 rg 100 50 100 100 re f \
+         {m1}0 0 1 RG 2 w 10 10 m 290 190 l S \
+         BT /F1 18 Tf 0 g 20 170 Td (Tiles) Tj ET"
+    );
     let font = p.doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type1",
@@ -28,13 +41,30 @@ fn vector_page() -> Vec<u8> {
     let s = p
         .doc
         .add_object(Stream::new(dictionary! {}, content.as_bytes().to_vec()));
+    let mut resources = dictionary! { "Font" => dictionary! { "F1" => Object::Reference(font) } };
+    if masked {
+        let mut states = lopdf::Dictionary::new();
+        for (name, white) in [("M0", "0 0 300 200"), ("M1", "-1 -1 302 202")] {
+            let white = p.doc.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject",
+                    "Subtype" => "Form",
+                    "BBox" => vec![(-1).into(), (-1).into(), 301.into(), 201.into()],
+                    "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+                },
+                format!("1 g {white} re f").into_bytes(),
+            ));
+            let mask = p.doc.add_object(dictionary! {
+                "SMask" => dictionary! { "S" => "Luminosity", "G" => Object::Reference(white) },
+            });
+            states.set(name, Object::Reference(mask));
+        }
+        resources.set("ExtGState", states);
+    }
     let page = p.page_ids()[0];
     let d = p.doc.get_dictionary_mut(page).unwrap();
     d.set("Contents", Object::Reference(s));
-    d.set(
-        "Resources",
-        dictionary! { "Font" => dictionary! { "F1" => Object::Reference(font) } },
-    );
+    d.set("Resources", resources);
     p.snapshot().unwrap()
 }
 
@@ -82,40 +112,63 @@ fn tiles_match_the_whole_page() {
     }
 }
 
-/// A scale at which the vector page needs several bands, and the band count.
-fn banded_scale() -> (f32, usize) {
-    // 300 × 200 pt at 12 is 3600 × 2400 px, 8.6 million pixels.
-    let scale = 12.0;
-    let rows = (render::BAND_PIXELS / 3600) / 4 * 4;
-    let bands = 2400usize.div_ceil(rows as usize);
-    assert!(bands > 1, "{bands}");
-    (scale, bands)
+/// The masked vector page twice the size, 2400 × 1600 pixels at the scale given, and the
+/// side of the pieces it's drawn in on this thread, the memory of a pass held to a little
+/// over 1024 pixels a side.
+fn pieced_page() -> (Vec<u8>, f32, usize) {
+    // A pixel takes the masks, and in a piece the piece's bitmap: 7.7 MB in one pass, 6.3 MB
+    // in pieces of 1024 and 9.8 MB in pieces of 1280.
+    render::pass_seam::hold_to(6.5 * 1024.0 * 1024.0);
+    (vector_page_at(2.0, true), 4.0, 1024)
 }
 
 #[test]
-fn bands_match_one_pass() {
-    let hp = render::load(vector_page(), None).unwrap();
+fn pieces_match_one_pass() {
+    let (page, scale, side) = pieced_page();
+    let hp = render::load(page, None).unwrap();
     let r = render::Renderer::new(&hp);
-    let (scale, _) = banded_scale();
-    let banded = r.render(0, scale).unwrap();
-    let one = r
-        .render_region(0, scale, region(0, 0, u32::MAX, u32::MAX))
-        .unwrap();
-    assert_eq!((banded.width, banded.height), (3600, 2400));
-    assert_eq!((one.width, one.height), (3600, 2400));
-    for y in 0..one.height {
-        for x in 0..one.width {
-            assert_eq!(px(&banded, x, y), px(&one, x, y), "pixel {x}, {y}");
+    let pieced = r.render(0, scale).unwrap();
+    assert_eq!((pieced.width, pieced.height), (2400, 1600));
+    assert_eq!(render::pass_seam::last_side(), Some(side as u32));
+    // Tiles drawn in one pass each, none starting on an edge between the pieces, so every
+    // edge runs through some tile. Drawn from another origin, an edge pixel can come out a
+    // level apart, as the app's tiles can; no more.
+    let tile = 512;
+    assert!((side - tile / 2) % tile != 0);
+    for ty in (tile / 2..1600).step_by(tile) {
+        for tx in (tile / 2..2400).step_by(tile) {
+            let reg = region(tx as u32, ty as u32, tile as u32, tile as u32);
+            let one = r.render_region(0, scale, reg).unwrap();
+            for y in 0..one.height {
+                for x in 0..one.width {
+                    let (gx, gy) = (tx + x, ty + y);
+                    let (a, b) = (px(&one, x, y), px(&pieced, gx, gy));
+                    let apart = (0..3).all(|i| a[i].abs_diff(b[i]) <= 1);
+                    assert!(apart, "pixel {gx}, {gy}: {a:?}, {b:?}");
+                }
+            }
         }
     }
 }
 
 #[test]
-fn drawing_stops_between_bands() {
-    let hp = render::load(vector_page(), None).unwrap();
+fn a_page_without_masks_or_patterns_is_drawn_in_one_pass() {
+    // Held to a byte, the masked page is drawn in the smallest pieces, the other in one.
+    render::pass_seam::hold_to(1.0);
+    for (masked, side) in [(true, 256), (false, 2400)] {
+        let hp = render::load(vector_page_at(2.0, masked), None).unwrap();
+        render::Renderer::new(&hp).render(0, 4.0).unwrap();
+        assert_eq!(render::pass_seam::last_side(), Some(side), "{masked}");
+    }
+}
+
+#[test]
+fn drawing_stops_between_pieces() {
+    let (page, scale, side) = pieced_page();
+    let pieces = 2400usize.div_ceil(side) * 1600usize.div_ceil(side);
+    let hp = render::load(page, None).unwrap();
     let r = render::Renderer::new(&hp);
-    let (scale, bands) = banded_scale();
-    // Asked before each band.
+    // Asked before each piece.
     let asked = std::cell::Cell::new(0);
     let b = r
         .render_unless(0, scale, &|| {
@@ -124,8 +177,8 @@ fn drawing_stops_between_bands() {
         })
         .unwrap();
     assert!(b.is_some());
-    assert_eq!(asked.get(), bands);
-    // Told to stop before the second band.
+    assert_eq!(asked.get(), pieces);
+    // Told to stop before the second piece.
     asked.set(0);
     let b = r
         .render_unless(0, scale, &|| {
@@ -135,7 +188,7 @@ fn drawing_stops_between_bands() {
         .unwrap();
     assert!(b.is_none());
     assert_eq!(asked.get(), 2);
-    // A page that fits in one band is asked once.
+    // A page that fits in one piece is asked once.
     asked.set(0);
     let b = r
         .render_unless(0, 1.0, &|| {
@@ -144,7 +197,7 @@ fn drawing_stops_between_bands() {
         })
         .unwrap()
         .unwrap();
-    assert_eq!((b.width, b.height), (300, 200));
+    assert_eq!((b.width, b.height), (600, 400));
     assert_eq!(asked.get(), 1);
 }
 

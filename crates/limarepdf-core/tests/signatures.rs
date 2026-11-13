@@ -744,6 +744,15 @@ fn warnings() {
     ));
     assert_valid(&s);
     assert_eq!(s.warnings, [SigWarning::ShortKey(1024)]);
+    // Shorter than the `rsa` crate reads by itself: still checked.
+    let s = only(&sign(
+        &base_pdf(),
+        &id("rsa512"),
+        &Field::default(),
+        &Cms::default(),
+    ));
+    assert_valid(&s);
+    assert_eq!(s.warnings, [SigWarning::ShortKey(512)]);
     let s = only(&sign(
         &base_pdf(),
         &id_with_cert("rsa2048", "expired"),

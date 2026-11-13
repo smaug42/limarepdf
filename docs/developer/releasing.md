@@ -9,9 +9,8 @@ How a release is made, for maintainers.
    - update the status line in `docs/developer/feature-status.md` if it names the version;
    - in `CHANGELOG.md`, rename the `## [Unreleased]` section to `## [x.y.z] - date`. Changes are added to
      Unreleased as they are made;
-   - check the signature crates listed in [How it is built](architecture.md#signature-crates): if a pinned
-     pre-release (`rsa`, `pkcs1`) has a final version, move to it; if RUSTSEC-2023-0071 has a fixed `rsa`, take it
-     and remove its line from `deny.toml`'s `ignore`;
+   - check the signature crates listed in [How it is built](architecture.md#signature-crates) are at their latest
+     versions, and update the table's versions;
    - run `cargo deny check` (`cargo install cargo-deny --locked --version` with the version `ci.yml`'s `deny` job
      sets) and read any new advisory or licence it reports. An advisory set aside in `deny.toml` whose crate has
      gone or been fixed is reported as no longer needed: remove it. Move the `deny` job's cargo-deny version to the
@@ -154,7 +153,7 @@ version the script names (`ci.yml` installs the same one), from `about.toml` and
 leaving out build and dev dependencies and the workspace's own crates. It stops, leaving no page, when
 `about.toml`'s accepted licences differ from `deny.toml`'s allow list, or when cargo-about warns.
 
-`about.toml`'s clarifications add what cargo-about can't find by itself: the fonts that hayro-interpret and
+`about.toml`'s clarifications add what cargo-about can't find by itself: the fonts that hayro-font and
 epaint_default_fonts bundle, and the code notices in subsetter's NOTICE, each file pinned by its SHA-256. When a
 new version of the crate changes one of those files, cargo-about only warns and leaves the notice out, which is why
 the script stops on a warning. sctk-adwaita's Cantarell font, which draws the window title bars on Linux under

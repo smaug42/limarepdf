@@ -60,20 +60,22 @@ fn extreme_numbers_get_plain_answers() {
     assert_eq!(rotate.status.code(), Some(0), "stderr: {err}");
 }
 
-/// PDFBox 2363 makes hayro's renderer (vello_common) panic at 150 dpi. Opt-in: the corpus is fetched by
-/// `crates/limarepdf-core/tools/fetch-render-samples.sh` and isn't in the repository.
+/// A panic while drawing, as hayro 0.8.0's renderer had on PDFBox 2363 at 150 dpi, ends in a plain
+/// error. No file is known to make hayro 0.9.0 panic, so core's test seam makes drawing panic in the
+/// program the tests build.
 #[test]
-#[ignore = "needs the fetched render corpus"]
 fn a_panic_ends_in_a_plain_error() {
-    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../limarepdf-core/tests/data/render/pdfbox/2363.pdf");
-    assert!(file.exists(), "fetch the render corpus first");
-    let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("panics-2363");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("panics-draw");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut p = limarepdf_core::Pdf::new();
+    p.insert_blank(0, 200.0, 200.0).unwrap();
+    std::fs::write(dir.join("in.pdf"), p.to_bytes().unwrap()).unwrap();
     let run = limarepdf_core::child_seam::output(
         Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
-            .args(["render", "--dpi", "150", "--out-dir"])
-            .arg(&out_dir)
-            .arg(&file)
+            .current_dir(&dir)
+            .args(["render", "--dpi", "150", "--out-dir", "out", "in.pdf"])
+            .env(limarepdf_core::render::panic_seam::VAR, "1")
             .env_remove("RUST_BACKTRACE"),
     )
     .unwrap();

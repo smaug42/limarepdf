@@ -1,9 +1,9 @@
 //! What LimarePDF's pages draw a font in that the PDF names but doesn't hold (ENH-25), so
 //! that text typed in such a font shows in the face it will have once kept.
 //!
-//! The renderer is hayro 0.8's, and this follows its choice (its `font/standard_font.rs`,
-//! `type1.rs`, `true_type.rs` and `cid.rs`). A font is drawn in the standard font it is by
-//! name; else in one of the family a word in its name gives ("helvetica", then "arial" or
+//! The renderer is hayro 0.9's, and this follows its choice (`standard_font.rs`, `type1.rs`,
+//! `true_type.rs` and `cid.rs` in its hayro-font crate). A font is drawn in the standard font
+//! it is by name; else in one of the family a word in its name gives ("helvetica", then "arial" or
 //! "sans", "courier", "mono", "times", "serif", in that order), bold where its descriptor's
 //! weight is 700 or more or the name says "bold" or "demi", italic where its italic angle
 //! isn't 0 or the name says "italic" or "oblique". A simple font without such a word is

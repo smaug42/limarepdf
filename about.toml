@@ -31,17 +31,17 @@ private = { ignore = true }
 # on the warning. Read the new file, then update the licence and the sum (docs/developer/releasing.md).
 
 # Foxit's fonts for the standard PDF fonts (the embed-fonts feature), with their BSD-3-Clause notice.
-[hayro-interpret.clarify]
+[hayro-font.clarify]
 license = "(Apache-2.0 OR MIT) AND BSD-3-Clause"
-[[hayro-interpret.clarify.files]]
+[[hayro-font.clarify.files]]
 path = "LICENSE-MIT"
 license = "MIT"
 checksum = "51b50e6120c344dcc146bbd6375ca1c78e079d97c8bea76e67a53d6ff0efebac"
-[[hayro-interpret.clarify.files]]
+[[hayro-font.clarify.files]]
 path = "LICENSE-APACHE"
 license = "Apache-2.0"
 checksum = "0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9"
-[[hayro-interpret.clarify.files]]
+[[hayro-font.clarify.files]]
 path = "assets/LICENSE_FOXIT"
 license = "BSD-3-Clause"
 checksum = "b578cdd2345840ada550bd12519533812320d5f1d21cf4c1c7e1b1b0a31c98b7"

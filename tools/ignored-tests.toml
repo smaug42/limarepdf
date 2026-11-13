@@ -43,13 +43,6 @@ file = "crates/limarepdf-core/tests/render_coverage.rs"
 group = "G1"
 
 [[test]]
-name = "annot_noview_flag_is_respected"
-crate = "limarepdf-core"
-target = "--test render_coverage"
-file = "crates/limarepdf-core/tests/render_coverage.rs"
-group = "G1"
-
-[[test]]
 name = "annot_stamp_without_ap"
 crate = "limarepdf-core"
 target = "--test render_coverage"
@@ -242,13 +235,6 @@ name = "dss_samples"
 crate = "limarepdf-core"
 target = "--test signatures"
 file = "crates/limarepdf-core/tests/signatures.rs"
-group = "G3"
-
-[[test]]
-name = "a_panic_ends_in_a_plain_error"
-crate = "limarepdf-cli"
-target = "--test panics"
-file = "crates/limarepdf-cli/tests/panics.rs"
 group = "G3"
 
 # G4: timings

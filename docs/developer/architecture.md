@@ -118,7 +118,7 @@ entry whose object is missing or isn't a typed dictionary, as a blank stand-in p
 so taking lopdf's list would shift page numbers between editing and drawing, and a tree with no real page would
 no longer be repaired.
 
-hayro (0.8) sets aside memory for a picture from its stated width and height, not from its data: an inline image of
+hayro (0.9) sets aside memory for a picture from its stated width and height, not from its data: an inline image of
 78 bytes stating 255,555,555 × 2 pixels made it ask for about 4 GB (PB-81, found by REL-12's `draw` fuzz target). So
 every copy pages are drawn from leaves out a picture whose data can't come near filling it
 (`crates/limarepdf-core/src/unfillable.rs`): `Pdf::render_snapshot`, `app_snapshot` and `uncropped_app_snapshot`
@@ -140,6 +140,49 @@ fingerprint (`Checked`: number, dictionary, length and 16 spans of 32 bytes spre
 snapshot the check costs at most 2 ms on the 104 test files measured (0.06 ms on average). A changed stream gets a
 new fingerprint and is checked again; what LimarePDF writes never states more than its data holds, so only what a
 file brings needs it. None of the 1,080 test files that open has a picture left out. `tests/unfillable.rs`.
+
+The same copies leave out a tiling pattern hayro 0.9 can't tile (PB-11). hayro draws the pattern's cell into a tile
+once for each copy of the cell the tile overlaps, about the cell's size over the step plus two each way, then repeats
+the tile; each way the tile is the step long, or the canvas seen in the pattern's space if that is shorter, at the
+pattern's scale. A cell 100,000 units a side stepping 1 is drawn ten billion times (drawing ran past five minutes),
+and a skew grows the canvas seen: a pattern skewed 80 to 1 (`/Matrix [1 0 80 1 0 0]`, a cell 60,000 by 700 units) on
+a Letter page asked for 13 GB at 72 dpi and panicked at 96, its tile over the 65,532 pixels a side vello_common can
+snap to its tiles. The renderer draws a page with a tiling pattern in passes of at most 2,048 pixels a side
+(`PASS_SIDE`; [Large drawings](../rendering.md#large-drawings)), so the canvas is at most a pass at every zoom: the
+tile's pixels across are the canvas seen times a unit's length on it, the same at every zoom, or the step's, which
+grow with the zoom.
+`unfillable.rs` reckons them from the pattern's `/BBox`, `/XStep`, `/YStep` and `/Matrix` at the most zoom the
+renderer takes (`MAX_REGION_SCALE`, 256), and leaves the pattern out when its copies would be over 10,000
+(`MOST_COPIES`), a side of its tile over 65,530 pixels (`MOST_SIDE`: 65,532 less the 2 hayro may round up) or the
+tile over 16 passes' pixels (`MOST_TILE`, 256 MiB; unskewed or turned a quarter a tile is at most one pass, turned an
+eighth two, skewed 2 to 1 about 7). A pattern in a form, an annotation's appearance, a soft mask or a Type 3 glyph is drawn with their
+matrices too, which can skew it where its own doesn't, and one in another pattern's cell is drawn on that pattern's
+tile, which can be longer than a pass. So a walk of what the pages draw (`Nested`) follows `q`, `Q`, `cm`, `gs`, `Do`,
+`BT`, `Tm`, `Tf`, `Tz` and the text Type 3 fonts show, reading a drawing's content only when something it draws holds
+a tiling pattern, and reckons each pattern against the whole of a pass, or of the tile it is drawn on; every state of
+an appearance, and hidden annotations, are looked into too. It looks 64 drawings deep at most (hayro draws 50), and
+past 2^24 drawings looked into and operators gone through outside the pages it leaves out every tiling pattern. In
+the copy a pattern left out becomes one whose one-unit tile draws the undecodable picture above, so the page is drawn
+without it and the renderer reports `Missing::Picture`; the document keeps the pattern. hayro 0.8 sized the tile from
+the step alone, so PDFBox's 2363, stepping 32,767 units, asked for 7.6 GB at 96 dpi and panicked at 150 (D12); 0.9
+draws it at 50 MiB. None of the
+646 tiling patterns in the 1,207 test files is left out: the most copies any has is 49, and the largest tile is 1.5
+passes and 5,714 pixels long, turned (both pdf.js issue2177). `tests/patterns.rs`.
+
+In the same copies a shape filled with a pattern of a mesh shading (types 4 to 7: triangles or patches) is drawn as
+the shading itself (PB-11, `crates/limarepdf-core/src/mesh_fill.rs`). hayro 0.9 samples a mesh, for a fill with its
+pattern, into a picture of all the shape covers on the pass, and keeps every such picture until the pass ends; for
+`sh` it samples only the mesh's bounds. pdf.js's bug1260585, a 3D plot converted from PostScript, fills its figure
+2,640 times with a pattern of one triangle each: 6.1 GB and 138 s at 288 dpi, now 111 MiB and 0.3 s, and without the
+light seams the fills left between triangles (Ghostscript draws none). As the PDF reference describes such a fill,
+the shape becomes the clip in a saved state, the pattern's matrix, taken from the space the drawing began in (which
+hayro starts afresh in a form, an appearance and a tiling pattern's cell), is set with `cm`, and the shading is
+painted with `sh` under a name of its own added to the drawing's shadings; a shape that is also outlined is
+outlined after, and one setting a clip (`W f`) sets it after. Pages, forms, annotations' appearances and tiling
+patterns' cells are redrawn, a page's streams as one; left as they are: a shading with a `/Background` (which `sh`
+leaves out), a pattern with an `/ExtGState`, fills in Type 3 glyphs and in forms without resources of their own, and
+a stream two drawings share, which is drawn with the resources of each. `tests/mesh_fills.rs` draws each case both
+ways and finds them the same (a skewed shape's smoothed edges differ in 933 pixels of 1.9 million).
 
 The page colour modes (View > Page colours; [Rendering](../rendering.md#page-colour-modes)) are worked out on the
 drawn page, pixel by pixel, in `crates/limarepdf-core/src/page_colours.rs` (`PageColours::pixel`, `recolour`). Only
@@ -203,22 +246,26 @@ once per call, its program read with the decoding context the page is read with)
 the page show in that font; `Pdf::page_line_fonts` gives every line's at once, the page parsed and each font read
 once (the app reads a page's lines' fonts with it the first time one is selected). `LineFont::code` gives a character's
 code only when one reads as exactly that character (`FontCtx::decode_code`, and for Type 0 fonts `known_text`,
-which leaves out lopdf's last-resort guess), its glyph is found as hayro 0.8 finds it to draw (simple TrueType by
-the code's glyph name through (3,1), then (1,0) by Mac OS Roman's code, then `post`, or by code through (3,0) or
-(3,1) at 0, 0xF000, 0xF100 and 0xF200 when the descriptor's flags aren't nonsymbolic, an undefined flag counting
-as symbolic as hayro's `from_bits` does; CFF and Type 1 by `/Differences` name, else the program's own encoding,
-else the base encoding's name; CID fonts through `/CIDToGIDMap` or a CID-keyed CFF charset), isn't `.notdef` and
-draws an outline (blank characters excepted), the PDF's width is within 2% or 2 units of the program's advance,
-a simple font's ToUnicode text matches the character its encoding names (`disagree`; not symbolic TrueType,
-drawn by code), and the program's cmap read backwards, else the glyph's name, doesn't make it another character.
+which leaves out lopdf's last-resort guess), its glyph is found as hayro 0.9 finds it to draw (simple TrueType by
+the code's glyph name through (3,1), then (1,0) by Mac OS Roman's code, then the first glyph so named in `post`, or
+by code through (3,0) or (3,1) at 0, 0xF000, 0xF100 and 0xF200 when the descriptor's flags aren't nonsymbolic, an
+undefined flag counting as symbolic as hayro's `from_bits` does, the cmaps read as read-fonts reads them, a `DMAP`
+table's first; Type 1, whatever the program, by `/Differences` name, else the program's own encoding, else the base
+encoding's name, a name found in an OpenType program's `post` before its CFF charset, and `nbspace` and `sfthyphen`
+also as `space` and `hyphen`; CID fonts through the first 65,536 entries of `/CIDToGIDMap` or a CID-keyed CFF
+charset), isn't `.notdef` and draws an outline (blank characters excepted), the PDF's width is within 2% or 2
+units of the program's advance, a simple font's ToUnicode text matches the character its encoding names
+(`disagree`; not symbolic TrueType, drawn by code), and the program's cmap read backwards, else the glyph's name,
+doesn't make it another character.
 Several codes for one character: the line's, else the page's, else the lowest when they draw one glyph, else
 `Ambiguous`. The base encodings' glyph names are `base_encodings.rs`'s, generated by
 `tools/gen_base_encodings.py` and checked equal to hayro's tables (code 0 `.notdef`, WinAnsi's unused codes past
-40 bullets, MacRoman with Mac OS Roman's codes after it; MacExpert unread). hayro draws a simple font whose
-program is OpenType in `/FontFile3` in a standard face, so that program is looked up by its CFF names, as other
-readers draw it; the unit tests `simple_fonts_find_each_code_s_glyph_as_hayro_draws_it` and
-`cid_fonts_find_each_cid_s_glyph_as_hayro_draws_it` run hayro's interpreter over every code of the test fonts
-and compare the glyphs it draws, so a hayro upgrade that finds glyphs otherwise fails them. Refused as a whole
+40 bullets, MacRoman with Mac OS Roman's codes after it; MacExpert unread). A program is read by what it turns out
+to be, whatever key holds it (OpenType without `maxp` as its `CFF ` table); a TrueType font's only from `/FontFile2`
+and only when TrueType or OpenType, since hayro draws any other in a standard face; the unit tests
+`simple_fonts_find_each_code_s_glyph_as_hayro_draws_it` and `cid_fonts_find_each_cid_s_glyph_as_hayro_draws_it`
+run hayro's interpreter over every code of the test fonts and compare the glyphs it draws, so a hayro upgrade
+that finds glyphs otherwise fails them. Refused as a whole
 (`FontRefusal`): Type 3, not embedded (where plain ASCII is still written as itself when `FontCtx::reusable`),
 a CMap other than Identity-H, vertical writing, a program that can't be read or isn't one hayro draws with, and
 LimarePDF's own fonts (`embed::KEY`), which their pen grows. Each character is checked when first asked (kept in
@@ -276,7 +323,9 @@ TrueType program's quadratic segments as the cubics that draw them exactly, coor
 units of a 1000-unit em; cmap formats 4 and 12; `hmtx` from the PDF's widths; `head`, `hhea`, `maxp` 0.5,
 `post` 3, `name`, `OS/2` 4 with the descriptor's ascent and descent), holding the characters the line shows
 with a code of their own, as it shows them, and up to 4,096 in all of those `code` gives. egui 0.37 reads it
-with skrifa 0.44, whose CFF drawing and metrics are those of the 0.46 core uses. The app makes it on its loader
+with skrifa 0.44, which draws it and reads its metrics as the 0.50 core uses does: the font's charstrings are
+moves, lines, curves and endchar, and 0.50's changes to CFF (Type 2's arithmetic and storage operators, an
+operation limit, building multiple-master instances) touch none of them. The app makes it on its loader
 thread (`typing_fonts.rs`, `Candidate::Preview`, keyed by `LineFont::preview_key`: the program and font
 dictionaries hashed, with the codes the line shows), falling back to the Liberation face of its kind, then
 Inter. TJ kerning isn't drawn while typing, and a ligature glyph's letters draw in the Liberation face.
@@ -1329,7 +1378,7 @@ tying each signature value to its dictionary in the version it signed, by positi
 signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, that walks the data exactly as written
 so signed attributes are never re-encoded before checking. The cryptography is RustCrypto's (`rsa`, `p256`, `p384`,
 `sha1`, `sha2`, `x509-cert`). What changed after each signature is worked out in `sig_changes.rs`: it reads the
-appended revisions' cross-reference sections itself (lopdf ignores free entries and repairs broken tables, which
+appended revisions' cross-reference sections itself (lopdf corrects bad offsets and repairs broken tables, which
 would hide changes), checks that lopdf reads the same objects (in number order, so a revision with several faults
 always gives the same reason: saving compares the reasons before and after, and one naming another object would
 count as a new change), then compares each signed version with the next,
@@ -1367,7 +1416,9 @@ synced. Tests reach this outcome through `atomic::sync_seam` (REL-10): folder sy
 in folders a test registers (`fail_in`, `stop_failing_in`) or in the one `LIMAREPDF_TEST_SYNC_FAILS` names (for the
 CLI, run as a separate program). It is built for core's own tests and, through core's `test-seams` feature, only
 for the app's and the CLI's: their dev-dependencies turn the feature on, so `cargo build --release` never has it,
-and CI's "No test seam" steps check the release programs for the variable's name. Writes of LimarePDF's own files say what happened too (BUG-14): `IdStore::create` and `import` return a
+and CI's "No test seam" steps check the release programs for the variable's name. The feature has a second seam
+for the CLI, `render::panic_seam`: with `LIMAREPDF_TEST_DRAW_PANICS` set, drawing a page panics, so its tests reach
+the CLI's panic guard now that no file is known to make hayro panic. Writes of LimarePDF's own files say what happened too (BUG-14): `IdStore::create` and `import` return a
 `Stored` (the ID and warnings) once the ID's file is written, so a default that can't be noted, or a sync not
 confirmed, is a warning, never a failure that a second try would repeat; `IdStore::remove` returns its warnings;
 the app's ID window shows them (`Said::Warning`), the CLI prints `warning:` lines and succeeds, and the trust list,
@@ -1788,7 +1839,7 @@ ignores). Anything else is `picture_png`: `placed` lays the picture on a page of
 points as its pixels in the direction it shows (a side within 1e-4 of upright or across taken as exactly so),
 the page the bounding box; `alone` writes a one-page document of the picture with every object its dictionary
 reaches copied under the same numbers (`/OC`, `/Metadata`, `/Alternates`, `/OPI`, `/StructParent` dropped), and
-`render.rs`'s `Renderer::render_clear` draws it at 72 dpi on a clear backdrop (`render_bands` with
+`render.rs`'s `Renderer::render_clear` draws it at 72 dpi on a clear backdrop (`render_whole` with
 `TargetInit::Clear(TRANSPARENT)`, then the colours divided by alpha); the three are `pictures::drawn_alone`, which
 Optimise scanned pages draws a calibrated scan with too. Drawn 1:1 on whole pixels, the renderer
 samples each pixel as stored, so a Flate RGB or grey picture comes out exactly (core's `tests/pictures.rs`, and a
@@ -2781,7 +2832,7 @@ form XObject, and per inline image.
   again (up to a third of a second each time on a heavy page; performance.md). It draws each piece in the
   font it will have: a kept embedded font in its own glyphs (its preview font), a kept unembedded one in the face
   LimarePDF's pages draw it in once kept (ENH-25, batch 45's 3b-1; `LineFont::stand_in`, `stand_in.rs`): hayro
-  0.8 draws a simple font it doesn't hold in one of its standard faces, the one its name is, else by a word in the
+  0.9 draws a simple font it doesn't hold in one of its standard faces, the one its name is, else by a word in the
   name ("helvetica", then "arial" or "sans", "courier", "mono", "times", "serif", in that order; bold by a
   descriptor weight of 700 or "bold" or "demi", italic by a non-zero italic angle or "italic" or "oblique"), else
   by the descriptor's serif flag, bold and italic by "Bold" and "Italic" in the PostScript name and the italic
@@ -2982,22 +3033,23 @@ An edit that fails leaves the document unchanged.
 ## Signature crates
 
 Checking and digital IDs use these pure-Rust crates (moved from [Digital signatures in depth](../signatures-in-depth.md#security-notes)),
-from the RustCrypto project unless noted, pinned to exact versions where they are pre-releases:
+from the RustCrypto project unless noted, all final releases:
 
-| Crate | Version | Status | Used for |
-| --- | --- | --- | --- |
-| `rsa` | 0.10.0-rc.19 | pre-release | RSA keys and signatures |
-| `pkcs1` | 0.8.0 | stable (pinned exactly with `rsa`; final since 0.13.0) | RSA key encoding |
-| `der`, `spki`, `x509-cert` | 0.8.2, 0.8.1, 0.3.0 | stable | certificates; making self-signed ones |
-| `p256`, `p384` | 0.14.0 | stable | ECDSA keys and signatures |
-| `sha1`, `sha2` | 0.11.0, 0.11.1 | stable | digests |
-| `hmac`, `pbkdf2` | 0.13.0 | stable | ID file integrity checks and password stretching |
-| `aes`, `cbc` | 0.9, 0.2.1 | stable | ID file encryption |
-| `des`, `rc2` | 0.9.0 | stable | reading older ID files only (3DES, RC2) |
-| `zeroize`, `subtle` | 1.9, 2.6 | stable | wiping secrets, constant-time comparison |
-| `getrandom` | 0.4 | stable | random numbers from the operating system (also the AES-256 file key and a protected file's ID when it has none, through `pkcs12::random`) |
-| `rpassword` | 7.5.4 | stable, not RustCrypto | asking for passwords without showing them (command line) |
+| Crate | Version | Used for |
+| --- | --- | --- |
+| `rsa` | 0.10.0 | RSA keys and signatures |
+| `pkcs1` | 0.8.0 | RSA key encoding |
+| `der`, `spki`, `x509-cert` | 0.8.3, 0.8.1, 0.3.0 | certificates; making self-signed ones |
+| `p256`, `p384` | 0.14.0 | ECDSA keys and signatures |
+| `sha1`, `sha2` | 0.11.0, 0.11.1 | digests |
+| `hmac`, `pbkdf2` | 0.13.0 | ID file integrity checks and password stretching |
+| `aes`, `cbc` | 0.9.4, 0.2.1 | ID file encryption |
+| `des`, `rc2` | 0.9.0 | reading older ID files only (3DES, RC2) |
+| `zeroize`, `subtle` | 1.9.1, 2.6.1 | wiping secrets, constant-time comparison |
+| `getrandom` | 0.4.3 | random numbers from the operating system (also the AES-256 file key and a protected file's ID when it has none, through `pkcs12::random`) |
+| `rpassword` | 7.5.5 | asking for passwords without showing them (command line; not RustCrypto) |
 
-"Pre-release" means their programming interface may still change, not that they are untested; they come from the
-same project and review as the stable crates. LimarePDF's own reader and writer handle the signature data (see
-[Digital signatures in depth](../signatures-in-depth.md#security-notes)), so the pre-release `cms` crate isn't used.
+`rsa` 0.10.0 refuses public keys shorter than 1,024 bits; `cms_check.rs` reads them itself, so a signature made
+with one is still checked, and flagged as too short to be safe. LimarePDF's own reader and writer handle the
+signature data (see [Digital signatures in depth](../signatures-in-depth.md#security-notes)), so the `cms` crate,
+still a pre-release, isn't used.

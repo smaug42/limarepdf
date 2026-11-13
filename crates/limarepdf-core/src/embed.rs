@@ -30,8 +30,7 @@
 use crate::{Family, FontChoice, Pdf, Result};
 use anyhow::{anyhow, bail};
 use harfrust::{
-    BufferClusterLevel, BufferFlags, Direction, Feature, ShapeOptions, ShapePlan, ShaperData,
-    ShaperInstance, UnicodeBuffer, Variation,
+    Buffer, BufferFlags, ClusterLevel, Direction, Feature, ShapeOptions, ShapePlan, ShaperFont,
 };
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 use sha2::{Digest, Sha256};
@@ -172,10 +171,9 @@ pub(crate) struct Face {
     upem: f32,
     /// Whether each glyph has an outline ([`Face::outlined`]), found the first time asked.
     outlines: Box<[OnceLock<bool>]>,
-    /// What shaping needs of the face, made the first time it is shaped.
-    shaper: OnceLock<ShaperData>,
-    /// Where a variable font is set, for shaping; `None` for others.
-    instance: Option<ShaperInstance>,
+    /// The face as shaping reads it, set where a variable font is set, made the first time
+    /// it is shaped.
+    shaper: OnceLock<harfrust::Font>,
     /// The shaping plans made, by script, language and whether only kerning was asked.
     plans: Mutex<Vec<(PlanKey, Arc<ShapePlan>)>>,
 }
@@ -299,18 +297,11 @@ impl Face {
         let m = font.metrics(Size::unscaled(), at);
         let em = 1000.0 / m.units_per_em.max(1) as f32;
         let gm = font.glyph_metrics(Size::unscaled(), at);
-        let advances: Vec<f32> = (0..m.glyph_count as u32)
+        let advances: Vec<f32> = (0..m.glyph_count)
             .map(|g| gm.advance_width(GlyphId::new(g)).unwrap_or(0.0) * em)
             .collect();
         let widths = advances.iter().map(|w| w.round() as i64).collect();
         let outlines = (0..m.glyph_count).map(|_| OnceLock::new()).collect();
-        let instance = (!coords.is_empty()).then(|| {
-            let at = coords.iter().map(|(t, v)| Variation {
-                tag: Tag::new(t),
-                value: *v,
-            });
-            ShaperInstance::from_variations(&font, at)
-        });
         let mut sum = Sha256::new();
         sum.update(data);
         if index != 0 || !coords.is_empty() {
@@ -335,7 +326,6 @@ impl Face {
             upem: m.units_per_em.max(1) as f32,
             outlines,
             shaper: OnceLock::new(),
-            instance,
             plans: Mutex::new(Vec::new()),
         })
     }
@@ -384,9 +374,15 @@ impl Face {
         if text.is_empty() {
             return Vec::new();
         }
-        let font = self.font();
-        let data = self.shaper.get_or_init(|| ShaperData::new(&font));
-        let shaper = data.shaper(&font).instance(self.instance.as_ref()).build();
+        let font = self.shaper.get_or_init(|| {
+            let font = harfrust::Font::new(self.data, self.index).expect("read when the face was");
+            match self.coords.is_empty() {
+                true => font,
+                false => (font.instance_builder())
+                    .variations(self.coords.iter().map(|(t, v)| (Tag::new(t), *v)))
+                    .build(),
+            }
+        });
         let features: Vec<Feature> = match kerning_only {
             true => (NO_LIGATURES.iter())
                 .map(|t| Feature::new(Tag::new(t), 0, ..))
@@ -400,7 +396,7 @@ impl Face {
                 Some((_, p)) => Arc::clone(p),
                 None => {
                     let p = Arc::new(ShapePlan::new(
-                        &shaper,
+                        font,
                         Direction::LeftToRight,
                         Some(script),
                         language,
@@ -412,21 +408,20 @@ impl Face {
             }
         };
         let s: String = text.iter().collect();
-        let mut buffer = UnicodeBuffer::new();
+        let mut buffer = Buffer::new();
         buffer.push_str(&s);
         buffer.set_direction(Direction::LeftToRight);
-        buffer.set_script(script);
-        if let Some(l) = language {
-            buffer.set_language(l.clone());
-        }
-        buffer.set_cluster_level(BufferClusterLevel::MonotoneCharacters);
+        buffer.set_script(Some(script));
+        buffer.set_language(language.cloned());
+        buffer.set_cluster_level(ClusterLevel::MonotoneCharacters);
         buffer.set_flags(BufferFlags::BEGINNING_OF_TEXT | BufferFlags::END_OF_TEXT);
         let options = ShapeOptions::new().plan(Some(&plan)).features(&features);
-        let out = shaper.shape(buffer, options);
+        harfrust::shape(&ShaperFont::new(font), &mut buffer, options)
+            .expect("the plan is made for the buffer's direction and script");
         // Clusters are where their characters start in `s`, in bytes.
         let starts: Vec<usize> = s.char_indices().map(|(b, _)| b).collect();
         let at = |cluster: u32| starts.partition_point(|&b| b < cluster as usize);
-        let (infos, places) = (out.glyph_infos(), out.glyph_positions());
+        let (infos, places) = (buffer.glyph_infos(), buffer.glyph_positions());
         let k = 1000.0 / self.upem;
         let mut glyphs = Vec::with_capacity(infos.len());
         for (i, (info, place)) in infos.iter().zip(places).enumerate() {

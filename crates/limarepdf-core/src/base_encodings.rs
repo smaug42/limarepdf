@@ -10,7 +10,7 @@
 //! unused codes past 40 are bullets. StandardEncoding is read-fonts'. MacExpertEncoding,
 //! for expert fonts (small capitals, old-style figures), isn't read: its codes find no glyph.
 
-use skrifa::raw::ps::encoding::PredefinedEncoding;
+use skrifa::raw::ps::PredefinedEncoding;
 
 /// A simple font's base encoding: the one its `/Encoding` (or the `/BaseEncoding` of an
 /// encoding dictionary) names, else the program's own (`BuiltIn`).

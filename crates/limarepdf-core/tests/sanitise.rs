@@ -1063,15 +1063,7 @@ const STATE_IN_HIDDEN_LAYERS: [&str; 13] = [
 fn removing_hidden_layers_keeps_what_shows() {
     for content in STATE_IN_HIDDEN_LAYERS {
         let mut p = layered(content);
-        // hayro 0.8.0 doesn't clip with a path painted as it is set (`W f`; backlog PB-11):
-        // how the page should look, drawn with the clip on its own.
-        let before = match content.contains("W f") {
-            true => drawn(&mut make(
-                "100 0 100 200 re W n 0 0 1 rg 0 0 300 100 re f",
-                Dictionary::new(),
-            )),
-            false => drawn(&mut p),
-        };
+        let before = drawn(&mut p);
         assert!(
             changed(&drawn(&mut all_shown(&p)), &before) > 0,
             "{content}: the hidden layer draws nothing"

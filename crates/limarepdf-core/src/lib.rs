@@ -41,6 +41,7 @@ mod layout;
 mod links;
 mod matrix;
 mod merge;
+mod mesh_fill;
 mod objects;
 mod ocr;
 mod outline;
@@ -56,6 +57,7 @@ mod paper_answer;
 mod para_frames;
 mod para_write;
 mod paragraph;
+mod passes;
 mod pictures;
 mod pkcs12;
 mod preview_font;
@@ -176,6 +178,7 @@ pub use stand_in::{InstalledQuery, StandIn};
 pub use state::{StateBefore, StateDifference};
 pub use text::{
     match_count, HitPart, Matches, Query, SearchHit, SearchOptions, Snippet, TextIndex,
+    SEARCH_GROUP,
 };
 pub use trust::{is_authority, read_certificates, Added, Trust, TrustEntry, TrustList, TrustRole};
 pub use typefaces::{add_font_files, typeface, typefaces, typefaces_ready, FaceFile, Typeface};

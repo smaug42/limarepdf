@@ -60,6 +60,8 @@ if [ "$what" = all ]; then
 key rsa3072 '-algorithm RSA -pkeyopt rsa_keygen_bits:3072'
 key rsa2048 '-algorithm RSA -pkeyopt rsa_keygen_bits:2048'
 key rsa1024 '-algorithm RSA -pkeyopt rsa_keygen_bits:1024'
+# Shorter than the `rsa` crate's public keys allow; old signers made such keys.
+key rsa512 '-algorithm RSA -pkeyopt rsa_keygen_bits:512'
 key p256 '-algorithm EC -pkeyopt ec_paramgen_curve:P-256'
 key p384 '-algorithm EC -pkeyopt ec_paramgen_curve:P-384'
 key p521 '-algorithm EC -pkeyopt ec_paramgen_curve:P-521'
@@ -67,6 +69,7 @@ key p521 '-algorithm EC -pkeyopt ec_paramgen_curve:P-521'
 cert rsa3072 rsa3072 '/CN=Test Signer RSA-3072/O=MPE Tests/emailAddress=rsa3072@example.com' "$signer" $from $to
 cert rsa2048 rsa2048 '/CN=Test Signer RSA-2048/O=MPE Tests' "$signer" $from $to
 cert rsa1024 rsa1024 '/CN=Test Signer RSA-1024/O=MPE Tests' "$signer" $from $to
+cert rsa512 rsa512 '/CN=Test Signer RSA-512/O=MPE Tests' "$signer" $from $to
 cert p256 p256 '/CN=Test Signer P-256/O=MPE Tests' "$signer" $from $to
 cert p384 p384 '/CN=Test Signer P-384/O=MPE Tests' "$signer" $from $to
 cert p521 p521 '/CN=Test Signer P-521/O=MPE Tests' "$signer" $from $to

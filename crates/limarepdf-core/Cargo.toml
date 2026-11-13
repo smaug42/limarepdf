@@ -30,8 +30,9 @@ fax = "0.3"
 # already use it. The pure-Rust zlib-rs backend, as hayro has it, so no C zlib is used.
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 png = "0.18"
-# Glyph outlines for typed signatures; hayro already uses it to draw fonts.
-skrifa = "0.46"
+# Glyph outlines for typed signatures; hayro already uses it to draw fonts. `type1` reads Type 1
+# programs (own_font.rs, own_encoding.rs): from 0.50, without it every one fails to read.
+skrifa = { version = "0.50", features = ["type1"] }
 # Installed fonts, for fonts a PDF names but doesn't embed (installed_fonts.rs).
 fontdb = "0.24"
 # Fonts embedded in PDFs for text beyond Western European and in installed fonts (embed.rs):
@@ -47,7 +48,7 @@ unicode-segmentation = "1.13"
 # Shaping new text in installed fonts and Liberation (layout.rs): kerning, standard ligatures
 # and marks placed as the font places them. It reads fonts through the `read-fonts` version
 # `skrifa` uses, so core keeps one font reader.
-harfrust = "0.13.3"
+harfrust = "0.16"
 # Where lines may break, by Unicode's line-breaking rule (UAX #14), for every wrapper
 # (layout.rs).
 unicode-linebreak = "0.1.5"
@@ -63,18 +64,17 @@ spellbook = "0.4.2"
 # Dictionaries added from LibreOffice's dictionary extensions (an .oxt is a zip file), read
 # only, unpacked through the zlib-rs backend flate2 uses above.
 zip = { version = "9.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-ocrs ={ version = "0.13", default-features = false, features = ["rten"] }
-rten = { version = "0.26", default-features = false, features = ["rten_format"] }
-rten-imageproc = "0.26"
+ocrs = { version = "0.14", default-features = false, features = ["rten"] }
+rten = { version = "0.28", default-features = false, features = ["rten_format"] }
+rten-imageproc = "0.28"
 
 # Digital signatures (docs/developer/architecture.md lists these crates and their release status).
-# `rsa` is a pre-release, pinned exactly; `pkcs1` stays pinned as `rsa`'s companion.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 der = { version = "0.8.2", features = ["alloc", "oid", "pem"] }
 spki = "0.8.1"
 x509-cert = { version = "0.3.0", default-features = false, features = ["std", "builder"] }
-rsa = { version = "=0.10.0-rc.19", features = ["sha2"] }
-pkcs1 = { version = "=0.8.0", default-features = false }
+rsa = { version = "0.10.0", features = ["pkcs1v15"] }
+pkcs1 = { version = "0.8.0", default-features = false }
 p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8"] }
 p384 = { version = "0.14.0", features = ["ecdsa", "pkcs8"] }
 sha1 = { version = "0.11.0", features = ["oid"] }

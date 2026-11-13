@@ -1,6 +1,6 @@
 //! Installed fonts, for fonts a PDF names but doesn't embed (pure Rust, `fontdb`).
 //!
-//! hayro 0.8 asks for such a font only when it is a CID font (Chinese, Japanese or
+//! hayro 0.9 asks for such a font only when it is a CID font (Chinese, Japanese or
 //! Korean, as a rule, but also Latin fonts that some programs write as CID fonts);
 //! other fonts that aren't embedded get the closest standard font without a question.
 //!

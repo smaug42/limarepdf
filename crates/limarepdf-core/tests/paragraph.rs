@@ -621,9 +621,10 @@ fn letters_kept_in_a_flipped_type3_font_stand_up_after_a_typed_word_and_in_place
         p.edit_text(0, lines(&p)[0].id, &e).unwrap();
         p
     };
-    // A word typed first, in another font, then the line's own letters turned over.
-    let mut p = edit("Big Stony Brook");
-    assert_eq!(texts(&p), ["Big Stony Brook"]);
+    // A word typed first, in another font, then the line's own letters turned over. The word
+    // has no descender, so nothing is drawn below the baseline.
+    let mut p = edit("Old Stony Brook");
+    assert_eq!(texts(&p), ["Old Stony Brook"]);
     let line = lines(&p).remove(0);
     assert!(line.upright);
     let last = line.spans.last().unwrap();

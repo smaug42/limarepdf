@@ -11,13 +11,14 @@
 //! such codes: the one the line already uses, else the page; else, when they all draw one
 //! glyph, the lowest; else none ([`CharRefusal::Ambiguous`]).
 //!
-//! The glyph lookups are hayro 0.8's (its `font/true_type.rs`, `type1.rs` and `cid.rs`), so
-//! a code chosen here draws in LimarePDF what it draws in the file's other readers. hayro
-//! draws a simple font whose program is OpenType in `/FontFile3` in a standard face instead;
-//! such a program is looked up by its glyph names, as the other readers do. A line's fonts
-//! are read when they are asked for ([`Pdf::line_fonts`]), but each character is checked only
-//! when it is first asked about, so the thousands of glyphs of a Chinese, Japanese or Korean
-//! font aren't all drawn.
+//! The glyph lookups are hayro 0.9's (`true_type.rs`, `type1.rs` and `cid.rs` in its
+//! hayro-font crate), so a code chosen here draws in LimarePDF what it draws in the file's
+//! other readers. A program is read by what it turns out to be, whatever key holds it; a font
+//! hayro draws in a standard face instead (a TrueType font whose program isn't TrueType or
+//! OpenType in `/FontFile2`, or one it can't read) takes no new text. A line's fonts are read
+//! when they are asked for ([`Pdf::line_fonts`]), but each character is checked only when it
+//! is first asked about, so the thousands of glyphs of a Chinese, Japanese or Korean font
+//! aren't all drawn.
 
 use crate::base_encodings::{mac_code, Base};
 use crate::decorate::{lines_of, FontLines};
@@ -31,16 +32,15 @@ use crate::{Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::Operation;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
+use skrifa::font::{Kind, Source};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::ps::cff::CffFontRef;
-use skrifa::raw::ps::string::Sid;
-use skrifa::raw::ps::type1::Type1Font;
 use skrifa::raw::tables::cmap::PlatformId;
 use skrifa::raw::tables::post::DEFAULT_GLYPH_NAMES;
 use skrifa::raw::types::Tag;
 use skrifa::raw::{FontRef, TableProvider};
-use skrifa::{GlyphId, MetadataProvider};
+use skrifa::{Font, GlyphId, GlyphSource, GlyphSourceOrder, MetadataProvider};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -346,10 +346,7 @@ impl<'a> PageFonts<'a> {
                 let unembedded = matches!(font, Err(FontRefusal::NotEmbedded));
                 let widths = (!ctx.type0).then(|| (0..=255).map(|k| ctx.width(k, 1)).collect());
                 // Its program as read already, so it isn't read twice.
-                let sfnt = font.as_ref().ok().and_then(|f| match &f.program {
-                    Program::Sfnt(data) => Some(data.clone()),
-                    _ => None,
-                });
+                let lines = lines_of(doc, dict, font.as_ref().ok().and_then(|f| f.program.sfnt()));
                 let font = LineFont {
                     font,
                     ascii: unembedded && ctx.reusable(),
@@ -359,7 +356,7 @@ impl<'a> PageFonts<'a> {
                     flipped: ctx.flipped,
                     widths,
                     stand_in: crate::stand_in::stand_in(doc, dict),
-                    lines: lines_of(doc, dict, sfnt.as_deref()),
+                    lines,
                 };
                 Some((ctx, font))
             });
@@ -431,81 +428,70 @@ impl OutlinePen for Segments {
     fn close(&mut self) {}
 }
 
-/// An embedded font program, as it is read to draw.
-enum Program {
-    /// TrueType or OpenType, with TrueType or CFF outlines.
-    Sfnt(Arc<[u8]>),
-    /// A bare CFF program.
-    Cff(Arc<[u8]>),
-    /// A Type 1 program.
-    Type1(Arc<Type1Font>),
+/// An embedded font program, as hayro reads it to draw (`program/mod.rs` in its hayro-font
+/// crate): by what it turns out to be, TrueType, OpenType, bare CFF or Type 1, whatever key
+/// holds it.
+struct Program {
+    /// The program as drawn: OpenType without a `maxp` table as its `CFF ` table.
+    font: Font,
+    /// The program as the file holds it.
+    file: Font,
 }
 
 impl Program {
-    /// A TrueType or OpenType program, unless hayro would pass over it: one whose `post`
-    /// table has a version it doesn't know (pdf.js issue 9462).
-    fn sfnt(data: Vec<u8>) -> Option<Self> {
-        let font = FontRef::from_index(&data, 0).ok()?;
+    /// The program in `data`, unless hayro would pass over it: one it can't read, or a
+    /// TrueType or OpenType one whose `post` table has a version it doesn't know (pdf.js
+    /// issue 9462).
+    fn new(data: Vec<u8>) -> Option<Self> {
+        let file = Font::new(data, 0)?;
+        let mut font = file.clone();
+        if matches!(font.kind(), Kind::Sfnt(..)) && font.num_glyphs() == 0 {
+            let cff = sfnt_of(&file).and_then(cff_table);
+            if let Some(cff) = cff.and_then(|t| Font::new(t.to_vec(), 0)) {
+                font = cff;
+            }
+        }
         let known = |v: (u16, u16)| matches!(v, (1, 0) | (2, 0) | (2, 5) | (3, 0));
-        if font
-            .post()
-            .is_ok_and(|p| !known(p.version().to_major_minor()))
+        if matches!(font.kind(), Kind::Sfnt(..))
+            && (font.tables().post()).is_ok_and(|p| !known(p.version().to_major_minor()))
         {
             return None;
         }
-        Some(Self::Sfnt(data.into()))
+        Some(Self { font, file })
     }
 
-    /// A bare CFF (or CFF2) program, when its fonts can be read.
-    fn cff(data: Vec<u8>) -> Option<Self> {
-        let font = CffFontRef::new(&data, 0, None).ok()?;
-        for i in 0..font.num_subfonts() {
-            font.subfont(i, &[]).ok()?;
-        }
-        Some(Self::Cff(data.into()))
+    /// Whether the program is drawn as TrueType or OpenType.
+    fn is_sfnt(&self) -> bool {
+        matches!(self.font.kind(), Kind::Sfnt(..))
     }
 
-    fn type1(data: &[u8]) -> Option<Self> {
-        Type1Font::new(data).ok().map(|f| Self::Type1(Arc::new(f)))
-    }
-
-    /// A CID font's program, read by what it turns out to be (as hayro reads it), not by
-    /// the descriptor's key.
-    fn any(data: Vec<u8>) -> Option<Self> {
-        if FontRef::from_index(&data, 0).is_ok() {
-            Self::sfnt(data)
-        } else if CffFontRef::new(&data, 0, None).is_ok() {
-            Self::cff(data)
-        } else {
-            Self::type1(&data)
-        }
+    /// The bytes of a TrueType or OpenType program, as the file holds it.
+    fn sfnt(&self) -> Option<&[u8]> {
+        sfnt_of(&self.file)
     }
 
     fn font(&self) -> Option<FontRef<'_>> {
-        match self {
-            Self::Sfnt(data) => FontRef::from_index(data, 0).ok(),
-            _ => None,
-        }
+        FontRef::from_index(self.sfnt()?, 0).ok()
     }
 
     /// The CFF outlines: a bare program, or an OpenType font's `CFF ` table.
-    fn cff_font(&self) -> Option<CffFontRef<'_>> {
-        let data: &[u8] = match self {
-            Self::Cff(data) => data,
-            Self::Sfnt(_) => self.font()?.table_data(Tag::new(b"CFF "))?.as_bytes(),
-            Self::Type1(_) => return None,
-        };
-        CffFontRef::new(data, 0, None).ok()
+    fn cff(&self) -> Option<&CffFontRef<'_>> {
+        let cff = GlyphSourceOrder::new(&[GlyphSource::Cff]);
+        self.font.outline_glyphs_with(cff).cff_font()
+    }
+
+    /// The glyph the program's own encoding gives code `code`: a CFF program's (an OpenType
+    /// one's `CFF ` table's) or a Type 1 one's.
+    fn builtin(&self, code: u8) -> Option<GlyphId> {
+        match self.font.kind() {
+            Kind::Type1(t) => t.encoding()?.map(code),
+            Kind::Cff(c, _) => c.encoding()?.map(code),
+            Kind::Sfnt(..) => self.cff()?.encoding()?.map(code),
+        }
     }
 
     fn num_glyphs(&self) -> u32 {
-        match self {
-            Self::Sfnt(_) => {
-                (self.font().and_then(|f| f.maxp().ok())).map_or(0, |m| u32::from(m.num_glyphs()))
-            }
-            Self::Cff(_) => self.cff_font().map_or(0, |c| c.num_glyphs()),
-            Self::Type1(t) => t.num_glyphs(),
-        }
+        self.font.num_glyphs()
     }
 
     /// Whether glyph `gid` draws something, and its advance width in 1/1000 em.
@@ -517,8 +503,8 @@ impl Program {
 
     /// Glyph `gid` drawn with `pen` at 1000 units to the em; its advance width.
     fn trace(&self, gid: GlyphId, pen: &mut impl OutlinePen) -> Option<f32> {
-        match self {
-            Self::Sfnt(_) => {
+        match self.font.kind() {
+            Kind::Sfnt(..) => {
                 let font = self.font()?;
                 if let Some(o) = font.outline_glyphs().get(gid) {
                     let at = DrawSettings::unhinted(Size::new(1000.0), LocationRef::default());
@@ -527,28 +513,12 @@ impl Program {
                 let metrics = font.glyph_metrics(Size::new(1000.0), LocationRef::default());
                 metrics.advance_width(gid)
             }
-            Self::Cff(_) => self.cff_font().and_then(|c| {
+            Kind::Cff(c, _) => {
                 let sub = c.subfont(c.subfont_index(gid)?, &[]).ok()?;
                 c.draw(&sub, gid, &[], Some(1000.0), pen).ok().flatten()
-            }),
-            Self::Type1(t) => t.draw(gid, Some(1000.0), pen).ok().flatten(),
+            }
+            Kind::Type1(t) => t.draw(gid, Some(1000.0), pen).ok().flatten(),
         }
-    }
-
-    /// A CFF program's glyph names (not a CID-keyed one's), by glyph, in its charset's order.
-    fn cff_names(&self) -> Vec<(GlyphId, String)> {
-        let Some(cff) = self.cff_font().filter(|c| !c.is_cid()) else {
-            return Vec::new();
-        };
-        let Some(charset) = cff.charset() else {
-            return Vec::new();
-        };
-        (charset.iter())
-            .filter_map(|(gid, sid)| {
-                let name = std::str::from_utf8(cff.string(sid)?).ok()?;
-                Some((gid, name.to_string()))
-            })
-            .collect()
     }
 
     /// A TrueType or OpenType program's glyph names in its `post` table, by glyph, as hayro
@@ -587,15 +557,15 @@ impl Program {
 
     /// The name of glyph `gid` in the program, where it names its glyphs.
     fn name(&self, gid: GlyphId, post: &[(GlyphId, String)]) -> Option<String> {
-        match self {
-            Self::Type1(t) => t.glyph_name(gid).map(str::to_string),
-            _ => match self.cff_font().filter(|c| !c.is_cid()) {
-                Some(cff) => {
-                    let sid = cff.charset()?.string_id(gid).ok()?;
-                    Some(std::str::from_utf8(cff.string(sid)?).ok()?.to_string())
-                }
-                None => (post.iter().find(|(g, _)| *g == gid)).map(|(_, n)| n.clone()),
-            },
+        if let Kind::Type1(t) = self.font.kind() {
+            return t.glyph_name(gid).map(str::to_string);
+        }
+        match self.cff().filter(|c| !c.is_cid()) {
+            Some(cff) => {
+                let sid = cff.charset()?.string_id(gid)?;
+                Some(std::str::from_utf8(cff.string(sid)?).ok()?.to_string())
+            }
+            None => (post.iter().find(|(g, _)| *g == gid)).map(|(_, n)| n.clone()),
         }
     }
 
@@ -628,6 +598,23 @@ impl Program {
     }
 }
 
+/// The bytes of `font` when it is TrueType or OpenType.
+fn sfnt_of(font: &Font) -> Option<&[u8]> {
+    match (font.kind(), font.source()) {
+        (Kind::Sfnt(..), Source::Blob(data)) => Some(data),
+        _ => None,
+    }
+}
+
+/// An OpenType program's `CFF ` table, as hayro finds it: by the first record with its tag.
+fn cff_table(data: &[u8]) -> Option<&[u8]> {
+    let font = FontRef::from_index(data, 0).ok()?;
+    let records = font.table_directory().table_records();
+    let r = records.iter().find(|r| r.tag() == Tag::new(b"CFF "))?;
+    let start = r.offset() as usize;
+    data.get(start..start.checked_add(r.length() as usize)?)
+}
+
 /// How the font descriptor's `/Flags` say a TrueType font's glyphs are found, as hayro reads
 /// them: by the encoding's glyph names when the nonsymbolic flag is set and no flag the PDF
 /// specification doesn't define is (hayro's flags are then unread), else by code.
@@ -641,35 +628,39 @@ fn nonsymbolic(flags: Option<i64>) -> bool {
 enum CidMap {
     Identity,
     Mapped {
-        to: HashMap<u16, GlyphId>,
+        to: Vec<u16>,
         back: HashMap<GlyphId, u16>,
     },
 }
 
 impl CidMap {
-    /// The map of CIDFont `desc`, as hayro reads it: a stream of two-byte glyph numbers, else
-    /// Identity (named so, or not given, or anything else).
-    fn of(doc: &Document, desc: &Dictionary) -> Self {
+    /// The map of CIDFont `desc`, as hayro reads it: a stream of two-byte glyph numbers for
+    /// the first 65,536 CIDs, else Identity (named so, or not given, or anything else).
+    /// `None` when the stream can't be decoded, which hayro may yet decode.
+    fn of(doc: &Document, desc: &Dictionary) -> Option<Self> {
         let stream = (desc.get(b"CIDToGIDMap").ok())
             .and_then(|o| doc.dereference(o).ok())
-            .and_then(|(_, o)| o.as_stream().ok())
-            .and_then(|s| s.get_plain_content_with_limit(1 << 20).ok());
-        let Some(data) = stream else {
-            return Self::Identity;
+            .and_then(|(_, o)| o.as_stream().ok());
+        let Some(stream) = stream else {
+            return Some(Self::Identity);
         };
-        let (mut to, mut back) = (HashMap::new(), HashMap::new());
-        for (cid, g) in data.as_chunks::<2>().0.iter().enumerate() {
-            let gid = GlyphId::new(u32::from(u16::from_be_bytes([g[0], g[1]])));
-            to.insert(cid as u16, gid);
-            back.insert(gid, cid as u16);
-        }
-        Self::Mapped { to, back }
+        let data = stream.get_plain_content_with_limit(MAX_PROGRAM).ok()?;
+        let to: Vec<u16> = (data.as_chunks::<2>().0.iter())
+            .take(1 << 16)
+            .map(|g| u16::from_be_bytes(*g))
+            .collect();
+        let back = (to.iter().enumerate())
+            .map(|(cid, g)| (GlyphId::new(u32::from(*g)), cid as u16))
+            .collect();
+        Some(Self::Mapped { to, back })
     }
 
     fn to(&self, cid: u16) -> GlyphId {
         match self {
             Self::Identity => GlyphId::new(u32::from(cid)),
-            Self::Mapped { to, .. } => to.get(&cid).copied().unwrap_or(GlyphId::NOTDEF),
+            Self::Mapped { to, .. } => {
+                (to.get(usize::from(cid))).map_or(GlyphId::NOTDEF, |g| GlyphId::new(u32::from(*g)))
+            }
         }
     }
 
@@ -681,34 +672,28 @@ impl CidMap {
     }
 }
 
-/// The glyph CID `cid` draws in a CID font's `program`, as hayro finds it: through the
-/// `/CIDToGIDMap`, except in a CID-keyed CFF program, whose charset gives a CID's glyph
+/// The glyph CID `cid` draws in a CID font's `program`, as hayro finds it (`cid.rs`): through
+/// the `/CIDToGIDMap`, except in a CID-keyed CFF program, which gives a CID's glyph itself
 /// (or, with a map given, the map read backwards), and a Type 1 program (the CID itself).
 fn cid_glyph(program: &Program, map: &CidMap, cid: u32) -> GlyphId {
-    let cid = cid as u16;
-    match program {
-        Program::Sfnt(_) => map.to(cid),
-        Program::Cff(_) => match program.cff_font().filter(|c| c.is_cid()) {
-            Some(c) if matches!(map, CidMap::Identity) => (c.charset())
-                .and_then(|s| s.glyph_id(Sid::new(cid)).ok())
-                .unwrap_or(GlyphId::NOTDEF),
-            Some(_) => GlyphId::new(u32::from(map.back(GlyphId::new(u32::from(cid))))),
-            None => map.to(cid),
+    let font = &program.font;
+    match font.kind() {
+        Kind::Sfnt(..) => map.to(cid as u16),
+        Kind::Cff(..) if font.is_cid_keyed() => match map {
+            CidMap::Identity => font.glyph_by_cid(cid).unwrap_or(GlyphId::NOTDEF),
+            CidMap::Mapped { .. } => GlyphId::new(u32::from(map.back(GlyphId::new(cid)))),
         },
-        Program::Type1(_) => GlyphId::new(u32::from(cid)),
+        Kind::Cff(..) => map.to(cid as u16),
+        Kind::Type1(_) => GlyphId::new(cid),
     }
 }
 
-/// The program in font descriptor `fd` under the first of `keys` it has, with that key;
-/// `None` when it has none.
-fn program_stream<'a>(
-    doc: &'a Document,
-    fd: &'a Dictionary,
-    keys: &[&'static [u8]],
-) -> Option<(&'static [u8], &'a Stream)> {
+/// The program in font descriptor `fd` under the first of `keys` it has; `None` when it has
+/// none.
+fn program_stream<'a>(doc: &'a Document, fd: &'a Dictionary, keys: &[&[u8]]) -> Option<&'a Stream> {
     keys.iter().find_map(|&k| {
         let (_, o) = doc.dereference(fd.get(k).ok()?).ok()?;
-        Some((k, o.as_stream().ok()?))
+        o.as_stream().ok()
     })
 }
 
@@ -857,22 +842,20 @@ impl OwnFont {
         use FontRefusal::*;
         let fd = sub_dict(doc, dict, b"FontDescriptor").ok_or(NotEmbedded)?;
         let truetype = matches!(subtype, b"TrueType" | b"OpenType");
-        let keys: [&[u8]; 3] = [b"FontFile2", b"FontFile3", b"FontFile"];
-        let (key, stream) = program_stream(doc, fd, &keys).ok_or(NotEmbedded)?;
+        // The renderer draws a TrueType font's program from `/FontFile2` when it is TrueType
+        // or OpenType, and a Type 1 font's from `/FontFile3`, else `/FontFile`, whatever it
+        // turns out to be; any other font in a standard face, or not at all.
+        let all: [&[u8]; 3] = [b"FontFile2", b"FontFile3", b"FontFile"];
+        let keys = match subtype {
+            b"TrueType" | b"OpenType" => &all[..1],
+            b"Type1" | b"MMType1" => &all[1..],
+            _ => &[],
+        };
+        program_stream(doc, fd, &all).ok_or(NotEmbedded)?;
+        let stream = program_stream(doc, fd, keys).ok_or(Unreadable)?;
         let data = (stream.get_plain_content_with_limit(MAX_PROGRAM)).map_err(|_| Unreadable)?;
         let (key_hash, metrics) = (key_of(&data, &[dict]), metrics_of(doc, fd));
-        // The renderer reads a TrueType font's program from `/FontFile2` and a Type 1 font's
-        // from `/FontFile3` (CFF) or `/FontFile`; OpenType in `/FontFile3`, which it draws
-        // in a standard face, is read as the other readers read it.
-        let program = match (truetype, key) {
-            (true, b"FontFile2") => Program::sfnt(data),
-            (_, b"FontFile3") => match CffFontRef::new(&data, 0, None) {
-                Ok(_) => Program::cff(data),
-                Err(_) => Program::sfnt(data),
-            },
-            (false, b"FontFile") => Program::type1(&data),
-            _ => None,
-        };
+        let program = Program::new(data).filter(|p| !truetype || p.is_sfnt());
         let mut font = Self::new(program.ok_or(Unreadable)?, false);
         (font.key, font.metrics) = (key_hash, metrics);
 
@@ -888,14 +871,9 @@ impl OwnFont {
         let flags = (fd.get(b"Flags").ok())
             .and_then(|o| doc.dereference(o).ok())
             .and_then(|(_, o)| o.as_i64().ok());
-        let by_name = match (&font.program, truetype) {
-            (Program::Sfnt(_), true) => false,
-            (Program::Sfnt(_), false) => font.program.cff_font().is_some(),
-            _ => true,
-        };
-        font.glyphs = match by_name {
-            true => font.named_glyphs(base, &differences),
-            false => font.truetype_glyphs(base, &differences, nonsymbolic(flags)),
+        font.glyphs = match truetype {
+            true => font.truetype_glyphs(base, &differences, nonsymbolic(flags)),
+            false => font.named_glyphs(base, &differences),
         };
 
         let widths = simple_widths(doc, dict);
@@ -910,8 +888,7 @@ impl OwnFont {
             }
         }
         // A symbolic TrueType font is drawn by code, whatever its encoding names.
-        let outlines_cff = font.program.cff_font().is_some();
-        let by_code = !by_name && !outlines_cff && !nonsymbolic(flags);
+        let by_code = truetype && font.program.cff().is_none() && !nonsymbolic(flags);
         if !by_code {
             let mut plain = dict.clone();
             plain.remove(b"ToUnicode");
@@ -955,12 +932,12 @@ impl OwnFont {
             .ok_or(Unreadable)?;
         let fd = sub_dict(doc, desc, b"FontDescriptor").ok_or(NotEmbedded)?;
         let keys: [&[u8]; 3] = [b"FontFile2", b"FontFile3", b"FontFile"];
-        let (_, stream) = program_stream(doc, fd, &keys).ok_or(NotEmbedded)?;
+        let stream = program_stream(doc, fd, &keys).ok_or(NotEmbedded)?;
         let data = (stream.get_plain_content_with_limit(MAX_PROGRAM)).map_err(|_| Unreadable)?;
         let (key, metrics) = (key_of(&data, &[dict, desc]), metrics_of(doc, fd));
-        let mut font = Self::new(Program::any(data).ok_or(Unreadable)?, true);
+        let mut font = Self::new(Program::new(data).ok_or(Unreadable)?, true);
         (font.key, font.metrics) = (key, metrics);
-        font.cids = CidMap::of(doc, desc);
+        font.cids = CidMap::of(doc, desc).ok_or(Unreadable)?;
         for code in 0..=0xFFFFu32 {
             let raw = [(code >> 8) as u8, code as u8];
             let Some(text) = ctx.known_text(code, &raw) else {
@@ -977,37 +954,26 @@ impl OwnFont {
         Ok(font)
     }
 
-    /// Each code's glyph in a font whose glyphs are found by name (Type 1 and CFF
-    /// programs), as hayro finds them: a `/Differences` name, else the program's own
-    /// encoding, else the base encoding's name. A CFF program's names are also tried as
-    /// `space` and `hyphen` for `nbspace` and `sfthyphen`.
+    /// Each code's glyph in a Type 1 font, as hayro finds them (`type1.rs`): a `/Differences`
+    /// name, else the program's own encoding (an OpenType program's `CFF ` table's), else
+    /// the base encoding's name. A name is the first glyph so named in the program (in an
+    /// OpenType one's `post` table, then its `CFF ` table), else `nbspace` and `sfthyphen`
+    /// are tried as `space` and `hyphen`.
     fn named_glyphs(&self, base: Base, differences: &HashMap<u8, String>) -> Vec<GlyphId> {
-        let mut names: HashMap<String, GlyphId> = HashMap::new();
-        let cff = matches!(self.program, Program::Cff(_) | Program::Sfnt(_));
-        let builtin: Box<dyn Fn(u8) -> Option<GlyphId> + '_> = match &self.program {
-            Program::Type1(t) => {
-                names.extend(t.glyph_names().map(|(g, n)| (n.to_string(), g)));
-                Box::new(move |c| t.encoding().and_then(|e| e.map(c)))
-            }
-            _ => {
-                names.extend(self.program.cff_names().into_iter().map(|(g, n)| (n, g)));
-                let font = self.program.cff_font();
-                Box::new(move |c| font.as_ref()?.encoding()?.map(c))
-            }
-        };
+        let program = &self.program.font;
         let glyph = |n: &str| {
             let normal = match n {
-                "nbspace" if cff => "space",
-                "sfthyphen" if cff => "hyphen",
+                "nbspace" => "space",
+                "sfthyphen" => "hyphen",
                 n => n,
             };
-            names.get(n).or_else(|| names.get(normal)).copied()
+            (program.glyph_by_name(n)).or_else(|| program.glyph_by_name(normal))
         };
         (0..=255u8)
             .map(|code| {
                 match differences.get(&code) {
                     Some(n) => glyph(n),
-                    None if base == Base::BuiltIn => builtin(code),
+                    None if base == Base::BuiltIn => self.program.builtin(code),
                     None => base.name(code).and_then(glyph),
                 }
                 .unwrap_or(GlyphId::NOTDEF)
@@ -1015,12 +981,13 @@ impl OwnFont {
             .collect()
     }
 
-    /// Each code's glyph in a TrueType font, as hayro finds them. A program with CFF
-    /// outlines: by the code's glyph name (`/Differences`, else the base encoding, else the
-    /// standard one) in its charset. A nonsymbolic one: that name's character through a
-    /// (3,1) cmap, else its Mac OS Roman code through a (1,0) cmap, else the name in `post`
-    /// (or a `gNN` name, the glyph's number). A symbolic one: the code through a (3,0) or
-    /// (3,1) cmap (also at 0xF000, 0xF100 and 0xF200), or a (1,0) or (0,0) one.
+    /// Each code's glyph in a TrueType font, as hayro finds them (`true_type.rs`). A program
+    /// with CFF outlines: by the code's glyph name (`/Differences`, else the base encoding,
+    /// else the standard one) in the program. A nonsymbolic one: that name's character
+    /// through a (3,1) cmap, else its Mac OS Roman code through a (1,0) cmap, else the first
+    /// glyph so named in `post` (or a `gNN` name, the glyph's number). A symbolic one: the
+    /// code through a (3,0) or (3,1) cmap (also at 0xF000, 0xF100 and 0xF200), or a (1,0) or
+    /// (0,0) one. The cmaps are read as read-fonts reads them, with a `DMAP` table's first.
     fn truetype_glyphs(
         &self,
         base: Base,
@@ -1032,30 +999,19 @@ impl OwnFont {
                 .or_else(|| base.name(code))
                 .or_else(|| Base::Standard.name(code))
         };
-        let nonzero = |g: &GlyphId| *g != GlyphId::NOTDEF;
-        if self.program.cff_font().is_some() {
-            let names = self.program.cff_names();
+        let program = &self.program.font;
+        if self.program.cff().is_some() {
             return (0..=255u8)
                 .map(|code| {
                     (code_name(code))
-                        .and_then(|n| names.iter().find(|(_, m)| m == n))
-                        .map_or(GlyphId::NOTDEF, |(g, _)| *g)
+                        .and_then(|n| program.glyph_by_name(n))
+                        .unwrap_or(GlyphId::NOTDEF)
                 })
                 .collect();
         }
-        let Some(font) = self.program.font() else {
-            return vec![GlyphId::NOTDEF; 256];
-        };
-        let cmap = font.cmap().ok();
-        let records: Vec<_> = (cmap.iter())
-            .flat_map(|c| c.encoding_records().iter().map(move |r| (c, r)))
-            .filter_map(|(c, r)| {
-                let sub = r.subtable(c.offset_data()).ok()?;
-                Some((r.platform_id(), r.encoding_id(), sub))
-            })
-            .collect();
-        let post: HashMap<&str, GlyphId> = (self.post().iter())
-            .map(|(g, n)| (n.as_str(), *g))
+        let charmap = program.charmap();
+        let subtables: Vec<_> = (charmap.encodings())
+            .filter_map(|e| Some((e.sfnt_ids()?, e)))
             .collect();
         (0..=255u8)
             .map(|code| {
@@ -1064,38 +1020,34 @@ impl OwnFont {
                     let Some(name) = code_name(code) else {
                         return GlyphId::NOTDEF;
                     };
-                    for (p, e, sub) in &records {
-                        if *p == PlatformId::Windows && *e == 1 {
-                            glyph = glyph
-                                .or_else(|| name_char(name).and_then(|c| sub.map_codepoint(c)))
-                                .filter(nonzero);
+                    for &(ids, e) in &subtables {
+                        if ids == (3, 1) {
+                            glyph = glyph.or_else(|| {
+                                name_char(name).and_then(|c| charmap.map_code(e, u32::from(c)))
+                            });
                         }
                     }
-                    for (p, e, sub) in &records {
-                        if *p == PlatformId::Macintosh && *e == 0 {
-                            glyph = glyph
-                                .or_else(|| mac_code(name).and_then(|c| sub.map_codepoint(c)))
-                                .filter(nonzero);
+                    for &(ids, e) in &subtables {
+                        if ids == (1, 0) {
+                            glyph = glyph.or_else(|| {
+                                mac_code(name).and_then(|c| charmap.map_code(e, u32::from(c)))
+                            });
                         }
                     }
                     if glyph.is_none() {
-                        glyph = post.get(name).copied().or_else(|| {
+                        glyph = program.glyph_by_name(name).or_else(|| {
                             let n = name.strip_prefix('g')?.parse::<u32>().ok()?;
                             Some(GlyphId::new(n))
                         });
                     }
                 } else {
-                    for (p, e, sub) in &records {
-                        if *p == PlatformId::Windows && matches!(*e, 0 | 1) {
+                    for &((p, id), e) in &subtables {
+                        if p == 3 && matches!(id, 0 | 1) {
                             for at in [0, 0xF000, 0xF100, 0xF200] {
-                                glyph = glyph
-                                    .or_else(|| sub.map_codepoint(u32::from(code) + at))
-                                    .filter(nonzero);
+                                glyph = glyph.or_else(|| charmap.map_code(e, u32::from(code) + at));
                             }
-                        } else if matches!(p, PlatformId::Macintosh | PlatformId::Unicode)
-                            && *e == 0
-                        {
-                            glyph = glyph.or_else(|| sub.map_codepoint(code)).filter(nonzero);
+                        } else if matches!(p, 0 | 1) && id == 0 {
+                            glyph = glyph.or_else(|| charmap.map_code(e, u32::from(code)));
                         }
                     }
                 }
@@ -1268,7 +1220,7 @@ pub(crate) fn cid_text(doc: &Document, desc: &Dictionary) -> Option<Arc<CidText>
         LazyLock::new(Default::default);
     let fd = sub_dict(doc, desc, b"FontDescriptor")?;
     let keys: [&[u8]; 3] = [b"FontFile2", b"FontFile3", b"FontFile"];
-    let (_, stream) = program_stream(doc, fd, &keys)?;
+    let stream = program_stream(doc, fd, &keys)?;
     let mut h = DefaultHasher::new();
     stream.content.hash(&mut h);
     let map = (desc.get(b"CIDToGIDMap").ok()).and_then(|o| doc.dereference(o).ok());
@@ -1282,7 +1234,7 @@ pub(crate) fn cid_text(doc: &Document, desc: &Dictionary) -> Option<Arc<CidText>
         return t.clone();
     }
     let text = (stream.get_plain_content_with_limit(MAX_PROGRAM).ok())
-        .and_then(Program::any)
+        .and_then(Program::new)
         .and_then(|program| {
             let pua = |c: char| {
                 matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}')
@@ -1301,7 +1253,7 @@ pub(crate) fn cid_text(doc: &Document, desc: &Dictionary) -> Option<Arc<CidText>
                     text.extend(t.map(|t| (gid, t)));
                 }
             }
-            let cids = CidMap::of(doc, desc);
+            let cids = CidMap::of(doc, desc)?;
             (!text.is_empty()).then(|| Arc::new(CidText { program, cids, text }))
         });
     let mut keep = KEEP.lock().unwrap_or_else(|e| e.into_inner());
@@ -1470,6 +1422,135 @@ mod tests {
         }))
     }
 
+    /// Font `font` in `p`, read for new text.
+    fn own(p: &Pdf, font: &Dictionary) -> std::result::Result<OwnFont, FontRefusal> {
+        OwnFont::read(&p.doc, font, &FontCtx::new(&p.doc, font))
+    }
+
+    /// TrueType or OpenType `sfnt` with each of `changes` made: a table put in under its tag,
+    /// or (`None`) left out.
+    fn tables(sfnt: &[u8], changes: &[(&[u8; 4], Option<Vec<u8>>)]) -> Vec<u8> {
+        let font = FontRef::new(sfnt).unwrap();
+        let mut all: Vec<([u8; 4], Vec<u8>)> = (font.table_directory().table_records().iter())
+            .map(|r| {
+                let at = r.offset() as usize;
+                let table = sfnt[at..at + r.length() as usize].to_vec();
+                (r.tag().to_be_bytes(), table)
+            })
+            .filter(|(tag, _)| !changes.iter().any(|(t, _)| *t == tag))
+            .collect();
+        for (tag, table) in changes {
+            all.extend(table.clone().map(|table| (**tag, table)));
+        }
+        all.sort();
+        let n = all.len() as u16;
+        let search = 16 << n.ilog2();
+        let mut out = sfnt[..4].to_vec();
+        for v in [n, search, n.ilog2() as u16, n * 16 - search] {
+            out.extend(v.to_be_bytes());
+        }
+        let mut data = Vec::new();
+        for (tag, table) in &all {
+            let at = 12 + 16 * all.len() + data.len();
+            out.extend(tag);
+            out.extend([0; 4]);
+            out.extend((at as u32).to_be_bytes());
+            out.extend((table.len() as u32).to_be_bytes());
+            data.extend(table);
+            data.resize(data.len().next_multiple_of(4), 0);
+        }
+        out.extend(data);
+        out
+    }
+
+    /// Liberation Sans's `post` table with glyphs 5 and 9 both named `dup1`.
+    fn named_twice() -> Vec<u8> {
+        let sans = sans();
+        let font = FontRef::new(&sans).unwrap();
+        let post = font.table_data(Tag::new(b"post")).unwrap();
+        let mut post = post.as_bytes().to_vec();
+        // Its own names, each a length and that many bytes, follow the glyphs' indexes.
+        let count = usize::from(u16::from_be_bytes([post[32], post[33]]));
+        let (mut at, mut names) = (34 + 2 * count, 0u16);
+        while at < post.len() {
+            at += 1 + usize::from(post[at]);
+            names += 1;
+        }
+        post.extend(b"\x04dup1");
+        for gid in [5, 9] {
+            let i = 34 + 2 * gid;
+            post[i..i + 2].copy_from_slice(&(258 + names).to_be_bytes());
+        }
+        post
+    }
+
+    /// A `post` table (version 2) for `count` glyphs, naming glyph 2 `B` and glyph 3 `A`
+    /// (Source Serif's `A` and `B` the other way round) and the others `.notdef`.
+    fn names_swapped(count: u16) -> Vec<u8> {
+        let mut post = vec![0, 2, 0, 0];
+        post.resize(32, 0);
+        post.extend(count.to_be_bytes());
+        for gid in 0..count {
+            let i: u16 = match gid {
+                2 => 37,
+                3 => 36,
+                _ => 0,
+            };
+            post.extend(i.to_be_bytes());
+        }
+        post
+    }
+
+    /// A `DMAP` table whose (3,1) subtable maps `A` to glyph 37 (Liberation Sans's `B`).
+    fn dmap() -> Vec<u8> {
+        let delta = 37u16.wrapping_sub(0x41);
+        let mut t = Vec::new();
+        // One subtable, at 12; format 4, with a segment for `A` and the last one, 0xFFFF.
+        let header = [0, 1, 3, 1, 0, 12, 4, 32, 0, 4, 4, 1, 0];
+        for w in header.into_iter().chain([0x41, 0xFFFF, 0, 0x41, 0xFFFF]) {
+            t.extend(u16::to_be_bytes(w));
+        }
+        for w in [delta, 1, 0, 0] {
+            t.extend(w.to_be_bytes());
+        }
+        t
+    }
+
+    /// Type 1 program `pfa` with its glyph `from` named `to` (as long), in its encoding and
+    /// among its glyphs, which are encrypted.
+    fn renamed(pfa: &[u8], from: &str, to: &str) -> Vec<u8> {
+        let (from, to) = (format!("/{from} "), format!("/{to} "));
+        assert_eq!(from.len(), to.len());
+        let rename = |b: &mut [u8]| {
+            while let Some(i) = b.windows(from.len()).position(|w| w == from.as_bytes()) {
+                b[i..i + to.len()].copy_from_slice(to.as_bytes());
+            }
+        };
+        let find = |what: &[u8]| pfa.windows(what.len()).position(|w| w == what).unwrap();
+        let (start, end) = (find(b"eexec") + 6, find(&[b'0'; 64]));
+        // eexec encryption: each byte with a key from the encrypted bytes before it.
+        let crypt = |data: &[u8], decrypt: bool| -> Vec<u8> {
+            let mut r: u16 = 55665;
+            (data.iter())
+                .map(|&b| {
+                    let out = b ^ (r >> 8) as u8;
+                    let cipher = if decrypt { b } else { out };
+                    r = (u16::from(cipher).wrapping_add(r))
+                        .wrapping_mul(52845)
+                        .wrapping_add(22719);
+                    out
+                })
+                .collect()
+        };
+        let mut out = pfa[..start].to_vec();
+        rename(&mut out);
+        let mut plain = crypt(&pfa[start..end], true);
+        rename(&mut plain);
+        out.extend(crypt(&plain, false));
+        out.extend(&pfa[end..]);
+        out
+    }
+
     #[test]
     fn simple_fonts_find_each_code_s_glyph_as_hayro_draws_it() {
         let ttf = |data| ("FontFile2", Dictionary::new(), data);
@@ -1523,6 +1604,151 @@ mod tests {
         assert_eq!(hayro, ours);
         let otf = file("SourceSerif4-Regular.otf");
         check("CIDFontType0", ("FontFile3", otf), None);
+    }
+
+    /// hayro reads a Type 1 font's program by what it turns out to be, whichever of
+    /// `/FontFile3` and `/FontFile` holds it, OpenType too: its glyphs by name, and by its
+    /// `CFF ` table's encoding where the PDF gives none (none for TrueType outlines).
+    #[test]
+    fn a_type1_font_s_program_is_read_by_what_it_turns_out_to_be() {
+        let win = || Some(Object::Name(b"WinAnsiEncoding".to_vec()));
+        let opentype = || dictionary! { "Subtype" => "OpenType" };
+        for program in [sans(), file("SourceSerif4-Regular.otf")] {
+            let ff3 = || ("FontFile3", opentype(), program.clone());
+            every_simple_code("Type1", ff3(), 4, None);
+            every_simple_code("Type1", ff3(), 32, win_ansi_with_differences());
+            let ff = ("FontFile", Dictionary::new(), program.clone());
+            every_simple_code("Type1", ff, 32, win());
+        }
+        let cff = file("LimareOwnEncoding.cff");
+        every_simple_code("Type1", ("FontFile", Dictionary::new(), cff), 4, None);
+    }
+
+    /// A font hayro draws in a standard face, not in its program, takes no new text: a
+    /// TrueType font whose program isn't TrueType or OpenType in `/FontFile2`, a Type 1 font
+    /// whose program is only there, and a font of no subtype hayro knows.
+    #[test]
+    fn fonts_hayro_draws_in_a_standard_face_take_no_text() {
+        let otf = file("SourceSerif4-Regular.otf");
+        let pfa = file("LimareOwnEncoding.pfa");
+        let cases = [
+            ("TrueType", "FontFile3", otf.clone()),
+            ("TrueType", "FontFile3", file("LimareOwnEncoding.cff")),
+            // OpenType without `maxp`, read as its `CFF ` table.
+            ("TrueType", "FontFile2", tables(&otf, &[(b"maxp", None)])),
+            ("Type1", "FontFile2", sans()),
+            ("Foo", "FontFile", pfa.clone()),
+            ("", "FontFile", pfa),
+        ];
+        let taken: Vec<_> = (cases.into_iter())
+            .filter_map(|(subtype, key, program)| {
+                let mut p = Pdf::new();
+                let mut font = simple(&mut p, subtype, (key, Dictionary::new(), program), 32, None);
+                if subtype.is_empty() {
+                    font.remove(b"Subtype");
+                }
+                let refused = own(&p, &font).err() == Some(FontRefusal::Unreadable);
+                (!refused).then_some((subtype, key))
+            })
+            .collect();
+        assert_eq!(taken, []);
+    }
+
+    /// Of glyphs `post` gives one name, hayro finds the first by it.
+    #[test]
+    fn a_name_post_gives_twice_finds_the_first_glyph() {
+        let sans = tables(&sans(), &[(b"post", Some(named_twice()))]);
+        let list = vec![Object::Integer(0x80), Object::Name(b"dup1".to_vec())];
+        let encoding = Some(Object::Dictionary(dictionary! {
+            "Type" => "Encoding", "BaseEncoding" => "WinAnsiEncoding", "Differences" => list,
+        }));
+        let ttf = ("FontFile2", Dictionary::new(), sans);
+        every_simple_code("TrueType", ttf, 32, encoding);
+    }
+
+    /// hayro finds an OpenType program's glyph names in its `post` table before its `CFF `
+    /// table.
+    #[test]
+    fn opentype_names_are_found_in_post_before_cff() {
+        let otf = file("SourceSerif4-Regular.otf");
+        let swapped = tables(&otf, &[(b"post", Some(names_swapped(1464)))]);
+        let win = || Some(Object::Name(b"WinAnsiEncoding".to_vec()));
+        let ttf = ("FontFile2", Dictionary::new(), swapped.clone());
+        every_simple_code("TrueType", ttf, 32, win());
+        let opentype = dictionary! { "Subtype" => "OpenType" };
+        every_simple_code("Type1", ("FontFile3", opentype, swapped), 32, win());
+    }
+
+    /// OpenType without a `maxp` table, which tells its number of glyphs, is read as its
+    /// `CFF ` table, whose glyphs then take new text.
+    #[test]
+    fn opentype_without_maxp_is_read_as_its_cff_table() {
+        let otf = tables(&file("SourceSerif4-Regular.otf"), &[(b"maxp", None)]);
+        let win = || Some(Object::Name(b"WinAnsiEncoding".to_vec()));
+        let opentype = dictionary! { "Subtype" => "OpenType" };
+        let ff3 = || ("FontFile3", opentype.clone(), otf.clone());
+        every_simple_code("Type1", ff3(), 32, win());
+        let mut p = Pdf::new();
+        let mut font = simple(&mut p, "Type1", ff3(), 32, win());
+        font.set("FirstChar", 65);
+        font.set("LastChar", 65);
+        font.set("Widths", vec![Object::Integer(664)]);
+        let read = own(&p, &font).ok().unwrap();
+        assert_eq!(read.check('A'), Ok(vec![(0x41, GlyphId::new(2))]));
+        // A CID font, whose CIDs are then the CFF program's glyphs.
+        let mut p = Pdf::new();
+        let font = type0(&mut p, "CIDFontType0", ("FontFile3", otf), None);
+        let descendant = (font.get(b"DescendantFonts").unwrap().as_array().unwrap()[0])
+            .as_reference()
+            .unwrap();
+        let widths = vec![Object::Integer(2), vec![Object::Integer(664)].into()];
+        let descendant = p.doc.get_dictionary_mut(descendant).unwrap();
+        descendant.set("W", widths);
+        let read = own(&p, &font).ok().unwrap();
+        assert_eq!(read.check('A'), Ok(vec![(2, GlyphId::new(2))]));
+        let codes: Vec<u32> = (1..=700).collect();
+        let (hayro, ours) = both(p, font, &codes, true);
+        assert_eq!(hayro, ours);
+    }
+
+    /// hayro finds a Type 1 program's glyphs for `nbspace` and `sfthyphen` also by `space`
+    /// and `hyphen`.
+    #[test]
+    fn a_type1_program_s_space_and_hyphen_stand_in_for_nbspace_and_sfthyphen() {
+        let pfa = renamed(&file("LimareOwnEncoding.pfa"), "endash", "hyphen");
+        let lengths = dictionary! { "Length1" => pfa.len() as i64, "Length2" => 0, "Length3" => 0 };
+        let ff = || ("FontFile", lengths.clone(), pfa.clone());
+        let win = Some(Object::Name(b"WinAnsiEncoding".to_vec()));
+        every_simple_code("Type1", ff(), 4, win);
+        every_simple_code("Type1", ff(), 4, win_ansi_with_differences());
+    }
+
+    /// A `DMAP` table maps characters before the `cmap` table does.
+    #[test]
+    fn a_dmap_table_maps_characters_before_cmap() {
+        let sans = tables(&sans(), &[(b"DMAP", Some(dmap()))]);
+        let win = Some(Object::Name(b"WinAnsiEncoding".to_vec()));
+        every_simple_code("TrueType", ("FontFile2", Dictionary::new(), sans), 32, win);
+    }
+
+    /// hayro reads a `/CIDToGIDMap` stream's first 65,536 glyphs, however long it is.
+    #[test]
+    fn a_cid_to_gid_map_gives_the_first_65536_cids_their_glyphs() {
+        let codes: Vec<u32> = (1..=700).collect();
+        let mapped = |gids: Vec<u16>| {
+            let mut p = Pdf::new();
+            let gids: Vec<u8> = gids.into_iter().flat_map(u16::to_be_bytes).collect();
+            let map = p.doc.add_object(Stream::new(Dictionary::new(), gids));
+            let map = Some(map.into());
+            let font = type0(&mut p, "CIDFontType2", ("FontFile2", sans()), map);
+            let (hayro, ours) = both(p, font, &codes, true);
+            assert_eq!(hayro, ours);
+        };
+        // More glyphs than CIDs: the rest aren't read.
+        mapped((0..=0xFFFF).chain((0..700).map(|g| 700 - g)).collect());
+        // Over 1 MiB of glyphs.
+        let zeros = std::iter::repeat_n(0, 600_000);
+        mapped((0..2048).rev().chain(zeros).collect());
     }
 
     #[test]

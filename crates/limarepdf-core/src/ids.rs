@@ -193,7 +193,7 @@ pub mod password_seam {
 
 /// A private key LimarePDF can sign with.
 enum Key {
-    Rsa(Box<rsa::RsaPrivateKey>),
+    Rsa(Box<rsa::PrivateKey>),
     P256(p256::ecdsa::SigningKey),
     P384(p384::ecdsa::SigningKey),
 }
@@ -224,10 +224,10 @@ impl Key {
             oid::RSA => {
                 use rsa::pkcs8::DecodePrivateKey;
                 use rsa::traits::PublicKeyParts;
-                let k = rsa::RsaPrivateKey::from_pkcs8_der(der).map_err(|_| unreadable())?;
+                let k = rsa::PrivateKey::from_pkcs8_der(der).map_err(|_| unreadable())?;
                 k.validate()
                     .map_err(|_| anyhow!("the ID's RSA key is damaged"))?;
-                let bits = k.n().bits_vartime() as usize;
+                let bits = k.n().bit_width_vartime() as usize;
                 if !RSA_RANGE.contains(&bits) {
                     bail!(
                         "the ID has a {bits}-bit RSA key; LimarePDF signs with RSA keys of {} to {} \
@@ -279,7 +279,7 @@ impl Key {
         match self {
             Self::Rsa(k) => {
                 use rsa::traits::PublicKeyParts;
-                format!("RSA {}-bit", k.n().bits_vartime())
+                format!("RSA {}-bit", k.n().bit_width_vartime())
             }
             Self::P256(_) => "ECDSA P-256".into(),
             Self::P384(_) => "ECDSA P-384".into(),
@@ -716,7 +716,7 @@ impl IdStore {
         }
         check_new(new)?;
         let key = Key::Rsa(Box::new(
-            rsa::RsaPrivateKey::new(&mut rng(), RSA_BITS)
+            rsa::PrivateKey::new(&mut rng(), RSA_BITS)
                 .map_err(|e| anyhow!("making the key failed: {e}"))?,
         ));
         let cert = Cert::parse(&self_signed(&key, new)?)?;
@@ -1114,7 +1114,7 @@ mod tests {
         use x509_cert::builder::{Builder, CertificateBuilder};
         let keys = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/signatures/keys");
         let der = std::fs::read(keys.join("rsa2048.key.der")).unwrap();
-        let rsa = rsa::RsaPrivateKey::from_pkcs8_der(&der).unwrap();
+        let rsa = rsa::PrivateKey::from_pkcs8_der(&der).unwrap();
         let key = Key::Rsa(Box::new(rsa.clone()));
         let mut spki = key.public_key_info().unwrap();
         spki.algorithm = spki::AlgorithmIdentifierOwned {

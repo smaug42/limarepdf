@@ -133,22 +133,39 @@ impl Pdf {
     /// lines. It is the same reading of the page that search highlights and text
     /// selection use. Empty when the page has no text (a scan) or cannot be read.
     pub fn page_text(&self, index: usize) -> String {
-        self.page_words(index)
-            .map(|w| words_text(&w))
+        self.page_id_at(index)
+            .map(|id| self.text_of(id))
             .unwrap_or_default()
+    }
+
+    /// [`Pdf::page_text`] of each of `pages` (0-based), in the order given. Pages are
+    /// extracted in parallel, and found in the page tree once (PB-165).
+    pub fn page_texts(&self, pages: &[usize]) -> Vec<String> {
+        let ids = self.page_ids();
+        pages
+            .par_iter()
+            .map(|&p| ids.get(p).map(|&id| self.text_of(id)).unwrap_or_default())
+            .collect()
     }
 
     /// Text of `pages` (0-based) in the order given, separated by form feeds as pdftotext
     /// does. Pages are extracted in parallel.
     pub fn pages_text(&self, pages: &[usize]) -> String {
-        let texts: Vec<String> = pages.par_iter().map(|&p| self.page_text(p)).collect();
-        texts.join("\u{c}")
+        self.page_texts(pages).join("\u{c}")
+    }
+
+    /// [`Pdf::page_text`] of the page with object `page`.
+    fn text_of(&self, page: ObjectId) -> String {
+        self.words_of(page)
+            .map(|w| words_text(&w))
+            .unwrap_or_default()
     }
 
     /// Case-insensitive text search across all pages, in parallel. Runs of whitespace,
     /// line breaks and page breaks included, match one space, and words hyphenated at a
     /// line or page end are found whole (see [`joints`]). Each page is read once, for the
-    /// matches, their snippets and their boxes together (see [`TextIndex`]).
+    /// matches, their snippets and their boxes together (see [`TextIndex`]), [`SEARCH_GROUP`]
+    /// pages at a time, each group's text let go of once looked through.
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         self.search_with(query, SearchOptions::default())
     }
@@ -159,10 +176,21 @@ impl Pdf {
         if q.is_empty() {
             return Ok(vec![]);
         }
+        // Each group with the page after it, for a phrase across the page break; of a group
+        // looked through only its last page is kept, which the next group's first word may go
+        // on from. 1,000 pages of text held at once took 130 MB (PB-165).
         let mut index = TextIndex::new(self);
         let n = index.page_count();
-        index.read(self, 0..n, &|| false);
-        Ok(index.find(&q, 0..n, 0).hits)
+        let (mut hits, mut spill) = (Vec::new(), 0);
+        for start in (0..n).step_by(SEARCH_GROUP) {
+            let end = (start + SEARCH_GROUP).min(n);
+            index.read(self, start..end + 1, &|| false);
+            let m = index.find(&q, start..end, spill);
+            spill = m.spill;
+            hits.extend(m.hits);
+            index.forget(start.saturating_sub(1)..end - 1);
+        }
+        Ok(hits)
     }
 
     /// Where `query` occurs on a page (0-based): one entry per match, with a box for each
@@ -594,6 +622,9 @@ impl TextIndex {
         }
     }
 }
+
+/// How many pages [`Pdf::search`] reads and looks through at a time.
+pub const SEARCH_GROUP: usize = 64;
 
 /// One character as search compares it: lowercased.
 pub(crate) fn fold(c: char) -> char {

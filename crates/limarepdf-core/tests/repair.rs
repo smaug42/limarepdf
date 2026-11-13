@@ -175,7 +175,8 @@ fn catalog_found_by_scanning() {
 #[test]
 fn object_stream_with_comments() {
     // The catalog, page tree and page are in an object stream whose members start with
-    // comments, which lopdf's reader of object streams doesn't take; the table is gone.
+    // comments, which lopdf's reader of object streams didn't take before 0.47; the table
+    // is gone.
     let o = objects();
     let mut index = String::new();
     let mut data = String::new();

@@ -2,7 +2,9 @@
 //! (PF-38), and the index the app searches as you type with (ENH-02, ENH-03); Match case,
 //! Whole words only and each hit's lines, for Replace (NEW-04a).
 
-use limarepdf_core::{match_count, FontChoice, HitPart, Pdf, Query, SearchOptions, TextIndex};
+use limarepdf_core::{
+    match_count, FontChoice, HitPart, Pdf, Query, SearchHit, SearchOptions, TextIndex, SEARCH_GROUP,
+};
 use std::collections::BTreeSet;
 
 /// `text` on pages that hold two lines each.
@@ -137,6 +139,28 @@ fn the_index_finds_a_group_at_a_time_what_search_finds() {
     let fish = ix.find(&Query::new("fish"), 0..n, 0).hits;
     assert_eq!(fish, p.search("fish").unwrap());
     assert!(ix.bytes() > 0);
+}
+
+/// Search reads and looks through [`SEARCH_GROUP`] pages at a time, letting go of each group
+/// but its last page once looked through (PB-165): it finds what the index finds with every
+/// page read at once, in the same order, a phrase across a group's last page break among them.
+#[test]
+fn search_finds_a_group_at_a_time_what_reading_every_page_finds() {
+    let n = 2 * SEARCH_GROUP + 20;
+    let p = walrus_pages(n);
+    let mut ix = TextIndex::new(&p);
+    assert!(ix.read(&p, 0..n, &|| false));
+    for query in ["walrus ate", "fish"] {
+        let whole = ix.find(&Query::new(query), 0..n, 0).hits;
+        assert_eq!(p.search(query).unwrap(), whole, "{query}");
+    }
+    let across = |h: &SearchHit| pages_of(&h.boxes).len() == 2;
+    let last = SEARCH_GROUP - 1;
+    let found = p.search("walrus ate").unwrap();
+    assert!(
+        found.iter().any(|h| h.page == last && across(h)),
+        "{found:?}"
+    );
 }
 
 /// Hits carry the same boxes looking at their page alone finds.

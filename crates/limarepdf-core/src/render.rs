@@ -6,6 +6,7 @@
 use crate::installed_fonts::display_name;
 pub use crate::installed_fonts::{InstalledFonts, Language};
 use crate::page_colours::{self, PageColours};
+use crate::passes::{self, Kinds, Weight};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, Context};
 use hayro::hayro_interpret::font::FontQuery;
@@ -15,13 +16,15 @@ use hayro::hayro_syntax::page::Page;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf as HPdf};
 use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::{TRANSPARENT, WHITE};
+use hayro::vello_cpu::peniko::ImageAlphaType;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
 use hayro::{render_into, RenderCache, RenderSettings};
 use image::codecs::jpeg::{JpegEncoder, PixelDensity};
 use rayon::prelude::*;
-use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// An opaque RGBA8 bitmap (row-major, 4 bytes per pixel).
 #[derive(Clone)]
@@ -40,16 +43,20 @@ pub const MAX_REGION_SCALE: f32 = 256.0;
 /// (up to [`MAX_SIDE`] pixels a side, 17 GB), so a failed allocation would close the app.
 pub const MAX_PIXELS: u64 = 1 << 28;
 
-/// Most pixels drawn in one pass of the rasteriser; a bigger bitmap is drawn in bands of
-/// full width. hayro holds everything it draws until the pass ends, which on a page of
-/// many paths is a few hundred bytes a pixel (PDFBox test file 5134, 73,000 paths: 2.7 GB
-/// for its 8 million pixels at 72 dpi), so this bounds the memory of one drawing.
-pub const BAND_PIXELS: u32 = 1 << 22;
+/// Most pixels a side of one pass of the rasteriser on a page with a tiling pattern. hayro
+/// draws a pattern's tile on a bitmap of its own, as much of the pattern as the pass shows,
+/// up to a step, so this bounds the tile, and `unfillable` can tell at any zoom a pattern
+/// whose tile would be too large. Other pages are drawn in one pass unless their soft masks
+/// and the like would take too much memory (see `passes`). Pieces are a multiple of the
+/// rasteriser's 256-pixel strips, so that they line up with one pass: the bitmap comes out
+/// the same, but for an edge pixel here and there a level apart, as the app's tiles are, its
+/// rounding from another origin.
+pub const PASS_SIDE: u32 = 2048;
 
 /// Most pixels a side of a page's bitmap may have (M-18): 255 of the rasteriser's 256-pixel
-/// strips. Past 65,408 pixels wide its coverage counts overflow and it panics; a taller
-/// page is drawn in bands, but is held to the same side, so that what a page can be
-/// exported at doesn't hang on which way it is turned.
+/// strips. Past 65,408 pixels wide its coverage counts overflow and it panics; a bitmap may
+/// be drawn in pieces, but is held to the same side, so that what a page can be exported at
+/// doesn't hang on which way it is turned.
 pub const MAX_SIDE: u32 = 255 * 256;
 
 /// An error when a bitmap `width` × `height` of page `index` would pass [`MAX_SIDE`] or
@@ -113,7 +120,8 @@ pub enum Missing {
     /// A font that isn't embedded or installed, drawn with an installed font like it
     /// (the second name), so the text reads but looks different.
     StandIn(Option<String>, String),
-    /// A picture that couldn't be decoded.
+    /// A picture that couldn't be decoded, or one left out of what is drawn: one its data
+    /// can't fill, or a tiling pattern the renderer can't tile (`unfillable.rs`).
     Picture,
 }
 
@@ -248,9 +256,79 @@ pub fn notices(what: &BTreeSet<Missing>) -> Notices {
     }
 }
 
+/// A test seam: drawing panics in a program a test runs with [`panic_seam::VAR`] set, so the
+/// CLI's tests reach its panic guard (no file is known to make hayro 0.9.0 panic). Built only
+/// for tests, as [`crate::sync_seam`] is.
+#[cfg(any(test, feature = "test-seams"))]
+pub mod panic_seam {
+    /// Set, every page drawn panics, as hayro 0.8.0 did on PDFBox 2363 at 150 dpi.
+    pub const VAR: &str = "LIMAREPDF_TEST_DRAW_PANICS";
+
+    pub(super) fn here() {
+        if std::env::var_os(VAR).is_some() {
+            panic!("a test made drawing panic");
+        }
+    }
+}
+
+/// A test seam: how large the pieces a page is drawn in are, and the memory they're held to,
+/// on the thread drawing, so that a test reaches pieces without a page that needs them.
+#[cfg(any(test, feature = "test-seams"))]
+pub mod pass_seam {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SIDE: Cell<Option<u32>> = const { Cell::new(None) };
+        static BYTES: Cell<Option<f64>> = const { Cell::new(None) };
+    }
+
+    /// The side of the pieces the last page or region drawn on this thread was drawn in.
+    pub fn last_side() -> Option<u32> {
+        SIDE.get()
+    }
+
+    /// Hold the pieces drawn on this thread to `bytes`, not `passes::PASS_BYTES`.
+    pub fn hold_to(bytes: f64) {
+        BYTES.set(Some(bytes));
+    }
+
+    pub(super) fn note(side: u32) {
+        SIDE.set(Some(side));
+    }
+
+    pub(crate) fn bytes() -> Option<f64> {
+        BYTES.get()
+    }
+}
+
+/// A test seam: the bytes hayro's glyph cache is held to on the thread drawing, so that a test
+/// reaches the limit with a page that draws quickly.
+#[cfg(any(test, feature = "test-seams"))]
+pub mod glyph_seam {
+    use std::cell::Cell;
+
+    thread_local! {
+        static BYTES: Cell<Option<f64>> = const { Cell::new(None) };
+    }
+
+    /// Hold the glyph cache of renderers drawing on this thread to `bytes`, not
+    /// `passes::GLYPH_BYTES`.
+    pub fn hold_to(bytes: f64) {
+        BYTES.set(Some(bytes));
+    }
+
+    pub(crate) fn bytes() -> Option<f64> {
+        BYTES.get()
+    }
+}
+
 pub struct Renderer<'a> {
     pdf: &'a HPdf,
-    cache: RenderCache<'a>,
+    /// Let go, for a new one, when its glyphs would take too much (see `passes`).
+    cache: RefCell<RenderCache<'a>>,
+    /// The pages and scales drawn with [`Renderer::cache`]'s glyph cache, as page index and
+    /// scale's bits, and the bytes their glyphs may take.
+    glyphs: RefCell<(HashSet<(usize, u32)>, f64)>,
     /// For finding pictures in [`Renderer::render_in`]; hayro keeps its own cache's
     /// interpreter half private.
     boxes: InterpreterCache<'a>,
@@ -258,6 +336,10 @@ pub struct Renderer<'a> {
     /// What hayro reported it couldn't draw, since [`Renderer::take_missing`] was last
     /// called.
     missing: Arc<Mutex<BTreeSet<Missing>>>,
+    /// What the file holds that pages' passes are weighed for, once looked for.
+    kinds: OnceLock<Kinds>,
+    /// Pages' weights, once weighed.
+    weights: Mutex<HashMap<usize, Arc<Weight>>>,
 }
 
 impl<'a> Renderer<'a> {
@@ -318,16 +400,20 @@ impl<'a> Renderer<'a> {
         });
         Self {
             pdf,
-            cache: RenderCache::new(),
+            cache: RefCell::new(RenderCache::new()),
+            glyphs: RefCell::new((HashSet::new(), 0.0)),
             boxes: InterpreterCache::new(),
             settings,
             missing,
+            kinds: OnceLock::new(),
+            weights: Mutex::new(HashMap::new()),
         }
     }
 
     /// What couldn't be drawn in the renders since the last call. hayro keeps the fonts it
-    /// has read from page to page, so a font is reported once per renderer, on the first
-    /// page that uses it; a picture is decoded each time it's drawn, and reported each time.
+    /// has read from page to page, so a font is reported on the first page that uses it, and
+    /// again only after the renderer lets its cache go for its glyphs (see `passes`); a
+    /// picture is decoded each time it's drawn, and reported each time.
     pub fn take_missing(&self) -> BTreeSet<Missing> {
         std::mem::take(&mut *self.missing.lock().unwrap_or_else(|e| e.into_inner()))
     }
@@ -355,22 +441,23 @@ impl<'a> Renderer<'a> {
             .ok_or_else(|| anyhow!("drawing page {} was stopped", index + 1))
     }
 
-    /// [`Renderer::render`], drawn in bands of at most [`BAND_PIXELS`]. `stop` is asked
-    /// before each band, and `None` is returned once it says to stop.
+    /// [`Renderer::render`], drawn in one pass or, on a page whose passes would take too
+    /// much memory, in pieces (see `passes`). `stop` is asked before each piece, and `None`
+    /// is returned once it says to stop.
     pub fn render_unless(
         &self,
         index: usize,
         scale: f32,
         stop: &dyn Fn() -> bool,
     ) -> Result<Option<Bitmap>> {
-        self.render_bands(index, scale, false, stop)
+        self.render_whole(index, scale, false, stop)
     }
 
     /// Page `index` at 72 dpi on a clear backdrop, for a picture drawn alone on a page of its
     /// size: the bitmap keeps the picture's transparency, its colours not multiplied by it.
     pub(crate) fn render_clear(&self, index: usize) -> Result<Bitmap> {
         let mut b = self
-            .render_bands(index, 1.0, true, &|| false)?
+            .render_whole(index, 1.0, true, &|| false)?
             .ok_or_else(|| anyhow!("drawing page {} was stopped", index + 1))?;
         for px in b.rgba.as_chunks_mut::<4>().0 {
             let a = px[3] as u32;
@@ -384,7 +471,7 @@ impl<'a> Renderer<'a> {
     }
 
     /// [`Renderer::render_unless`], on white or, `clear`, on a clear backdrop.
-    fn render_bands(
+    fn render_whole(
         &self,
         index: usize,
         scale: f32,
@@ -394,29 +481,141 @@ impl<'a> Renderer<'a> {
         let page = self.page(index)?;
         let (width, height) = bitmap_size(page, index, scale)?;
         let scale = scale.clamp(0.05, 16.0);
-        // Whole strips of 4 rows, the rasteriser's tile height, so the bands' tiles line
-        // up with those of one pass and the bitmap comes out the same.
-        let rows = (BAND_PIXELS / width.max(1)).max(4) / 4 * 4;
-        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-        let mut y = 0;
-        while y < height {
-            if stop() {
-                return Ok(None);
-            }
-            let band = Region {
-                x: 0,
-                y,
-                width,
-                height: rows.min(height - y),
-            };
-            rgba.extend_from_slice(self.draw(page, scale, band, clear).data_as_u8_slice());
-            y += band.height;
+        let whole = Region {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        Ok(self.draw_pieces(index, page, scale, whole, clear, stop))
+    }
+
+    /// The side of the square pieces to draw region `r` of page `index` in at `scale`, and
+    /// the page's weight, unless it isn't weighed: it's weighed the first time the whole page
+    /// at the scale it's drawn at, of which `r` is part, would be larger than a region drawn
+    /// unweighed, as the app's tiles of a page zoomed in are.
+    fn pass_side(
+        &self,
+        index: usize,
+        page: &'a Page<'a>,
+        scale: f32,
+        r: Region,
+    ) -> (u32, Option<Arc<Weight>>) {
+        let whole = r.width.max(r.height);
+        let kinds = *self.kinds.get_or_init(|| passes::kinds(self.pdf));
+        let known = self.lock_weights().get(&index).cloned();
+        let (w, h) = page.render_dimensions();
+        let (width, height) = ((w * scale) as u32, (h * scale) as u32);
+        let all = Region {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        if known.is_none() && Weight::unweighed(all) {
+            return (whole, None);
         }
-        Ok(Some(Bitmap {
-            width: width as usize,
-            height: height as usize,
+        let weight = known.unwrap_or_else(|| {
+            let transform = page_transform(page, 1.0, 0, 0);
+            let w = Weight::of(page, &self.boxes, &self.settings, transform, kinds.patterns);
+            let w = Arc::new(w);
+            self.lock_weights().insert(index, w.clone());
+            w
+        });
+        let side = if kinds.any && !Weight::unweighed(r) {
+            weight.side(scale, r)
+        } else {
+            whole
+        };
+        (side, Some(weight))
+    }
+
+    /// Whether to draw page `index`, of `weight`, at `scale` with hayro's glyph cache: only
+    /// if it's weighed, and its glyphs take at most [`passes::GLYPH_BYTES`]. The cache is let
+    /// go first if they and those of the pages drawn with it before would take more.
+    fn glyph_cache(&self, index: usize, weight: Option<&Weight>, scale: f32) -> bool {
+        let Some(weight) = weight else {
+            return false;
+        };
+        let most = passes::GLYPH_BYTES;
+        #[cfg(any(test, feature = "test-seams"))]
+        let most = glyph_seam::bytes().unwrap_or(most);
+        let bytes = weight.glyph_bytes(scale);
+        if bytes > most {
+            return false;
+        }
+        let mut glyphs = self.glyphs.borrow_mut();
+        let (drawn, taken) = &mut *glyphs;
+        if !drawn.contains(&(index, scale.to_bits())) {
+            if *taken + bytes > most {
+                *self.cache.borrow_mut() = RenderCache::new();
+                drawn.clear();
+                *taken = 0.0;
+            }
+            drawn.insert((index, scale.to_bits()));
+            *taken += bytes;
+        }
+        true
+    }
+
+    fn lock_weights(&self) -> std::sync::MutexGuard<'_, HashMap<usize, Arc<Weight>>> {
+        self.weights.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// [`Renderer::draw`] region `r` of page `index`, in pieces if it must be (see
+    /// [`Renderer::pass_side`]), asking `stop` before each; `None` once it says to stop.
+    fn draw_pieces(
+        &self,
+        index: usize,
+        page: &'a Page<'a>,
+        scale: f32,
+        r: Region,
+        clear: bool,
+        stop: &dyn Fn() -> bool,
+    ) -> Option<Bitmap> {
+        let (width, height) = (r.width as usize, r.height as usize);
+        let (side, weight) = self.pass_side(index, page, scale, r);
+        #[cfg(any(test, feature = "test-seams"))]
+        pass_seam::note(side);
+        let glyphs = self.glyph_cache(index, weight.as_deref(), scale);
+        if side >= r.width && side >= r.height {
+            if stop() {
+                return None;
+            }
+            let rgba = self
+                .draw(page, scale, r, clear, glyphs)
+                .take_rgba8(ImageAlphaType::AlphaPremultiplied);
+            return Some(Bitmap {
+                width,
+                height,
+                rgba,
+            });
+        }
+        let mut rgba = vec![0; width * height * 4];
+        for y in (0..r.height).step_by(side as usize) {
+            for x in (0..r.width).step_by(side as usize) {
+                if stop() {
+                    return None;
+                }
+                let piece = Region {
+                    x: r.x + x,
+                    y: r.y + y,
+                    width: side.min(r.width - x),
+                    height: side.min(r.height - y),
+                };
+                let pm = self.draw(page, scale, piece, clear, glyphs);
+                let line = piece.width as usize * 4;
+                for (i, row) in pm.data_as_u8_slice().chunks_exact(line).enumerate() {
+                    let at = ((y as usize + i) * width + x as usize) * 4;
+                    rgba[at..at + line].copy_from_slice(row);
+                }
+            }
+        }
+        Some(Bitmap {
+            width,
+            height,
             rgba,
-        }))
+        })
     }
 
     /// Render a page at `scale` for display in a colour mode, as
@@ -450,25 +649,33 @@ impl<'a> Renderer<'a> {
             .within((w * scale) as u32, (h * scale) as u32)
             .ok_or_else(|| anyhow!("the region is outside page {}", index + 1))?;
         check_pixels(index, r.width as u64, r.height as u64)?;
-        let pm = self.draw(page, scale, r, false);
-        Ok(Bitmap {
-            width: pm.width() as usize,
-            height: pm.height() as usize,
-            rgba: pm.data_as_u8_slice().to_vec(),
-        })
+        self.draw_pieces(index, page, scale, r, false, &|| false)
+            .ok_or_else(|| anyhow!("drawing page {} was stopped", index + 1))
     }
 
-    /// Draw the part `r` (within the bitmap, at most [`MAX_SIDE`] a side) of `page` drawn at
-    /// `scale`, on white, as `hayro::render` draws a whole page, or, `clear`, on a clear
-    /// backdrop (the pixels' colours multiplied by their alpha).
-    fn draw(&self, page: &'a Page<'a>, scale: f32, r: Region, clear: bool) -> Pixmap {
+    /// Draw the part `r` (within the bitmap, at most [`MAX_SIDE`] a side) of `page` drawn
+    /// at `scale`, on white, as `hayro::render` draws a whole page, or, `clear`, on a clear
+    /// backdrop (the pixels' colours multiplied by their alpha). `glyphs`: with hayro's
+    /// glyph cache.
+    fn draw(&self, page: &'a Page<'a>, scale: f32, r: Region, clear: bool, glyphs: bool) -> Pixmap {
         debug_assert!(r.width <= MAX_SIDE && r.height <= MAX_SIDE, "{r:?}");
+        #[cfg(any(test, feature = "test-seams"))]
+        panic_seam::here();
         let mut ctx = RenderContext::new(r.width as u16, r.height as u16);
+        // Text isn't hinted. hayro 0.9 hints only filled text, so a stroked or clipping
+        // outline of a glyph falls off its fill by up to a pixel; poppler and pdf.js don't
+        // hint, so small text was drawn unlike theirs; and a hinted glyph's outline is kept
+        // at every size it's drawn at.
+        let settings = RenderSettings {
+            hinting: false,
+            glyph_caching: glyphs,
+            ..Default::default()
+        };
         render_into(
             page,
-            &self.cache,
+            &self.cache.borrow(),
             &self.settings,
-            &RenderSettings::default(),
+            &settings,
             &mut ctx,
             page_transform(page, scale, r.x, r.y),
         );

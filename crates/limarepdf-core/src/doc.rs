@@ -65,7 +65,7 @@ const INHERITABLE: [&[u8]; 4] = [b"Resources", b"MediaBox", b"CropBox", b"Rotate
 
 /// An A4 page in points (210 by 297 mm), worked out as hayro does: what it draws a page
 /// without a media box as.
-const A4: (f32, f32) = {
+pub(crate) const A4: (f32, f32) = {
     const MM: f64 = 1.0 / (10.0 * 2.54) * 72.0;
     ((210.0 * MM) as f32, (297.0 * MM) as f32)
 };
@@ -95,7 +95,7 @@ impl Pdf {
     /// cross-reference information is damaged, and a page tree other readers find pages in
     /// is mended. A file in which no pages can be found is refused.
     pub fn from_bytes(bytes: &[u8], password: Option<&str>) -> Result<Self> {
-        let opened = Self::read(bytes, password);
+        let opened = Self::read(bytes, password, false);
         let pages = match &opened {
             Ok(p) => p.page_count(),
             Err(lopdf::Error::InvalidPassword) => return opened.map_err(cannot_open),
@@ -113,7 +113,8 @@ impl Pdf {
         if pages > 0 && !rebuilt_by_lopdf {
             return opened.map_err(cannot_open);
         }
-        let rebuilt = match crate::repair::rebuild(bytes).map(|b| Self::read(&b, password)) {
+        // Read by the rebuilt table only: lopdf's own rebuild would scan again, its way.
+        let rebuilt = match crate::repair::rebuild(bytes).map(|b| Self::read(&b, password, true)) {
             // Only the repaired file reads far enough to ask for the password.
             Some(Err(e @ lopdf::Error::InvalidPassword)) => return Err(cannot_open(e)),
             Some(r) => r.ok(),
@@ -174,13 +175,19 @@ impl Pdf {
         self.password_needed
     }
 
-    /// Reads a document as its cross-reference information says.
-    fn read(bytes: &[u8], password: Option<&str>) -> std::result::Result<Self, lopdf::Error> {
+    /// Reads a document as its cross-reference information says, or, unless `as_written`, as
+    /// lopdf rebuilds that information when the catalog doesn't lead to a page tree.
+    fn read(
+        bytes: &[u8],
+        password: Option<&str>,
+        as_written: bool,
+    ) -> std::result::Result<Self, lopdf::Error> {
         let load = |b: &[u8]| {
-            Document::load_from_with_options(
-                Cursor::new(b),
-                lopdf::LoadOptions::with_password(password.unwrap_or("")),
-            )
+            let options = lopdf::LoadOptions {
+                filter: as_written.then_some(crate::repair::as_written as lopdf::FilterFunc),
+                ..lopdf::LoadOptions::with_password(password.unwrap_or(""))
+            };
+            Document::load_from_with_options(Cursor::new(b), options)
         };
         let copy;
         let (doc, read) = match load(bytes) {
@@ -390,8 +397,11 @@ impl Pdf {
 
     /// Like [`Pdf::snapshot`], for drawing: a picture whose stated size its data can't come
     /// near filling, which would make the renderer ask for gigabytes, is left out of the
-    /// copy, and reported as a picture that can't be decoded when the page is drawn (PB-81).
-    /// The document itself is not changed.
+    /// copy, and reported as a picture that can't be decoded when the page is drawn (PB-81);
+    /// so is a tiling pattern the renderer can't tile (PB-11). A shape filled with a pattern
+    /// of a triangle or patch shading is drawn as the shading clipped to the shape, which
+    /// the renderer samples only where the shading is (PB-11). The document itself is not
+    /// changed.
     pub fn drawing_snapshot(&mut self) -> Result<Vec<u8>> {
         let swaps = crate::unfillable::swaps(&self.doc, &mut self.checked);
         if swaps.is_empty() {
@@ -411,20 +421,20 @@ impl Pdf {
     }
 
     /// Like [`Pdf::snapshot`], for drawing pages as the app shows them (`limarepdf-cli
-    /// render`). hayro honours the Hidden annotation flag but not NoView, so annotations
-    /// flagged NoView are marked Hidden in the copy that is serialised. Form fields are drawn
+    /// render`): annotations flagged Hidden or NoView aren't drawn, as hayro 0.9 honours both
+    /// (`annot_noview_flag_is_respected` in `tests/render_coverage.rs`). Form fields are drawn
     /// as [`Pdf::refresh_appearances`] would draw them, as the app draws them when opening a
     /// file ([`Pdf::unshown_fields`] names those it can't draw). Pictures their data can't
-    /// fill are left out, as in [`Pdf::drawing_snapshot`]. The document itself is not
-    /// changed.
+    /// fill and patterns the renderer can't tile are left out, as in
+    /// [`Pdf::drawing_snapshot`]. The document itself is not changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, _| flags & 32 != 0, true)
+        self.snapshot_hiding(|_| false, true)
     }
 
     /// Like [`Pdf::render_snapshot`], for the app, which draws sticky notes itself at a
     /// fixed size on screen: notes are left out too.
     pub fn app_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, sub| flags & 32 != 0 || sub == b"Text", false)
+        self.snapshot_hiding(|sub| sub == b"Text", false)
     }
 
     /// Like [`Pdf::app_snapshot`], with every page shown whole: each page's crop box is
@@ -451,16 +461,16 @@ impl Pdf {
         bytes
     }
 
-    /// A snapshot in which annotations whose flags and subtype match `hide` are marked
-    /// Hidden, and annotations without a drawing get LimarePDF's (the document itself keeps
+    /// A snapshot in which annotations whose subtype `hide` picks are marked Hidden, and
+    /// annotations without a drawing get LimarePDF's (the document itself keeps
     /// none). In a signed document, or in any with `all_fields`, form fields are drawn this
     /// way too, as [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a
     /// signed document's fields into it when opening it, so that saving adds only the edits
-    /// made to what was signed. Pictures their data can't fill are left out, as in
-    /// [`Pdf::drawing_snapshot`].
+    /// made to what was signed. Pictures their data can't fill and patterns the renderer
+    /// can't tile are left out, as in [`Pdf::drawing_snapshot`].
     fn snapshot_hiding(
         &mut self,
-        hide: impl Fn(i64, &[u8]) -> bool,
+        hide: impl Fn(&[u8]) -> bool,
         all_fields: bool,
     ) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
@@ -487,9 +497,8 @@ impl Pdf {
         Ok(out)
     }
 
-    /// Annotations not Hidden (bit 2) whose flags and subtype match `hide`, with their
-    /// flags.
-    fn annots_where(&self, hide: impl Fn(i64, &[u8]) -> bool) -> Vec<(ObjectId, i64)> {
+    /// Annotations not Hidden (bit 2) whose subtype `hide` picks, with their flags.
+    fn annots_where(&self, hide: impl Fn(&[u8]) -> bool) -> Vec<(ObjectId, i64)> {
         let mut out = Vec::new();
         for page in self.page_ids() {
             let Some(annots) = self
@@ -510,7 +519,7 @@ impl Pdf {
                 };
                 let flags = d.get(b"F").ok().and_then(|f| self.num(f)).unwrap_or(0.0) as i64;
                 let sub = d.get(b"Subtype").and_then(|o| o.as_name()).unwrap_or(b"");
-                if flags & 2 == 0 && hide(flags, sub) {
+                if flags & 2 == 0 && hide(sub) {
                     out.push((id, flags));
                 }
             }
@@ -798,6 +807,8 @@ impl Pdf {
                 xref_start: d.xref_start,
                 xref_recovery: d.xref_recovery,
                 encryption_state: d.encryption_state.clone(),
+                linearization: d.linearization.clone(),
+                xref_section_count: d.xref_section_count,
             },
             encryption: self.encryption.clone(),
             differs: self.differs.clone(),
@@ -1369,9 +1380,9 @@ pub(crate) fn encode_text(s: &str) -> Vec<u8> {
 }
 
 /// Adjust what lopdf writes for an encrypted document so other readers open it:
-/// - Strings become hexadecimal. Ciphertext and password hashes are binary, and hayro 0.8
-///   reads two line feeds in a row inside a literal string as one, so about one file in
-///   2,500 failed its password check there.
+/// - Strings become hexadecimal. Ciphertext and password hashes are binary, and hayro before
+///   0.9 read two line feeds in a row inside a literal string as one, so about one file in
+///   2,500 failed its password check there. Hexadecimal is safe from any reader with that slip.
 /// - AES-256 gets `/Length 256`, which lopdf leaves out; without it poppler uses a short
 ///   key and shows the pages as garbage.
 fn fix_encrypted(d: &mut Document, cipher: crate::Cipher) {
