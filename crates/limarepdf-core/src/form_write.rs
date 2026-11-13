@@ -464,14 +464,15 @@ impl Pdf {
     }
 
     /// Write `staged` ([`Pdf::stage_value`]), all of it or, when a step fails, none: the
-    /// document is copied first when a step can fail ([`Staged::can_fail`]).
+    /// document is copied first ([`Pdf::atomically`]) only when a step can fail
+    /// ([`Staged::can_fail`]).
     fn commit_values(&mut self, staged: Vec<Staged>) -> Result<()> {
-        let before = staged.iter().any(Staged::can_fail).then(|| self.before());
-        let put = staged.into_iter().try_for_each(|s| self.put_value(s));
-        if let (Err(_), Some(before)) = (&put, before) {
-            self.go_back(before);
+        let can_fail = staged.iter().any(Staged::can_fail);
+        let put = |p: &mut Pdf| staged.into_iter().try_for_each(|s| p.put_value(s));
+        match can_fail {
+            true => self.atomically(put),
+            false => put(self),
         }
-        put
     }
 
     fn put_value(&mut self, s: Staged) -> Result<()> {

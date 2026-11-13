@@ -1611,13 +1611,14 @@ impl Pdf {
     /// those lines, whose characters were written in another font after all. A line's
     /// underlines and strike-throughs ([`PageObject::decorations`]) go with its characters
     /// ([`crate::decorate`]'s `carried`): drawn where they are now, in their own look, and
-    /// left as they were drawn where their characters didn't move.
+    /// left as they were drawn where their characters didn't move. Refused, with nothing
+    /// changed, when any of them fails.
     pub fn edit_texts(
         &mut self,
         page_index: usize,
         edits: &[(usize, TextEdit)],
     ) -> Result<Vec<usize>> {
-        self.edit_texts_with(page_index, edits, None)
+        self.atomically(|p| p.edit_texts_with(page_index, edits, None))
     }
 
     /// [`Pdf::edit_texts`] with each line's underlines and strike-throughs as given (over its
@@ -1631,7 +1632,7 @@ impl Pdf {
         let (plain, asked): (Vec<_>, Vec<_>) = (edits.iter())
             .map(|(id, e, d)| ((*id, e.clone()), d.clone()))
             .unzip();
-        self.edit_texts_with(page_index, &plain, Some(&asked))
+        self.atomically(|p| p.edit_texts_with(page_index, &plain, Some(&asked)))
     }
 
     fn edit_texts_with(
@@ -2551,9 +2552,11 @@ impl Pdf {
         let (vd, _, _) = self.vis_down(page);
         let mut out = closed(parsed.ops.clone(), parsed.depth_left);
         out.extend([op("q", vec![]), cm(vd)]);
-        out.extend(body(self, page)?);
-        out.push(op("Q", vec![]));
-        self.commit(page, out, 0, &parsed.inline)
+        self.atomically(|p| {
+            out.extend(body(p, page)?);
+            out.push(op("Q", vec![]));
+            p.commit(page, out, 0, &parsed.inline)
+        })
     }
 
     /// Add a line of text. `pos` is the left end of the baseline in displayed-page points (y down).
@@ -2647,11 +2650,13 @@ impl Pdf {
                 .collect::<Result<Vec<f32>>>()?
         };
         let widest = widths.iter().copied().fold(0.0, f32::max);
-        for ((dy, parts, decos), w) in lines.iter().zip(widths) {
-            let x = pos.0 + (widest - w) * share;
-            self.add_text_decorated(page_index, (x, pos.1 + dy), parts, decos)?;
-        }
-        Ok(())
+        self.atomically(|p| {
+            for ((dy, parts, decos), w) in lines.iter().zip(widths) {
+                let x = pos.0 + (widest - w) * share;
+                p.add_text_decorated(page_index, (x, pos.1 + dy), parts, decos)?;
+            }
+            Ok(())
+        })
     }
 
     /// How wide a line of new text in `parts` is as it is written, in points: each part set
@@ -2684,14 +2689,16 @@ impl Pdf {
     /// Add a picture filling `rect` (displayed-page points, y down), upright as the file's
     /// orientation asks.
     pub fn add_image(&mut self, page_index: usize, rect: [f32; 4], bytes: &[u8]) -> Result<()> {
-        let (img, _, _, o) = self.add_upright_image(bytes)?;
-        self.append_layer(page_index, move |s, page| {
-            let nm = s.add_resource(page, "XObject", "LimareIm", Object::Reference(img))?;
-            let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
-            let mut ops = vec![op("q", vec![]), cm([w, 0.0, 0.0, -h, rect[0], rect[3]])];
-            ops.extend(upright(o));
-            ops.extend([op("Do", vec![name(&nm)]), op("Q", vec![])]);
-            Ok(ops)
+        self.atomically(|p| {
+            let (img, _, _, o) = p.add_upright_image(bytes)?;
+            p.append_layer(page_index, move |s, page| {
+                let nm = s.add_resource(page, "XObject", "LimareIm", Object::Reference(img))?;
+                let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
+                let mut ops = vec![op("q", vec![]), cm([w, 0.0, 0.0, -h, rect[0], rect[3]])];
+                ops.extend(upright(o));
+                ops.extend([op("Do", vec![name(&nm)]), op("Q", vec![])]);
+                Ok(ops)
+            })
         })
     }
 

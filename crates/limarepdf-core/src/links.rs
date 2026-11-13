@@ -407,16 +407,18 @@ impl Pdf {
         underline: bool,
     ) -> Result<(u32, u16)> {
         let target = self.target_entry(to)?;
-        let id = self.link_object(page_index, link)?;
-        let d = self.doc.get_dictionary_mut(id)?;
-        d.remove(b"Dest");
-        d.remove(b"A");
-        d.remove(b"PA");
-        d.set(target.0, target.1);
-        set_look(d, underline);
-        d.set("M", Object::string_literal(crate::annot_write::pdf_now()));
-        self.draw_link(id, underline)?;
-        Ok(id)
+        self.atomically(|p| {
+            let id = p.link_object(page_index, link)?;
+            let d = p.doc.get_dictionary_mut(id)?;
+            d.remove(b"Dest");
+            d.remove(b"A");
+            d.remove(b"PA");
+            d.set(target.0, target.1);
+            set_look(d, underline);
+            d.set("M", Object::string_literal(crate::annot_write::pdf_now()));
+            p.draw_link(id, underline)?;
+            Ok(id)
+        })
     }
 
     /// Move a link on page `page_index` (zero-based) so its box becomes `to` (displayed-page
@@ -427,20 +429,24 @@ impl Pdf {
         link: LinkId,
         to: [f32; 4],
     ) -> Result<(u32, u16)> {
-        let id = self.link_object(page_index, link)?;
-        self.move_annotation(page_index, id, to)?;
-        let underline = self.link_underlined(self.doc.get_dictionary(id)?);
-        self.draw_link(id, underline)?;
-        Ok(id)
+        self.atomically(|p| {
+            let id = p.link_object(page_index, link)?;
+            p.move_annotation(page_index, id, to)?;
+            let underline = p.link_underlined(p.doc.get_dictionary(id)?);
+            p.draw_link(id, underline)?;
+            Ok(id)
+        })
     }
 
     /// Remove links from page `page_index` (zero-based). Returns how many went.
     pub fn remove_links(&mut self, page_index: usize, links: &[LinkId]) -> Result<usize> {
-        let mut gone = HashSet::new();
-        for &l in links {
-            gone.insert(self.link_object(page_index, l)?);
-        }
-        self.drop_annotations(gone)
+        self.atomically(|p| {
+            let mut gone = HashSet::new();
+            for &l in links {
+                gone.insert(p.link_object(page_index, l)?);
+            }
+            p.drop_annotations(gone)
+        })
     }
 
     /// The object of a link, made one first if it is written inside its page's list.

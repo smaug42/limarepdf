@@ -267,6 +267,12 @@ What they show:
   the first paragraph written on a page uses the setting its planning made instead of reading it again.
 - When some replacements don't fit and others do, a second copy without them is made for Replace where it fits,
   doubling the time. Taking the copy is one undo step, as any edit: the document's objects compared once.
+- S2-02 (failure atomicity) has each core edit copy the document first, to put back on failure, unless its caller
+  holds it. Replace all holds its copy (`Pdf::holding`), so its writes take no extra copy. Measured again on 12
+  November 2026, three runs each, the same test and machine: `main` before S2-02 (a4fa09d) 1.27 to 1.32 s for the
+  lines and 3.88 to 4.02 s for the paragraphs (its first run, 3.54 and 6.29 s, left out as the warm-up); with
+  S2-02, 1.25 to 1.35 s and 3.90 to 3.99 s. Not held, as S2-02 was first written (the 300 pages copied for each
+  change), it took 3.90 and 8.76 s, one run at a busier time, when the held version took 2.52 and 3.66 s.
 
 ## Redaction
 
@@ -1034,3 +1040,28 @@ redaction, the drag's release is taken in a frame 257.1 / 261.7 ms later, and th
 #### Not run
 
 - The testers' Windows and macOS figures.
+
+### Failure atomicity's edit rows, 12 November 2026
+
+S2-02 (WP-02) has each core edit copy the document first, to put back if it fails, unless the caller holds it, as
+every edit in the app does ([Failure atomicity](contracts.md#failure-atomicity)). The edit rows above were measured
+again to see what that costs: the release build of `main` before S2-02 (a4fa09d) and of S2-02's branch, one after the
+other with nothing building, the same reference set (made again, its checksums unchanged), driver, machine and
+display, warm, 10 runs after one discarded. Median / worst, shown.
+
+| Item | What | Before (a4fa09d) | S2-02 |
+| --- | --- | --- | --- |
+| PB-37 | text-10000.pdf in Organise: page 1 moved to the end | 1,180.4 / 2,257.9 ms | 1,141.4 / 2,071.9 ms |
+| | its Undo, Redo and Undo again | 939.5 / 1,907.1, 931.1 / 2,048.0, 999.1 / 2,250.7 ms | 927.5 / 1,891.8, 926.8 / 1,936.9, 913.5 / 1,563.0 ms |
+| | page 1 deleted | 1,096.7 / 2,111.9 ms | 1,023.1 / 1,954.6 ms |
+| | its Undo and Redo | 749.1 / 1,449.7, 746.9 / 1,572.5 ms | 723.1 / 1,332.0, 733.3 / 1,449.7 ms |
+| PB-43 | artwork.pdf, each in a launch of its own: a shape nudged with an arrow key | 1,287.9 / 1,376.5 ms | 1,264.7 / 1,309.8 ms |
+| | a picture placed | 1,368.0 / 1,406.9 ms | 1,340.8 / 1,350.4 ms |
+| | a redaction applied | 2,207.2 / 2,536.4 ms | 2,129.6 / 2,161.2 ms |
+| PB-44 | a redaction applied on text-10000.pdf | 91.3 / 127.6 s | 91.8 / 95.9 s |
+
+No row is measurably slower: PB-44's median is 0.5 % above the one before, and every other median 0.5 to 9 % below
+it, the machine's noise rather than the change, as the app holds the document and takes no extra copy. The worst
+runs were further from the medians than in the release check above, in both builds alike (PB-37's about twice the
+median, before and after; one of PB-44's before took 127.6 s): the machine was busier. Replace all, which writes on a copy of its
+own, is measured in [Replace all](#replace-all).

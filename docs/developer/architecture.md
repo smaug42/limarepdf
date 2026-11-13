@@ -379,8 +379,10 @@ pages since, is put aside with a message, as a job's is. `replace_all` plans, th
   replacement takes the style of what it types over, as typing does; an empty one widened by `with_a_space`), then
   `text_change` or `Styled::parts` with `ParagraphSetting::set`: the writers typing uses, never bytes. A rewrite can
   move the page's object ids, so each change finds its lines again by `follow` (the same kind, text and box as the
-  page was planned); the first change on a page uses the plan's objects and paragraph setting. A change that fails
-  marks it, and `settle` writes the copy again without it (a failed write may have left an added font in the copy).
+  page was planned); the first change on a page uses the plan's objects and paragraph setting. The copy is held
+  (`Pdf::holding`), so core doesn't copy it again for each change, nor put one back when it fails: a change that
+  fails marks it, and `settle` writes a new copy of the document without it (the failed write may have left some of
+  itself in the old copy, which is dropped).
 - **Judging** (`judge`): the page is read again and each line written anew is given to the change that wrote it (a
   set paragraph line where it was set, else the edited line it starts on the baseline of); its rows go through the
   one overflow rule, `page_text::overflow` over `obstacles_in` (shared with `Editor::obstacles`, in page points),
@@ -717,8 +719,10 @@ failed change's message is such a dialog.
 
 Undo steps (`tab.rs`'s `Step`; batch 43, PF-42) keep only what each change changed: `Step::doc` is an
 `Option<Arc<Restore>>`, `None` for a change of the password settings alone, made by core's
-`crates/limarepdf-core/src/history.rs`. `Tab::edit_inner` takes `Pdf::before` (a `Before`: the document cloned)
-before the change, and after it `Before::undo(&pdf)` compares each object with its old value and gives a `Restore`: the old values of the
+`crates/limarepdf-core/src/history.rs`. Core's own operations are atomic ([Failure atomicity](contracts.md#failure-atomicity)):
+each that changes the document runs in `Pdf::atomically`, which takes `Pdf::before` and calls `Pdf::go_back` when it
+fails or panics, unless the document is held. `Tab::edit_inner` takes `Pdf::before` (a `Before`: the document
+cloned) before the change and runs it in `Pdf::holding`, so the operation doesn't copy the document again, and after it `Before::undo(&pdf)` compares each object with its old value and gives a `Restore`: the old values of the
 objects changed or removed, `None` for those added (to be removed again), and the version, binary mark, trailer
 and highest object number when any of them changed. The comparison is order-sensitive and bit for bit (`same`,
 `same_dict`): lopdf's `==` ignores a dictionary's key order and takes 0.0 for −0.0, which are written

@@ -299,7 +299,7 @@ fn plan_page(
 }
 
 /// [`write`], again without the changes that failed, until none does: a failed change may
-/// have left a font it added to its page in the copy.
+/// have left some of itself, such as a font it added to its page, in the copy.
 fn settle(job: &AllJob, plan: &[PagePlan], left: &[LeftOut], unfit: &HashSet<Key>) -> Pass {
     let mut failed = HashSet::new();
     loop {
@@ -330,7 +330,8 @@ enum Written {
 
 /// Write `plan`'s changes, but those `unfit` or `failed`, on a copy of `job`'s document,
 /// and judge each written; `left` the matches left before. Returns the copy and what it
-/// holds, and the changes that failed now.
+/// holds, and the changes that failed now. The copy is held ([`Pdf::holding`]): a change
+/// that fails isn't put back, but [`settle`] writes again without it.
 fn write(
     job: &AllJob,
     plan: &[PagePlan],
@@ -350,72 +351,73 @@ fn write(
         similar: false,
         over_changes: HashSet::new(),
     };
-    let pdf = &mut pass.pdf;
     let words = job.words.clone().unwrap_or_default();
-    let sizes = pdf.page_sizes();
+    let sizes = pass.pdf.page_sizes();
     let mut left = left.to_vec();
     let mut newly = Vec::new();
-    for pp in plan {
-        let mut done = Vec::new();
-        let mut lines = Vec::new();
-        let mut touched = false;
-        for c in &pp.changes {
-            let key = (pp.page, c.of);
-            if unfit.contains(&key) {
-                pass.unfit += c.matches.len();
+    pass.pdf.holding(|pdf| {
+        for pp in plan {
+            let mut done = Vec::new();
+            let mut lines = Vec::new();
+            let mut touched = false;
+            for c in &pp.changes {
+                let key = (pp.page, c.of);
+                if unfit.contains(&key) {
+                    pass.unfit += c.matches.len();
+                    continue;
+                }
+                if failed.contains(&key) {
+                    left.extend(c.matches.iter().map(|_| LeftOut::Failed));
+                    continue;
+                }
+                // The paragraphs one at a time, then the lines together.
+                let Of::Paragraph(k) = c.of else {
+                    lines.push(c);
+                    continue;
+                };
+                match paragraph(pdf, job, &words, pp, (c, k), touched) {
+                    Ok((d, lost)) => {
+                        pass.similar |= lost;
+                        done.push(d);
+                    }
+                    Err(_) => newly.push(key),
+                }
+                touched = true;
+            }
+            if !lines.is_empty() {
+                match line_changes(pdf, job, pp, &lines, touched) {
+                    Ok((written, gone, lost)) => {
+                        pass.similar |= lost;
+                        done.extend(written);
+                        newly.extend(gone.into_iter().map(|of| (pp.page, of)));
+                    }
+                    Err(_) => newly.extend(lines.iter().map(|c| (pp.page, c.of))),
+                }
+            }
+            if done.is_empty() {
                 continue;
             }
-            if failed.contains(&key) {
-                left.extend(c.matches.iter().map(|_| LeftOut::Failed));
-                continue;
-            }
-            // The paragraphs one at a time, then the lines together.
-            let Of::Paragraph(k) = c.of else {
-                lines.push(c);
+            let size = sizes.get(pp.page).copied().unwrap_or((612.0, 792.0));
+            // A page that can't be read back can't be judged: its changes are left out.
+            let Ok(after) = pdf.page_objects(pp.page) else {
+                newly.extend(done.iter().map(|d| (pp.page, d.of)));
                 continue;
             };
-            match paragraph(pdf, job, &words, pp, (c, k), touched) {
-                Ok((d, lost)) => {
-                    pass.similar |= lost;
-                    done.push(d);
-                }
-                Err(_) => newly.push(key),
-            }
-            touched = true;
-        }
-        if !lines.is_empty() {
-            match line_changes(pdf, job, pp, &lines, touched) {
-                Ok((written, gone, lost)) => {
-                    pass.similar |= lost;
-                    done.extend(written);
-                    newly.extend(gone.into_iter().map(|of| (pp.page, of)));
-                }
-                Err(_) => newly.extend(lines.iter().map(|c| (pp.page, c.of))),
-            }
-        }
-        if done.is_empty() {
-            continue;
-        }
-        let size = sizes.get(pp.page).copied().unwrap_or((612.0, 792.0));
-        // A page that can't be read back can't be judged: its changes are left out.
-        let Ok(after) = pdf.page_objects(pp.page) else {
-            newly.extend(done.iter().map(|d| (pp.page, d.of)));
-            continue;
-        };
-        let over = judge(&pp.objs, &after, &done, size);
-        pass.pages.push(pp.page);
-        for (d, over) in done.iter().zip(over) {
-            pass.replaced += d.matches;
-            pass.other_font += d.other_font;
-            if over {
-                pass.over += d.matches;
-                pass.over_changes.insert((pp.page, d.of));
-                if pass.over_pages.last() != Some(&pp.page) {
-                    pass.over_pages.push(pp.page);
+            let over = judge(&pp.objs, &after, &done, size);
+            pass.pages.push(pp.page);
+            for (d, over) in done.iter().zip(over) {
+                pass.replaced += d.matches;
+                pass.other_font += d.other_font;
+                if over {
+                    pass.over += d.matches;
+                    pass.over_changes.insert((pp.page, d.of));
+                    if pass.over_pages.last() != Some(&pp.page) {
+                        pass.over_pages.push(pp.page);
+                    }
                 }
             }
         }
-    }
+    });
     left.sort_unstable();
     for why in left {
         match pass.left.last_mut() {
@@ -789,6 +791,49 @@ mod tests {
         assert_eq!(into_other_font(&at, &[]), 0);
         assert_eq!(into_other_font(&at, &[(0, 4)]), 0);
         assert_eq!(into_other_font(&at, &[(3, 5), (25, 40)]), 2);
+    }
+
+    /// A change that fails as it is written leaves nothing in what Replace all prepares. The
+    /// copy is held, so the failed write stays in it (here the line's edit, its replacement in
+    /// a second font, refused reading the page back after writing it, one step past the
+    /// page's); [`settle`] writes a new copy without the change, its match left as failed.
+    #[test]
+    fn a_change_failing_as_it_is_written_leaves_nothing() {
+        use limarepdf_core::budget_seam;
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let (at, text) = ((72.0, 100.0), "the walrus ate the fish by the quay");
+        (pdf.add_text(0, at, text, FontChoice::default(), 12.0, [0.0; 3])).unwrap();
+        let before = pdf.state_before();
+        let job = AllJob {
+            matches: (pdf.search("walrus").unwrap().into_iter())
+                .map(|h| h.parts)
+                .collect(),
+            pdf,
+            with: "θάλασσα".into(),
+            paragraphs: false,
+            words: None,
+        };
+        let (plan, left) = plan(&job);
+        let none = HashSet::new();
+        let first = || write(&job, &plan, &left, &none, &none);
+        let (_, taken) = budget_seam::with_limit(u64::MAX / 4, first);
+        let needed = taken[0];
+        assert!(
+            taken[1..].iter().any(|&t| t > needed),
+            "the line reads back dearer than the page: {taken:?}"
+        );
+        let ((pass, failed), _) = budget_seam::with_limit(needed, first);
+        assert_eq!(failed.len(), 1);
+        assert!(
+            !pass.pdf.state_since(&before).is_empty(),
+            "the edit failed before it wrote"
+        );
+        let (done, _) = budget_seam::with_limit(needed, || replace_all(&job));
+        assert_eq!(done.all.replaced, 0);
+        assert_eq!(done.all.left, [(LeftOut::Failed, 1)]);
+        assert_eq!(done.all.pdf.state_since(&before), []);
+        assert!(done.fits.is_none());
     }
 
     /// A made-up document of 300 Letter pages, each with ten lines of 12-point Helvetica 20

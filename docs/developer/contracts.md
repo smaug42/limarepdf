@@ -77,3 +77,54 @@ never replaces; core `write_private`. The app's `app/destinations.rs`: `Destinat
 `App::conflict`, `export_conflict`, `tab_of`, `reading` and `in_other_tab` for open tabs; `IdsWindow::refused` in
 `digital.rs` for the ID store's folder. The command line's `not_an_input` and `not_taken`
 (`limarepdf-cli/src/main.rs`).
+
+## Failure atomicity
+
+**What it promises.**
+
+- An operation that changes a document either finishes or leaves it as it was: refused, failing partway or
+  panicking, it leaves every object, the trailer and the objects' numbers as they were before it started, never a
+  half-made change for a save, Undo or the next edit to find (WP-02). This holds for the core's public edits:
+  text, paragraphs, new text and pictures, stamps, annotations and their styles, links, bookmarks, pages inserted
+  or appended, form values, hidden content removed, and redaction.
+- Redacting is one operation with its check afterwards. When the check finds something of what was marked still in
+  the file, `redact` and `apply_redactions` refuse with a `Leftovers` error carrying the report, and nothing is
+  changed. No redaction keeps what the check found.
+- In the app, an edit holds the document: the tab keeps its own copy, to put back on failure and to make the undo
+  step, so the operation under it doesn't copy the document a second time. Replace all holds the copy it writes
+  on: a change that fails there is written again on a new copy without it, so the document never takes a
+  half-made one.
+
+**Checked by.**
+
+- Core: `atomicity.rs`, every case judged by the state oracle (`state_before` and `state_since`, each object and
+  the trailer compared): the operations refused before they change anything, the redactions, stamps, text and
+  paragraph edits refused late, and the survey's late failures (`annotation_changes_failing_late_change_nothing`,
+  `bookmark_changes_failing_late_change_nothing`, `new_content_failing_late_changes_nothing`,
+  `link_changes_failing_late_change_nothing`). Before S2-02, six of its tests and all 17 of the survey's cases
+  failed.
+- Core, besides: `redact.rs`'s `refused` and `all_refused` cases; `too_complex.rs`'s
+  `a_redaction_over_a_page_too_complex_to_read_changes_nothing`; `sanitise.rs`'s
+  `content_outside_the_crop_box_that_redaction_leaves_is_refused`; the form tests that end `changes_nothing` in
+  `form_fill.rs`; `form_flatten.rs`'s and `many_annotations.rs`'s refused flattenings; `history.rs`'s
+  `a_failed_edit_goes_back_as_it_was`.
+- The app: `applying_what_the_tag_tree_would_keep_changes_nothing` and
+  `content_outside_the_crop_box_redaction_leaves_is_refused_with_nothing_changed`; Replace all's
+  `a_change_failing_as_it_is_written_leaves_nothing` (`editor/replace_all.rs`).
+- The command line: `redact.rs`'s `redact_refuses_what_the_tag_tree_would_keep_and_writes_nothing`.
+
+**Limits.**
+
+- Only the document is put back. Nothing an operation does changes what was read when it was opened (its
+  encryption, that it was repaired, that it reads differently in other apps), so that isn't copied.
+- The highest object number isn't lowered: a number an object had for the failed operation isn't given to another
+  in the session, as after Undo.
+- Outside the app (the command line, the core's own callers), each operation copies the document before it starts,
+  as the app's edit did already: on a large document an edit takes that copy's time and memory.
+- A bookmark change in an outline with a broken link (an entry naming an object that isn't there) is refused, with
+  nothing changed, and a message naming the missing object rather than the bookmark.
+
+**Owner.** Core `Pdf::atomically` (`history.rs`), which every operation above goes through, and `Pdf::holding`, by
+which a caller that keeps its own copy says so; the copy is `Pdf::before`, put back by `Pdf::go_back`. Core
+`redact::Leftovers`. The app's `Tab::edit_inner` (`tab.rs`), which holds the document, and Replace all's `write`
+and `settle` (`editor/replace_all.rs`), which hold its copy.

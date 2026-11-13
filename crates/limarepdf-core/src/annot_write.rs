@@ -428,18 +428,20 @@ impl Pdf {
 
     /// Set a text box's text size and colour, fill and border, and draw it again. Refused,
     /// with nothing changed, for one another app wrote with characters its font can't
-    /// write ([`Pdf::check_box_drawable`]).
+    /// write ([`Pdf::check_box_drawable`]), or when it fails.
     pub fn set_text_style(&mut self, id: (u32, u16), style: &TextStyle) -> Result<()> {
         self.check_box_drawable(id)?;
-        let d = self.doc.get_dictionary_mut(id)?;
-        if d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"FreeText") {
-            bail!("not a text box");
-        }
-        text_style(d, style);
-        d.set("M", Object::string_literal(pdf_now()));
-        self.fit_text_box(id)?;
-        self.draw_annotations(&[id]);
-        Ok(())
+        self.atomically(|p| {
+            let d = p.doc.get_dictionary_mut(id)?;
+            if d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"FreeText") {
+                bail!("not a text box");
+            }
+            text_style(d, style);
+            d.set("M", Object::string_literal(pdf_now()));
+            p.fit_text_box(id)?;
+            p.draw_annotations(&[id]);
+            Ok(())
+        })
     }
 
     /// Move an annotation on page `page_index` (zero-based) so that its box becomes `to`
@@ -570,22 +572,24 @@ impl Pdf {
         d.set("M", now.clone());
         d.set("CreationDate", now);
         set_text(&mut d, "T", author);
-        let id = self.doc.add_object(d);
-        let name = format!("limarepdf-{}-{}", id.0, pdf_now().trim_start_matches("D:"));
-        if let Ok(a) = self.doc.get_dictionary_mut(id) {
-            a.set("NM", Object::string_literal(name));
-        }
-        self.push_annot(page, id)?;
-        let d = self.doc.get_dictionary(id)?;
-        let reply = d.has(b"IRT");
-        if d.get(b"Subtype")?.as_name()? == b"FreeText" {
-            self.fit_text_box(id)?;
-        }
-        // Replies are not shown, so they need no drawing.
-        if !reply {
-            self.draw_annotations(&[id]);
-        }
-        Ok(id)
+        self.atomically(|p| {
+            let id = p.doc.add_object(d);
+            let name = format!("limarepdf-{}-{}", id.0, pdf_now().trim_start_matches("D:"));
+            if let Ok(a) = p.doc.get_dictionary_mut(id) {
+                a.set("NM", Object::string_literal(name));
+            }
+            p.push_annot(page, id)?;
+            let d = p.doc.get_dictionary(id)?;
+            let reply = d.has(b"IRT");
+            if d.get(b"Subtype")?.as_name()? == b"FreeText" {
+                p.fit_text_box(id)?;
+            }
+            // Replies are not shown, so they need no drawing.
+            if !reply {
+                p.draw_annotations(&[id]);
+            }
+            Ok(id)
+        })
     }
 
     /// Change an annotation's colour (`None` for none), opacity (0 to 1) and comment.
@@ -593,8 +597,18 @@ impl Pdf {
     /// changed too; the app checks [`crate::Annot::locked`] first. A text box's new text is
     /// refused, with nothing changed, as [`Pdf::add_text_box`] refuses it, and so is a new
     /// look for one another app wrote with characters its font can't write
-    /// ([`Pdf::check_box_drawable`]).
+    /// ([`Pdf::check_box_drawable`]). Refused, with nothing changed, when it fails.
     pub fn set_annotation(
+        &mut self,
+        id: (u32, u16),
+        color: Option<[f32; 3]>,
+        opacity: f32,
+        contents: &str,
+    ) -> Result<()> {
+        self.atomically(|p| p.change_annotation(id, color, opacity, contents))
+    }
+
+    fn change_annotation(
         &mut self,
         id: (u32, u16),
         color: Option<[f32; 3]>,

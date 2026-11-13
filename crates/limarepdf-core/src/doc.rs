@@ -25,6 +25,8 @@ pub struct Pdf {
     pub(crate) made_fonts: HashSet<ObjectId>,
     /// Streams the copies pages are drawn from found fine (`unfillable.rs`).
     pub(crate) checked: crate::unfillable::Checked,
+    /// Whether a caller puts the document back when an operation fails ([`Pdf::holding`]).
+    pub(crate) held: crate::history::Held,
 }
 
 /// The document's pages in order: the page tree's entries whose object is a page. lopdf also
@@ -211,6 +213,7 @@ impl Pdf {
             password_needed,
             made_fonts: Default::default(),
             checked: Default::default(),
+            held: Default::default(),
         };
         pdf.differs = pdf.match_other_readers(read);
         Ok(pdf)
@@ -267,6 +270,7 @@ impl Pdf {
             password_needed: false,
             made_fonts: Default::default(),
             checked: Default::default(),
+            held: Default::default(),
         }
     }
 
@@ -801,6 +805,7 @@ impl Pdf {
             password_needed: self.password_needed,
             made_fonts: self.made_fonts.clone(),
             checked: self.checked.clone(),
+            held: Default::default(),
         }
     }
 
@@ -921,11 +926,16 @@ impl Pdf {
     /// (0-based; the page count puts them at the end). Their bookmarks come too, at the top
     /// level in page order: after the last bookmark there going to a page before `at`. So
     /// do their named destinations, one taken already renamed (`intro-2`) along with what
-    /// goes to it. Their forms aren't merged, as for [`Pdf::append`].
+    /// goes to it. Their forms aren't merged, as for [`Pdf::append`]. Refused, with nothing
+    /// changed, when it fails.
     pub fn insert_pages(&mut self, at: usize, others: Vec<Pdf>) -> Result<()> {
         if at > self.page_count() {
             bail!("position {at} is beyond the end of the document");
         }
+        self.atomically(|p| p.put_pages(at, others))
+    }
+
+    fn put_pages(&mut self, at: usize, others: Vec<Pdf>) -> Result<()> {
         self.flatten()?;
         let mut ids = self.page_ids();
         let mut carried = self.carrying(at);

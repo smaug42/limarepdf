@@ -2,7 +2,7 @@ mod common;
 
 use common::compare::{differences, Image};
 use common::saved::{tools, Saved};
-use limarepdf_core::{render, ObjectKind, Pdf, RedactReport};
+use limarepdf_core::{render, Leftovers, ObjectKind, Pdf, RedactReport};
 use lopdf::content::Content;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
@@ -1438,8 +1438,10 @@ fn forms_tree(depth: usize, width: usize) -> Pdf {
     p
 }
 
-/// Following the drawings has a budget: a document needing one step more than it allows
-/// is refused with nothing changed, and one needing exactly as many is redacted.
+/// Following the drawings has a budget: a document needing one step more than the check
+/// before redacting allows is refused with nothing changed; the redacted page, which takes
+/// more steps to read, is refused by the check afterwards when allowed no more than that,
+/// with nothing changed; and with as many as the most any step takes, it is redacted.
 #[test]
 fn drawings_too_complex_to_follow_are_refused_with_nothing_changed() {
     use limarepdf_core::{budget_seam, TooComplex};
@@ -1455,9 +1457,22 @@ fn drawings_too_complex_to_follow_are_refused_with_nothing_changed() {
     );
 
     let mut p = forms_tree(4, 3);
-    let (done, _) = budget_seam::with_limit(needed, || p.redact(&marks));
+    let most = *taken.iter().max().unwrap();
+    let (done, _) = budget_seam::with_limit(most, || p.redact(&marks));
     done.unwrap();
     Saved::of(&mut p).assert_gone(&["Zebra"]);
+
+    let mut p = forms_tree(4, 3);
+    let before = p.state_before();
+    let (done, _) = budget_seam::with_limit(needed, || p.redact(&marks));
+    let e = done.unwrap_err();
+    let left = (e.downcast::<Leftovers>())
+        .expect("refused by the check afterwards")
+        .report
+        .left;
+    let why = "page 1: the page can't be read to check it";
+    assert!(left.iter().any(|l| l.starts_with(why)), "{left:?}");
+    assert_eq!(p.state_since(&before), []);
 
     let mut p = forms_tree(4, 3);
     let before = p.state_before();
@@ -2462,10 +2477,15 @@ fn redacted(
     (rep, back)
 }
 
-/// Redacts `marks`, which the check afterwards must refuse, saying `why`.
+/// Redacts `marks`, which the check afterwards must refuse, saying `why`, changing nothing.
 fn refused(p: &mut Pdf, marks: &[(usize, [f32; 4])], why: &str) -> RedactReport {
-    let rep = p.redact(marks).unwrap();
+    let before = p.state_before();
+    let e = p.redact(marks).unwrap_err();
+    let rep = (e.downcast::<Leftovers>())
+        .unwrap_or_else(|e| panic!("{why}: {e:#}"))
+        .report;
     assert!(rep.left.iter().any(|l| l == why), "{why}: {:?}", rep.left);
+    assert_eq!(p.state_since(&before), [], "{why}");
     rep
 }
 
@@ -3178,8 +3198,8 @@ fn tag_with_alt(p: &mut Pdf, text: ObjectId) {
 /// A case: what it is, the document, its marks and the route still reaching what they remove.
 type Routed = (String, Pdf, Marks, Route);
 
-/// Redacts each case, which the check afterwards must refuse, naming its route. Panics
-/// listing every case it didn't refuse, with what it said.
+/// Redacts each case, which the check afterwards must refuse, naming its route, changing
+/// nothing. Panics listing every case it didn't refuse, with what it said.
 fn all_refused(cases: Vec<Routed>) {
     let mut not = Vec::new();
     for (what, mut p, marks, route) in cases {
@@ -3187,10 +3207,17 @@ fn all_refused(cases: Vec<Routed>) {
             "removed content may still be in the file, through {}",
             route.says()
         );
-        let rep = p.redact(&marks).unwrap();
-        if !rep.left.contains(&why) {
-            not.push(format!("{what}, through {}: {:?}", route.says(), rep.left));
-        }
+        let before = p.state_before();
+        let said = match p.redact(&marks).map_err(|e| e.downcast::<Leftovers>()) {
+            Err(Ok(l)) if l.report.left.contains(&why) => match p.state_since(&before) {
+                changed if changed.is_empty() => continue,
+                changed => format!("refused, but changed {changed:?}"),
+            },
+            Err(Ok(l)) => format!("{:?}", l.report.left),
+            Err(Err(e)) => format!("{e:#}"),
+            Ok(_) => "redacted".into(),
+        };
+        not.push(format!("{what}, through {}: {said}", route.says()));
     }
     assert!(not.is_empty(), "not refused:\n{}", not.join("\n"));
 }

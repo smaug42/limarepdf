@@ -66,7 +66,8 @@ pub struct PageRedaction {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RedactReport {
     pub pages: Vec<PageRedaction>,
-    /// Anything readable still under a mark after redacting. Empty when the check passed.
+    /// Anything readable still under a mark after redacting. Empty when the check passed,
+    /// as in every report [`Pdf::redact`] returns: else it is refused ([`Leftovers`]).
     pub left: Vec<String>,
     /// Removed text that can still be found elsewhere in the document (other pages,
     /// bookmarks, comments, form fields, document information), with where.
@@ -91,6 +92,26 @@ impl RedactReport {
             .collect()
     }
 }
+
+/// Redacting refused by its check afterwards ([`Pdf::redact`]): the report, with what the
+/// check found left ([`RedactReport::left`]); what redacting did was put back. Found through
+/// the error's chain (`downcast_ref`), like [`crate::TooComplex`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Leftovers {
+    pub report: RedactReport,
+}
+
+impl std::fmt::Display for Leftovers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Nothing was changed: the check after redacting found {}",
+            self.report.left.join("; ")
+        )
+    }
+}
+
+impl std::error::Error for Leftovers {}
 
 /// Overlap, in points, below which two boxes only meet and don't touch, so that the
 /// characters beside a mark made from a text selection stay.
@@ -1184,22 +1205,23 @@ impl Pdf {
     }
 
     /// Apply the document's redaction marks: remove everything under them as
-    /// [`Pdf::redact`] does, then remove the marks.
+    /// [`Pdf::redact`] does, then remove the marks. Refused, with nothing changed, as
+    /// [`Pdf::redact`] is.
     pub fn apply_redactions(&mut self) -> Result<RedactReport> {
-        self.own_direct_annots()?;
-        let marks = self.redaction_marks();
-        if marks.is_empty() {
-            bail!("the document has no redaction marks");
-        }
-        let report = self.redact(&marks)?;
-        let ids = self
-            .every_annotation()
-            .into_iter()
-            .filter(|a| a.kind == crate::AnnotKind::Redact)
-            .map(|a| a.id)
-            .collect();
-        self.drop_annotations(ids)?;
-        Ok(report)
+        self.atomically(|p| {
+            p.own_direct_annots()?;
+            let marks = p.redaction_marks();
+            if marks.is_empty() {
+                bail!("the document has no redaction marks");
+            }
+            let report = p.redact(&marks)?;
+            let ids = (p.every_annotation().into_iter())
+                .filter(|a| a.kind == crate::AnnotKind::Redact)
+                .map(|a| a.id)
+                .collect();
+            p.drop_annotations(ids)?;
+            Ok(report)
+        })
     }
 
     /// Marks covering every match of `query` (as [`Pdf::find_text_matches`] finds them):
@@ -1219,8 +1241,21 @@ impl Pdf {
     /// are annotations touching a mark; then each mark is painted black. Afterwards the
     /// pages are read again to check that nothing readable is left under the marks, and
     /// the removed text is looked for elsewhere in the document. The old content is gone
-    /// from the file once it is saved.
+    /// from the file once it is saved. Refused, with nothing changed, when it fails or the
+    /// check finds something left ([`Leftovers`]).
     pub fn redact(&mut self, marks: &[(usize, [f32; 4])]) -> Result<RedactReport> {
+        self.atomically(|p| {
+            let report = p.redact_unchecked(marks)?;
+            match report.left.is_empty() {
+                true => Ok(report),
+                false => Err(Leftovers { report }.into()),
+            }
+        })
+    }
+
+    /// [`Pdf::redact`] whatever its check finds ([`RedactReport::left`]), and leaving the
+    /// document half changed when it fails: for finding what redacting would do, on a copy.
+    pub(crate) fn redact_unchecked(&mut self, marks: &[(usize, [f32; 4])]) -> Result<RedactReport> {
         let n = self.page_count();
         let mut by_page: BTreeMap<usize, Vec<[f32; 4]>> = BTreeMap::new();
         for &(p, b) in marks {

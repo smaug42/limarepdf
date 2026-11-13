@@ -346,7 +346,18 @@ pub(crate) fn rounded(r: [f32; 4], c: f32) -> String {
 impl Pdf {
     /// Put a stamp on page `page_index` (zero-based). `author` is written as the
     /// annotation's author, and on a text stamp's name-and-date line. Returns its id.
+    /// Refused, with nothing changed, when it fails.
     pub fn add_stamp(
+        &mut self,
+        page_index: usize,
+        stamp: &Stamp,
+        place: StampPlace,
+        author: &str,
+    ) -> Result<(u32, u16)> {
+        self.atomically(|p| p.stamp_on(page_index, stamp, place, author))
+    }
+
+    fn stamp_on(
         &mut self,
         page_index: usize,
         stamp: &Stamp,
