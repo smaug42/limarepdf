@@ -2,6 +2,9 @@
 //! file (build plan E4): no references to them from bookmarks, named destinations, links,
 //! the opening action, form fields or the structure tree, which would keep their content.
 
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use common::saved::{tools, Saved};

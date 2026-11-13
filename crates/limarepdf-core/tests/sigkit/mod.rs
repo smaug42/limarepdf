@@ -3,6 +3,8 @@
 //! keys and certificates are OpenSSL-made (tools/make-signature-keys.sh).
 
 #![allow(dead_code)]
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use limarepdf_core::Pdf;
 use lopdf::{dictionary, Dictionary, Document, IncrementalDocument, Object, StringFormat};

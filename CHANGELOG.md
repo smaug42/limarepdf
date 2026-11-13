@@ -439,6 +439,10 @@
   printing service gives a size with an impossible width or height, near the largest or smallest number it can
   send: that size is passed over, and the papers keep their own sizes. Before, the papers weren't listed, and the
   app reported an internal error that said the file might be damaged. Found by fuzzing.
+- A damaged PDF whose list of pages gives the wrong number of pages for part of the list opens, is drawn and saves,
+  in the app and in `limarepdf-cli`. Before, when that number was too small, or past the largest number there is,
+  opening the file reported an internal error; when it was far too large, drawing the file closed the app at once,
+  without a word. Found by fuzzing.
 
 ### Changed
 

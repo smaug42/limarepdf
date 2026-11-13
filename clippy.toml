@@ -1,0 +1,7 @@
+# lopdf's page iterator guesses how many pages there are from the `/Count` a file gives each
+# branch of its page tree. A damaged file makes the guess short, overflowing, or so large that
+# collecting the pages ends the app (PB-173). `doc::page_tree` walks the tree without it.
+disallowed-methods = [
+    { path = "lopdf::Document::page_iter", reason = "its size hint trusts the file's /Count (PB-173): use doc::page_tree" },
+    { path = "lopdf::Document::get_pages", reason = "its size hint trusts the file's /Count (PB-173): use doc::page_tree" },
+]

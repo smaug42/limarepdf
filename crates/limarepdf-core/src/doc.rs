@@ -35,11 +35,23 @@ pub struct Pdf {
 /// a page number means the same page when editing as on screen, and a page tree with no real
 /// page is repaired (see [`Pdf::from_bytes`]).
 pub(crate) fn pages(doc: &Document) -> impl Iterator<Item = ObjectId> + '_ {
-    doc.page_iter().filter(|&id| {
+    page_tree(doc).filter(|&id| {
         doc.get_dictionary(id)
             .and_then(Dictionary::get_type)
             .is_ok_and(|t| t == b"Page")
     })
+}
+
+/// Every entry of the page tree in order, stand-ins too, as lopdf's `page_iter` lists them,
+/// without its guess at how many there are: that adds up the `/Count` the file gives each
+/// branch, so in a damaged file it can be short (counting the pages then stops with an
+/// overflow), overflow itself, or be so large that collecting the pages makes room for more
+/// memory than there is, which ends the app (PB-173). Used instead of `page_iter` and
+/// `get_pages`.
+pub(crate) fn page_tree(doc: &Document) -> impl Iterator<Item = ObjectId> + '_ {
+    #[allow(clippy::disallowed_methods)] // The one use, its guess hidden.
+    let mut tree = doc.page_iter();
+    std::iter::from_fn(move || tree.next())
 }
 
 /// Why a repaired document may read differently in other PDF apps.

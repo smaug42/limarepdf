@@ -18,6 +18,9 @@
 //! - **Outside readers** (`pdftotext`, Ghostscript's `txtwrite`, which draws form fields,
 //!   `pdfinfo -js` and `pdfimages`), for the opt-in `cross_check` tests.
 
+// lopdf's page list, of files LimarePDF saved (clippy.toml).
+#![allow(clippy::disallowed_methods)]
+
 use limarepdf_core::Pdf;
 use lopdf::content::Content;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};

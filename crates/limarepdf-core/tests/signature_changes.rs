@@ -2,6 +2,9 @@
 //! analysis (Acrobat's rules), the shadow and incremental-saving attack shapes, malformed
 //! appended revisions, and the signed version of each signature.
 
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
+
 mod sigkit;
 
 use limarepdf_core::{

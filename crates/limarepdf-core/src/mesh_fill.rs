@@ -44,7 +44,7 @@ pub(crate) fn draw_as_shadings(doc: &Document, swaps: &mut BTreeMap<ObjectId, Ob
     // Each drawing: the object holding its resources, the resources, its streams.
     let mut drawings = Vec::new();
     let mut others = BTreeSet::new();
-    for page in doc.get_pages().into_values() {
+    for page in crate::doc::page_tree(doc) {
         if let Some((holder, res)) = inherited_at(doc, page, b"Resources") {
             drawings.push((holder, res.clone(), doc.get_page_contents(page)));
         }

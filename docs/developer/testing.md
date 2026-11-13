@@ -286,7 +286,13 @@ run by hand (2026-11-13, on 033f4e7, nightly 2026-11-12, the same limits): `open
 (4,513), `content` (601,186), `draw` (271,154), `images` (307,748), `verify` (21,518), `signature` (97,320),
 `trustfiles` (2,783,825) and `pkcs12` (2,895,587) found nothing; `ipp` found PB-154 again after about 917,000
 inputs (22 seconds). PB-154 is fixed (the differences taken in `i64`; `paper.rs`'s
-`database_sizes_at_the_ends_of_the_range_are_never_near`, failing first).
+`database_sizes_at_the_ends_of_the_range_are_never_near`, failing first). Run again on that fix (3812276, the same
+limits): `ipp` (5,546,027 inputs) and seven others found nothing; `readers` found PB-173 after about 730 inputs (45
+seconds): a branch of the page tree whose `/Count` is less than the pages it holds made counting the pages stop with
+an overflow. lopdf guesses the number of pages from those counts, and the same guess could overflow, or be so large
+that drawing asked for more memory than there is and ended the app. PB-173 is fixed (`doc::page_tree` walks the tree
+without the guess, and clippy.toml refuses lopdf's page list elsewhere; `repair.rs`'s three page-list count tests,
+failing first).
 
 The desktop app's startup and responsiveness figures in
 [Performance](performance.md#startup-and-responsiveness) (REL-07) come from the app's

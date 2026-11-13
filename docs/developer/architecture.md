@@ -116,7 +116,11 @@ A document's pages are its page tree's entries whose object is a `/Type /Page` d
 `Pdf::page_count`, `Pdf::page_ids` and `page_index`). lopdf's own list (`get_pages`, since 0.46) also counts an
 entry whose object is missing or isn't a typed dictionary, as a blank stand-in page; hayro passes over a missing one,
 so taking lopdf's list would shift page numbers between editing and drawing, and a tree with no real page would
-no longer be repaired.
+no longer be repaired. The tree is walked through `doc::page_tree`, which keeps lopdf's order but not its guess at
+how many entries there are; clippy.toml refuses `page_iter` and `get_pages` anywhere else. The guess adds up the
+`/Count` each branch of the tree states, so in a damaged file it was short (counting the pages then stopped with an
+overflow, as the app is built), overflowed itself, or, as the pages were collected for drawing, asked for more
+memory than a computer has, which ended the app (PB-173, found by the `readers` fuzz target).
 
 hayro (0.9) sets aside memory for a picture from its stated width and height, not from its data: an inline image of
 78 bytes stating 255,555,555 × 2 pixels made it ask for about 4 GB (PB-81, found by REL-12's `draw` fuzz target). So

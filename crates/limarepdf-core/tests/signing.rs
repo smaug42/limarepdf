@@ -4,6 +4,9 @@
 //! before it is handed out. The IDs are the
 //! OpenSSL-made test files in `tests/data/signatures/ids` (password "mpe-test-password").
 
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
+
 mod sigkit;
 #[allow(dead_code)]
 #[path = "common/tool.rs"]

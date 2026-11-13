@@ -151,7 +151,7 @@ pub(crate) fn put(doc: &mut Document, swaps: Vec<(ObjectId, Object)>) {
 pub(crate) fn swaps(doc: &Document, checked: &mut Checked) -> Vec<(ObjectId, Object)> {
     let mut out = BTreeMap::new();
     let mut contents = BTreeSet::new();
-    let pages = doc.get_pages();
+    let pages: Vec<ObjectId> = crate::doc::page_tree(doc).collect();
     let mut kept = BTreeSet::new();
     for (&id, o) in &doc.objects {
         match o {
@@ -190,13 +190,13 @@ pub(crate) fn swaps(doc: &Document, checked: &mut Checked) -> Vec<(ObjectId, Obj
         }
     }
     if !kept.is_empty() {
-        let nested = Nested::new(doc, &kept).walk(pages.values());
+        let nested = Nested::new(doc, &kept).walk(pages.iter());
         for id in nested.unwrap_or(kept) {
             contents.remove(&id);
             out.insert(id, Object::Stream(broken_pattern()));
         }
     }
-    for page in pages.into_values() {
+    for page in pages {
         contents.extend(doc.get_page_contents(page));
     }
     for id in contents {
