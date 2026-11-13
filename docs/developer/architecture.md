@@ -1044,8 +1044,7 @@ annotation appearance state (`Reach::appearances`) and what a readable node cert
 page. A replacement (a cut picture, a redacted form's copy) is bound under a fresh name in the
 copy made for the marked invocation only; an original name is never re-pointed, so a kept drawing drawing it by
 an inherited name keeps the original (S1-01's amendment A1, CP-03). Fonts and other resource kinds are left
-alone. Remove hidden information unlists dropped pictures with `drop_unused_xobjects`, from `Reach::holders` only
-(PB-111: the resources of a pattern nothing paints with aren't among them).
+alone.
 
 After the change, `retained.rs` (`Pdf::clear_retained`; amendments A2 and A3, CP-01 and CP-02) works with the walk
 after and what redaction removed (`retained::Removed`: the originals replaced or removed under a mark, the
@@ -1062,6 +1061,13 @@ followed after everything else, so an object something else reaches counts as th
 reaching anything removed is a `report.left` sentence naming it ("removed content may still be in the file,
 through the tag tree"), which makes both callers refuse: the app rolls back, the CLI writes nothing. Nothing is
 cut on those routes (that needs its own design).
+Removing hidden layers takes the same steps (`drop_hidden_layers`, PB-153; PB-111 with it): a walk before the
+change (which refuses, as the check does, when the drawings are too complex) and one after every edit; the
+removed set is the pictures and forms drawn before and not after, with those carrying a hidden `/OC` of their
+own, and the tiling patterns and soft masks painted with before and not after (`Reach::painted`: `scn` and
+`SCN` with a name, and the soft mask of a state `gs` sets, `reach::mask_drawing`; `Removed::painted`);
+`clear_retained` unlists them from every `/XObject`, `/Pattern` and `/ExtGState` (by the state whose mask it is)
+in the file, and a route still reaching one refuses, rolled back by `atomically`. Redaction passes no `painted`.
 Decoded content is cached by object (`reach::Decoded`) and shared by the walks before and after a redaction,
 which only adds objects; Remove hidden information edits streams in place, so its walk after starts afresh.
 
@@ -1163,7 +1169,10 @@ a form or other drawing with nothing known, as it inherits where it is used. Ref
 for, it is taken as 0); hidden text of unknown width (no font set in the drawing, a CMap LimarePDF can't split
 for certain) followed by a visible `Tj`/`TJ` before a line move, `BT` or `ET` resets the position; a path left
 open at the section's end. A drawing without resources of its own takes its fonts from where it is used too, so
-`HiddenNames` includes the fonts, and `check_shared` compares the result for each set.
+`HiddenNames` includes the fonts, and `check_shared` compares the result for each set. A pattern choice (`scn`,
+`SCN` with a name) or graphics state (`gs`) hidden content sets that nothing paints with while it holds
+(restored by `Q`, set again at the same depth, or the drawing's end, with only operators known not to paint
+between: `unused_settings`, `paints`) goes too, so the pattern or soft mask it names isn't counted as used.
 
 Appending pages (`Pdf::append`) doesn't merge forms. Before adding a file with form fields, Append PDFs
 (`App::append_read`, BUG-19) refuses if `Pdf::undrawable_fields` (the whole-form form of `unprintable_fields`) names

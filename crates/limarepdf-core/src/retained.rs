@@ -20,8 +20,12 @@
 //!   the file) fails the check, saying which. Removed with what held them: alternative text
 //!   stored as an object of its own that no property still in the file holds, and what an
 //!   annotation removed held as objects of its own that no annotation still listed holds.
+//!
+//! Removing hidden layers takes the same steps (PB-153): the originals are the pictures and
+//! forms drawn before and not after, and the patterns and soft masks painted with before and
+//! not after, which every resource dictionary stops listing the same way.
 
-use crate::reach::{self, Reach, ALT};
+use crate::reach::{self, mask_drawing, Reach, ALT};
 use crate::Pdf;
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -49,6 +53,8 @@ pub(crate) struct Removed {
     /// What the annotations removed held as objects of their own (see
     /// [`Pdf::annot_holds`]).
     pub held: HashSet<ObjectId>,
+    /// The patterns and soft masks' drawings what was removed painted with ([`Reach::painted`]).
+    pub painted: HashSet<ObjectId>,
 }
 
 /// What [`Pdf::clear_retained`] found.
@@ -177,24 +183,44 @@ fn resources(doc: &Document) -> HashSet<Place> {
     out
 }
 
-/// The `/XObject` and the `/Properties` dictionaries of every resource dictionary in the
-/// file.
-fn maps(doc: &Document) -> (HashSet<Place>, HashSet<Place>) {
-    let (mut xobjects, mut properties) = (HashSet::new(), HashSet::new());
+/// The `keys` dictionaries (`/XObject`, `/Properties`…) of every resource dictionary in the
+/// file, a set for each key.
+fn maps<const N: usize>(doc: &Document, keys: [&[u8]; N]) -> [HashSet<Place>; N] {
+    let mut out: [HashSet<Place>; N] = std::array::from_fn(|_| HashSet::new());
     for r in resources(doc) {
         let Some(res) = r.get(doc) else {
             continue;
         };
-        for (key, out) in [
-            (&b"XObject"[..], &mut xobjects),
-            (b"Properties", &mut properties),
-        ] {
+        for (key, set) in keys.iter().zip(&mut out) {
             if let Ok(m) = res.get(key) {
-                out.insert(r.to(Step::Key(key.to_vec()), m));
+                set.insert(r.to(Step::Key(key.to_vec()), m));
             }
         }
     }
-    (xobjects, properties)
+    out
+}
+
+/// In each of `maps`, dictionaries of one key of resource dictionaries, the names of the
+/// entries `gone` says go.
+fn unlisted(
+    doc: &Document,
+    maps: HashSet<Place>,
+    gone: impl Fn(&Object) -> bool,
+) -> Vec<(Place, Vec<Vec<u8>>)> {
+    let mut edits = Vec::new();
+    for m in maps {
+        let Some(d) = m.get(doc) else {
+            continue;
+        };
+        let names: Vec<Vec<u8>> = (d.iter())
+            .filter(|(_, v)| gone(v))
+            .map(|(k, _)| k.clone())
+            .collect();
+        if !names.is_empty() {
+            edits.push((m, names));
+        }
+    }
+    edits
 }
 
 /// Marked-content properties as resource dictionaries list them: by the object they refer
@@ -449,26 +475,27 @@ impl Pdf {
             .collect();
         let unused =
             |x: &ObjectId| parts.contains(x) || (originals.contains(x) && !drawn.contains(x));
+        let painted: HashSet<ObjectId> = (removed.painted.difference(&reach.painted))
+            .copied()
+            .collect();
         let mut targets: HashSet<ObjectId> = (originals.iter().chain(&parts))
             .filter(|x| unused(x))
             .copied()
+            .chain(painted.iter().copied())
             .collect();
 
         // Worked out first, changing nothing: the entries to remove, and where.
-        let (xmaps, pmaps) = maps(&self.doc);
-        let mut edits: Vec<(Place, Vec<Vec<u8>>)> = Vec::new();
-        for m in xmaps {
-            let Some(d) = m.get(&self.doc) else {
-                continue;
-            };
-            let gone: Vec<Vec<u8>> = (d.iter())
-                .filter(|(_, v)| v.as_reference().is_ok_and(|id| unused(&id)))
-                .map(|(k, _)| k.clone())
-                .collect();
-            if !gone.is_empty() {
-                edits.push((m, gone));
-            }
-        }
+        let keys = [&b"XObject"[..], b"Pattern", b"ExtGState", b"Properties"];
+        let [xmaps, patterns, states, pmaps] = maps(&self.doc, keys);
+        let doc = &self.doc;
+        let mut edits = unlisted(doc, xmaps, |v| v.as_reference().is_ok_and(|id| unused(&id)));
+        let painted_with = |id: Option<ObjectId>| id.is_some_and(|id| painted.contains(&id));
+        edits.extend(unlisted(doc, patterns, |v| {
+            painted_with(v.as_reference().ok())
+        }));
+        edits.extend(unlisted(doc, states, |v| {
+            painted_with(mask_drawing(self, &self.resolved_dict(Some(v))))
+        }));
         let mut unsure_props = Props::default();
         let mut texts = removed.texts.clone();
         for m in pmaps.into_iter().filter(|_| !removed.alts.is_empty()) {

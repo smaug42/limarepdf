@@ -7,6 +7,7 @@ use crate::budget::{self, TooComplex, Work};
 use crate::fonts::FontCtx;
 use crate::inline::Inline;
 use crate::reach;
+use crate::retained::Removed;
 use crate::{Leftovers, Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
@@ -753,6 +754,65 @@ fn hidden_show(o: &Operation, t: &TextState, font: Option<&FontCtx>) -> (Vec<Ope
     (out, true)
 }
 
+/// Of the operators at `at` in `ops`, a pattern to paint with (`scn`, `SCN`) or a graphics
+/// state (`gs`) that hidden content set, those nothing paints while they hold: they are
+/// restored (`Q`), the colour is set again, or the drawing ends first. Kept, they would
+/// keep the pattern or soft mask only the hidden content painted with in the file (PB-153).
+fn unused_settings(ops: &[Operation], at: &[usize]) -> HashSet<usize> {
+    let mut depth = Vec::with_capacity(ops.len());
+    let mut d = 0usize;
+    for o in ops {
+        depth.push(d);
+        match o.operator.as_str() {
+            "q" => d += 1,
+            // One with nothing saved is passed over.
+            "Q" => d = d.saturating_sub(1),
+            _ => {}
+        }
+    }
+    let unused = |i: usize| {
+        let again: &[&str] = match ops[i].operator.as_str() {
+            "scn" => &["cs", "sc", "scn", "g", "rg", "k"],
+            "SCN" => &["CS", "SC", "SCN", "G", "RG", "K"],
+            _ => &[],
+        };
+        let set = depth[i];
+        for (o, &at) in ops.iter().zip(&depth).skip(i + 1) {
+            let name = o.operator.as_str();
+            if at == set && ((name == "Q" && set > 0) || again.contains(&name)) {
+                return true;
+            }
+            if paints(o) {
+                return false;
+            }
+        }
+        true
+    };
+    let selects = |o: &Operation| match o.operator.as_str() {
+        "scn" | "SCN" => matches!(o.operands.last(), Some(Object::Name(_))),
+        op => op == "gs",
+    };
+    (at.iter().copied())
+        .filter(|&i| selects(&ops[i]) && unused(i))
+        .collect()
+}
+
+/// Whether operator `o` may paint: one not known not to does.
+fn paints(o: &Operation) -> bool {
+    const NOT: &[&str] = &[
+        "m", "l", "c", "v", "y", "h", "re", "n", "W", "W*", "q", "Q", "cm", "w", "J", "j", "M",
+        "d", "ri", "i", "gs", "CS", "cs", "SC", "SCN", "sc", "scn", "G", "g", "RG", "rg", "K", "k",
+        "BT", "ET", "Tc", "Tw", "Tz", "TL", "Tf", "Tr", "Ts", "Td", "TD", "Tm", "T*", "BMC", "BDC",
+        "EMC", "MP", "DP", "BX", "EX", "d0", "d1",
+    ];
+    match o.operator.as_str() {
+        // Spacing without text, as hidden text leaves.
+        "TJ" => (o.operands.first().and_then(|a| a.as_array().ok()))
+            .is_none_or(|a| a.iter().any(|x| matches!(x, Object::String(..)))),
+        name => !NOT.contains(&name),
+    }
+}
+
 /// Why a stream's content couldn't be read.
 enum Unread {
     /// Its compressed data is cut off or damaged part way.
@@ -775,15 +835,17 @@ impl Pdf {
     /// Remove the kinds of hidden information in `what`. Unused objects go when the
     /// document is saved, which rewrites the whole file, so nothing removed is kept in it.
     /// Refuses, with nothing changed, when it couldn't remove all of a kind: hidden layers
-    /// in drawings it can't read or nested too deep, a layer rule it can't read, a form
-    /// nested too deep, content outside the crop box redaction's check finds left.
+    /// in drawings it can't read or nested too deep, a layer rule it can't read, something
+    /// only hidden layers drew that the file still keeps another way (the tag tree, say), a
+    /// form nested too deep, content outside the crop box redaction's check finds left.
     pub fn remove_hidden(&mut self, what: &[Hidden]) -> Result<HiddenReport> {
         self.atomically(|p| p.remove_kinds(what, true))
     }
 
     /// Why [`Pdf::remove_hidden`] would refuse to remove `what`, if it would; changes nothing.
     /// For checking before anything else is done for the removal. Content outside the crop
-    /// box is only found left by redacting it.
+    /// box is only found left by redacting it, and what only hidden layers drew that the
+    /// file keeps another way only by removing them.
     pub fn check_remove_hidden(&self, what: &[Hidden]) -> Result<()> {
         if what.contains(&Hidden::HiddenLayers) && self.layers_to_remove()? {
             // What is no longer drawn is found by following the drawings afterwards.
@@ -1060,8 +1122,9 @@ impl Pdf {
     /// switched off, and the rules hiding content with every layer they name on), and
     /// whether data with a wrong checksum was read. When `strict`, refuses with nothing
     /// changed if some rule couldn't be read, or there is something to remove and some
-    /// drawing couldn't be looked into; otherwise (finding) counts them and changes nothing
-    /// then. With nothing to remove, nothing changes.
+    /// drawing couldn't be looked into, or what only hidden content drew or painted with is
+    /// still kept another way; otherwise (finding) counts them and changes nothing then.
+    /// With nothing to remove, nothing changes.
     fn drop_hidden_layers(&mut self, strict: bool) -> Result<(usize, bool)> {
         let Some((props, d, hidden)) = self.layer_list() else {
             return Ok((0, false));
@@ -1083,6 +1146,12 @@ impl Pdf {
         if !layers.to_remove() {
             return Ok((0, false));
         }
+        // What the drawings draw and paint with before the change, so that what only hidden
+        // content did goes with it. Finding, on a copy, only counts.
+        let before = match strict {
+            true => Some(self.reach(&mut reach::work(), &mut reach::Decoded::new())?),
+            false => None,
+        };
         for (drawn, ops, inline) in scan.edits {
             match drawn {
                 Drawn::Page(page) => self.commit(page, ops, 0, &inline)?,
@@ -1099,21 +1168,12 @@ impl Pdf {
                 }
             }
         }
-        // Pictures and forms in a hidden layer are no longer drawn: out of the resources.
+        // Pictures and forms in a hidden layer of their own, drawn or only listed.
         let mut layered = HashSet::new();
         for (id, o) in &self.doc.objects {
             let oc = o.as_stream().ok().and_then(|s| s.dict.get(b"OC").ok());
             if oc.is_some_and(|oc| self.oc_hidden(oc, &mut layers)) {
                 layered.insert(*id);
-            }
-        }
-        if !layered.is_empty() {
-            // The streams were changed in place, so they are read afresh. Finding (on a
-            // copy) leaves them listed when the drawings are too complex to follow.
-            match self.reach(&mut reach::work_after(0), &mut reach::Decoded::new()) {
-                Ok(reach) => self.drop_unused_xobjects(&layered, &reach)?,
-                Err(e) if strict => return Err(e.into()),
-                Err(_) => {}
             }
         }
         // Annotations in a hidden layer, and their drawings in one: a drawing for a state
@@ -1184,6 +1244,31 @@ impl Pdf {
         }
         self.drop_hidden_properties(&layers);
         self.rewrite_rules(&layers);
+
+        // What is no longer drawn or painted with, and the pictures and forms in a hidden
+        // layer, out of the resources, as redaction takes out its originals (PB-153);
+        // refused when the file still keeps any of it another way.
+        if let Some(before) = before {
+            // The streams were changed in place, so they are read afresh.
+            let after = self.reach(&mut reach::work_after(0), &mut reach::Decoded::new())?;
+            let removed = Removed {
+                xobjects: (before.drawn.union(&layered))
+                    .filter(|x| !after.drawn.contains(*x))
+                    .copied()
+                    .collect(),
+                painted: before.painted,
+                ..Removed::default()
+            };
+            let left = self.clear_retained(&removed, &after).left;
+            if !left.is_empty() {
+                return Err(anyhow!(
+                    "hidden layers can't be removed for certain: the check after removing \
+                     them found {}. Nothing was changed; leave out hidden layers to remove the \
+                     rest",
+                    left.join("; ")
+                ));
+            }
+        }
 
         // The layer list: hidden layers out, the rest on.
         let keep = |o: &Object| o.as_reference().map_or(true, |id| !hidden.contains(&id));
@@ -1675,9 +1760,10 @@ impl Pdf {
     ///
     /// Hidden content still sets what is drawn after it (ISO 32000-1, 8.11.3.2), so only
     /// its painting goes: settings (colour, position, line style, text state) are kept, a
-    /// clipping path still clips, and hidden text becomes spacing as wide. Refuses with
-    /// [`Unsure`] where the result wouldn't look the same, and with [`InlineRule`] where a
-    /// rule written in it can't be read.
+    /// clipping path still clips, and hidden text becomes spacing as wide. A pattern or
+    /// graphics state it sets that nothing paints with goes too ([`unused_settings`]).
+    /// Refuses with [`Unsure`] where the result wouldn't look the same, and with
+    /// [`InlineRule`] where a rule written in it can't be read.
     #[allow(clippy::type_complexity)]
     fn without_hidden(
         &self,
@@ -1705,6 +1791,8 @@ impl Pdf {
         let mut path: Vec<Operation> = Vec::new();
         // A path begun in what is kept and not yet painted, which hidden content may paint.
         let mut open = false;
+        // Where the settings hidden content made are in `out`.
+        let mut settings = Vec::new();
         for mut o in ops {
             let name = o.operator.as_str();
             text.follow(&o, &mut saved);
@@ -1754,7 +1842,10 @@ impl Pdf {
                     // Painting.
                     "sh" | "Do" | "MP" | "DP" => {}
                     t if inline.raw(t).is_some() => {}
-                    _ => out.push(o),
+                    _ => {
+                        settings.push(out.len());
+                        out.push(o);
+                    }
                 }
                 continue;
             }
@@ -1810,6 +1901,13 @@ impl Pdf {
                 _ => {}
             }
             out.push(o);
+        }
+        let unused = unused_settings(&out, &settings);
+        if !unused.is_empty() {
+            out = (out.into_iter().enumerate())
+                .filter(|(i, _)| !unused.contains(i))
+                .map(|(_, o)| o)
+                .collect();
         }
         Ok(changed.then_some((out, inline)))
     }

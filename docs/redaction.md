@@ -172,8 +172,9 @@ What is ticked at first:
   a layer rule hides, wherever it is drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments'
   and fields' drawings, in patterns, soft masks and Type 3 fonts. A layer rule combines layers ("shown when layer A
   is on and layer B is off"), and rules can sit inside rules; LimarePDF reads them as other PDF readers do, so
-  what a rule hides goes even when every layer it names is on. A picture only hidden content drew is left out of
-  the saved file, also when it was listed by a form inside a form. Layers that are off leave the layer list;
+  what a rule hides goes even when every layer it names is on. A picture or form only hidden content drew, and a
+  pattern or soft mask only it painted with, is left out of the saved file, also when it was listed by a form
+  inside a form or by a pattern nothing paints with. Layers that are off leave the layer list;
   layers that are shown stay. A rule that stays but named a removed layer is rewritten without it, so switching
   the layers that stay still shows and hides what it did. What shows doesn't change: a colour, position or clip
   hidden content sets still applies to what is drawn after it, and hidden text is replaced by a gap as wide, so
@@ -187,7 +188,8 @@ What is ticked at first:
   change what shows: hidden text that clips what comes after it, hidden text whose width LimarePDF can't work out
   (its font is set where the drawing is used) with visible text after it on the same line, or a shape begun in a
   hidden layer and painted outside it, or when the document's drawings are too complex to follow (as for
-  redaction). Leave hidden layers out to remove the rest. Compressed data is checked to its end: if it is cut off
+  redaction); and when something only hidden content drew is still kept another way, as when the tag tree
+  points at it (as for redaction). Leave hidden layers out to remove the rest. Compressed data is checked to its end: if it is cut off
   or damaged part way, the command stops in the same way ("Part of this document is damaged..."). Data that is
   complete but whose checksum at the end is wrong is read in full, as other PDF readers read it, and the result
   says so.

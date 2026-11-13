@@ -148,6 +148,9 @@ pub(crate) struct Reach {
     /// The pictures and forms drawn (`Do`) somewhere; content that can't be read counts as
     /// drawing all its resources list.
     pub drawn: HashSet<ObjectId>,
+    /// The patterns painted with (`scn`, `SCN`) and the soft masks' drawings used (`gs`)
+    /// somewhere, as [`Reach::drawn`].
+    pub painted: HashSet<ObjectId>,
     /// The annotations' appearances: (the page's node, the appearance's node).
     pub appearances: Vec<(usize, usize)>,
     /// The annotations' appearances by stream, with their nodes.
@@ -462,6 +465,7 @@ impl Walk<'_> {
             for nm in &u.patterns {
                 self.work.take(1)?;
                 if let Some(id) = patterns.get(nm).ok().and_then(|o| o.as_reference().ok()) {
+                    self.reach.painted.insert(id);
                     draws.extend(self.drawing(id, &res)?);
                 }
             }
@@ -469,8 +473,8 @@ impl Walk<'_> {
             for nm in &u.states {
                 self.work.take(1)?;
                 let gs = pdf.resolved_dict(states.get(nm).ok());
-                let mask = pdf.resolved_dict(gs.get(b"SMask").ok());
-                if let Some(id) = mask.get(b"G").ok().and_then(|o| o.as_reference().ok()) {
+                if let Some(id) = mask_drawing(pdf, &gs) {
+                    self.reach.painted.insert(id);
                     draws.extend(self.drawing(id, &res)?);
                 }
             }
@@ -504,6 +508,12 @@ impl Walk<'_> {
         }
         Ok(())
     }
+}
+
+/// The drawing of the soft mask graphics state `gs` sets, if it sets one.
+pub(crate) fn mask_drawing(pdf: &Pdf, gs: &Dictionary) -> Option<ObjectId> {
+    let mask = pdf.resolved_dict(gs.get(b"SMask").ok());
+    mask.get(b"G").ok().and_then(|o| o.as_reference().ok())
 }
 
 /// Whether object `id` is a form XObject.

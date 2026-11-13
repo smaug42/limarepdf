@@ -89,10 +89,8 @@ enum Place {
 struct Drawing {
     page: usize,
     cell: Cell,
-    /// Hidden by a layer switched off.
+    /// Hidden by a layer switched off, its own or that of what draws it.
     hidden: bool,
-    /// Drawn through a form that hidden content draws (`/OC … BDC … Do … EMC`).
-    through: bool,
 }
 
 struct Marker {
@@ -210,7 +208,6 @@ fn record(items: &[Item], forms: &[Form], layers: &[bool], from: &Drawing, marke
             }
             Draws::Form(f) => {
                 let form = &forms[f];
-                at.through |= at.hidden;
                 at.hidden |= form.layer.is_some_and(|l| !layers[l]);
                 record(&form.items, forms, layers, &at, markers);
             }
@@ -341,7 +338,6 @@ fn make(seed: u64) -> Made {
             page,
             cell: (0, 0),
             hidden: false,
-            through: false,
         };
         record(items, &forms, &layers, &start, &mut markers);
     }
@@ -624,24 +620,12 @@ fn removing_hidden_layers_removes_only_what_they_alone_hold() {
         } = made(seed);
         let pages = pdf.page_count();
         change(&mut pdf, |p| p.remove_hidden(&[Hidden::HiddenLayers]));
-        // PB-153: a form that hidden content draws is no longer drawn, but stays listed in the
-        // resources, so what it draws stays in the file, its layers too: either way, until
-        // that is fixed.
         let saved = check(&mut pdf, &markers, pages, |m| match &m.place {
-            Place::Drawn(at) if at.iter().all(|d| d.hidden) => {
-                (!at.iter().any(|d| d.through)).then_some(true)
-            }
-            Place::Drawn(_) => Some(false),
+            Place::Drawn(at) => Some(at.iter().all(|d| d.hidden)),
             Place::Annot(a) => Some(annots[*a].layer == Some(false)),
             Place::PageScript(_) | Place::DocScript => Some(false),
         });
-        let through = markers.iter().any(|m| match &m.place {
-            Place::Drawn(at) => at.iter().any(|d| d.through),
-            _ => false,
-        });
-        if !through {
-            assert_eq!(saved.hidden_layer_users(), Vec::<String>::new());
-        }
+        assert_eq!(saved.hidden_layer_users(), Vec::<String>::new());
     });
 }
 

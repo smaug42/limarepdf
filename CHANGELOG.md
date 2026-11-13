@@ -443,6 +443,11 @@
   in the app and in `limarepdf-cli`. Before, when that number was too small, or past the largest number there is,
   opening the file reported an internal error; when it was far too large, drawing the file closed the app at once,
   without a word. Found by fuzzing.
+- Removing hidden layers removes everything only their content drew: forms, also one drawn by a form that stays,
+  and the patterns and soft masks only it painted with, as it already did pictures. Before, such a form or
+  pattern stayed in the saved file with its text, and a picture in a hidden layer stayed when a pattern nothing
+  paints with listed it too. When the file keeps one of them another way, as when the tag tree points at it, the
+  command stops and changes nothing, as redaction does, and says so.
 
 ### Changed
 
