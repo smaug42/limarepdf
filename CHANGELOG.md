@@ -16,6 +16,10 @@
   the folder where LimarePDF keeps its digital IDs: a message says so, and you choose another folder. Before, only
   the Digital IDs window's exports were kept out, and saving there could take the place of an ID or of the note
   naming the default one.
+- Adding, moving and removing bookmarks works in a file whose bookmarks point to something missing from the file,
+  or don't say which bookmark they are inside. Before, such a change was refused with a message about the missing
+  object; a bookmark added beside one inside another went to the end of the list instead; and removing one from
+  inside another left it where it was.
 - Editing a line keeps the text other apps read in place of some of its letters (a file's attached text, such as
   a whole word given for an abbreviation) with those letters when the edit leaves them as they were, and drops it
   from letters the edit changes or removes. Before, other apps went on reading the old text in place of the letters

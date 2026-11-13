@@ -10,9 +10,9 @@
 //! read (`too_complex.rs`, `redact.rs`).
 
 use limarepdf_core::{
-    budget_seam, Align, BookmarkPlace, FontChoice, HeaderFooter, ImageWatermark, InkColor, LinkId,
-    LinkTarget, Mark, PartFont, Pdf, ReduceOptions, Stamp, StampColor, StampPlace, TextEdit,
-    TextPart, TextStyle, TooComplex, Watermark,
+    budget_seam, outline_seam, Align, BookmarkPlace, FontChoice, HeaderFooter, ImageWatermark,
+    InkColor, LinkId, LinkTarget, Mark, PartFont, Pdf, ReduceOptions, Stamp, StampColor,
+    StampPlace, TextEdit, TextPart, TextStyle, TooComplex, Watermark,
 };
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
@@ -367,8 +367,7 @@ fn annotation_changes_failing_late_change_nothing() {
     ]);
 }
 
-/// One page, with a bookmark to it for each of `titles` at the top level, the first's
-/// children only a link to an object that isn't in the file.
+/// One page, with a bookmark to it for each of `titles` at the top level.
 fn outlined(titles: &[&str]) -> Pdf {
     let mut p = letter(&[ZEBRA]);
     let page = p.page_ids()[0];
@@ -390,11 +389,6 @@ fn outlined(titles: &[&str]) -> Pdf {
         if let Some(&after) = ids.get(i + 1) {
             d.set("Next", after);
         }
-        if i == 0 {
-            d.set("First", GONE);
-            d.set("Last", GONE);
-            d.set("Count", 1);
-        }
         p.doc.objects.insert(id, d.into());
     }
     let last = ids[ids.len() - 1];
@@ -407,6 +401,7 @@ fn outlined(titles: &[&str]) -> Pdf {
     p
 }
 
+/// Each fails at its last step, setting the outline's counts, through `outline_seam`.
 #[test]
 fn bookmark_changes_failing_late_change_nothing() {
     let other = || {
@@ -414,7 +409,8 @@ fn bookmark_changes_failing_late_change_nothing() {
         o.add_bookmark("Other", 0, BookmarkPlace::End).unwrap();
         o
     };
-    all_change_nothing(vec![
+    let (inserted, appended) = (other(), other());
+    let cases: Vec<Late> = vec![
         (
             "a bookmark added at the end",
             outlined(&["A"]),
@@ -438,14 +434,15 @@ fn bookmark_changes_failing_late_change_nothing() {
         (
             "pages with a bookmark inserted",
             outlined(&["A"]),
-            Box::new(move |p| p.insert_pages(0, vec![other()])),
+            Box::new(move |p| p.insert_pages(0, vec![inserted])),
         ),
         (
             "pages with a bookmark added at the end",
             outlined(&["A"]),
-            Box::new(move |p| p.append(vec![other()])),
+            Box::new(move |p| p.append(vec![appended])),
         ),
-    ]);
+    ];
+    outline_seam::failing(|| all_change_nothing(cases));
 }
 
 /// A `w` × `h` picture.

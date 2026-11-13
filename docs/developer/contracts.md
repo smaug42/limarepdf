@@ -106,7 +106,7 @@ digital IDs through `digital::in_id_folder`. The command line's `not_an_input` a
   paragraph edits refused late, and the survey's late failures (`annotation_changes_failing_late_change_nothing`,
   `bookmark_changes_failing_late_change_nothing`, `new_content_failing_late_changes_nothing`,
   `link_changes_failing_late_change_nothing`). Before S2-02, six of its tests and all 17 of the survey's cases
-  failed.
+  failed. The bookmark cases fail at their last step, setting the outline's counts, through `outline_seam`.
 - Core, besides: `redact.rs`'s `refused` and `all_refused` cases; `too_complex.rs`'s
   `a_redaction_over_a_page_too_complex_to_read_changes_nothing`; `sanitise.rs`'s
   `content_outside_the_crop_box_that_redaction_leaves_is_refused`; the form tests that end `changes_nothing` in
@@ -125,8 +125,6 @@ digital IDs through `digital::in_id_folder`. The command line's `not_an_input` a
   in the session, as after Undo.
 - Outside the app (the command line, the core's own callers), each operation copies the document before it starts,
   as the app's edit did already: on a large document an edit takes that copy's time and memory.
-- A bookmark change in an outline with a broken link (an entry naming an object that isn't there) is refused, with
-  nothing changed, and a message naming the missing object rather than the bookmark.
 
 **Owner.** Core `Pdf::atomically` (`history.rs`), which every operation above goes through, and `Pdf::holding`, by
 which a caller that keeps its own copy says so; the copy is `Pdf::before`, put back by `Pdf::go_back`. Core

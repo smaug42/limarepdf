@@ -1250,11 +1250,14 @@ followed by those inside it; `outline` drops the objects. Positions in that list
 `End`, `Before(i)`, `After(i)` (past those inside `i`) or `Under(i)` (last inside it). A move (ENH-16) is worked
 out on the items alone by `plan_move` (the list it leaves and the one it joins, by position): `bookmark_moves`
 gives the same answer beforehand, false when it would stay put and an error when it can't go (into itself, or so
-deep that something inside it would pass the 64th level), so the app asks before making an undo step. The move
-writes only the links: the list it leaves and the list it joins are linked again from the outline as read
-(`relink`: the parent's `First` and `Last`, each child's `Parent`, `Prev` and `Next`), which puts right any wrong
-`Prev` or `Parent` a file had in those lists, then every `Count` is set again from the tree (`fix_outline_counts`);
-moving into a closed bookmark opens it. Its `Title`, `Dest`, `A`, `C` and `F` are never touched, so it goes where
+deep that something inside it would pass the 64th level), so the app asks before making an undo step. A change
+writes only the links: the list a bookmark leaves and the list it joins (adding joins one, removing leaves one, a
+move both) are linked again from the outline as read (`relink`: the parent's `First` and `Last`, each child's
+`Parent`, `Prev` and `Next`; the parent and the place by `place_parent` and `place_index`), which puts right any
+wrong `Prev` or `Parent` and any link to an object that isn't there a file had in those lists, then every `Count`
+is set again from the tree (`fix_outline_counts`, following only links to objects there are, as `outline_nodes`
+does). An outline of 100,000 bookmarks or more, which the walk cuts short, is refused these changes, as linking a
+list cut short would lose what is past the cut. Adding into a bookmark, or moving into a closed one, opens it. Its `Title`, `Dest`, `A`, `C` and `F` are never touched, so it goes where
 it went. `bookmark_step` turns Word's outline keys into places: Up before the bookmark above at its level, Down
 after the one below, Promote after the one it is in, Demote into the one above, last; `None` at the edges, so a
 bookmark changes level only when promoted or demoted (ENH-16's Q2).
