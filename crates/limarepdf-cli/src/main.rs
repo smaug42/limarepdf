@@ -12,9 +12,9 @@ use limarepdf_core::{display_line, DigitalId, IdStore, NewId, SignPlace, SignReq
 use limarepdf_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
-    ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, OpenLayout, OpenPanel, Pdf,
-    PictureQuality, ReduceOptions, Restrictions, ScanMode, ScanOptions, ScanResult, SplitBy, Stamp,
-    StampColor, StampKind, StampPlace, ViewPrefs, Watermark,
+    ImageWatermark, Info, LabelRange, LabelStyle, Leftovers, Ocr, OcrResult, OpenLayout, OpenPanel,
+    Pdf, PictureQuality, ReduceOptions, Restrictions, ScanMode, ScanOptions, ScanResult, SplitBy,
+    Stamp, StampColor, StampKind, StampPlace, ViewPrefs, Watermark,
 };
 use limarepdf_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
 use limarepdf_core::{
@@ -1710,23 +1710,27 @@ fn redact(
         out!("wrote {}", io.output.display());
         return Ok(());
     }
-    let rep = if apply {
+    let done = if apply {
         // The new areas become marks too, and applying takes every mark away.
         for (p, boxes) in by_page(&marks) {
             pdf.add_redaction_mark(p, &boxes, "")?;
         }
-        pdf.apply_redactions()?
+        pdf.apply_redactions()
     } else if marks.is_empty() {
         bail!("nothing to redact; the file was not written");
     } else {
-        pdf.redact(&marks)?
+        pdf.redact(&marks)
     };
-    if !rep.left.is_empty() {
-        for l in &rep.left {
-            eprintln!("{l}");
+    let rep = match done.map_err(|e| e.downcast::<Leftovers>()) {
+        Ok(rep) => rep,
+        Err(Ok(l)) => {
+            for l in &l.report.left {
+                eprintln!("{l}");
+            }
+            bail!("the check after redacting failed, so the file was not written");
         }
-        bail!("the check after redacting failed, so the file was not written");
-    }
+        Err(Err(e)) => return Err(e),
+    };
     // What was redacted must not stay in an earlier version of the file.
     save_edited(io, &mut pdf, &original, true)?;
     if json {

@@ -144,7 +144,7 @@ pub use paragraph::{Align, Block, Detect, Doubt, Frame, VisualLine};
 pub use pictures::{png_file, PictureFormat, SavedPictures};
 #[cfg(all(windows, any(test, feature = "test-seams")))]
 pub use print_win::papers_seam;
-pub use redact::{PageRedaction, RedactReport};
+pub use redact::{Leftovers, PageRedaction, RedactReport};
 pub use reduce::{
     KeptWhy, Most, PictureQuality, ReduceOptions, ReducePreview, Reduced, PREVIEW_SIDE,
 };

@@ -987,7 +987,8 @@ impl Tab {
         // The document as it is: compared with it after the change, or put back if it fails.
         let before = self.pdf.before();
         // A panic leaves the document half changed, so it is put back like any other failure.
-        if let Err(e) = crate::guard(|| f(&mut self.pdf)) {
+        // Held, so the operation doesn't copy the document again to put it back itself.
+        if let Err(e) = crate::guard(|| self.pdf.holding(f)) {
             self.pdf.go_back(before);
             self.error = Some(format!("{e:#}"));
             return false;

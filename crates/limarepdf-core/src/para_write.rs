@@ -51,7 +51,7 @@ impl Pdf {
         edges: (f32, f32),
     ) -> Result<Vec<usize>> {
         let align = setting.paragraph().frame.align;
-        Ok(self.paragraph_with(setting, parts, edges, align, None)?.0)
+        self.edit_paragraph_in(setting, parts, edges, align)
     }
 
     /// [`Pdf::edit_paragraph_between`] with the paragraph aligned as `align` says, as
@@ -63,7 +63,8 @@ impl Pdf {
         edges: (f32, f32),
         align: Align,
     ) -> Result<Vec<usize>> {
-        Ok(self.paragraph_with(setting, parts, edges, align, None)?.0)
+        let edit = |p: &mut Pdf| p.paragraph_with(setting, parts, edges, align, None);
+        Ok(self.atomically(edit)?.0)
     }
 
     /// [`Pdf::edit_paragraph_in`] with the paragraph's underlines and strike-throughs as
@@ -79,7 +80,7 @@ impl Pdf {
         align: Align,
         decorations: &[Decorated],
     ) -> Result<(Vec<usize>, Vec<SetLine>)> {
-        self.paragraph_with(setting, parts, edges, align, Some(decorations))
+        self.atomically(|p| p.paragraph_with(setting, parts, edges, align, Some(decorations)))
     }
 
     /// A paragraph edited ([`Pdf::edit_paragraph_in`]) between its frame's edges, aligned

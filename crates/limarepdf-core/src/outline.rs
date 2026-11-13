@@ -101,13 +101,18 @@ impl Pdf {
     }
 
     /// Add a bookmark to `page` (zero-based) and return its position in [`Pdf::outline`].
-    /// It goes to the top of the page, keeping the zoom.
+    /// It goes to the top of the page, keeping the zoom. Refused, with nothing changed, when
+    /// it fails.
     pub fn add_bookmark(
         &mut self,
         title: &str,
         page: usize,
         place: BookmarkPlace,
     ) -> Result<usize> {
+        self.atomically(|p| p.put_bookmark(title, page, place))
+    }
+
+    fn put_bookmark(&mut self, title: &str, page: usize, place: BookmarkPlace) -> Result<usize> {
         let Some(&page_id) = self.page_ids().get(page) else {
             bail!(
                 "page {} does not exist (document has {})",
@@ -193,8 +198,13 @@ impl Pdf {
         Ok(())
     }
 
-    /// Remove bookmark `index` (a position in [`Pdf::outline`]) and its children.
+    /// Remove bookmark `index` (a position in [`Pdf::outline`]) and its children. Refused,
+    /// with nothing changed, when it fails.
     pub fn remove_bookmark(&mut self, index: usize) -> Result<()> {
+        self.atomically(|p| p.unlink_bookmark(index))
+    }
+
+    fn unlink_bookmark(&mut self, index: usize) -> Result<()> {
         let Some(&(id, _)) = self.outline_nodes().get(index) else {
             bail!("bookmark {} does not exist", index + 1);
         };
@@ -229,8 +239,13 @@ impl Pdf {
     /// to `place`, and return its new position. Only where it is changes: what it goes to
     /// and everything else it holds stay as they were. A bookmark moved into a closed one
     /// opens it. A move to where it is already changes nothing ([`bookmark_moves`] says so
-    /// beforehand); one into itself, or nesting deeper than the outline allows, is refused.
+    /// beforehand); one into itself, or nesting deeper than the outline allows, is refused,
+    /// and so is one that fails, with nothing changed.
     pub fn move_bookmark(&mut self, index: usize, place: BookmarkPlace) -> Result<usize> {
+        self.atomically(|p| p.relink_bookmark(index, place))
+    }
+
+    fn relink_bookmark(&mut self, index: usize, place: BookmarkPlace) -> Result<usize> {
         let nodes = self.outline_nodes();
         let items: Vec<OutlineItem> = nodes.iter().map(|(_, i)| i.clone()).collect();
         let Some(plan) = plan_move(&items, index, place)? else {

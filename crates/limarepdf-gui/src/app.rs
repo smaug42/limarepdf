@@ -4445,14 +4445,7 @@ impl App {
         let t = &mut self.tabs[self.active];
         let mut report = None;
         let ok = t.edit_removing(ctx, |p| {
-            let r = p.apply_redactions()?;
-            if !r.left.is_empty() {
-                anyhow::bail!(
-                    "Nothing was changed: the check after redacting found {}",
-                    r.left.join("; ")
-                );
-            }
-            report = Some(r);
+            report = Some(p.apply_redactions()?);
             Ok(())
         });
         if let Some(r) = report.filter(|_| ok) {

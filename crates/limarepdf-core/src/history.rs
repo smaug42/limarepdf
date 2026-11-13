@@ -5,14 +5,27 @@
 //! reading the document again, so what was read when it was opened (that it was repaired,
 //! decrypted, or reads differently in other apps) stays as it was.
 
-use crate::Pdf;
+use crate::{Pdf, Result};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::BTreeMap;
-use std::mem::{size_of, swap, take};
+use std::mem::{replace, size_of, swap, take};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 
 /// A document as it was before an edit: compared with it after the edit ([`Before::undo`]),
 /// or put back when the edit fails ([`Pdf::go_back`]).
 pub struct Before(Document);
+
+/// Whether a caller puts the document back itself when an operation fails ([`Pdf::holding`]),
+/// so the operations don't each copy it ([`Pdf::atomically`]). A copy of the document isn't
+/// held: the caller holds the one it copied.
+#[derive(Default)]
+pub(crate) struct Held(bool);
+
+impl Clone for Held {
+    fn clone(&self) -> Self {
+        Held(false)
+    }
+}
 
 /// What puts a document back as it was before an edit: the old values of the objects the edit
 /// changed or removed, the objects it added (to be removed again), and the trailer and the
@@ -78,6 +91,40 @@ impl Pdf {
         let top = self.doc.max_id;
         self.doc = before.0;
         self.doc.max_id = self.doc.max_id.max(top);
+    }
+
+    /// Runs `f`, an operation that either finishes or, when it fails or panics, leaves the
+    /// document as it was, as [`Pdf::go_back`] puts it back: the document is copied first.
+    /// Not copied again when a caller holds it ([`Pdf::holding`]), as the app's edits do, nor
+    /// for an operation inside another. Only the document is put back: no operation changes
+    /// what was read when it was opened (its encryption, that it was repaired or reads
+    /// differently in other apps).
+    pub(crate) fn atomically<T>(&mut self, f: impl FnOnce(&mut Pdf) -> Result<T>) -> Result<T> {
+        if self.held.0 {
+            return f(self);
+        }
+        let before = self.before();
+        match catch_unwind(AssertUnwindSafe(|| self.holding(f))) {
+            Ok(Ok(done)) => Ok(done),
+            Ok(Err(e)) => {
+                self.go_back(before);
+                Err(e)
+            }
+            Err(panic) => {
+                self.go_back(before);
+                resume_unwind(panic)
+            }
+        }
+    }
+
+    /// Runs `f` with the operations it calls not each copying the document to put it back
+    /// when they fail ([`Pdf::atomically`]): for a caller that copied it first itself
+    /// ([`Pdf::before`]) and puts it back ([`Pdf::go_back`]) when `f` fails or panics.
+    pub fn holding<T>(&mut self, f: impl FnOnce(&mut Pdf) -> T) -> T {
+        let was = replace(&mut self.held.0, true);
+        let out = catch_unwind(AssertUnwindSafe(|| f(self)));
+        self.held.0 = was;
+        out.unwrap_or_else(|panic| resume_unwind(panic))
     }
 
     /// Put a [`Restore`]'s values in place: Undo, or Redo with the one that reversed it.

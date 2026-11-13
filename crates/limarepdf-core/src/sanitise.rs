@@ -7,7 +7,7 @@ use crate::budget::{self, TooComplex, Work};
 use crate::fonts::FontCtx;
 use crate::inline::Inline;
 use crate::reach;
-use crate::{Pdf, Result};
+use crate::{Leftovers, Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId};
@@ -778,12 +778,7 @@ impl Pdf {
     /// in drawings it can't read or nested too deep, a layer rule it can't read, a form
     /// nested too deep, content outside the crop box redaction's check finds left.
     pub fn remove_hidden(&mut self, what: &[Hidden]) -> Result<HiddenReport> {
-        let before = self.before();
-        let got = self.remove_kinds(what, true);
-        if got.is_err() {
-            self.go_back(before);
-        }
-        got
+        self.atomically(|p| p.remove_kinds(what, true))
     }
 
     /// Why [`Pdf::remove_hidden`] would refuse to remove `what`, if it would; changes nothing.
@@ -975,7 +970,8 @@ impl Pdf {
     /// Delete what lies outside each page's crop box, then make the crop box the page.
     /// Returns how many pages were cut, and the pages where a drawing left as it was still
     /// draws an original picture or form cut ([`crate::RedactReport::pictures_elsewhere`]).
-    /// When `strict`, refuses, after redacting, when redaction's check finds something left.
+    /// When `strict`, refuses when redaction's check finds something left ([`Leftovers`]);
+    /// else (finding what would be removed, on a copy) goes on.
     fn cut_outside_crop(&mut self, strict: bool) -> Result<(usize, Vec<usize>)> {
         let mut marks = Vec::new();
         let mut cut = Vec::new();
@@ -1004,15 +1000,20 @@ impl Pdf {
         if marks.is_empty() {
             return Ok((0, Vec::new()));
         }
-        let rep = self.redact(&marks)?;
-        if strict && !rep.left.is_empty() {
-            return Err(anyhow!(
-                "Content outside the visible page area can't be removed for certain: the check \
-                 after redacting found {}. Nothing was changed; leave out content outside the \
-                 visible page area to remove the rest.",
-                rep.left.join("; ")
-            ));
-        }
+        let rep = match strict {
+            true => self
+                .redact(&marks)
+                .map_err(|e| match e.downcast_ref::<Leftovers>() {
+                    Some(l) => anyhow!(
+                        "Content outside the visible page area can't be removed for certain: \
+                         the check after redacting found {}. Nothing was changed; leave out \
+                         content outside the visible page area to remove the rest.",
+                        l.report.left.join("; ")
+                    ),
+                    None => e,
+                })?,
+            false => self.redact_unchecked(&marks)?,
+        };
         for (page, crop) in &cut {
             let d = self.doc.get_dictionary_mut(*page)?;
             d.set(
