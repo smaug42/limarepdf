@@ -327,7 +327,7 @@ fn a_split_never_writes_over_another_tabs_file() {
 /// they were (PB-170). Beside the folder, nothing is refused.
 #[test]
 fn no_writer_writes_in_the_id_folder() {
-    const PASSWORD: &str = "correct horse battery";
+    let password = limarepdf_core::password_seam::made_up();
     let png = limarepdf_core::render::encode(&super::save_image::halves(), ImageFormat::Png, 72.0)
         .unwrap();
     let (ctx, mut app, picture) = super::save_image::picture_tab(&png);
@@ -337,7 +337,7 @@ fn no_writer_writes_in_the_id_folder() {
         name: "Jane Example".into(),
         ..Default::default()
     };
-    let id = store.create(&new, PASSWORD).unwrap().id;
+    let id = store.create(&new, &password).unwrap().id;
     store.set_default(&id).unwrap();
     app.id_folder = Some(store.dir().to_path_buf());
     let default = store.dir().join("default.txt");
@@ -447,7 +447,7 @@ fn no_writer_writes_in_the_id_folder() {
         std::fs::read(&default).unwrap(),
     ];
     assert!(now == kept, "an ID or the default was changed");
-    store.unlock(&id, PASSWORD).unwrap();
+    store.unlock(&id, &password).unwrap();
     assert_eq!(store.default_id().map(|d| d.path), Some(id.path.clone()));
 
     // Beside the folder.
