@@ -4624,6 +4624,40 @@ mod tests {
         assert_eq!(page_lines(&t, 0), ["COPY", "Page 1 of 2", "COPY"]);
     }
 
+    /// ENH-24's first test (S2-04): cropping page 2 ends a watermark's link, whether the
+    /// watermark is on page 2 too (both change its dictionary) or not (nothing in common),
+    /// so it can't be updated in place after. Undoing the crop brings the link back. Keeping
+    /// it across other changes waits for after the freeze (D-18).
+    #[test]
+    fn a_crop_ends_a_stamps_link_on_its_pages_or_others() {
+        let ctx = egui::Context::default();
+        for range in ["1-2", "1"] {
+            let mut t = blank_tab(&ctx, 2);
+            t.forms.wm.text = "DRAFT".into();
+            t.forms.wm.range = range.into();
+            t.stamp_from_form(&ctx, Stamp::Watermark, false);
+            assert!(t.linked(Stamp::Watermark).is_some(), "{range}");
+            assert!(t.crop(&ctx, &[1], [72.0, 0.0, 0.0, 0.0], None));
+            // The crop changed page 2's dictionary alone.
+            let crop = t.undo.last().unwrap().doc.as_ref().unwrap();
+            assert_eq!(crop.objects(), 1, "{range}");
+            assert!(t.linked(Stamp::Watermark).is_none(), "{range}");
+            // Updating in place is refused, nothing changed.
+            let depth = t.undo.len();
+            t.forms.wm.text = "COPY".into();
+            t.stamp_from_form(&ctx, Stamp::Watermark, true);
+            assert_eq!(t.undo.len(), depth, "{range}");
+            assert_eq!(page_lines(&t, 0), ["DRAFT"], "{range}");
+            // Undoing the crop brings the link back, the form its settings.
+            t.undo(&ctx);
+            assert!(t.linked(Stamp::Watermark).is_some(), "{range}");
+            assert_eq!(t.forms.wm.text, "DRAFT", "{range}");
+            t.forms.wm.text = "COPY".into();
+            t.stamp_from_form(&ctx, Stamp::Watermark, true);
+            assert_eq!(page_lines(&t, 0), ["COPY"], "{range}");
+        }
+    }
+
     /// While the crop is set on the pages, they are shown whole: cropping them changes the
     /// document but not the layout, nothing is redrawn, and nudges join one step.
     #[test]
