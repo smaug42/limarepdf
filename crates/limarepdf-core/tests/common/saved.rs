@@ -24,6 +24,7 @@
 use limarepdf_core::Pdf;
 use lopdf::content::Content;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
+use std::cell::Cell;
 use std::collections::HashSet;
 
 /// Actions that run something, send data or open other files by themselves (as
@@ -39,6 +40,24 @@ const ACTIVE: [&[u8]; 6] = [
 
 /// Deepest nesting of direct objects followed.
 const MAX_DEPTH: usize = 64;
+
+/// With `SAVED_DUMP=<folder>`, each file checked is written there too, as `<test>-<n>.pdf`
+/// (n from 0 in each test), so that two builds' saved files can be compared one by one.
+fn dump(bytes: &[u8]) {
+    thread_local!(static N: Cell<usize> = const { Cell::new(0) });
+    let Some(dir) = std::env::var_os("SAVED_DUMP") else {
+        return;
+    };
+    let n = N.get();
+    N.set(n + 1);
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("main")
+        .replace("::", "-");
+    let dir = std::path::Path::new(&dir);
+    std::fs::create_dir_all(dir).expect("SAVED_DUMP's folder can be made");
+    std::fs::write(dir.join(format!("{test}-{n}.pdf")), bytes).expect("SAVED_DUMP is written");
+}
 
 pub struct Saved {
     pub bytes: Vec<u8>,
@@ -60,6 +79,7 @@ impl Saved {
     }
 
     pub fn new(bytes: Vec<u8>) -> Self {
+        dump(&bytes);
         check_xref(&bytes);
         let doc = Document::load_mem(&bytes).expect("the saved file loads");
         let (segments, opaque) = segments(&bytes);
