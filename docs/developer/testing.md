@@ -281,7 +281,12 @@ printing targets' first runs (S2-15, 2026-11-11, on f8607aa, nightly 2026-11-03 
 each, 2 GB, 20 seconds an input, `verify` at most 256 KB an input): `verify` (19,719 inputs), `signature` (80,772),
 `trustfiles` (1,433,676) and `pkcs12` (1,456,781) found nothing; `ipp` found PB-154 after about 833,000 inputs (21
 seconds): a media size whose height is near `i32::MIN` overflows when compared with the paper sizes
-(`paper::from_ipp`), so the app reports a damaged file instead of listing the printer's papers.
+(`paper::from_ipp`), so the app reports a damaged file instead of listing the printer's papers. The workflow's first
+run by hand (2026-11-13, on 033f4e7, nightly 2026-11-12, the same limits): `open` (9,316 inputs), `readers`
+(4,513), `content` (601,186), `draw` (271,154), `images` (307,748), `verify` (21,518), `signature` (97,320),
+`trustfiles` (2,783,825) and `pkcs12` (2,895,587) found nothing; `ipp` found PB-154 again after about 917,000
+inputs (22 seconds). PB-154 is fixed (the differences taken in `i64`; `paper.rs`'s
+`database_sizes_at_the_ends_of_the_range_are_never_near`, failing first).
 
 The desktop app's startup and responsiveness figures in
 [Performance](performance.md#startup-and-responsiveness) (REL-07) come from the app's

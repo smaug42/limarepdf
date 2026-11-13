@@ -435,6 +435,10 @@
   you choose another place. While an ID is exported, Save As and the app's other writers are refused its file.
   Before, a certificate saved over the ID's own file replaced the ID, key and all, and an export could replace a
   document open in a tab.
+- A printer's paper sizes are listed, in the Print window and by `limarepdf-cli printers --paper`, when the
+  printing service gives a size with an impossible width or height, near the largest or smallest number it can
+  send: that size is passed over, and the papers keep their own sizes. Before, the papers weren't listed, and the
+  app reported an internal error that said the file might be damaged. Found by fuzzing.
 
 ### Changed
 
