@@ -2315,20 +2315,8 @@ impl App {
                 problems.push(e.to_string());
                 continue;
             }
-            let mut unconfirmed = None;
-            let mut written = Ok(());
-            for (kind, data) in [("aff", &u.aff), ("dic", &u.dic)] {
-                let path = folder.join(format!("{}.{kind}", u.stem));
-                match crate::settings::write_own(&path, data) {
-                    Ok(why) => unconfirmed = unconfirmed.or(why),
-                    Err(e) => {
-                        written = Err(e);
-                        break;
-                    }
-                }
-            }
-            match written {
-                Ok(()) => {
+            match crate::settings::write_dictionary(&folder, &u.stem, &u.aff, &u.dic) {
+                Ok(unconfirmed) => {
                     if let Some(why) = unconfirmed {
                         problems.push(format!(
                             "{file} was added, but your system couldn't confirm it is safely \

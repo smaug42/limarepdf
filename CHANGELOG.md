@@ -9,6 +9,9 @@
 
 ### Fixed
 
+- Add a dictionary, replacing one added before, keeps the one before as it was when the new one can't be saved
+  whole. Before, a failure between its two files could leave the new spelling rules with the old words, checking
+  spelling against a mix of the two.
 - Editing a line keeps the text other apps read in place of some of its letters (a file's attached text, such as
   a whole word given for an abbreviation) with those letters when the edit leaves them as they were, and drops it
   from letters the edit changes or removes. Before, other apps went on reading the old text in place of the letters

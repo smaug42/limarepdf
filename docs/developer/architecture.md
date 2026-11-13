@@ -1294,7 +1294,11 @@ the zip's list first, refusing (`TooMany`, `TooMuch`, `TooLarge`) before anythin
 from the budget as it is read (zip 9 also stops an entry at its stated size); a refusal gives no dictionaries and
 leaves the budget as it was. The app's Add a dictionary… reads an extension's own file through `read_extension`
 (128 MiB) and a chosen `.dic` and `.aff` through `read_within`, all on one budget. `best_match` matches a `/Lang` or locale to a dictionary by region, then
-language.
+language. Each dictionary added is written by `settings::write_dictionary` (A-11): a dictionary is listed by its
+`.dic`, so the `.dic` of one of the same name goes first, then the new `.aff` and `.dic` are written, and when
+either fails, the pair there before is put back (the new `.aff` removed, when there was none). The folder never
+holds one dictionary's `.aff` beside another's `.dic`; when the pair before can't be put back, it isn't listed,
+and that is said.
 
 In the app, `spell.rs` holds the state in the context's data (as `typing_fonts` holds its loads, so each test's
 context has its own): `App::spelling_frame` sets each frame what spelling follows (`Config`: Check spelling as you
