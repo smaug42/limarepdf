@@ -229,8 +229,8 @@ so the images import back at the page's size. LimarePDF draws the pages with its
 A page image can have at most 268 million pixels (A3 at 1152 dpi; a 4 × 3 foot poster at about 390 dpi), and at
 most 65,280 pixels a side (a page 2.3 m long at 720 dpi; one 10,000 points long at about 470 dpi). A page past
 either limit stops the export before any image is written, with an error that names the page, and a lower
-resolution works. Large page images are drawn in bands, which bounds the memory a complex page takes but makes
-some pages slower to export ([details](rendering.md#large-drawings)).
+resolution works. A page with soft masks, patterns or shadings may be drawn in pieces, sized from what it holds so
+that it takes at most about 512 MB more than its image ([details](rendering.md#large-drawings)).
 
 When the images lack something, the message at the end of the export says what, as the page's notice does: a
 picture LimarePDF can't read, say, or a font that isn't installed, drawn with a similar one.

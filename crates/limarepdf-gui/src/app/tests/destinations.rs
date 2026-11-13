@@ -4,7 +4,8 @@
 //! spelling of its name, and the save goes on as it would alone. However the save ends,
 //! the name is free again (the open tab's own check aside). A split never writes over a
 //! file open in another tab. The Digital IDs window's exports keep apart from the tabs'
-//! files, and an ID's export from the files tabs save (PB-167).
+//! files, and an ID's export from the files tabs save (PB-167). No writer writes in the
+//! folder of digital IDs (PB-170).
 
 use super::*;
 
@@ -316,5 +317,145 @@ fn a_split_never_writes_over_another_tabs_file() {
     assert!(why.contains("\"doc-002.pdf\" is open in a tab"), "{why}");
     assert_eq!(field_in(&open, "Name"), "Kept");
     assert!(!dir.join("doc-001.pdf").exists(), "a part was written");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// No writer writes in the folder of digital IDs, by its path or a link to it, where a file
+/// would take the place of an ID or the note of the default, or lie among them: Save as,
+/// the selection and the text saved, a signed copy, a picture, every picture, page images,
+/// a split and an export from the Digital IDs window are refused, and the IDs are left as
+/// they were (PB-170). Beside the folder, nothing is refused.
+#[test]
+fn no_writer_writes_in_the_id_folder() {
+    let password = limarepdf_core::password_seam::made_up();
+    let png = limarepdf_core::render::encode(&super::save_image::halves(), ImageFormat::Png, 72.0)
+        .unwrap();
+    let (ctx, mut app, picture) = super::save_image::picture_tab(&png);
+    let dir = test_dir("destination-ids");
+    let store = limarepdf_core::IdStore::new(dir.join("ids"));
+    let new = limarepdf_core::NewId {
+        name: "Jane Example".into(),
+        ..Default::default()
+    };
+    let id = store.create(&new, &password).unwrap().id;
+    store.set_default(&id).unwrap();
+    app.id_folder = Some(store.dir().to_path_buf());
+    let default = store.dir().join("default.txt");
+    let kept = [
+        std::fs::read(&id.path).unwrap(),
+        std::fs::read(&default).unwrap(),
+    ];
+    let names = || {
+        let mut n: Vec<_> = (std::fs::read_dir(store.dir()).unwrap())
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        n.sort();
+        n
+    };
+    let listed = names();
+
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut folders = vec![store.dir().to_path_buf()];
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(store.dir(), dir.join("link")).unwrap();
+        folders.push(dir.join("link"));
+    }
+    let refused = |app: &mut App, what: &str| {
+        let (_, why) = message(app);
+        let said = "LimarePDF keeps its digital IDs in that folder: choose another.";
+        assert!(why.starts_with(said), "{what}: {why}");
+        assert!(!app.busy && app.saves.is_empty(), "{what} started");
+        app.dialog = Dialog::None;
+    };
+    for folder in &folders {
+        let files = [
+            folder.join(id.path.file_name().unwrap()),
+            folder.join("default.txt"),
+        ];
+        for file in &files {
+            let at = file.display();
+            SAVE_AS.with(|s| s.set(Some(file.clone())));
+            app.act(&ctx, Act::SaveAs);
+            refused(&mut app, &format!("Save as {at}"));
+
+            let t = &mut app.tabs[0];
+            t.ed.select_all_words(&t.pdf, 0);
+            assert!(app.tabs[0].ed.selected_text().is_some());
+            SAVE_AS.with(|s| s.set(Some(file.clone())));
+            app.save_selection(dlg::Layout::TextFile);
+            refused(&mut app, &format!("the selection to {at}"));
+
+            SAVE_AS.with(|s| s.set(Some(file.clone())));
+            app.export_text();
+            refused(&mut app, &format!("the text to {at}"));
+
+            let t = &app.tabs[0];
+            let place = SignPlace::NewBox {
+                page: 0,
+                rect: [72.0, 72.0, 272.0, 132.0],
+            };
+            let mut w = SignWindow::new(t.id, t.revision, place, "a box".into(), false, false);
+            SAVE_AS.with(|s| s.set(Some(file.clone())));
+            app.start_signing(&ctx, &mut w);
+            let why = w.error.clone().unwrap_or_default();
+            assert!(
+                why.starts_with("LimarePDF keeps its digital IDs"),
+                "signed to {at}: {why}"
+            );
+            assert!(!w.busy());
+
+            select(&mut app, &ctx, &[picture]);
+            SAVE_AS.with(|s| s.set(Some(file.clone())));
+            app.act(&ctx, Act::SaveImage);
+            refused(&mut app, &format!("the picture to {at}"));
+
+            let why = app.export_conflict(file).unwrap_or_default();
+            assert!(
+                why.starts_with("LimarePDF keeps its digital IDs"),
+                "exported to {at}: {why}"
+            );
+        }
+        let to = folder.display();
+        FOLDER.with(|f| f.set(Some(folder.clone())));
+        app.act(&ctx, Act::SaveAllImages);
+        refused(&mut app, &format!("every picture to {to}"));
+
+        FOLDER.with(|f| f.set(Some(folder.clone())));
+        app.apply_panel(&ctx, Apply::Export);
+        refused(&mut app, &format!("page images to {to}"));
+
+        let s = SplitFiles {
+            by: SplitBy::Every(1),
+            dir: folder.clone(),
+            stem: "doc".into(),
+        };
+        app.split_into(&ctx, s);
+        refused(&mut app, &format!("a split to {to}"));
+
+        let cer = folder.join("jane.cer");
+        let why = app.export_conflict(&cer).unwrap_or_default();
+        assert!(
+            why.starts_with("LimarePDF keeps its digital IDs"),
+            "exported to {}: {why}",
+            cer.display()
+        );
+    }
+    assert_eq!(names(), listed, "a file was written among the IDs");
+    let now = [
+        std::fs::read(&id.path).unwrap(),
+        std::fs::read(&default).unwrap(),
+    ];
+    assert!(now == kept, "an ID or the default was changed");
+    store.unlock(&id, &password).unwrap();
+    assert_eq!(store.default_id().map(|d| d.path), Some(id.path.clone()));
+
+    // Beside the folder.
+    assert_eq!(app.export_conflict(&dir.join("jane.cer")), None);
+    let beside = dir.join("doc.pdf");
+    SAVE_AS.with(|s| s.set(Some(beside.clone())));
+    app.act(&ctx, Act::SaveAs);
+    saves_done(&mut app, &ctx);
+    assert_eq!(pages_in(&beside), 1);
     std::fs::remove_dir_all(&dir).unwrap();
 }

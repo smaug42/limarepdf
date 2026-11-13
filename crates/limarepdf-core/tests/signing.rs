@@ -4,6 +4,9 @@
 //! before it is handed out. The IDs are the
 //! OpenSSL-made test files in `tests/data/signatures/ids` (password "mpe-test-password").
 
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
+
 mod sigkit;
 #[allow(dead_code)]
 #[path = "common/tool.rs"]
@@ -1005,7 +1008,7 @@ fn a_fill_in_a_standard_font_is_only_a_fill_when_signed() {
         let ap = ap.as_stream().unwrap();
         let content = ap.decompressed_content().unwrap_or(ap.content.clone());
         let content = String::from_utf8_lossy(&content);
-        assert!(content.contains(&format!("/{font} 10 Tf")), "{content}");
+        assert!(content.contains(&format!("/{font} 10.0 Tf")), "{content}");
         let res = ap.dict.get(b"Resources").unwrap().as_dict().unwrap();
         let fonts = res.get(b"Font").unwrap().as_dict().unwrap();
         assert!(fonts.has(font.as_bytes()), "{name} {text}: {fonts:?}");
@@ -1056,7 +1059,7 @@ fn a_signed_fill_doesnt_use_another_font_under_the_fallback_name() {
     let ap = ap.as_stream().unwrap();
     let content = ap.decompressed_content().unwrap_or(ap.content.clone());
     let content = String::from_utf8_lossy(&content);
-    assert!(content.contains("/LimareHelvetica1 10 Tf"), "{content}");
+    assert!(content.contains("/LimareHelvetica1 10.0 Tf"), "{content}");
     assert!(!content.contains("/LimareHelvetica "), "{content}");
     let res = ap.dict.get(b"Resources").unwrap().as_dict().unwrap();
     let fonts = res.get(b"Font").unwrap().as_dict().unwrap();
@@ -1340,8 +1343,9 @@ fn shows_one_million(text: &str, what: impl std::fmt::Debug) {
     );
 }
 
-/// lopdf on its own holds object 5 in every [`HIDES`] file; LimarePDF drops it, as other apps
-/// do.
+/// LimarePDF drops object 5 in every [`HIDES`] file, as apps following the specification do,
+/// and says other apps may show the file differently. lopdf on its own drops the freed ones
+/// (since 0.47), and holds the unlisted one.
 #[test]
 fn limarepdf_shows_what_other_apps_show() {
     let control = Pdf::from_bytes(&hidden_payment(Hide::Not), None).unwrap();
@@ -1350,7 +1354,8 @@ fn limarepdf_shows_what_other_apps_show() {
     for hide in HIDES {
         let bytes = hidden_payment(hide);
         let lopdf = lopdf::Document::load_mem(&bytes).unwrap();
-        assert!(lopdf.objects.contains_key(&(5, 0)), "{hide:?}");
+        let unlisted = hide == Hide::StrayUnlisted;
+        assert_eq!(lopdf.objects.contains_key(&(5, 0)), unlisted, "{hide:?}");
         let pdf = Pdf::from_bytes(&bytes, None).unwrap();
         assert!(!pdf.doc.objects.contains_key(&(5, 0)), "{hide:?}");
         // The app and the CLI say so.
@@ -1406,10 +1411,7 @@ fn an_unused_freed_object_doesnt_stop_signing_on_top() {
     let base = hidden_payment(Hide::Not);
     let added = append_raw(&base, &[(9, b"<< /Unused true >>")], &[], &[], "");
     let freed = append_raw(&added, &[], &[9], &[], "");
-    assert!(lopdf::Document::load_mem(&freed)
-        .unwrap()
-        .objects
-        .contains_key(&(9, 0)));
+    assert_eq!(Pdf::from_bytes(&freed, None).unwrap().differs(), None);
     let s = sign(&freed, &req(rsa(), field("Sign here")));
     assert!(!s.rewritten);
     assert!(s.bytes.starts_with(&freed));

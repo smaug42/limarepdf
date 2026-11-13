@@ -5,6 +5,9 @@
 //! document itself keeps it. Large pictures whose data is there, and small ones a little
 //! short, are drawn as they are.
 
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
+
 use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
 use limarepdf_core::render::{self, Missing};
 use limarepdf_core::Pdf;

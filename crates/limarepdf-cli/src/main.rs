@@ -4388,8 +4388,9 @@ fn run(cmd: Cmd) -> Result<()> {
             password,
         } => {
             let p = open(&input, &password)?;
-            for i in parse_page_range(&pages, p.page_count())? {
-                out!("--- page {} ---\n{}", i + 1, p.page_text(i));
+            let pages = parse_page_range(&pages, p.page_count())?;
+            for (i, text) in pages.iter().zip(p.page_texts(&pages)) {
+                out!("--- page {} ---\n{}", i + 1, text);
             }
         }
         Cmd::Render {

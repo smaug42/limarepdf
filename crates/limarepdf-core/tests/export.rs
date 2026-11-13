@@ -111,4 +111,8 @@ fn pages_text_separates_pages_with_form_feeds() {
     let text = p.pages_text(&[1, 0]);
     let parts: Vec<&str> = text.split('\u{c}').map(str::trim).collect();
     assert_eq!(parts, ["Beta", "Alpha"]);
+    // Each page's text, as page_text gives it, in the order asked; a page past the end has none.
+    let texts = p.page_texts(&[1, 0, 2]);
+    assert_eq!(texts, [p.page_text(1), p.page_text(0), String::new()]);
+    assert_eq!(texts[0].trim(), "Beta");
 }

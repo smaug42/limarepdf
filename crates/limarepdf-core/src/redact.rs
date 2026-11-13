@@ -38,7 +38,6 @@ use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Object, ObjectId, Stream};
-use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// What a redaction removed from one page.
@@ -1740,10 +1739,8 @@ impl Pdf {
             return Vec::new();
         }
         let n = self.page_count();
-        let pages: Vec<String> = (0..n)
-            .into_par_iter()
-            .map(|p| fold(&self.page_text(p)))
-            .collect();
+        let all: Vec<usize> = (0..n).collect();
+        let pages: Vec<String> = self.page_texts(&all).iter().map(|t| fold(t)).collect();
         let alt: Vec<Vec<String>> = (reach.nodes.iter())
             .map(|node| node.alt.iter().map(|a| fold(a)).collect())
             .collect();

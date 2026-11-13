@@ -1,12 +1,13 @@
 # Performance
 
-Measured on 12 November 2026 (S2-16) on an Intel Core i5-9600K (6 cores) with 15 GB of memory, Linux 7.3, release
-build (LTO, one codegen unit), at commit 11d899c (the measuring script's `--refset` added, nothing else changed), with
-`limarepdf-cli` and the measuring script described in [Testing](testing.md#automated-tests). Each time is the median
-of three runs and includes starting the program. Peak memory is the most the program held in memory at once (its
-resident set) in any of the three runs; readings shown as "≤ 24 MB" are at the lowest the script can measure (the
-measuring process's own). The last column is the first measurement, on 18 October 2026 at commit 6b67145, where its
-floor was 20 MB.
+Measured on 13 November 2026 (S2's follow-ups) on an Intel Core i5-9600K (6 cores) with 15 GB of memory, Linux 7.3,
+release build (LTO, one codegen unit), with the follow-ups' changes on commit b6bba1b (hayro 0.9, every dependency at
+its latest, pages drawn in passes sized to what they hold), with `limarepdf-cli` and the measuring script described
+in [Testing](testing.md#automated-tests). Each time is the median of three runs and includes starting the program.
+Peak memory is the most the program held in memory at once (its resident set) in any of the three runs; readings
+shown as "≤ 24 MB" are at the lowest the script can measure (the measuring process's own). The 12 November column is
+the measurement before, at commit 11d899c (S2-16), and the last column the first, on 18 October 2026 at commit
+6b67145, where its floor was 20 MB.
 
 To measure again, run `python3 crates/limarepdf-core/tools/measure.py` from the repository (Linux or macOS): it
 builds the release CLI, makes the files and prints this table for the machine and commit. `--runs`, `--only` and
@@ -19,42 +20,52 @@ The files: a generated 1,000-page text file (1.5 MB; a heading, 48 lines of text
 merge writes the page's picture once, shared by all 200 pages, so its rows now measure a much smaller file and aren't
 compared (when the merge started sharing it wasn't traced; PB-164).
 
-| Task | Time | Peak memory | 18 October |
-| --- | --- | --- | --- |
-| 1,000 text pages: document information | 0.02 s | ≤ 24 MB | 0.01 s, ≤ 20 MB |
-| 1,000 text pages: extract all text | 1.81 s | ≤ 24 MB | 1.32 s, ≤ 20 MB |
-| 1,000 text pages: search | 0.19 s | 130 MB | 0.24 s, ≤ 20 MB |
-| 1,000 text pages: render at 100 dpi to PNG files (all cores) | 4.26 s | 88 MB | 4.59 s, 75 MB |
-| 1,000 text pages: watermark | 0.10 s | 39 MB | 0.09 s, 28 MB |
-| 1,000 text pages: merge 3 copies into 3,000 pages | 0.09 s | 48 MB | 0.07 s, 34 MB |
-| 1,000 text pages: split into 20 files | 0.07 s | 42 MB | 0.07 s, 125 MB |
-| 1,000 text pages: AES-256 encrypt | 0.04 s | 30 MB | 0.03 s, 29 MB |
-| 200-page scan: document information | 0.00 s | ≤ 24 MB | – |
-| 200-page scan: render at 100 dpi | 2.04 s | 236 MB | – |
-| 200-page scan: watermark | 0.03 s | ≤ 24 MB | – |
-| 200-page scan: AES-256 encrypt | 0.01 s | ≤ 24 MB | – |
-| Complex drawing, 73,000 paths on one page (PDFBox 5134): render at 150 dpi | 50.83 s | 1,672 MB | 58.5 s, 9,707 MB; drawn in bands (19 October, one run) 54.4 s, 1,520 MB |
-| Complex drawing, 27,000 paths on one page (pdf.js bug1791583): render at 150 dpi | 4.81 s | 667 MB | 2.05 s, 642 MB |
-| Japanese fonts not embedded, drawn with installed stand-ins, 42 pages (PDFBox 1910): render at 150 dpi | 0.50 s | 608 MB | 0.53 s, 562 MB |
-| The same, 203 pages (pdf.js bug1905623): render at 150 dpi | 2.08 s | 651 MB | 2.69 s, 559 MB |
+| Task | Time | Peak memory | 12 November | 18 October |
+| --- | --- | --- | --- | --- |
+| 1,000 text pages: document information | 0.02 s | ≤ 24 MB | 0.02 s, ≤ 24 MB | 0.01 s, ≤ 20 MB |
+| 1,000 text pages: extract all text (all cores) | 0.18 s | ≤ 24 MB | 1.81 s, ≤ 24 MB | 1.32 s, ≤ 20 MB |
+| 1,000 text pages: search | 0.20 s | 29 MB | 0.19 s, 130 MB | 0.24 s, ≤ 20 MB |
+| 1,000 text pages: render at 100 dpi to PNG files (all cores) | 3.64 s | 92 MB | 4.26 s, 88 MB | 4.59 s, 75 MB |
+| 1,000 text pages: watermark | 0.09 s | 40 MB | 0.10 s, 39 MB | 0.09 s, 28 MB |
+| 1,000 text pages: merge 3 copies into 3,000 pages | 0.07 s | 48 MB | 0.09 s, 48 MB | 0.07 s, 34 MB |
+| 1,000 text pages: split into 20 files | 0.08 s | 42 MB | 0.07 s, 42 MB | 0.07 s, 125 MB |
+| 1,000 text pages: AES-256 encrypt | 0.03 s | 30 MB | 0.04 s, 30 MB | 0.03 s, 29 MB |
+| 200-page scan: document information | 0.00 s | ≤ 24 MB | 0.00 s, ≤ 24 MB | – |
+| 200-page scan: render at 100 dpi | 2.30 s | 233 MB | 2.04 s, 236 MB | – |
+| 200-page scan: watermark | 0.03 s | ≤ 24 MB | 0.03 s, ≤ 24 MB | – |
+| 200-page scan: AES-256 encrypt | 0.02 s | ≤ 24 MB | 0.01 s, ≤ 24 MB | – |
+| Complex drawing, 73,000 paths on one page (PDFBox 5134): render at 150 dpi | 0.78 s | 314 MB | 50.83 s, 1,672 MB | 58.5 s, 9,707 MB; drawn in bands (19 October, one run) 54.4 s, 1,520 MB |
+| Complex drawing, 27,000 paths on one page (pdf.js bug1791583): render at 150 dpi | 2.17 s | 648 MB | 4.81 s, 667 MB | 2.05 s, 642 MB |
+| Japanese fonts not embedded, drawn with installed stand-ins, 42 pages (PDFBox 1910): render at 150 dpi | 0.46 s | 235 MB | 0.50 s, 608 MB | 0.53 s, 562 MB |
+| The same, 203 pages (pdf.js bug1905623): render at 150 dpi | 2.01 s | 204 MB | 2.08 s, 651 MB | 2.69 s, 559 MB |
 
 What the numbers show:
 
 - Text documents are fast and small, even at 1,000 pages.
-- Three rows moved more than the runs' spread since 18 October: the 27,000-path page at 150 dpi takes 2.3 times as
-  long (4.81 s, was 2.05 s), extracting the 1,000 pages' text 37 % longer (1.81 s, was 1.32 s), and searching them
-  130 MB at its peak (was at the 20 MB floor). None was traced (PB-165); drawing in bands, since 19 October, is a
-  candidate for the first, not checked.
+- On 12 November three rows had moved more than the runs' spread since 18 October (PB-165). The 27,000-path page
+  at 150 dpi took 2.3 times as long (4.81 s, was 2.05 s): drawing in bands, each band reading the whole page again.
+  Drawn in one pass with hayro 0.9 it took 2.05 s, in bands 4.88 s (13 November, one run each), and today 2.17 s.
+  Searching the 1,000 pages took 131 MB at its peak (was at the 20 MB floor): search read every page's text before
+  looking through any. It now reads and looks through 64 pages at a time, letting each group go, and takes 29 MB
+  in the same 0.20 s. Extracting their text took 42 % longer (1.88 s, was 1.32 s), since 26 October (54e4d04):
+  each page's text looked its page up by number, going through the page tree to it, and since then each entry of
+  the tree is checked to be a page. Extracting now goes through the tree once, and takes 0.88 s on one thread;
+  `text` now reads pages on all cores, as `render` does, and takes 0.18 s.
+- The 200-page scan's 2.30 s is the runs' spread: run alternately five times each the same day, the release before
+  the follow-ups took 2.61 s and these changes 1.80 s.
 - On 18 October memory grew with the file: the 139 MB scan took about three times its size to open, before any page
   was drawn, and about four times to change and save. Today's 0.7 MB file can't show that.
 - Drawing cost grows with the number of paths and with resolution. On 18 October the 73,000-path page took 2.6 s
   and 707 MB at 36 dpi but nearly a minute and almost 10 GB at 150 dpi; poppler draws it at 150 dpi in 9 s with
   329 MB. In the app, zooming in on such a page is limited to the [tiles in view](../rendering.md#high-zoom), but the
-  whole page at a normal zoom costs the same as here. Since 2026-10-19 large pages are
-  [drawn in bands](../rendering.md#large-drawings): the same page at 150 dpi takes 51 s and 1.7 GB, and at 72 dpi
-  9.9 s and 1.4 GB (19 October; was 10.4 s and 2.7 GB).
-- The reasons for the 600 to 670 MB of the last three files weren't looked into: the 27,000-path file has no fonts at
-  all, and one page of PDFBox 1910 at 36 dpi takes 114 MB.
+  whole page at a normal zoom costs the same as here. From 19 October to 13 November large pages were drawn in
+  bands: the same page at 150 dpi took 51 s and 1.7 GB (12 November), and at 72 dpi 9.9 s and 1.4 GB (19 October;
+  was 10.4 s and 2.7 GB). Since 13 November it is drawn in [passes sized to what it
+  holds](../rendering.md#large-drawings), with hayro 0.9: 0.78 s and 314 MB at 150 dpi. Which of the two made the
+  most of the difference wasn't measured.
+- The stand-in font files peak at 235 and 204 MB, against 608 and 651 MB on 12 November; the follow-ups changed hayro,
+  the other libraries and the passes at once, and which of them did it wasn't traced. Why the 27,000-path file takes
+  648 MB wasn't looked into: it has no fonts at all.
 
 ### Splitting
 
@@ -129,10 +140,12 @@ now the size comes from the file's header. Peak memory includes the file itself,
   scan) and is needed anyway. What is lost is the renderer's fonts: the next page takes 19 ms instead of 6 ms on
   PDFBox 1910, 12 ms instead of 2 ms on bug1905623. A renderer can't be kept across documents, as the fonts belong
   to the old one.
-- *Pictures decoded again for each band.* Since pages are [drawn in bands](../rendering.md#large-drawings), a picture
-  across several bands is decoded once per band: a 300 dpi scan page takes 0.11 s instead of 0.05 s, at 600 dpi
-  0.34 s instead of 0.11 s, the same pixels either way. Only hayro, which draws the pages, can keep decoded
-  pictures, so this is recorded for discussion with it.
+- *Pictures decoded again for each band.* While pages were drawn in bands (19 October to 13 November), a picture
+  across several bands was decoded once per band: a 300 dpi scan page took 0.11 s instead of 0.05 s, at 600 dpi
+  0.34 s instead of 0.11 s, the same pixels either way. Since 13 November a page without patterns, shadings or
+  soft masks is drawn in one pass ([Large drawings](../rendering.md#large-drawings)), so a scan's picture is
+  decoded once. A page drawn in passes still decodes a picture once for each pass it crosses: only hayro, which
+  draws the pages, could keep decoded pictures.
 - *Reading signed documents again, and trusted certificates.* Checking a file with 1, 5, 20 and 50 signatures
   takes 1 ms, 8 ms, 74 ms and 0.40 s, of which reading the document is 1 to 4 ms. The trusted certificates are
   read again for each signature: with 121 of them (a whole system list, far more than anyone trusts in LimarePDF)
@@ -177,8 +190,10 @@ the history of 20 such edits is a few hundred kilobytes at most. The app's memor
 Zooming to 6400% added nothing measurable. The 5134 row was measured on a 3840 × 2160 screen at scale 1, the
 window not full screen: zooming in quickly straight after opening keeps several whole-page drawings and the tiles
 running at once, each drawing stopping only at its next band. The page showed enlarged until zooming stopped, then
-was drawn again quickly. Before bands, the same zooming would have come to an estimated 11 GB. Peaks vary somewhat from one session to the next: the three documents
-together peaked lower than the scan alone did in the other sessions.
+was drawn again quickly. Before bands, the same zooming would have come to an estimated 11 GB. Since 13 November
+pages are drawn in passes sized to what they hold, with hayro 0.9: the command line draws 5134 at 150 dpi in 0.78 s
+and 314 MB (the table above). The app's zooming hasn't been measured again. Peaks vary somewhat from one session to the next: the three
+documents together peaked lower than the scan alone did in the other sessions.
 
 These are timings of single tasks, not a benchmark suite, and apart from the one poppler timing no comparison with
 other software was made. hayro's own documentation says its renderer has not yet been tuned for performance.
@@ -193,7 +208,7 @@ OCR speed is in [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed).
   ([details](../rendering.md#high-zoom)). A tile takes about 1 ms on text pages and about 20 ms on a dense form, at
   any zoom, while a whole Letter page at 1152 dpi takes about 0.4 s and 500 MB.
 - A whole-page drawing that is no longer wanted (a zoom passed through, changed colours, an edited document) stops
-  at its next [band](../rendering.md#large-drawings) instead of running to the end.
+  at its next [pass](../rendering.md#large-drawings) instead of running to the end.
 - Undo keeps only the old values of the objects each edit changed, up to 100 steps within 1 GB per document
   ([Undo history](#undo-history)). The pages are still drawn from a copy of the document written out without
   compressing after each edit and each Undo.

@@ -28,26 +28,29 @@ fn from_unit(r: f64, g: f64, b: f64) -> Option<Color32> {
 mod imp {
     use eframe::egui::Color32;
     use std::time::Duration;
-    use zbus::zvariant::OwnedValue;
+    use zbus::OwnedVariant;
 
     pub fn read() -> Option<Color32> {
-        let conn = zbus::blocking::connection::Builder::session()
-            .ok()?
-            .method_timeout(Duration::from_secs(2))
-            .build()
-            .ok()?;
-        let reply = conn
-            .call_method(
-                Some("org.freedesktop.portal.Desktop"),
-                "/org/freedesktop/portal/desktop",
-                Some("org.freedesktop.portal.Settings"),
-                "ReadOne",
-                &("org.freedesktop.appearance", "accent-color"),
-            )
-            .ok()?;
-        let value: OwnedValue = reply.body().deserialize().ok()?;
-        let (r, g, b): (f64, f64, f64) = value.try_into().ok()?;
-        super::from_unit(r, g, b)
+        zbus::block_on(async {
+            let conn = zbus::connection::Builder::session()
+                .method_timeout(Duration::from_secs(2))
+                .build()
+                .await
+                .ok()?;
+            let reply = conn
+                .call_method(
+                    Some("org.freedesktop.portal.Desktop"),
+                    "/org/freedesktop/portal/desktop",
+                    Some("org.freedesktop.portal.Settings"),
+                    "ReadOne",
+                    &("org.freedesktop.appearance", "accent-color"),
+                )
+                .await
+                .ok()?;
+            let value: OwnedVariant = reply.body().deserialize().ok()?;
+            let (r, g, b): (f64, f64, f64) = value.try_into().ok()?;
+            super::from_unit(r, g, b)
+        })
     }
 }
 

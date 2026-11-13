@@ -419,10 +419,11 @@ struct RunInfo {
 }
 
 impl Pdf {
+    /// The page at `index` (0-based). It walks the page tree up to it: a loop over many pages
+    /// takes [`Pdf::page_ids`] once instead (PB-165).
     pub(crate) fn page_id_at(&self, index: usize) -> Result<ObjectId> {
-        self.page_ids()
-            .get(index)
-            .copied()
+        crate::doc::pages(&self.doc)
+            .nth(index)
             .ok_or_else(|| anyhow!("no page {}", index + 1))
     }
 
@@ -1137,7 +1138,11 @@ impl Pdf {
     /// them in. `line` numbers the visual lines. Boxes are in displayed-page points (y
     /// down). Each says which text line of [`Pdf::page_objects`] it is in, and where.
     pub fn page_words(&self, page_index: usize) -> Result<Vec<PageWord>> {
-        let page = self.page_id_at(page_index)?;
+        self.words_of(self.page_id_at(page_index)?)
+    }
+
+    /// [`Pdf::page_words`] of the page with object `page`.
+    pub(crate) fn words_of(&self, page: ObjectId) -> Result<Vec<PageWord>> {
         let parsed = self.parse_page_of(page)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;

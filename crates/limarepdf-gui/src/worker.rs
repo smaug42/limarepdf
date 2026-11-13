@@ -114,8 +114,9 @@ struct Queue {
     samples: Vec<Sample>,
     /// The jobs being drawn and their colours, one entry per thread.
     running: Vec<Job>,
-    /// Running jobs no longer wanted: a whole page stops at its next band and sends
-    /// nothing, as its key has also left the tab's pending set.
+    /// Running jobs no longer wanted: a whole page drawn in pieces stops at its next one,
+    /// any other before it's drawn, and sends nothing, as its key has also left the tab's
+    /// pending set.
     dropped: Vec<Job>,
     colours: Colours,
     closed: bool,

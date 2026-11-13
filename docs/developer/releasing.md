@@ -9,9 +9,8 @@ How a release is made, for maintainers.
    - update the status line in `docs/developer/feature-status.md` if it names the version;
    - in `CHANGELOG.md`, rename the `## [Unreleased]` section to `## [x.y.z] - date`. Changes are added to
      Unreleased as they are made;
-   - check the signature crates listed in [How it is built](architecture.md#signature-crates): if a pinned
-     pre-release (`rsa`, `pkcs1`) has a final version, move to it; if RUSTSEC-2023-0071 has a fixed `rsa`, take it
-     and remove its line from `deny.toml`'s `ignore`;
+   - check the signature crates listed in [How it is built](architecture.md#signature-crates) are at their latest
+     versions, and update the table's versions;
    - run `cargo deny check` (`cargo install cargo-deny --locked --version` with the version `ci.yml`'s `deny` job
      sets) and read any new advisory or licence it reports. An advisory set aside in `deny.toml` whose crate has
      gone or been fixed is reported as no longer needed: remove it. Move the `deny` job's cargo-deny version to the
@@ -33,7 +32,7 @@ How a release is made, for maintainers.
      credits and in licence.md. Move cargo-about to its latest release here, after reading its changelog: the
      version is set in `package-notices.sh` and in `ci.yml`'s two Install cargo-about steps;
    - merge or close Dependabot's open pull requests for the workflows' actions ([Pinned
-     actions](#pinned-actions)), and move `dtolnay/rust-toolchain` to its `stable` branch's latest commit by hand;
+     actions](#pinned-actions)), and check that `dtolnay/rust-toolchain` is at its `stable` branch's latest commit;
    - check that the user guide's screenshots (`docs/images/`) still show the app as it is, and retake any that
      don't: a 1000×660 window in the light theme under a virtual X server, made-up documents and digital IDs only,
      cut down to the part the page is about. `tools/docshots/docshots.sh` takes `comments`, `fill-and-sign`,
@@ -154,7 +153,7 @@ version the script names (`ci.yml` installs the same one), from `about.toml` and
 leaving out build and dev dependencies and the workspace's own crates. It stops, leaving no page, when
 `about.toml`'s accepted licences differ from `deny.toml`'s allow list, or when cargo-about warns.
 
-`about.toml`'s clarifications add what cargo-about can't find by itself: the fonts that hayro-interpret and
+`about.toml`'s clarifications add what cargo-about can't find by itself: the fonts that hayro-font and
 epaint_default_fonts bundle, and the code notices in subsetter's NOTICE, each file pinned by its SHA-256. When a
 new version of the crate changes one of those files, cargo-about only warns and leaves the notice out, which is why
 the script stops on a warning. sctk-adwaita's Cantarell font, which draws the window title bars on Linux under
@@ -194,10 +193,11 @@ Every action in the workflows is pinned by the full SHA of a commit, with its ve
 (`actions/checkout@3d3c42e… # v7.0.1`), so a moved or replaced tag can't change what runs. Dependabot
 (`.github/dependabot.yml`) checks them weekly and opens one pull request for all the updates; Cargo updates aren't
 part of it, since they come with each release's preparation (step 1) and some crates are pinned on purpose.
-`dtolnay/rust-toolchain` has no releases and is used through its `stable` branch, so Dependabot can't update it:
-at each release preparation, pin it to that branch's latest commit
-(`gh api repos/dtolnay/rust-toolchain/commits/stable --jq .sha`) in every place it appears. A new action is added
-pinned the same way: `gh api repos/OWNER/REPO/commits/vX.Y.Z --jq .sha`.
+`dtolnay/rust-toolchain` has no releases. It is pinned to its `stable` branch's latest commit
+(`gh api repos/dtolnay/rust-toolchain/commits/stable --jq .sha`), which is where Dependabot moves every pin of it,
+whatever the comment says. So every step that uses it names its toolchain (`toolchain: stable`, or `nightly` in
+`fuzz.yml`) rather than taking the pinned branch's default, and a moved pin can't change what is installed. A new
+action is added pinned the same way: `gh api repos/OWNER/REPO/commits/vX.Y.Z --jq .sha`.
 
 ## Package repositories
 

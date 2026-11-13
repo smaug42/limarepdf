@@ -25,10 +25,86 @@ use std::path::{Path, PathBuf};
 /// its folder first. Returns why it couldn't be written, or, written, why the system
 /// couldn't confirm it is safely on disk.
 pub fn write_own(file: &Path, text: &[u8]) -> anyhow::Result<Option<String>> {
+    #[cfg(test)]
+    if write_seam::fails() {
+        anyhow::bail!("a test made this write fail");
+    }
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
     }
     crate::app::unconfirmed(limarepdf_core::write_file(file, text))
+}
+
+/// A test seam (A-11): chosen writes through [`write_own`] on the test's thread fail.
+#[cfg(test)]
+pub mod write_seam {
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// The writes counted since [`fail_writes`], and which of them fail.
+        static FAILS: RefCell<(usize, Vec<usize>)> = const { RefCell::new((0, Vec::new())) };
+    }
+
+    /// From now on, this thread's writes numbered in `at` (from 1) fail.
+    pub fn fail_writes(at: &[usize]) {
+        FAILS.with_borrow_mut(|f| *f = (0, at.to_vec()));
+    }
+
+    pub(super) fn fails() -> bool {
+        FAILS.with_borrow_mut(|(n, at)| {
+            *n += 1;
+            at.contains(n)
+        })
+    }
+}
+
+/// Writes dictionary `stem` into `folder` as its `.aff` and `.dic`, in place of any there,
+/// never leaving the two mixed (A-11): a dictionary is listed by its `.dic`, so the old one
+/// goes first, and when either new file can't be written, the pair there before is put back
+/// (the new `.aff` removed, when there was none). Returns what [`write_own`] does.
+pub fn write_dictionary(
+    folder: &Path,
+    stem: &str,
+    aff: &[u8],
+    dic: &[u8],
+) -> anyhow::Result<Option<String>> {
+    let aff_file = folder.join(format!("{stem}.aff"));
+    let dic_file = folder.join(format!("{stem}.dic"));
+    let before = |file: &Path| match std::fs::read(file) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", file.display())),
+    };
+    let (old_aff, old_dic) = (before(&aff_file)?, before(&dic_file)?);
+    if old_dic.is_some() {
+        std::fs::remove_file(&dic_file)
+            .with_context(|| format!("removing {}", dic_file.display()))?;
+    }
+    let written = write_own(&aff_file, aff).and_then(|a| Ok(write_own(&dic_file, dic)?.or(a)));
+    let Err(e) = written else {
+        return written;
+    };
+    // The `.aff` first: once the `.dic` is back, the pair is listed again.
+    let back = match &old_aff {
+        Some(bytes) => write_own(&aff_file, bytes).map(drop),
+        None => match std::fs::remove_file(&aff_file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {}", aff_file.display()))
+            }
+            _ => Ok(()),
+        },
+    };
+    let back = back.and_then(|()| match &old_dic {
+        Some(bytes) => write_own(&dic_file, bytes).map(drop),
+        None => Ok(()),
+    });
+    match back {
+        Err(b) if old_dic.is_some() => Err(anyhow::anyhow!(
+            "{e:#}; the {stem} dictionary there before couldn't be put back either ({b:#}), so \
+             it is no longer listed: add it again"
+        )),
+        _ => Err(e),
+    }
 }
 
 /// Something of LimarePDF's own that couldn't be saved, for the app to say: a title and a

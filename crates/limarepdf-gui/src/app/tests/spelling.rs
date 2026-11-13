@@ -350,6 +350,74 @@ fn dictionaries_are_added_and_those_that_cant_be_are_said() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The `de_DE` pair in a dictionaries folder: its `.aff` and `.dic`, each if there.
+fn de_pair(folder: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let read = |kind: &str| std::fs::read(folder.join(format!("de_DE.{kind}"))).ok();
+    (read("aff"), read("dic"))
+}
+
+/// Replacing (or adding) the `de_DE` dictionary with this app's writes numbered in `fail`
+/// failing (A-11): the folder (`de_DE` in it first when `old`) and what was said after.
+fn replace_de_failing(name: &str, old: bool, fail: &[usize]) -> (PathBuf, PathBuf, String) {
+    let dir = std::env::temp_dir().join(format!("limarepdf-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let picked = dir.join("picked");
+    let folder = dir.join("settings").join("dictionaries");
+    std::fs::create_dir_all(&picked).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    if old {
+        std::fs::write(folder.join("de_DE.aff"), b"SET UTF-8\n").unwrap();
+        std::fs::write(folder.join("de_DE.dic"), "1\nHaus\n".as_bytes()).unwrap();
+    }
+    std::fs::write(picked.join("de_DE.aff"), b"SET UTF-8\nTRY e\n").unwrap();
+    std::fs::write(picked.join("de_DE.dic"), "2\nHaus\nStraße\n".as_bytes()).unwrap();
+    let ctx = test_ctx();
+    let mut app = canadian_app(Some(dir.join("settings").join("settings.txt")));
+    app.spelling_frame(&ctx);
+    crate::settings::write_seam::fail_writes(fail);
+    app.add_dictionaries(&ctx, &[picked.join("de_DE.dic"), picked.join("de_DE.aff")]);
+    crate::settings::write_seam::fail_writes(&[]);
+    let Dialog::Message(_, text) = &app.dialog else {
+        panic!("nothing said");
+    };
+    (dir, folder, text.clone())
+}
+
+/// A dictionary replaced whose `.dic` can't be written leaves the one there before whole: never
+/// its new affix rules with the old words (A-11).
+#[test]
+fn a_dictionary_half_replaced_is_put_back() {
+    let (dir, folder, text) = replace_de_failing("half-dict", true, &[2]);
+    let old = (Some(b"SET UTF-8\n".to_vec()), Some(b"1\nHaus\n".to_vec()));
+    assert_eq!(de_pair(&folder), old, "the old pair wasn't kept whole");
+    assert!(text.contains("de_DE.dic couldn't be saved"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A new dictionary whose `.dic` can't be written leaves nothing of it behind (A-11).
+#[test]
+fn a_new_dictionary_half_written_leaves_nothing() {
+    let (dir, folder, text) = replace_de_failing("half-new-dict", false, &[2]);
+    assert_eq!(de_pair(&folder), (None, None), "a file was left behind");
+    assert!(text.contains("de_DE.dic couldn't be saved"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// When the dictionary there before can't be put back either, it isn't listed rather than
+/// listed mixed, and that is said (A-11).
+#[test]
+fn a_dictionary_that_cant_be_put_back_isnt_left_mixed() {
+    let (dir, folder, text) = replace_de_failing("unrestored-dict", true, &[2, 3]);
+    let words = "2\nHaus\nStraße\n".as_bytes().to_vec();
+    let new = (Some(b"SET UTF-8\nTRY e\n".to_vec()), Some(words));
+    let old = (Some(b"SET UTF-8\n".to_vec()), Some(b"1\nHaus\n".to_vec()));
+    let pair = de_pair(&folder);
+    let listed = pair.0.is_some() && pair.1.is_some();
+    assert!(!listed || pair == old || pair == new, "mixed: {pair:?}");
+    assert!(text.contains("couldn't be put back"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A chosen `.dic` or extension too large to be a dictionary is refused as too large, without
 /// being read whole, and nothing of it is kept.
 #[test]

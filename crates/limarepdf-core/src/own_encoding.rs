@@ -274,7 +274,7 @@ fn cff_names(data: &[u8]) -> Option<Vec<Option<Box<str>>>> {
     let enc = font.encoding()?;
     let charset = enc.charset().clone();
     let name = |c: u8| {
-        let sid = charset.string_id(enc.map(c)?).ok()?;
+        let sid = charset.string_id(enc.map(c)?)?;
         let s = std::str::from_utf8(font.string(sid)?).ok()?;
         Some(Box::<str>::from(s))
     };

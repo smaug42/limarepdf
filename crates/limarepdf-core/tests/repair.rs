@@ -175,7 +175,8 @@ fn catalog_found_by_scanning() {
 #[test]
 fn object_stream_with_comments() {
     // The catalog, page tree and page are in an object stream whose members start with
-    // comments, which lopdf's reader of object streams doesn't take; the table is gone.
+    // comments, which lopdf's reader of object streams didn't take before 0.47; the table
+    // is gone.
     let o = objects();
     let mut index = String::new();
     let mut data = String::new();
@@ -441,6 +442,79 @@ fn a_page_missing_from_the_list_is_passed_over_as_it_is_drawn() {
     assert_eq!(pdf.page_size(1).unwrap(), (300.0, 100.0));
     let hp = render::load(b, None).unwrap();
     assert_eq!(render::Renderer::new(&hp).page_count(), 2);
+}
+
+// A branch of the page list says how many pages it holds (`/Count`), and lopdf adds those
+// up as its guess at the number of pages, which a damaged file makes wrong (PB-173).
+
+#[test]
+fn a_page_list_counting_fewer_pages_than_it_holds() {
+    // As the fuzzer found (2026-11-13): a branch says it holds one page and holds two.
+    // Counting the pages stopped with an overflow: Rust checks that a count isn't past the
+    // guess, as the app is built.
+    let mut o = objects();
+    o[1].1 = "<< /Type /Pages /Kids [6 0 R] /Count 1 >>".into();
+    o.push((
+        6,
+        "<< /Type /Pages /Parent 2 0 R /Kids [3 0 R 7 0 R] /Count 1 >>".into(),
+    ));
+    o.push((7, page(300)));
+    let (mut b, at) = body(&o);
+    table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+    let mut pdf = Pdf::from_bytes(&b, None).unwrap();
+    assert_eq!(pdf.page_count(), 2);
+    assert_eq!(pdf.page_size(1).unwrap(), (300.0, 100.0));
+    let hp = render::load(pdf.drawing_snapshot().unwrap(), None).unwrap();
+    assert_eq!(render::Renderer::new(&hp).page_count(), 2);
+}
+
+#[test]
+fn page_list_counts_adding_up_past_the_largest_number() {
+    // Three branches each say they hold the most pages a PDF number can say: the guess
+    // overflowed.
+    let most = i64::MAX;
+    let mut o = objects();
+    o[1].1 = "<< /Type /Pages /Kids [6 0 R 7 0 R 8 0 R] /Count 3 >>".into();
+    for (n, kid) in [(6, 3), (7, 9), (8, 10)] {
+        o.push((
+            n,
+            format!("<< /Type /Pages /Parent 2 0 R /Kids [{kid} 0 R] /Count {most} >>"),
+        ));
+    }
+    o.push((9, page(300)));
+    o.push((10, page(400)));
+    let (mut b, at) = body(&o);
+    table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+    let mut pdf = Pdf::from_bytes(&b, None).unwrap();
+    assert_eq!(pdf.page_count(), 3);
+    assert_eq!(pdf.page_size(2).unwrap(), (400.0, 100.0));
+    let hp = render::load(pdf.drawing_snapshot().unwrap(), None).unwrap();
+    assert_eq!(render::Renderer::new(&hp).page_count(), 3);
+    let back = Pdf::from_bytes(&pdf.to_bytes().unwrap(), None).unwrap();
+    assert_eq!(back.page_count(), 3);
+}
+
+#[test]
+fn a_page_list_counting_far_more_pages_than_it_holds() {
+    // After the first page, a branch says it holds 2^58 pages and holds one. The file
+    // opened, but drawing it made room for that many pages once it had the first: more
+    // memory than a computer can have, which ended the app outright.
+    let many = 1u64 << 58;
+    let mut o = objects();
+    o[1].1 = "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>".into();
+    o.push((
+        6,
+        format!("<< /Type /Pages /Parent 2 0 R /Kids [7 0 R] /Count {many} >>"),
+    ));
+    o.push((7, page(300)));
+    let (mut b, at) = body(&o);
+    table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+    let mut pdf = Pdf::from_bytes(&b, None).unwrap();
+    assert_eq!(pdf.page_count(), 2);
+    let hp = render::load(pdf.drawing_snapshot().unwrap(), None).unwrap();
+    assert_eq!(render::Renderer::new(&hp).page_count(), 2);
+    let back = Pdf::from_bytes(&pdf.to_bytes().unwrap(), None).unwrap();
+    assert_eq!(back.page_count(), 2);
 }
 
 #[test]

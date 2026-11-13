@@ -2,7 +2,7 @@
 
 # Rendering
 
-LimarePDF draws pages with [hayro](https://crates.io/crates/hayro) 0.8, a pure-Rust PDF renderer that runs on the CPU.
+LimarePDF draws pages with [hayro](https://crates.io/crates/hayro) 0.9, a pure-Rust PDF renderer that runs on the CPU.
 
 ## What has been checked
 
@@ -90,7 +90,7 @@ other raster picture is drawn in as it is (the part of it that shows), so:
 
 ## Known to be wrong
 
-These come from hayro 0.8, the library that draws the pages:
+These come from hayro 0.9, the library that draws the pages:
 
 - Very thin lines aren't snapped to the pixel grid, so a hairline that falls between two rows of pixels is drawn as
   two light-grey rows instead of one solid row (poppler and Acrobat snap them).
@@ -155,7 +155,7 @@ fonts installed on the computer.
   shown. Install a Japanese font, such as Noto Sans CJK JP, to read it."
 - **Other fonts that aren't embedded** (Calibri, Verdana, Wingdings as plain fonts) are drawn with the closest
   standard font, stretched to the widths the file gives, so lines keep their length but the letters look different.
-  Symbol fonts such as Wingdings come out as letters. hayro 0.8 picks these itself without asking LimarePDF, so
+  Symbol fonts such as Wingdings come out as letters. hayro 0.9 picks these itself without asking LimarePDF, so
   installed fonts can't be used for them yet.
 
 The installed fonts are listed the first time a document needs one, once per run of the app. With about 700 font
@@ -169,6 +169,12 @@ on which fonts are installed, as in other viewers.
   It isn't tried again until the document changes. Editing may still work if the document library (lopdf) can read
   the file.
 - When hayro reports a picture it can't decode, the app shows a notice that parts of the document couldn't be drawn.
+- The same notice covers what is left out before hayro draws, because drawing it would take gigabytes or hours: a
+  picture stating far more pixels than its data holds, and a tiling pattern (a cell repeated to fill a shape) whose
+  cell hayro would draw over 10,000 times, or whose tile would take over 256 MB or be over 65,530 pixels long at
+  some zoom, including where a drawing it is in skews or stretches it. They are left out of the page as it is
+  shown, printed as a picture and read by OCR; the document keeps them, and other readers may draw them. None of
+  the public test files that open has either.
 - A second notice covers fonts that aren't embedded or installed: which are shown with a stand-in, or which
   language has no font at all, and what to install (see [Fonts that aren't embedded](#fonts-that-arent-embedded)).
   Plain fonts that aren't embedded are drawn with the closest of the standard fonts (Helvetica for Arial) and
@@ -189,7 +195,7 @@ on which fonts are installed, as in other viewers.
   between a tile and the whole page, as the picture is sampled from a different starting point.
 - Memory and texture size stay bounded at any zoom, up to the highest, 6400%. Tiles are drawn at up to 256 pixels
   per point (6400% on a screen with three pixels per point); beyond that they are shown stretched.
-- Printing and exports don't use tiles. They draw whole pages ([in bands](#large-drawings) when large), at most
+- Printing and exports don't use tiles. They draw whole pages ([in passes](#large-drawings) when need be), at most
   1152 dpi and at most 268 million pixels
   ([details](export-and-printing.md#pages-as-images)). A page stated so large that even the whole-page bitmap the
   app draws at the lowest scale would pass that shows an error instead of being drawn.
@@ -197,24 +203,31 @@ on which fonts are installed, as in other viewers.
 
 ## Large drawings
 
-- hayro holds everything it draws for a page until the drawing is done, and some content costs memory for every
-  pixel: it fills each shaded area of the mesh kinds (types 4 to 7) by working out a picture of it as large as the
-  area painted, which for an `sh` operator is the whole page. PDFBox test file 5134 paints 84 of them, so drawing
-  its 8-million-pixel page at 72 dpi took 84 such pictures of 32 MB, 2.7 GB in all, and 9.7 GB at 150 dpi.
-- So a page bitmap of more than about 4 million pixels is drawn in full-width bands of at most that size, each by
-  hayro on its own, with the view moved to that part of the page, as tiles are. The memory of a drawing is that
-  of one band (5134 at 150 dpi: 1.5 GB).
-- The bands come out as one drawing would, except for slight differences in a few pixels, mostly within raster
-  pictures, as with tiles. A test checks that a banded page matches one drawn at once.
-- Each band reads the page's content again and works out its pictures, soft masks and shadings again. Measured on
-  the first pages of 571 of the test files at 288 dpi (8 million pixels for Letter), of the pages that took more
-  than 50 ms the middle one took about a third longer, and a few took several times longer, up to 0.6 s becoming
-  5.9 s for a page with large pictures. Bitmaps of 4 million pixels or less, which include most pages on screen, are drawn at once as before.
-- In the app, a whole-page drawing is stopped at its next band when it is no longer wanted: the page was drawn for
-  a zoom since passed, the colours changed, or the document was edited. Before, zooming in a few steps quickly
-  drew the page at every zoom passed through, one per drawing thread at a time (five on a six-core machine), which
-  for 5134 would have come to an estimated 11 GB. Zooming 5134 by hand straight to over 400% and then to over
-  1200% now peaks at about 4 GB on a 4K screen ([Performance](developer/performance.md#memory-in-the-desktop-app)).
+- hayro can draw a page in passes, each a part of the page drawn on its own, with the view moved to that part, as
+  tiles are. Some of what it draws costs memory for the whole pass, whatever it covers, held until the pass ends:
+  each soft mask (a byte a pixel), and each stencil mask (a picture used as a shape) painted with a pattern. A shape
+  filled with a pattern, or a shading painted with `sh`, takes a picture of all it covers on the pass, 4 bytes a
+  pixel, unless hayro draws it as a gradient. PDFBox test file 2171 paints 840 stencil masks with a pattern: drawn
+  in one pass at 288 dpi it asked for over 6 GB, and the drawing failed.
+- Yet each pass reads the page's content again and works out its pictures, soft masks and shadings again, so
+  fewer passes are faster: pdf.js test file issue17190, a poster, took 62 s at 288 dpi in passes of 2,048 pixels a
+  side and 5.7 s in one.
+- So a page is drawn in one pass unless its file has patterns, shadings or soft masks. A page of a file that has
+  them is first gone through once without drawing, to find where they are, then drawn in the largest square passes
+  (a multiple of 256 pixels a side) in which they take at most 512 MB more than the page's bitmap. At 288 dpi, 2171
+  is drawn in passes of 1,024 pixels in 2.3 s and at most 465 MB (8.7 s and up to 3.3 GB in passes of 2,048), and
+  issue17190 in one pass in 5.3 s. A page with a tiling pattern is drawn in passes of at most 2,048 pixels a side,
+  which bounds what a pattern's tile takes ([When something can't be drawn](#when-something-cant-be-drawn)).
+  Going through a page takes about as long as reading it for one pass: pdf.js test file bug1721218_reduced takes
+  1.15 s at 150 dpi instead of 0.68 s. So tiles, thumbnails and drawings of at most 524,288 pixels (a Letter or
+  A4 page at 72 dpi) are drawn in one pass without being gone through first; 2171 takes 404 MB so.
+- A page drawn in passes comes out as one drawing would, except for slight differences in a few pixels, mostly
+  within raster pictures, as with tiles. A test checks that a page drawn in passes matches one drawn at once.
+- In the app, a whole-page drawing that is no longer wanted (the page was drawn for a zoom since passed, the
+  colours changed, or the document was edited) is dropped before it starts, or stopped at its next pass. Zooming
+  PDFBox test file 5134 by hand straight to over 400% and then to over 1200% peaked at about 4 GB on a 4K screen
+  when pages were drawn in bands, before hayro 0.9; that hasn't been measured since
+  ([Performance](developer/performance.md#memory-in-the-desktop-app)).
 
 For timings and how the app keeps drawing responsive, see [Performance](developer/performance.md).
 

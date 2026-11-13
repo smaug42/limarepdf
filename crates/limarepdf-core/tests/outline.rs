@@ -672,3 +672,102 @@ fn adds_a_bookmark_before_another() {
     assert_eq!(tree(&p), "First A .A1 .Between .A2 B C .C1");
     links_agree(&p);
 }
+
+/// A, whose children are only a link to an object that isn't in the file, then B, whose
+/// next is one too.
+fn linked_to_nothing() -> Pdf {
+    let mut p = four_pages();
+    let pg = p.page_ids();
+    let gone = Object::Reference((999, 0));
+    let (a, b) = (p.doc.new_object_id(), p.doc.new_object_id());
+    let a_dict = dictionary! {
+        "Title" => text("A"), "Dest" => vec![pg[0].into(), "Fit".into()], "Next" => b,
+        "First" => gone.clone(), "Last" => gone.clone(), "Count" => 1,
+    };
+    let b_dict = dictionary! {
+        "Title" => text("B"), "Dest" => vec![pg[1].into(), "Fit".into()], "Prev" => a, "Next" => gone,
+    };
+    p.doc.objects.insert(a, a_dict.into());
+    p.doc.objects.insert(b, b_dict.into());
+    set_outline(&mut p, a);
+    p
+}
+
+/// Bookmarks are added, moved and removed in an outline whose links name objects that
+/// aren't in the file, or no parent: each list a change touches is linked again from the
+/// outline as read, and the counts are set from it.
+#[test]
+fn bookmark_changes_work_in_an_outline_with_broken_links() {
+    use BookmarkPlace::{Before, End, Under};
+    let mut p = linked_to_nothing();
+    assert_eq!(tree(&p), "A B");
+    assert_eq!(p.add_bookmark("New", 2, End).unwrap(), 2);
+    assert_eq!(tree(&p), "A B New");
+    assert_eq!(p.add_bookmark("A1", 3, Under(0)).unwrap(), 1);
+    assert_eq!(tree(&p), "A .A1 B New");
+    links_agree(&p);
+    assert_eq!(counts(&p), [Some(4), Some(1), None, None, None]);
+
+    let mut p = linked_to_nothing();
+    assert_eq!(p.move_bookmark(1, Before(0)).unwrap(), 0);
+    assert_eq!(tree(&p), "B A");
+    p.remove_bookmark(0).unwrap();
+    assert_eq!(tree(&p), "A");
+    let mut p = linked_to_nothing();
+    p.remove_bookmark(0).unwrap();
+    assert_eq!(tree(&p), "B");
+    links_agree(&p);
+
+    // Bookmarks inside A that don't name it as their parent.
+    let mut p = book();
+    for (id, _) in &p.outline_nodes()[1..3] {
+        p.doc.get_dictionary_mut(*id).unwrap().remove(b"Parent");
+    }
+    assert_eq!(p.add_bookmark("Between", 0, Before(2)).unwrap(), 2);
+    assert_eq!(tree(&p), "A .A1 .Between .A2 B C .C1");
+    p.remove_bookmark(1).unwrap();
+    assert_eq!(tree(&p), "A .Between .A2 B C .C1");
+    links_agree(&p);
+    let shown = [Some(6), Some(2), None, None, None, Some(1), None];
+    assert_eq!(counts(&p), shown);
+}
+
+/// `n` bookmarks to the first page, at the top level.
+fn many_bookmarks(n: usize) -> Pdf {
+    let mut p = four_pages();
+    let page = p.page_ids()[0];
+    let root = p.doc.new_object_id();
+    let ids: Vec<ObjectId> = (0..n).map(|_| p.doc.new_object_id()).collect();
+    for (k, &id) in ids.iter().enumerate() {
+        let mut d = dictionary! {
+            "Title" => text(&k.to_string()), "Parent" => root, "Dest" => vec![page.into(), "Fit".into()],
+        };
+        if let Some(&before) = k.checked_sub(1).and_then(|b| ids.get(b)) {
+            d.set("Prev", before);
+        }
+        if let Some(&after) = ids.get(k + 1) {
+            d.set("Next", after);
+        }
+        p.doc.objects.insert(id, d.into());
+    }
+    let last = ids[n - 1];
+    let d = dictionary! { "Type" => "Outlines", "First" => ids[0], "Last" => last, "Count" => n as i64 };
+    p.doc.objects.insert(root, d.into());
+    p.doc.catalog_mut().unwrap().set("Outlines", root);
+    p
+}
+
+/// An outline longer than the walk reads (100,000 bookmarks) is left as it is: a list cut
+/// short, linked again, would lose the bookmarks past the cut.
+#[test]
+fn an_outline_too_long_to_read_whole_is_left_as_it_is() {
+    use BookmarkPlace::{Before, End};
+    let mut p = many_bookmarks(100_001);
+    assert_eq!(p.outline().len(), 100_000);
+    let was = p.doc.objects.clone();
+    assert!(p.add_bookmark("New", 0, End).is_err());
+    assert!(p.add_bookmark("New", 0, Before(0)).is_err());
+    assert!(p.remove_bookmark(0).is_err());
+    assert!(p.move_bookmark(1, Before(0)).is_err());
+    assert!(p.doc.objects == was, "the document changed");
+}

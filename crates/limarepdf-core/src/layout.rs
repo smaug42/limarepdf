@@ -756,7 +756,7 @@ fn harfrust_script(s: Script) -> harfrust::Script {
         [a, b, c, d] => skrifa::Tag::new(&[*a, *b, *c, *d]),
         _ => skrifa::Tag::new(b"Zyyy"),
     };
-    harfrust::Script::from_iso15924_tag(tag).unwrap_or(harfrust::script::COMMON)
+    harfrust::Script::from_iso15924_tag(tag).unwrap_or(harfrust::Script::COMMON)
 }
 
 /// Whether `font` has every character of `text`, as it writes them (a standard font

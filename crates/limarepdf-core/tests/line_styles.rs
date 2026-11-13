@@ -715,7 +715,7 @@ fn a_word_cut_out_of_a_tj_keeps_its_spacing_numbers() {
     assert!(write(&mut p, &o, around(&o, bigger)).is_empty());
     let c = content(&p);
     assert!(
-        c.contains("[(one) -400] TJ") && c.contains("[(tw) 20(o) -266.666"),
+        c.contains("[(one) -400.0] TJ") && c.contains("[(tw) 20(o) -266.666"),
         "{c}"
     );
     assert!(c.contains("[(three)] TJ"), "{c}");
@@ -794,7 +794,7 @@ fn a_space_made_by_a_move_goes_with_the_word_before_it() {
     let o = line(&p, "one two three");
     let fonts: Vec<&str> = o.spans.iter().map(|s| s.font_name.as_str()).collect();
     assert_eq!(fonts, [subset, "Helvetica-Bold", subset]);
-    assert!(content(&p).contains("[(two) -160] TJ"), "{}", content(&p));
+    assert!(content(&p).contains("[(two) -160.0] TJ"), "{}", content(&p));
     // A word a show of its own, the space after it a gap before the next show.
     let mut p = make("BT /F3 20 Tf 20 100 Td (one) Tj 40 0 Td (two) Tj ET\n");
     let o = line(&p, "one two");

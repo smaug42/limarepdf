@@ -2,6 +2,9 @@
 //! analysis (Acrobat's rules), the shadow and incremental-saving attack shapes, malformed
 //! appended revisions, and the signed version of each signature.
 
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
+
 mod sigkit;
 
 use limarepdf_core::{
@@ -775,8 +778,8 @@ fn a_change_undone_before_the_next_signature_still_counts() {
 
 // ---------------------------------------------------------------- attacks
 
-/// Shadow attack, hide: an update that only frees an object (lopdf itself ignores free
-/// entries, so this is caught by LimarePDF's own reader).
+/// Shadow attack, hide: an update that only frees an object still in use. Some apps find it
+/// by scanning, so it is refused, by LimarePDF's own reader.
 #[test]
 fn freeing_an_object_still_in_use_is_refused() {
     let b = approve(&base_pdf());

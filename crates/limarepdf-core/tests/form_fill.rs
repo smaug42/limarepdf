@@ -443,7 +443,7 @@ fn replaces_fonts_it_cannot_write_with() {
 
     p.set_field("t", FieldValue::Text("café".into())).unwrap();
     let ap = appearance(&p, ids[0]);
-    assert!(ap.contains("/LimareTimesBold 10 Tf"), "{ap}");
+    assert!(ap.contains("/LimareTimesBold 10.0 Tf"), "{ap}");
     assert!(ap.contains("0 0 1 rg"), "{ap}");
     let d = p.doc.get_dictionary(ids[0]).unwrap();
     let da = d.get(b"DA").unwrap().as_str().unwrap();
@@ -493,11 +493,11 @@ fn replaces_a_font_that_lacks_a_character() {
 
     p.set_field("t", FieldValue::Text("Café".into())).unwrap();
     assert!(
-        appearance(&p, ids[0]).contains("/F3 10 Tf"),
+        appearance(&p, ids[0]).contains("/F3 10.0 Tf"),
         "its own font when it can"
     );
     p.set_field("t", FieldValue::Text("a – b".into())).unwrap();
-    assert!(appearance(&p, ids[0]).contains("/LimareHelvetica 10 Tf"));
+    assert!(appearance(&p, ids[0]).contains("/LimareHelvetica 10.0 Tf"));
 }
 
 /// The form's fonts (`/DR /Font`), as made by [`form`].

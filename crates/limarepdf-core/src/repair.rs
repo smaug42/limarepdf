@@ -5,7 +5,7 @@
 //! A page tree that lopdf reads with no pages, for reasons other readers look past, is
 //! mended too (see [`mend_page_tree`]).
 
-use lopdf::{Dictionary, Document, Object};
+use lopdf::{Dictionary, Document, LoadOptions, Object};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Cursor;
@@ -90,9 +90,10 @@ pub(crate) fn find_catalog(doc: &Document) -> Option<lopdf::ObjectId> {
         .map(|(id, _)| *id)
 }
 
-/// Adds the members of `doc`'s object streams that lopdf couldn't read there, reading each
-/// on its own: lopdf skips a member that starts with a comment, for one. An object already
-/// in `doc` is kept.
+/// Adds the members of `doc`'s object streams that `doc` doesn't hold, reading each on its
+/// own. A rebuilt table lists none of them, so the check against other readers drops those
+/// lopdf took (as never listed), and lopdf passes over one it can't read (before 0.47, one
+/// starting with a comment). An object already in `doc` is kept.
 pub(crate) fn unpack_object_streams(doc: &mut Document) {
     let mut found = Vec::new();
     for o in doc.objects.values() {
@@ -461,6 +462,18 @@ fn read_dictionary(b: &[u8]) -> Option<Dictionary> {
     }
 }
 
+/// A lopdf load filter that keeps every object, so lopdf reads a file by its table as
+/// written. Unfiltered, lopdf reads a file whose catalog doesn't lead to a page tree again by
+/// scanning, which ends a stream at the first `endstream` and ignores `/Length`. lopdf uses
+/// the object returned only for members of object streams, which are never streams, so no
+/// stream is copied.
+pub(crate) fn as_written(id: lopdf::ObjectId, o: &mut Object) -> Option<(lopdf::ObjectId, Object)> {
+    match o {
+        Object::Stream(_) => Some((id, Object::Null)),
+        o => Some((id, o.clone())),
+    }
+}
+
 /// Reads `b` as one object (a stream's data can't be reached), by having lopdf read it as
 /// the one object of a small file.
 fn read_object(b: &[u8]) -> Option<Object> {
@@ -477,7 +490,7 @@ fn read_object(b: &[u8]) -> Option<Object> {
         )
         .as_bytes(),
     );
-    match Document::load_from(Cursor::new(doc))
+    match Document::load_from_with_options(Cursor::new(doc), LoadOptions::with_filter(as_written))
         .ok()?
         .objects
         .remove(&(1, 0))?

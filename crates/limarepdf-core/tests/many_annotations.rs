@@ -2,6 +2,9 @@
 //! attachments and replies, applying redaction marks, redacting and flattening still deal
 //! with every one, and with annotations written into the page's list directly.
 
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use common::saved::{tools, Saved};

@@ -3,6 +3,8 @@
 //! keys and certificates are OpenSSL-made (tools/make-signature-keys.sh).
 
 #![allow(dead_code)]
+// lopdf's page list, of files made here (clippy.toml).
+#![allow(clippy::disallowed_methods)]
 
 use limarepdf_core::Pdf;
 use lopdf::{dictionary, Dictionary, Document, IncrementalDocument, Object, StringFormat};
@@ -20,7 +22,7 @@ pub fn data_dir() -> PathBuf {
 // ------------------------------------------------------------------ keys
 
 pub enum Key {
-    Rsa(rsa::RsaPrivateKey),
+    Rsa(rsa::PrivateKey),
     P256(p256::ecdsa::SigningKey),
     P384(p384::ecdsa::SigningKey),
 }
@@ -47,7 +49,7 @@ pub fn id_with_cert(key: &str, cert: &str) -> Id {
 
 /// A PKCS#8 private key (RSA, P-256 or P-384).
 pub fn key_from_pkcs8(der: &[u8]) -> Key {
-    if let Ok(k) = <rsa::RsaPrivateKey as rsa::pkcs8::DecodePrivateKey>::from_pkcs8_der(der) {
+    if let Ok(k) = <rsa::PrivateKey as rsa::pkcs8::DecodePrivateKey>::from_pkcs8_der(der) {
         Key::Rsa(k)
     } else if let Ok(k) =
         <p256::ecdsa::SigningKey as p256::pkcs8::DecodePrivateKey>::from_pkcs8_der(der)
@@ -248,7 +250,7 @@ pub fn pss_alg(params: Option<&[u8]>) -> Vec<u8> {
 
 /// Signs the digest `hash` (made with `h`) with RSA-PSS, MGF1 with the same digest, and a
 /// salt of `salt` bytes. Returns the value and the signature algorithm identifier.
-pub fn sign_pss(k: &rsa::RsaPrivateKey, h: Hash, hash: &[u8], salt: usize) -> (Vec<u8>, Vec<u8>) {
+pub fn sign_pss(k: &rsa::PrivateKey, h: Hash, hash: &[u8], salt: usize) -> (Vec<u8>, Vec<u8>) {
     let mut rng = rsa::rand_core::UnwrapErr(getrandom::SysRng);
     let sig = match h {
         Hash::Sha1 => k.sign_with_rng(&mut rng, rsa::Pss::<sha1::Sha1>::new_with_salt(salt), hash),
@@ -1149,8 +1151,9 @@ pub const HIDES: [Hide; 4] = [
 /// A one-page contract with an empty signature field "Sign here". The page says "Pay one
 /// million"; object 5, its XObject resources, names a form that covers that with "Pay one
 /// hundred". `hide` makes apps following the specification read object 5 as deleted or
-/// missing, so they show "Pay one million" while lopdf on its own shows "Pay one
-/// hundred". With [`Hide::OlderHybrid`] those apps and lopdf all show "Pay one hundred".
+/// missing, so they show "Pay one million", while apps that find objects by scanning show
+/// "Pay one hundred", and so does lopdf on its own with [`Hide::StrayUnlisted`]. With
+/// [`Hide::OlderHybrid`] those apps and lopdf all show "Pay one hundred".
 pub fn hidden_payment(hide: Hide) -> Vec<u8> {
     let mut w = Writer::new();
     w.obj(

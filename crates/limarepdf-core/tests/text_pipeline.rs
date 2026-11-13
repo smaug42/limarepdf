@@ -250,27 +250,22 @@ type Set<'a> = (&'a [u8], Vec<(&'a [u8; 4], f32)>);
 /// Where harfrust places each character that starts a glyph of `text` set in the font file
 /// and settings `set`: its index, and how far along the line it starts at `size`, in points.
 fn shaped(set: &Set, text: &str, size: f32) -> Vec<(usize, f32)> {
-    let font = harfrust::FontRef::new(set.0).unwrap();
-    let shaper_data = harfrust::ShaperData::new(&font);
-    let instance = (!set.1.is_empty()).then(|| {
-        let at = set.1.iter().map(|(t, v)| harfrust::Variation {
-            tag: harfrust::Tag::new(t),
-            value: *v,
-        });
-        harfrust::ShaperInstance::from_variations(&font, at)
-    });
-    let builder = shaper_data.shaper(&font);
-    let shaper = builder.instance(instance.as_ref()).build();
-    let mut buffer = harfrust::UnicodeBuffer::new();
+    let mut font = harfrust::Font::new(set.0.to_vec(), 0).unwrap();
+    if !set.1.is_empty() {
+        let at = set.1.iter().map(|(t, v)| (harfrust::Tag::new(t), *v));
+        font = font.instance_builder().variations(at).build();
+    }
+    let mut buffer = harfrust::Buffer::new();
     buffer.push_str(text);
     buffer.guess_segment_properties();
-    buffer.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
-    let out = shaper.shape(buffer, harfrust::ShapeOptions::new());
-    let k = size / shaper.units_per_em() as f32;
+    buffer.set_cluster_level(harfrust::ClusterLevel::MonotoneCharacters);
+    let shaper = harfrust::ShaperFont::new(&font);
+    harfrust::shape(&shaper, &mut buffer, harfrust::ShapeOptions::new()).unwrap();
+    let k = size / font.units_per_em() as f32;
     let starts: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
     let (mut pen, mut last) = (0, None);
     let mut at = Vec::new();
-    for (info, place) in out.glyph_infos().iter().zip(out.glyph_positions()) {
+    for (info, place) in buffer.glyph_infos().iter().zip(buffer.glyph_positions()) {
         if last != Some(info.cluster) {
             let i = starts.partition_point(|&b| b < info.cluster as usize);
             at.push((i, (pen + place.x_offset) as f32 * k));

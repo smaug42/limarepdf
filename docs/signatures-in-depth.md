@@ -756,12 +756,10 @@ saving a signed document add to a file only when the comparison above found noth
 the new revision must read back the same way; otherwise a file without signatures is written out in full, as LimarePDF
 shows it, and one with signatures is refused.
 
-**RUSTSEC-2023-0071**, a timing leak in `rsa` with no fixed version yet, concerns using a private key. Checking
-uses only public keys, so it doesn't apply to checking. It applies to signing with an RSA key: an attacker would
-have to time many signings on your computer. LimarePDF blinds its RSA signatures, which makes such timing harder. CI checks
-every change against the RustSec advisories with `cargo deny`, with this one vulnerability set aside (and four
-notices that crates the window toolkit uses are unmaintained, none a known vulnerability), and a release waits for
-it to pass;
+**RUSTSEC-2023-0071**, a timing leak when an RSA private key is used, is fixed in `rsa` 0.10.0, which LimarePDF uses.
+LimarePDF also blinds its RSA signatures. CI checks every change against the RustSec advisories with `cargo deny`,
+with no vulnerability set aside (only four notices that crates the window toolkit uses are unmaintained, none a
+known vulnerability), and a release waits for it to pass;
 [releasing](developer/releasing.md) has a step to look for final versions and new advisories before each release.
 
 **Digital IDs** are as safe as their passwords. In the files LimarePDF writes, the key is encrypted with AES-256, using a

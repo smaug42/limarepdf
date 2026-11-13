@@ -241,13 +241,14 @@ pub(crate) fn from_ipp(attributes: &[Attribute]) -> PaperList {
             continue;
         }
         let (w, h) = (p.unit.hundredths(p.size.0), p.unit.hundredths(p.size.1));
+        // In i64: the printer's sizes can be any i32, and their differences from ours past one.
+        let off = |a: i32, b: i32| (i64::from(a) - i64::from(b)).abs();
         let near = database
             .iter()
-            .filter(|e| (e.w - w).abs() <= 100 && (e.h - h).abs() <= 100)
+            .filter(|e| off(e.w, w) <= 100 && off(e.h, h) <= 100)
             .min_by_key(|e| {
                 let borderless = e.margins == Some([0; 4]);
-                let off = (e.w - w).abs() + (e.h - h).abs();
-                (off, borderless, e.margins.is_none())
+                (off(e.w, w) + off(e.h, h), borderless, e.margins.is_none())
             });
         let (size, margins) = match near {
             Some(e) => ((points(e.w), points(e.h)), e.margins.map(|m| m.map(points))),
@@ -623,6 +624,42 @@ mod tests {
         // No default listed, or one not supported.
         let none = answer(0, &[("media-supported", vec![V::Kw("na_letter_8.5x11in")])]);
         assert_eq!(from_ipp(&read_answer(&none).unwrap().printer).default, None);
+    }
+
+    /// A database size near either end of an IPP integer's range is never near a named size,
+    /// and doesn't stop the reading: the fuzzer's ipp target found Letter's height taken from
+    /// one exactly `i32::MIN` apart (2026-11-13), past what a difference in `i32` can hold.
+    #[test]
+    fn database_sizes_at_the_ends_of_the_range_are_never_near() {
+        let bytes = answer(
+            0,
+            &[
+                (
+                    "media-supported",
+                    vec![
+                        V::Kw("na_letter_8.5x11in"),
+                        V::Kw("custom_huge_99999999x99999999in"),
+                    ],
+                ),
+                (
+                    "media-default",
+                    vec![V::Kw("custom_huge_99999999x99999999in")],
+                ),
+                (
+                    "media-col-database",
+                    vec![
+                        media_col(21590, i32::MIN + 27940, [0, 0, 0, 0]),
+                        media_col(i32::MIN, 27940, [0, 0, 0, 0]),
+                        media_col(i32::MIN, i32::MIN, [0, 0, 0, 0]),
+                    ],
+                ),
+            ],
+        );
+        let list = from_ipp(&read_answer(&bytes).unwrap().printer);
+        assert_eq!(list.papers.len(), 2);
+        assert_eq!(list.default, Some(1));
+        assert!(list.papers.iter().all(|p| p.margins.is_none()));
+        assert!(close(list.papers[0].size, (612.0, 792.0)));
     }
 
     #[test]

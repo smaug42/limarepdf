@@ -20,8 +20,9 @@ where its code is, in [How it is built](architecture.md).
   other writer is refused them until that writer ends, by any spelling of the name, in capitals too. Exporting
   text, saving the selection and exporting a certificate write at once on the window's thread, so they check and
   don't claim. No writer writes the file another tab has open; a tab saves over its own.
-- The Digital IDs window exports nothing into the ID store's folder, by any path or link to it, where it would take
-  the place of an ID or the note of the default (PB-167).
+- No writer in the app writes in the folder of digital IDs, by any path or link to it, where a file would take the
+  place of an ID or the note of the default, or lie among them: Save As, the selection and the text saved, a signed
+  copy, pictures and page images, a split and the Digital IDs window's exports are refused there (PB-167, PB-170).
 - On the command line, a command never writes over a file it reads. An output (an `-o`, the trust list `trust add`
   writes, or a file named in `--out-dir`) that is the input, a picture, a password file, form values, a trust
   list, a certificate or the digital ID used, by any path or link to it, is refused with nothing written,
@@ -43,15 +44,19 @@ where its code is, in [How it is built](architecture.md).
   `identity_of_a_file_not_there_yet_follows_the_folders_that_are`, `identity_lasts_through_writing_and_replacing`
   and `identity_through_a_hard_link` (Unix and Windows); `atomic.rs`'s
   `a_file_changed_while_it_is_saved_is_not_replaced`, `a_change_that_keeps_the_size_and_time_is_not_replaced` and
-  `an_expected_file_is_replaced`; `ids.rs`'s `two_ids_stored_at_once_under_one_name_are_both_kept`.
+  `an_expected_file_is_replaced`; `ids.rs`'s `two_ids_stored_at_once_under_one_name_are_both_kept` and, through a
+  seam that fails the link as a disk without hard links does, `without_hard_links_an_id_there_first_is_kept`
+  (PB-168).
 - The app: `opening_a_file_twice_never_loses_a_saved_change`, `a_file_is_opened_once_by_any_path_to_it`,
   `a_file_asking_for_its_password_is_opened_once_by_any_path_to_it`, `nothing_is_saved_over_another_tabs_file`,
   `saving_never_silently_replaces_a_file_changed_since_it_was_read` and `save_asks_before_replacing_a_changed_file`;
   the claims in `app/tests/destinations.rs` (`every_writer_is_refused_a_file_being_saved` and the rest); saves and
   signing at the boundary in `app/tests/writers.rs`; `remembered_pictures_are_copied_and_deleted_with_their_entry`
-  for the picture's modes. The exports: `id_exports_and_the_tabs_files_keep_apart` in
-  `app/tests/destinations.rs`, and `digital.rs`'s `an_export_never_goes_in_the_id_stores_folder`,
-  `an_export_is_refused_a_file_the_app_holds` and `an_id_exports_file_is_handed_to_the_app`.
+  for the picture's modes. The folder of digital IDs: `no_writer_writes_in_the_id_folder` in
+  `app/tests/destinations.rs`, every writer aimed there (PB-170). The exports:
+  `id_exports_and_the_tabs_files_keep_apart` in `app/tests/destinations.rs`, and `digital.rs`'s
+  `an_export_never_goes_in_the_id_stores_folder`, `an_export_is_refused_a_file_the_app_holds` and
+  `an_id_exports_file_is_handed_to_the_app`.
 - The command line: `input_kept.rs` (`a_hard_link_to_the_input_is_refused`,
   `a_generated_file_hard_linked_to_the_input_is_refused`, `a_file_read_besides_the_input_is_refused_as_the_output`)
   and `verify.rs`'s `a_hard_link_to_the_input_leaves_it_unchanged`.
@@ -65,8 +70,7 @@ where its code is, in [How it is built](architecture.md).
   the file at the name is whole: one version or the other, never a mix.
 - The app's claims ignore case on every system, so on a disk that keeps case two names that differ only in case
   are refused to each other while one is written: a refusal that loses nothing.
-- Not claimed in the app: the recovery store's private folder, and files other apps write. Only the exports are
-  kept out of the ID store's folder; the app's other writers aren't.
+- Not claimed in the app: the recovery store's private folder, and files other apps write.
 - Where a disk has no hard links (some network and FAT drives), a digital ID's new file is put in place by a check
   and then a rename, which leaves a moment for another store to take the name.
 - A file Windows won't open, even only to ask its ID, is known by its path alone.
@@ -74,8 +78,8 @@ where its code is, in [How it is built](architecture.md).
 **Owner.** Core `disk::identity` and `Identity::matches` (`disk::same_file` is the two together); core
 `atomic::replace` with the version it expects (compared by `disk::compare_bytes`) and `atomic::create_new`, which
 never replaces; core `write_private`. The app's `app/destinations.rs`: `Destinations` for the claims, and
-`App::conflict`, `export_conflict`, `tab_of`, `reading` and `in_other_tab` for open tabs; `IdsWindow::refused` in
-`digital.rs` for the ID store's folder. The command line's `not_an_input` and `not_taken`
+`App::conflict`, `export_conflict`, `tab_of`, `reading` and `in_other_tab` for open tabs, and the folder of
+digital IDs through `digital::in_id_folder`. The command line's `not_an_input` and `not_taken`
 (`limarepdf-cli/src/main.rs`).
 
 ## Failure atomicity
@@ -102,7 +106,7 @@ never replaces; core `write_private`. The app's `app/destinations.rs`: `Destinat
   paragraph edits refused late, and the survey's late failures (`annotation_changes_failing_late_change_nothing`,
   `bookmark_changes_failing_late_change_nothing`, `new_content_failing_late_changes_nothing`,
   `link_changes_failing_late_change_nothing`). Before S2-02, six of its tests and all 17 of the survey's cases
-  failed.
+  failed. The bookmark cases fail at their last step, setting the outline's counts, through `outline_seam`.
 - Core, besides: `redact.rs`'s `refused` and `all_refused` cases; `too_complex.rs`'s
   `a_redaction_over_a_page_too_complex_to_read_changes_nothing`; `sanitise.rs`'s
   `content_outside_the_crop_box_that_redaction_leaves_is_refused`; the form tests that end `changes_nothing` in
@@ -121,8 +125,6 @@ never replaces; core `write_private`. The app's `app/destinations.rs`: `Destinat
   in the session, as after Undo.
 - Outside the app (the command line, the core's own callers), each operation copies the document before it starts,
   as the app's edit did already: on a large document an edit takes that copy's time and memory.
-- A bookmark change in an outline with a broken link (an entry naming an object that isn't there) is refused, with
-  nothing changed, and a message naming the missing object rather than the bookmark.
 
 **Owner.** Core `Pdf::atomically` (`history.rs`), which every operation above goes through, and `Pdf::holding`, by
 which a caller that keeps its own copy says so; the copy is `Pdf::before`, put back by `Pdf::go_back`. Core

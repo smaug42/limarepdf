@@ -49,7 +49,7 @@ SHIPPED = ["limarepdf-gui", "limarepdf-cli"]
 # finds most of these only through about.toml's clarifications, which drop a notice with no more than a warning
 # when the crate's file changes.
 BUNDLED = [
-    ("hayro-interpret", NOTICES, "PDFium Authors"),  # Foxit's standard fonts
+    ("hayro-font", NOTICES, "PDFium Authors"),  # Foxit's standard fonts
     ("epaint_default_fonts", NOTICES, "Source Foundry"),  # Hack
     ("epaint_default_fonts", NOTICES, "John Slegers"),  # egui-icons, cut from emoji-icon-font
     ("epaint_default_fonts", NOTICES, "UBUNTU FONT LICENCE"),  # Ubuntu Light
@@ -184,7 +184,7 @@ def self_test():
     def page(crates, text=""):
         return "".join(f'<li data-crate="{n} {v}">' for n, v in sorted(crates)) + text
 
-    foxit = {("hayro-interpret", "0.8.0")}
+    foxit = {("hayro-font", "0.5.0")}
     cantarell = {("sctk-adwaita", "0.10.1")}
     cases = [
         ("Linux's crates", lambda: built(["x86_64-unknown-linux-gnu"], ws, ["app"]), linux),
@@ -204,7 +204,7 @@ def self_test():
         (
             "a bundled font's notice missing",
             lambda: notices({NOTICES: page(foxit)}, foxit),
-            [f"{NOTICES}: no 'PDFium Authors', for hayro-interpret's bundled works"],
+            [f"{NOTICES}: no 'PDFium Authors', for hayro-font's bundled works"],
         ),
         (
             "a bundled font's file missing",

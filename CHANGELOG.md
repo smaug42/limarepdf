@@ -9,6 +9,47 @@
 
 ### Fixed
 
+- Signing with an RSA digital ID uses an updated cryptography library (`rsa` 0.10.0), which fixes a timing leak
+  when an RSA private key is used (RUSTSEC-2023-0071). LimarePDF already blinded its RSA signatures, which kept
+  that leak from showing the key. The other libraries LimarePDF is built from are updated to their latest
+  versions too, new major versions included. A signature made with an RSA key shorter than 1,024 bits, as some
+  old signers made, is still checked and flagged as too short to be safe; the new library doesn't read such keys
+  by itself, so LimarePDF reads them.
+- A page filled with a pattern repeated at very wide spacing is drawn. Before, drawing it asked for gigabytes of
+  memory at once, which on Windows could close the app, and from 150 dpi it failed with an internal error. A
+  pattern that would still take gigabytes of memory or hours to draw, at any zoom and wherever it is used (in a
+  form, a comment's or field's appearance, a soft mask, a Type 3 font's letter or another pattern, and in a
+  drawing that skews or stretches it), is left out of the page as it is shown, printed as a picture or read by
+  OCR, with the notice that parts of the document couldn't be drawn; the document keeps it.
+- A shape filled with a smooth shading made of triangles or patches (a mesh, as 3D plots converted from
+  PostScript use) is drawn in a fraction of the time and memory, and without the light seams that showed between
+  the triangles. Before, each such fill took memory for all the shape covered: a figure filled 2,640 times, one
+  triangle each, took 6 GB and over two minutes to draw at 288 dpi, and now takes 111 MB and a third of a second.
+- Detailed and very large pages are drawn several times faster and in less memory, with an updated drawing library.
+  A page is drawn in one go, or, when its soft masks, patterns or shadings would need more, in as few parts as keep
+  that memory to about 512 MB. Before, a large page was drawn in strips, each going through the whole page again. A
+  page of 73,000 drawn paths took 51 s at 150 dpi and now takes 0.8 s, a large poster took 27 s and now takes 2 s,
+  and another large page at 288 dpi took 30 s and 3.5 GB, now 2.2 s and 460 MB.
+- Searching a long document takes much less memory: it reads and looks through 64 pages at a time. Before, it read
+  the text of every page first; searching 1,000 pages took 131 MB at its peak, and now takes 29 MB.
+- Exporting the text of a long document, and finding text to redact across it, is faster. Each page was looked up
+  by going through the document's list of pages up to it, so the time grew with the square of the pages: the
+  command line's `text` took 1.9 s for 1,000 pages, and now takes 0.2 s, reading pages on all cores.
+- A shape that sets a clipping path as it is filled or outlined (`W f` or `W S` in the file) clips what is drawn
+  after it, as in other readers. Before, it was only filled or outlined, and what it should have hidden showed.
+- Text in a font whose embedded program is OpenType, kept where a Type 1 font's program goes (`/FontFile3`), is
+  drawn in that font. Before, it was drawn in a standard font in its place, so its letters looked different.
+- Add a dictionary, replacing one added before, keeps the one before as it was when the new one can't be saved
+  whole. Before, a failure between its two files could leave the new spelling rules with the old words, checking
+  spelling against a mix of the two.
+- Save As, saving selected text, exporting text or images, saving pictures, splitting and signing never write in
+  the folder where LimarePDF keeps its digital IDs: a message says so, and you choose another folder. Before, only
+  the Digital IDs window's exports were kept out, and saving there could take the place of an ID or of the note
+  naming the default one.
+- Adding, moving and removing bookmarks works in a file whose bookmarks point to something missing from the file,
+  or don't say which bookmark they are inside. Before, such a change was refused with a message about the missing
+  object; a bookmark added beside one inside another went to the end of the list instead; and removing one from
+  inside another left it where it was.
 - Editing a line keeps the text other apps read in place of some of its letters (a file's attached text, such as
   a whole word given for an abbreviation) with those letters when the edit leaves them as they were, and drops it
   from letters the edit changes or removes. Before, other apps went on reading the old text in place of the letters
@@ -394,6 +435,14 @@
   you choose another place. While an ID is exported, Save As and the app's other writers are refused its file.
   Before, a certificate saved over the ID's own file replaced the ID, key and all, and an export could replace a
   document open in a tab.
+- A printer's paper sizes are listed, in the Print window and by `limarepdf-cli printers --paper`, when the
+  printing service gives a size with an impossible width or height, near the largest or smallest number it can
+  send: that size is passed over, and the papers keep their own sizes. Before, the papers weren't listed, and the
+  app reported an internal error that said the file might be damaged. Found by fuzzing.
+- A damaged PDF whose list of pages gives the wrong number of pages for part of the list opens, is drawn and saves,
+  in the app and in `limarepdf-cli`. Before, when that number was too small, or past the largest number there is,
+  opening the file reported an internal error; when it was far too large, drawing the file closed the app at once,
+  without a word. Found by fuzzing.
 
 ### Changed
 

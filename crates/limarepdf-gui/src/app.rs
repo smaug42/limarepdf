@@ -908,6 +908,9 @@ pub struct App {
     trusted: Option<TrustedWindow>,
     /// The Digital IDs window, when open.
     ids_window: Option<IdsWindow>,
+    /// The folder of digital IDs, where none of the app's writers writes (PB-170); `None`
+    /// when there is no settings folder.
+    id_folder: Option<PathBuf>,
     /// The signing window, when open.
     sign_window: Option<SignWindow>,
     /// Crash recovery: this run's copies, and the copies an earlier run left.
@@ -1062,6 +1065,7 @@ impl App {
             trust_ask: None,
             trusted: None,
             ids_window: None,
+            id_folder: limarepdf_core::IdStore::default_dir(),
             sign_window: None,
             rescue: recover::Rescue::default(),
             opening: Vec::new(),
@@ -2315,20 +2319,8 @@ impl App {
                 problems.push(e.to_string());
                 continue;
             }
-            let mut unconfirmed = None;
-            let mut written = Ok(());
-            for (kind, data) in [("aff", &u.aff), ("dic", &u.dic)] {
-                let path = folder.join(format!("{}.{kind}", u.stem));
-                match crate::settings::write_own(&path, data) {
-                    Ok(why) => unconfirmed = unconfirmed.or(why),
-                    Err(e) => {
-                        written = Err(e);
-                        break;
-                    }
-                }
-            }
-            match written {
-                Ok(()) => {
+            match crate::settings::write_dictionary(&folder, &u.stem, &u.aff, &u.dic) {
+                Ok(unconfirmed) => {
                     if let Some(why) = unconfirmed {
                         problems.push(format!(
                             "{file} was added, but your system couldn't confirm it is safely \

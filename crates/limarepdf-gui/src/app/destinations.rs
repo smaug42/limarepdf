@@ -9,8 +9,9 @@
 //! The claims compare names without case, as a disk that ignores case does; another tab's
 //! open file is told exactly, by its path or its file's own number (the inode on Unix, the
 //! file ID on Windows). The Digital IDs window's exports are checked from no tab
-//! ([`App::export_conflict`]), and kept out of the ID store's own folder there (PB-167).
-//! Not covered: the recovery store's private folder, and other apps.
+//! ([`App::export_conflict`]) (PB-167). No writer writes in the folder of digital IDs, by
+//! any path or link to it (PB-170). Not covered: the recovery store's private folder, and
+//! other apps.
 //!
 //! Opening is checked here too: a file open in a tab, being read for one or asking for its
 //! password, by any path or link to it, isn't read again (BUG-06). Every check here knows a
@@ -107,9 +108,9 @@ impl App {
         ))
     }
 
-    /// Why tab `tab` may not write the file at `path`, with the message's title: it is open
-    /// in a tab (other than `tab`, when `own_file`, as a tab saves over its own file), or
-    /// it is being written.
+    /// Why tab `tab` may not write the file at `path`, with the message's title: it is in
+    /// the folder of digital IDs (PB-170), open in a tab (other than `tab`, when `own_file`,
+    /// as a tab saves over its own file), or being written.
     pub(super) fn conflict(
         &self,
         path: &Path,
@@ -120,7 +121,7 @@ impl App {
     }
 
     /// Why the Digital IDs window, writing for no tab, may not export to the file at
-    /// `path`: it is open in a tab, or being written (PB-167).
+    /// `path`: it is in the folder of digital IDs, open in a tab, or being written (PB-167).
     pub(super) fn export_conflict(&self, path: &Path) -> Option<String> {
         self.writer_conflict(path, None, false).map(|(_, why)| why)
     }
@@ -132,6 +133,10 @@ impl App {
         tab: Option<u64>,
         own_file: bool,
     ) -> Option<(&'static str, String)> {
+        let ids = self.id_folder.as_deref();
+        if let Some(why) = ids.and_then(|ids| crate::digital::in_id_folder(path, ids)) {
+            return Some(("Folder of digital IDs", why));
+        }
         if let Some(why) = self.in_other_tab(path, tab.filter(|_| own_file)) {
             let title = if own_file {
                 "Open in another tab"

@@ -113,6 +113,20 @@ fn wipe(s: &mut String) {
     }
 }
 
+/// Why nothing is written at `path`: it is in `ids`, the folder of digital IDs, by any path
+/// or link to it, where a file would take the place of an ID or the note of the default, or
+/// lie among them (PB-167, PB-170).
+pub(crate) fn in_id_folder(path: &Path, ids: &Path) -> Option<String> {
+    use limarepdf_core::disk;
+    // By any path or link to it, as a file is written where a link leads.
+    let dir = disk::identity(ids);
+    let file = disk::identity(path);
+    let inside = (file.path().ancestors()).any(|a| disk::identity(a).matches(&dir));
+    inside.then(|| {
+        "LimarePDF keeps its digital IDs in that folder: choose another. Nothing was saved.".into()
+    })
+}
+
 fn store() -> Result<IdStore, String> {
     IdStore::default_dir().map(IdStore::new).ok_or_else(|| {
         "LimarePDF can't find its settings folder (HOME or APPDATA isn't set), so it has nowhere \
@@ -947,37 +961,15 @@ impl IdsWindow {
         self.page = Page::Export(f);
     }
 
-    /// Why nothing is exported to `path`: it is in the ID store's folder, where it would
-    /// take the place of an ID or the note of the default (PB-167), or `taken` says why.
-    fn refused(&self, path: &Path, taken: &dyn Fn(&Path) -> Option<String>) -> Option<String> {
-        use limarepdf_core::disk;
-        // By any path or link to it, as a certificate is written where a link leads.
-        let file = disk::identity(path);
-        let in_store = self.store.as_ref().is_ok_and(|s| {
-            let dir = disk::identity(s.dir());
-            file.path()
-                .ancestors()
-                .any(|a| disk::identity(a).matches(&dir))
-        });
-        if in_store {
-            return Some(
-                "LimarePDF keeps its digital IDs in that folder: choose another. Nothing was \
-                 saved."
-                    .into(),
-            );
-        }
-        taken(path)
-    }
-
     /// Saves the form's certificate to `path`. The form stays, with the error, if that
-    /// fails or the file may not be written ([`Self::refused`]).
+    /// fails or the file may not be written (`taken` says why).
     fn export_certificate(
         &mut self,
         mut f: Box<ExportForm>,
         path: &Path,
         taken: &dyn Fn(&Path) -> Option<String>,
     ) {
-        if let Some(why) = self.refused(path, taken) {
+        if let Some(why) = taken(path) {
             f.error = Some((Field::Form, why));
             self.page = Page::Export(f);
             return;
@@ -1006,8 +998,8 @@ impl IdsWindow {
     }
 
     /// Starts saving the form's ID with its key to `path`, which the app claims until it
-    /// ends. The form stays, with the error, if the file may not be written
-    /// ([`Self::refused`]).
+    /// ends. The form stays, with the error, if the file may not be written (`taken` says
+    /// why).
     fn export_key(
         &mut self,
         ctx: &Context,
@@ -1015,7 +1007,7 @@ impl IdsWindow {
         path: PathBuf,
         taken: &dyn Fn(&Path) -> Option<String>,
     ) {
-        if let Some(why) = self.refused(&path, taken) {
+        if let Some(why) = taken(&path) {
             f.error = Some((Field::Form, why));
             self.page = Page::Export(f);
             return;
@@ -2683,14 +2675,15 @@ mod tests {
     }
 
     /// PB-167: nothing is exported into the ID store's folder, where a certificate would
-    /// take the place of an ID's file and its key: the form stays and says why, and the ID
-    /// still opens.
+    /// take the place of an ID's file and its key: refused by the app's check
+    /// ([`in_id_folder`], PB-170), the form stays and says why, and the ID still opens.
     #[test]
     fn an_export_never_goes_in_the_id_stores_folder() {
         let dir = scratch("export-store");
         let (store, id) = store_with_id(&dir);
         let kept = std::fs::read(&id.path).unwrap();
         let mut w = ids_window(store.clone());
+        let taken = |p: &Path| in_id_folder(p, store.dir());
         let ctx = Context::default();
         let form = |kind| {
             Box::new(ExportForm {
@@ -2723,8 +2716,8 @@ mod tests {
             ] {
                 w.page = Page::List;
                 match kind {
-                    ExportKind::Certificate => w.export_certificate(form(kind), &path, &free),
-                    ExportKind::Key => w.export_key(&ctx, form(kind), path.clone(), &free),
+                    ExportKind::Certificate => w.export_certificate(form(kind), &path, &taken),
+                    ExportKind::Key => w.export_key(&ctx, form(kind), path.clone(), &taken),
                 }
                 if w.task.is_some() {
                     finish(&mut w);
@@ -2837,7 +2830,9 @@ mod tests {
 
         w.export_certificate(form(ExportKind::Certificate), &dir.join("jane.cer"), &free);
         assert!(dir.join("jane.cer").exists());
-        w.export_key(&ctx, form(ExportKind::Key), id.path.clone(), &free);
+        // Refused by the app, as an export into the folder of digital IDs is.
+        let ids = |p: &Path| in_id_folder(p, id.path.parent().unwrap());
+        w.export_key(&ctx, form(ExportKind::Key), id.path.clone(), &ids);
         assert!(handed(&mut w).is_empty() && !w.busy());
         let _ = std::fs::remove_dir_all(&dir);
     }

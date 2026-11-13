@@ -329,10 +329,32 @@ fn name_part(name: &x509_cert::name::Name, o: Oid) -> Option<String> {
         .and_then(|a| Tlv::read(&der::Encode::to_der(&a.value).ok()?).ok()?.text())
 }
 
+/// A PKCS#1 RSA public key, up to the longest `rsa` reads. A key shorter than `rsa` takes
+/// (1,024 bits) is read too, as before rsa 0.10, so a signature made with it is still
+/// checked, and flagged as too short to be safe.
+fn rsa_key(der: &[u8]) -> Result<rsa::PublicKey> {
+    let k = pkcs1::RsaPublicKeyRef::from_der(der)?;
+    let uint = |b: &[u8]| {
+        let bits = (b.len().checked_mul(8))
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| anyhow!("the key is too long"))?;
+        rsa::BoxedUint::from_be_slice(b, bits).map_err(|e| anyhow!("{e}"))
+    };
+    let (n, e) = (
+        uint(k.modulus.as_bytes())?,
+        uint(k.public_exponent.as_bytes())?,
+    );
+    Ok(rsa::PublicKey::new_with_size_limits(
+        n,
+        e,
+        1..=rsa::PublicKey::MAX_SIZE,
+    )?)
+}
+
 /// A signer's public key.
 enum PublicKey {
     /// An RSA key, and what its certificate allows it to make.
-    Rsa(rsa::RsaPublicKey, RsaUse),
+    Rsa(rsa::PublicKey, RsaUse),
     P256(p256::ecdsa::VerifyingKey),
     P384(p384::ecdsa::VerifyingKey),
 }
@@ -355,12 +377,11 @@ impl PublicKey {
             .ok_or_else(|| Fail::CantCheck("the certificate's key is malformed".into()))?;
         match spki.algorithm.oid {
             o @ (oid::RSA | oid::RSA_PSS) => {
-                use pkcs1::DecodeRsaPublicKey;
                 let used = match o {
                     oid::RSA => RsaUse::Any,
                     _ => RsaUse::PssOnly(pss_key_limits(spki.algorithm.parameters.as_ref())?),
                 };
-                let k = rsa::RsaPublicKey::from_pkcs1_der(bits).map_err(|e| {
+                let k = rsa_key(bits).map_err(|e| {
                     Fail::CantCheck(format!("the certificate's RSA key can't be used ({e})"))
                 })?;
                 Ok(Self::Rsa(k, used))
@@ -393,7 +414,7 @@ impl PublicKey {
     fn bits(&self) -> usize {
         use rsa::traits::PublicKeyParts;
         match self {
-            Self::Rsa(k, _) => k.n().bits_vartime() as usize,
+            Self::Rsa(k, _) => k.n().bit_width_vartime() as usize,
             Self::P256(_) => 256,
             Self::P384(_) => 384,
         }

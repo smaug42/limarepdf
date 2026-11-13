@@ -7,9 +7,6 @@ all-features = true
 # fixes before each release.
 [advisories]
 ignore = [
-    # A timing leak in `rsa` with no fixed version, which needs someone timing many signings on
-    # the signer's machine: docs/signatures-in-depth.md.
-    { id = "RUSTSEC-2023-0071", reason = "rsa timing leak, no fixed version; see docs/signatures-in-depth.md" },
     # Unmaintained, with no known vulnerability, and reached only through eframe: ttf-parser
     # through winit's window decorations on Wayland, the zbus ones through AccessKit on Linux.
     # They go when those move on.

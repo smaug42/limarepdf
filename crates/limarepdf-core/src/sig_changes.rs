@@ -4,7 +4,7 @@
 //! A change made after signing is appended to the file as a new revision. For each
 //! signature, the revisions after it are read with LimarePDF's own strict reader of
 //! cross-reference sections, because lopdf is lenient in ways that would hide changes (it
-//! ignores free entries, corrects bad offsets and rebuilds broken tables). lopdf is used
+//! corrects bad offsets and rebuilds broken tables). lopdf is used
 //! only for object contents, after checking that it reads the same objects. Every file
 //! LimarePDF opens gets the same check over its whole chain of revisions ([`compare_reading`]),
 //! so what LimarePDF shows, edits and signs is what the specification's reading holds.
@@ -832,15 +832,15 @@ pub(crate) fn check_appended(
 const MAX_OBJECT_STREAM: usize = 256 << 20;
 
 /// How lopdf's reading of a file differs from that of a reader following the PDF
-/// specification (Acrobat, pdfium, poppler). lopdf ignores free entries, so an object
-/// freed in a later revision stays; it takes every object an object stream holds, even
-/// one the cross-reference information doesn't place there; and it repairs or misreads
-/// some damage. What LimarePDF shows, edits and signs must be what other apps show.
+/// specification (Acrobat, pdfium, poppler). lopdf takes every object an object stream
+/// holds that has no entry, and it repairs or misreads some damage. What LimarePDF shows,
+/// edits and signs must be what other apps show.
 pub(crate) struct Reading {
-    /// Objects lopdf holds that such a reader doesn't: freed, never listed, listed under
-    /// another generation, or a stray copy in an object stream. Dropping them makes the
-    /// two readings agree.
-    pub(crate) hidden: Vec<ObjectId>,
+    /// Objects the file holds that such a reader doesn't see: deleted by a later revision,
+    /// never listed, listed under another generation, or a stray copy in an object stream.
+    /// lopdf holds some of them, and dropping those makes the two readings agree. A file
+    /// that uses one reads differently in other apps: some find it by scanning the file.
+    pub(crate) hidden: BTreeSet<ObjectId>,
     /// Object numbers the two readings may disagree on in a way dropping objects doesn't
     /// fix: lopdf misread or repaired them, or couldn't read them at all.
     pub(crate) unsure: HashSet<u32>,
@@ -857,12 +857,13 @@ pub(crate) fn compare_reading(bytes: &[u8], doc: &Document) -> Result<Reading, S
     let start = bytes.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
     let bytes = &bytes[start..];
     let pointer = last_startxref(bytes);
-    let spec = whole_xref(bytes, pointer.unwrap_or(doc.xref_start))?;
+    let (spec, deleted) = whole_xref(bytes, pointer.unwrap_or(doc.xref_start))?;
     let table = &doc.reference_table.entries;
     let mut unsure: HashSet<u32> = HashSet::new();
+    let mut hidden = BTreeSet::new();
 
-    // The entries must agree, except that lopdf drops free ones (keeping an older entry,
-    // whose object is hidden below).
+    // The entries must agree. Where the newest is free, lopdf may keep an older entry,
+    // whose object is hidden below.
     for num in spec.keys().chain(table.keys()) {
         let agree = match (spec.get(num), table.get(num)) {
             (Some(Entry::Free), _) => true,
@@ -925,6 +926,10 @@ pub(crate) fn compare_reading(bytes: &[u8], doc: &Document) -> Result<Reading, S
                 Some(Entry::InUse { gen: 0, .. }) if doc.objects.contains_key(&(n, 0)) => {
                     copies.push((n, (c, g)));
                 }
+                // Deleted, or never listed.
+                None | Some(Entry::Free) => {
+                    hidden.insert((n, 0));
+                }
                 _ => {}
             }
         }
@@ -966,7 +971,6 @@ pub(crate) fn compare_reading(bytes: &[u8], doc: &Document) -> Result<Reading, S
         }
     }
 
-    let mut hidden = Vec::new();
     for &(n, g) in doc.objects.keys() {
         let seen = match spec.get(&n) {
             None | Some(Entry::Free) => false,
@@ -976,9 +980,14 @@ pub(crate) fn compare_reading(bytes: &[u8], doc: &Document) -> Result<Reading, S
             }
         };
         if !seen {
-            hidden.push((n, g));
+            hidden.insert((n, g));
         }
     }
+    // Objects a later revision deleted, which lopdf drops too.
+    hidden.extend(deleted.iter().map(|(&n, e)| match *e {
+        Entry::InUse { gen, .. } => (n, gen),
+        _ => (n, 0),
+    }));
     // Objects a reader finds that lopdf doesn't hold.
     for (&n, &e) in &spec {
         let id = match e {
@@ -1013,8 +1022,15 @@ pub(crate) fn compare_reading(bytes: &[u8], doc: &Document) -> Result<Reading, S
 /// The cross-reference entry each object number has for a reader following the
 /// specification: every section from the one at `at` along the `/Prev` chain (a hybrid
 /// section's stream ranking after its table), the newest entry counting, free ones too.
-fn whole_xref(bytes: &[u8], mut at: usize) -> Result<HashMap<u32, Entry>, String> {
+/// Also, for each number that entry frees, the newest older entry placing an object: the
+/// object a revision deleted.
+#[allow(clippy::type_complexity)]
+fn whole_xref(
+    bytes: &[u8],
+    mut at: usize,
+) -> Result<(HashMap<u32, Entry>, HashMap<u32, Entry>), String> {
     let mut spec = HashMap::new();
+    let mut deleted = HashMap::new();
     let mut seen = HashSet::new();
     loop {
         if !seen.insert(at) || seen.len() > MAX_SECTIONS {
@@ -1030,11 +1046,13 @@ fn whole_xref(bytes: &[u8], mut at: usize) -> Result<HashMap<u32, Entry>, String
             entries.extend(extra.entries);
         }
         for (num, e) in entries {
-            spec.entry(num).or_insert(e);
+            if *spec.entry(num).or_insert(e) == Entry::Free && e != Entry::Free {
+                deleted.entry(num).or_insert(e);
+            }
         }
         match read.prev {
             Some(p) => at = p,
-            None => return Ok(spec),
+            None => return Ok((spec, deleted)),
         }
     }
 }
@@ -1101,7 +1119,8 @@ pub(crate) fn references(doc: &Document) -> HashSet<ObjectId> {
 // ---------------------------------------------------------------- one step
 
 /// A version of the document: lopdf's reading, with the objects LimarePDF's reader found freed
-/// hidden (lopdf ignores free entries and would still show them).
+/// hidden. lopdf drops them itself since 0.47 (before, it ignored free entries); the check
+/// doesn't rest on that.
 struct Version<'a> {
     pdf: &'a Pdf,
     freed: HashSet<u32>,

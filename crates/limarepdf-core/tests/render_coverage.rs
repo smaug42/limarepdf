@@ -306,7 +306,7 @@ fn isolated_group_blends_against_transparent_backdrop() {
 }
 
 #[test]
-#[ignore = "hayro 0.8 treats every group as isolated"]
+#[ignore = "hayro 0.9 treats every group as isolated"]
 fn non_isolated_group_blends_against_page_backdrop() {
     group_case(false).expect(
         150.0,
@@ -377,7 +377,7 @@ fn non_knockout_group_composites_objects_over_each_other() {
 }
 
 #[test]
-#[ignore = "hayro 0.8 ignores /K (knockout)"]
+#[ignore = "hayro 0.9 ignores /K (knockout)"]
 fn knockout_group_replaces_earlier_objects() {
     // In a knockout group the red rect composites with the group's initial
     // backdrop (white), not with the blue rect: red 50% over white.
@@ -592,7 +592,6 @@ fn annot_hidden_flag_is_respected() {
 }
 
 #[test]
-#[ignore = "hayro 0.8 only checks the Hidden flag"]
 fn annot_noview_flag_is_respected() {
     // NoView (bit 6): not displayed on screen, may be printed.
     let s = shot(&mut annotated("Stamp", dictionary! { "F" => 32 | 4 }, true));
@@ -637,14 +636,14 @@ fn render_snapshot_keeps_other_annotations() {
 // annotation's own entries (12.5.6). Each case checks for that appearance.
 
 #[test]
-#[ignore = "hayro 0.8 draws annotations only from /AP"]
+#[ignore = "hayro 0.9 draws annotations only from /AP"]
 fn annot_text_without_ap() {
     let s = shot(&mut annotated("Text", text_extra(), false));
     assert!(s.marked(RECT) > 0, "no icon drawn for Text annotation");
 }
 
 #[test]
-#[ignore = "hayro 0.8 draws annotations only from /AP"]
+#[ignore = "hayro 0.9 draws annotations only from /AP"]
 fn annot_highlight_without_ap() {
     let s = shot(&mut annotated("Highlight", highlight_extra(), false));
     let (x, y) = mid();
@@ -652,7 +651,7 @@ fn annot_highlight_without_ap() {
 }
 
 #[test]
-#[ignore = "hayro 0.8 draws annotations only from /AP"]
+#[ignore = "hayro 0.9 draws annotations only from /AP"]
 fn annot_link_without_ap() {
     let s = shot(&mut annotated("Link", link_extra(), false));
     let (_, y) = mid();
@@ -673,21 +672,21 @@ fn annot_link_without_ap_or_border_draws_nothing() {
 }
 
 #[test]
-#[ignore = "hayro 0.8 draws annotations only from /AP"]
+#[ignore = "hayro 0.9 draws annotations only from /AP"]
 fn annot_stamp_without_ap() {
     let s = shot(&mut annotated("Stamp", stamp_extra(), false));
     assert!(s.marked(RECT) > 0, "no stamp drawn");
 }
 
 #[test]
-#[ignore = "hayro 0.8 draws annotations only from /AP"]
+#[ignore = "hayro 0.9 draws annotations only from /AP"]
 fn annot_free_text_without_ap() {
     let s = shot(&mut annotated("FreeText", free_text_extra(), false));
     assert!(s.marked(RECT) > 0, "FreeText /Contents not drawn");
 }
 
 #[test]
-#[ignore = "hayro 0.8 draws annotations only from /AP"]
+#[ignore = "hayro 0.9 draws annotations only from /AP"]
 fn annot_widget_without_ap() {
     let s = shot(&mut with_acroform(annotated(
         "Widget",
