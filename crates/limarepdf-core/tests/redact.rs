@@ -2652,6 +2652,59 @@ fn a_redacted_form_a_pattern_another_page_paints_with_is_kept_for_it_and_reporte
     assert_eq!(rep.picture_notices(), [notice(2)]);
 }
 
+/// A pattern and a soft mask set before the marked text, and painted with by it only, go
+/// with it (PB-177); painted with outside the mark too, they stay.
+#[test]
+fn a_pattern_set_for_the_marked_text_only_goes_with_it() {
+    for shown in [false, true] {
+        let after = if shown { "0 150 300 50 re f" } else { "" };
+        let content = format!(
+            "BT /F1 20 Tf 30 40 Td (Kept) Tj ET /Pattern cs /Pt scn /GS1 gs \
+             BT /F1 20 Tf 30 100 Td (Zebra) Tj ET {after}"
+        );
+        let mut p = make(&[&content]);
+        let font = helvetica_of(&p);
+        let mut drawing = |d: Dictionary, marker: &str| {
+            let text = format!("BT /F1 12 Tf 30 150 Td ({marker}) Tj ET");
+            p.doc.add_object(Stream::new(d, text.into_bytes()))
+        };
+        let bbox =
+            || -> Vec<Object> { [0, 0, 300, 200].into_iter().map(Object::Integer).collect() };
+        let fonts = || dictionary! { "Font" => dictionary! { "F1" => font.clone() } };
+        let pt = drawing(
+            dictionary! {
+                "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+                "BBox" => bbox(), "XStep" => 300, "YStep" => 200, "Resources" => fonts(),
+            },
+            "TileSecret",
+        );
+        let mask = drawing(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox(),
+                "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+                "Resources" => fonts(),
+            },
+            "MaskSecret",
+        );
+        let gs = dictionary! { "SMask" => dictionary! { "S" => "Luminosity", "G" => mask } };
+        add_res(
+            &mut p,
+            0,
+            dictionary! {
+                "Pattern" => dictionary! { "Pt" => pt },
+                "ExtGState" => dictionary! { "GS1" => gs },
+            },
+        );
+        let marks = marks_on(&p, 0, "zebra");
+        let drawings = ["TileSecret", "MaskSecret"];
+        let (gone, kept) = match shown {
+            true => (vec!["Zebra"], [&drawings[..], &["Kept"]].concat()),
+            false => ([&drawings[..], &["Zebra"]].concat(), vec!["Kept"]),
+        };
+        redacted(&mut p, &marks, &gone, &kept);
+    }
+}
+
 /// CP-03: page 1 draws a picture under the mark, and beside it a form, left as it is, which
 /// draws the same picture by the same name with the page's resources.
 fn picture_also_drawn_by_a_kept_form(picture: fn(&mut Pdf) -> ObjectId) -> Case {

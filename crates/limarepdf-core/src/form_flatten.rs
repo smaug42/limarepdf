@@ -501,10 +501,14 @@ impl Pdf {
     }
 
     /// Take the removed widgets out of the field tree, then the fields left without
-    /// widgets, then the form when it has no fields left. Fields nested more than
-    /// [`MAX_DEPTH`] deep are kept, or with `strict` (for removing information, where one
-    /// kept could hold the value of a removed widget) make it fail.
+    /// widgets, then the form when it has no fields left: from the form's list down, and
+    /// from each removed widget up its `/Parent`s, so a field the list leaves out, found
+    /// from a widget kept, holds none of them either (PB-179). Fields nested more than
+    /// [`MAX_DEPTH`] deep below the list are kept, or with `strict` (for removing
+    /// information, where one kept could hold the value of a removed widget) make it fail.
     pub(crate) fn prune_fields(&mut self, removed: &HashSet<ObjectId>, strict: bool) -> Result<()> {
+        let mut gone = removed.clone();
+        self.unparent(&mut gone);
         let Some(form) = self.acro_form() else {
             return Ok(());
         };
@@ -514,7 +518,6 @@ impl Pdf {
         };
         let all = list(b"Fields").unwrap_or_default();
         let order = list(b"CO");
-        let mut gone = removed.clone();
         let mut seen = HashSet::new();
         let mut fields = Vec::new();
         for f in all {
@@ -541,6 +544,42 @@ impl Pdf {
         }
         self.form_changed();
         Ok(())
+    }
+
+    /// Take each of `gone` out of the kids of the field its `/Parent` names; a field left
+    /// with none goes too, the same way. Nothing is followed by recursion and each field
+    /// goes once, so a loop of parents ends.
+    fn unparent(&mut self, gone: &mut HashSet<ObjectId>) {
+        let mut todo: Vec<ObjectId> = gone.iter().copied().collect();
+        while let Some(id) = todo.pop() {
+            let doc = &self.doc;
+            let Ok(parent) = (doc.get_dictionary(id))
+                .and_then(|d| d.get(b"Parent"))
+                .and_then(Object::as_reference)
+            else {
+                continue;
+            };
+            let Ok((_, Object::Array(kids))) = (doc.get_dictionary(parent))
+                .and_then(|d| d.get(b"Kids"))
+                .and_then(|o| doc.dereference(o))
+            else {
+                continue;
+            };
+            let kept: Vec<Object> = (kids.iter())
+                .filter(|k| k.as_reference().map_or(true, |k| !gone.contains(&k)))
+                .cloned()
+                .collect();
+            if kept.len() == kids.len() {
+                continue;
+            }
+            if kept.is_empty() {
+                if gone.insert(parent) {
+                    todo.push(parent);
+                }
+            } else if let Ok(d) = self.doc.get_dictionary_mut(parent) {
+                d.set("Kids", kept);
+            }
+        }
     }
 
     fn remove_form(&mut self) -> Result<()> {

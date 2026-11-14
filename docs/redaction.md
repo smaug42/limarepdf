@@ -97,7 +97,8 @@ For each area:
 
 Pictures and grouped content that nothing draws any more are left out of the saved file: also those only other
 grouped content, a pattern, a soft mask or a Type 3 font listed, and a redacted group's original, which its
-redacted copy replaces where the mark was. A redacted picture's original goes with its soft mask, mask and
+redacted copy replaces where the mark was. So are a pattern and a soft mask only removed content painted with, and
+what they draw. A redacted picture's original goes with its soft mask, mask and
 alternate versions, and a removed comment with the drawings it showed and the pictures and grouped content they
 draw. Every list of resources in the document stops listing them, also a list other pages share and one nothing
 draws with; the rest of each list stays as it was.
@@ -131,7 +132,8 @@ nothing and says what it found, and `limarepdf-cli redact` lists it and doesn't 
 
 It then follows everything the saved file would keep, from its start, and checks that nothing redaction removed is
 still kept another way. What it removed includes the pages' old content, a redacted picture's or group's original
-(a picture's with its soft mask, mask and alternate versions), alternative text taken off (also text stored apart
+(a picture's with its soft mask, mask and alternate versions), the patterns and soft masks only removed content
+painted with, alternative text taken off (also text stored apart
 from what held it, and a property stored apart that held it), removed comments, links and fields (a comment with
 what it showed and the text it held), and the pages' thumbnails and private data. The other ways are the tag tree,
 private application data and any other part of the file. LimarePDF doesn't cut them, so when one is found the app
@@ -174,7 +176,8 @@ What is ticked at first:
   is on and layer B is off"), and rules can sit inside rules; LimarePDF reads them as other PDF readers do, so
   what a rule hides goes even when every layer it names is on. A picture or form only hidden content drew, and a
   pattern or soft mask only it painted with, is left out of the saved file, also when it was listed by a form
-  inside a form or by a pattern nothing paints with. Layers that are off leave the layer list;
+  inside a form or by a pattern nothing paints with. A comment or a form field's box in a hidden layer goes, and a
+  field shown only in such boxes goes with its value. Layers that are off leave the layer list;
   layers that are shown stay. A rule that stays but named a removed layer is rewritten without it, so switching
   the layers that stay still shows and hides what it did. What shows doesn't change: a colour, position or clip
   hidden content sets still applies to what is drawn after it, and hidden text is replaced by a gap as wide, so
@@ -188,6 +191,7 @@ What is ticked at first:
   change what shows: hidden text that clips what comes after it, hidden text whose width LimarePDF can't work out
   (its font is set where the drawing is used) with visible text after it on the same line, or a shape begun in a
   hidden layer and painted outside it, or when the document's drawings are too complex to follow (as for
+  redaction); when a form field's box in a hidden layer belongs to a form nested more than 32 deep (as for
   redaction); and when something only hidden content drew is still kept another way, as when the tag tree
   points at it (as for redaction). Leave hidden layers out to remove the rest. Compressed data is checked to its end: if it is cut off
   or damaged part way, the command stops in the same way ("Part of this document is damaged..."). Data that is

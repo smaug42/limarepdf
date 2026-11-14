@@ -670,8 +670,9 @@ impl<'a> Redactor<'a> {
         // others point at (the originals of what was replaced, alternative text taken off)
         // isn't kept in the file through it. A drawing kept inside draws outside the marks,
         // so it keeps drawing the originals it names: a copy is drawn only where it was made,
-        // by a name of its own.
+        // by a name of its own. Patterns and states set for what was taken out go first.
         if changed {
+            reach::drop_unpainted(&mut out);
             let own = Uses::of_ops(&out);
             match self.needs(&res, &own) {
                 Some((xs, ps)) => {
@@ -1287,11 +1288,15 @@ impl Pdf {
         }
         // Drawings too complex to follow are refused now, not halfway through: every
         // annotation's appearances too, so those written into `/Annots` get objects first.
+        // What they paint with now, so that a pattern only what goes painted with goes too.
         self.own_direct_annots()?;
         let mut uses = Decoded::new();
-        self.reach(&mut reach::work(), &mut uses)?;
+        let before = self.reach(&mut reach::work(), &mut uses)?;
         let mut report = RedactReport::default();
-        let mut removed = Removed::default();
+        let mut removed = Removed {
+            painted: before.painted,
+            ..Removed::default()
+        };
         let (mut alts, mut unread, mut added_all) = (Vec::new(), Vec::new(), 0);
         for &p in by_page.keys() {
             let page = self.page_id_at(p)?;

@@ -139,6 +139,95 @@ pub(crate) fn alt_texts(doc: Option<&lopdf::Document>, d: &Dictionary) -> Vec<St
         .collect()
 }
 
+/// The operators besides `q`, `Q`, `gs` and those setting colours that paint nothing: they
+/// build paths, clip, set state, and start and end text and marked content. Any other
+/// paints, or may.
+const PAINTS_NOTHING: &[&str] = &[
+    "m", "l", "c", "v", "y", "h", "re", "n", "W", "W*", "cm", "w", "J", "j", "M", "d", "ri", "i",
+    "BT", "ET", "Tc", "Tw", "Tz", "TL", "Tf", "Tr", "Ts", "Td", "TD", "Tm", "T*", "BMC", "BDC",
+    "EMC", "MP", "DP", "BX", "EX",
+];
+
+/// Take out of content `ops` the patterns set as colours (`scn`, `SCN` naming one) and the
+/// graphics states set (`gs`) that nothing is painted with: replaced, restored or left at
+/// the end before anything paints. They show nothing there, but would keep the pattern or
+/// soft mask they name painted with for a walk, so an edit that took out all that painted
+/// with one would leave it in the file (PB-177).
+pub(crate) fn drop_unpainted(ops: &mut Vec<Operation>) {
+    /// What is set at one level of `q`: the fill and stroke patterns, and the states not
+    /// painted with yet.
+    #[derive(Clone, Default)]
+    struct Set {
+        fill: Option<usize>,
+        stroke: Option<usize>,
+        states: Vec<usize>,
+    }
+    let mut dead = vec![false; ops.len()];
+    let mut levels = vec![Set::default()];
+    for (i, o) in ops.iter().enumerate() {
+        let op = o.operator.as_str();
+        if op == "q" {
+            let top = levels.last().cloned().unwrap_or_default();
+            levels.push(Set {
+                states: Vec::new(),
+                ..top
+            });
+            continue;
+        }
+        if op == "Q" {
+            if levels.len() > 1 {
+                levels.pop();
+            }
+            continue;
+        }
+        let Some(top) = levels.last_mut() else {
+            continue;
+        };
+        let pattern = matches!(o.operands.last(), Some(Object::Name(_)));
+        match op {
+            "scn" | "SCN" => {
+                dead[i] = pattern;
+                let set = pattern.then_some(i);
+                match op {
+                    "scn" => top.fill = set,
+                    _ => top.stroke = set,
+                }
+            }
+            "cs" | "sc" | "g" | "rg" | "k" => top.fill = None,
+            "CS" | "SC" | "G" | "RG" | "K" => top.stroke = None,
+            "gs" => {
+                dead[i] = true;
+                top.states.push(i);
+            }
+            // What redaction leaves of text it took out: spacing only.
+            "Tj" | "TJ" | "'" | "\"" if !shows_text(o) => {}
+            _ if PAINTS_NOTHING.contains(&op) => {}
+            _ => {
+                // States set at every level hold here; colours only those of this one.
+                for j in top.fill.into_iter().chain(top.stroke) {
+                    dead[j] = false;
+                }
+                for level in &mut levels {
+                    for j in level.states.drain(..) {
+                        dead[j] = false;
+                    }
+                }
+            }
+        }
+    }
+    let mut dead = dead.into_iter();
+    ops.retain(|_| !dead.next().unwrap_or(false));
+}
+
+/// Whether text operator `o` shows any characters: holds a string that isn't empty.
+fn shows_text(o: &Operation) -> bool {
+    let shown = |o: &Object| matches!(o, Object::String(s, _) if !s.is_empty());
+    o.operands.iter().any(|x| match x {
+        Object::Array(a) => a.iter().any(shown),
+        x => shown(x),
+    })
+}
+
 /// What [`Pdf::reach`] found.
 #[derive(Default)]
 pub(crate) struct Reach {
@@ -662,5 +751,55 @@ mod tests {
         let last = reach.nodes.len() - 1;
         assert_eq!(reach.pages_drawing(1, |i| i == last), vec![0]);
         assert_eq!(reach.pages_drawing(1, |_| false), Vec::<usize>::new());
+    }
+
+    /// Patterns and graphics states nothing paints with go: replaced, restored or left at
+    /// the end before anything paints. Those painted with, at their level or inside it, stay,
+    /// and so do colours that aren't patterns.
+    #[test]
+    fn what_nothing_paints_with_goes() {
+        let ops = |s: &str| Content::decode(s.as_bytes()).unwrap().operations;
+        let text = |operations| String::from_utf8(Content { operations }.encode().unwrap());
+        for (content, left) in [
+            ("/P1 scn 0 0 9 9 re f", "/P1 scn 0 0 9 9 re f"),
+            ("/P1 scn 0 g 0 0 9 9 re f", "0 g 0 0 9 9 re f"),
+            (
+                "/P1 scn /Pattern cs 0 0 9 9 re f",
+                "/Pattern cs 0 0 9 9 re f",
+            ),
+            ("q /P1 scn Q 0 0 9 9 re f", "q Q 0 0 9 9 re f"),
+            ("/P1 scn q 0 0 9 9 re f Q", "/P1 scn q 0 0 9 9 re f Q"),
+            ("/P1 scn q 0 g 0 0 9 9 re f Q", "q 0 g 0 0 9 9 re f Q"),
+            ("/P1 SCN 0 G 0 0 9 9 re S", "0 G 0 0 9 9 re S"),
+            (
+                "/P1 scn /P2 SCN 0 0 9 9 re B",
+                "/P1 scn /P2 SCN 0 0 9 9 re B",
+            ),
+            (
+                "1 0 0 /P1 scn BT /F1 9 Tf (a) Tj ET",
+                "1 0 0 /P1 scn BT /F1 9 Tf (a) Tj ET",
+            ),
+            (
+                "/P1 scn BT [-500 ()] TJ () Tj ET",
+                "BT [-500 ()] TJ () Tj ET",
+            ),
+            ("/P1 scn BT [-500 (a)] TJ ET", "/P1 scn BT [-500 (a)] TJ ET"),
+            ("/P1 scn /Fm Do", "/P1 scn /Fm Do"),
+            ("/P1 scn /Sh sh", "/P1 scn /Sh sh"),
+            ("/P1 scn 0 0 9 9 re W n", "0 0 9 9 re W n"),
+            ("/DeviceGray cs 0.5 scn", "/DeviceGray cs 0.5 scn"),
+            ("/GS1 gs 0 0 9 9 re n", "0 0 9 9 re n"),
+            ("q /GS1 gs Q 0 0 9 9 re f", "q Q 0 0 9 9 re f"),
+            (
+                "/GS1 gs q /GS2 gs 0 0 9 9 re f Q",
+                "/GS1 gs q /GS2 gs 0 0 9 9 re f Q",
+            ),
+            ("/GS1 gs /OC /L1 BDC EMC", "/OC /L1 BDC EMC"),
+            ("Q /P1 scn", "Q"),
+        ] {
+            let mut done = ops(content);
+            drop_unpainted(&mut done);
+            assert_eq!(text(done), text(ops(left)), "{content}");
+        }
     }
 }

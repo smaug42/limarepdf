@@ -469,6 +469,15 @@
   document didn't check correctly; a field past the first 10,000 couldn't be signed by name or locked by a
   signature's field locks; and where the form asks readers to draw its fields, those past the first 10,000 were
   left without a drawing when signing turned that request off.
+- Redaction removes a pattern or soft mask that only the redacted content painted with, and the text it draws.
+  Before, it stayed in the saved file. Removing hidden layers removes one too when the page chooses it just before
+  the hidden content, outside the layer; before, choosing it there kept it in the file.
+- Removing hidden layers takes a form field's box in a hidden layer out of its field, and removes a field shown
+  only in such boxes, value and all. Before, the box went from the page but stayed in its field, so the box, its
+  drawing and the field's value stayed in the saved file.
+- Redaction and flattening some of a form's fields take a removed box out of its field even when the form's list
+  of fields leaves the field out, as some files do. Before, such a field kept the box: redaction stopped, changing
+  nothing, and said removed content might still be in the file, and flattening left the box in the file.
 
 ### Changed
 

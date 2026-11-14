@@ -844,7 +844,8 @@ impl Pdf {
     /// Why [`Pdf::remove_hidden`] would refuse to remove `what`, if it would; changes nothing.
     /// For checking before anything else is done for the removal. Content outside the crop
     /// box is only found left by redacting it, and what only hidden layers drew that the
-    /// file keeps another way only by removing them.
+    /// file keeps another way, or a form field's box in one in fields nested too deep to take
+    /// it out of, only by removing them.
     pub fn check_remove_hidden(&self, what: &[Hidden]) -> Result<()> {
         if what.contains(&Hidden::HiddenLayers) && self.layers_to_remove()? {
             // What is no longer drawn is found by following the drawings afterwards.
@@ -1122,8 +1123,9 @@ impl Pdf {
     /// whether data with a wrong checksum was read. When `strict`, refuses with nothing
     /// changed if some rule couldn't be read, or there is something to remove and some
     /// drawing couldn't be looked into, or what only hidden content drew or painted with is
-    /// still kept another way; otherwise (finding) counts them and changes nothing then.
-    /// With nothing to remove, nothing changes.
+    /// still kept another way, or the form's fields are nested too deep to take a removed
+    /// widget out of; otherwise (finding) counts them and changes nothing then. With
+    /// nothing to remove, nothing changes.
     fn drop_hidden_layers(&mut self, strict: bool) -> Result<(usize, bool)> {
         let Some((props, d, hidden)) = self.layer_list() else {
             return Ok((0, false));
@@ -1151,7 +1153,9 @@ impl Pdf {
             true => Some(self.reach(&mut reach::work(), &mut reach::Decoded::new())?),
             false => None,
         };
-        for (drawn, ops, inline) in scan.edits {
+        for (drawn, mut ops, inline) in scan.edits {
+            // Patterns and states set for hidden content only go with it.
+            reach::drop_unpainted(&mut ops);
             match drawn {
                 Drawn::Page(page) => self.commit(page, ops, 0, &inline)?,
                 Drawn::Stream(id) => {
@@ -1238,8 +1242,22 @@ impl Pdf {
                 d.set("AP", ap);
             }
         }
+        // Form widgets go from their fields too, and fields only they showed with them
+        // (PB-178).
         if !gone.is_empty() {
-            self.drop_annotations(gone)?;
+            let (_, off) = self.drop_annotations_ids(gone)?;
+            let widgets: HashSet<ObjectId> = (off.into_iter())
+                .filter(|&id| {
+                    let d = self.doc.get_dictionary(id);
+                    d.and_then(|d| d.get(b"Subtype"))
+                        .and_then(|o| o.as_name())
+                        .ok()
+                        == Some(b"Widget")
+                })
+                .collect();
+            if !widgets.is_empty() {
+                self.prune_fields(&widgets, strict)?;
+            }
         }
         self.drop_hidden_properties(&layers);
         self.rewrite_rules(&layers);

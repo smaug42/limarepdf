@@ -4,8 +4,9 @@
 //! with what everything still draws (a [`Pdf::reach`] walk after the change):
 //!
 //! * Every resource dictionary in the file, whatever holds it and whether or not anything
-//!   draws with it, stops listing an original nothing draws any more, and a marked-content
-//!   property holding alternative text that was taken off that nothing uses any more.
+//!   draws with it, stops listing an original nothing draws any more, a pattern or soft
+//!   mask painted with before and not after (PB-177), and a marked-content property
+//!   holding alternative text that was taken off that nothing uses any more.
 //!   Dictionaries shared with what didn't change are edited where they are, for those
 //!   entries only. Every change is worked out before any is made.
 //! * An original that a drawing left as it was still draws is kept for it, unchanged, and
@@ -22,8 +23,8 @@
 //!   annotation removed held as objects of its own that no annotation still listed holds.
 //!
 //! Removing hidden layers takes the same steps (PB-153): the originals are the pictures and
-//! forms drawn before and not after, and the patterns and soft masks painted with before and
-//! not after, which every resource dictionary stops listing the same way.
+//! forms drawn before and not after, and patterns and soft masks go as they do for
+//! redaction.
 
 use crate::reach::{self, mask_drawing, Reach, ALT};
 use crate::Pdf;
@@ -53,7 +54,8 @@ pub(crate) struct Removed {
     /// What the annotations removed held as objects of their own (see
     /// [`Pdf::annot_holds`]).
     pub held: HashSet<ObjectId>,
-    /// The patterns and soft masks' drawings what was removed painted with ([`Reach::painted`]).
+    /// The patterns and soft masks' drawings painted with before the change
+    /// ([`Reach::painted`]): those nothing paints with after it go.
     pub painted: HashSet<ObjectId>,
 }
 

@@ -1075,7 +1075,15 @@ removed set is the pictures and forms drawn before and not after, with those car
 own, and the tiling patterns and soft masks painted with before and not after (`Reach::painted`: `scn` and
 `SCN` with a name, and the soft mask of a state `gs` sets, `reach::mask_drawing`; `Removed::painted`);
 `clear_retained` unlists them from every `/XObject`, `/Pattern` and `/ExtGState` (by the state whose mask it is)
-in the file, and a route still reaching one refuses, rolled back by `atomically`. Redaction passes no `painted`.
+in the file, and a route still reaching one refuses, rolled back by `atomically`. Redaction passes `painted` too
+(PB-177). Both first take out of each rewritten content the pattern and state settings nothing paints with
+(`reach::drop_unpainted`: `scn` or `SCN` naming a pattern, and `gs`, replaced, restored or left at the end before
+anything paints; a text operator showing no characters, as redaction's spacing-only `TJ`, paints nothing), so a
+setting left from removed content doesn't keep its pattern or soft mask painted with. Widgets in a hidden layer
+leave their fields as redaction's do (`prune_fields`, PB-178), not only the pages' `/Annots`. `prune_fields`
+first takes each removed widget out of the `/Kids` of the field its `/Parent` names, and a field left without
+kids out of its own parent, iteratively (`unparent`, PB-179), so a field the form's list leaves out doesn't keep
+one; then it walks down from the list as before.
 Decoded content is cached by object (`reach::Decoded`) and shared by the walks before and after a redaction,
 which only adds objects; Remove hidden information edits streams in place, so its walk after starts afresh.
 Its scan for hidden content (`scan_layers`, WP-03) runs on `Pdf::reach_listed`: the same walk following every
