@@ -3,7 +3,7 @@
 
 use crate::annots::NO_VIEW;
 use crate::budget::{self, TooComplex, Work};
-use crate::forms::{FieldValue, Reach};
+use crate::forms::{FieldValue, Reach, MAX_DEPTH};
 use crate::matrix::{self as mx, M};
 use crate::{quoted_list, Pdf, Result};
 use anyhow::bail;
@@ -14,7 +14,6 @@ use std::collections::{HashMap, HashSet};
 const HIDDEN: i64 = 1 << 1;
 /// Annotation flag (`/F`) for an annotation that is printed.
 const PRINT: i64 = 1 << 2;
-const MAX_DEPTH: usize = 32;
 
 /// The steps finding what goes with the annotations kept may take: one for each annotation
 /// looked at and one for each popup or reply followed, about two for each annotation entry.
@@ -36,8 +35,9 @@ pub(crate) struct Plan {
     annots: Vec<Object>,
     /// Which entries stay on the page.
     keep: Vec<bool>,
-    /// The drawings to draw in, each with the matrix that puts it on the page.
-    shown: Vec<(ObjectId, M)>,
+    /// The drawings to draw in, each with the matrix that puts it on the page, and the
+    /// layer or layer rule its annotation is in (`/OC`), if any.
+    shown: Vec<(ObjectId, M, Option<Object>)>,
     /// The unplaced annotations kept, one for each entry.
     held: Vec<ObjectId>,
     /// The entries that go with each annotation: its popup, and the replies to it.
@@ -143,7 +143,7 @@ impl Pdf {
     /// ([`Pdf::render_snapshot`]): widgets showing a value that has no drawing, which
     /// LimarePDF can't draw either. Changes nothing.
     pub fn unshown_fields(&self, pages: &[usize]) -> Vec<String> {
-        self.lost_values(pages, flat_widget, Reach::Listed)
+        self.lost_values(pages, flat_widget, Reach::Every)
     }
 
     /// The fields whose values flattening the whole form ([`Pdf::flatten_form`]) would
@@ -343,9 +343,10 @@ impl Pdf {
 
         let mut res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
         let mut xobjects = self.resolved_dict(res.get(b"XObject").ok());
+        let mut props = self.resolved_dict(res.get(b"Properties").ok());
         let mut content = Vec::new();
-        let mut n = 0;
-        for (ap, m) in &shown {
+        let (mut n, mut k) = (0, 0);
+        for (ap, m, oc) in &shown {
             if let (Some(dr), Ok(s)) = (
                 dr,
                 self.doc.get_object_mut(*ap).and_then(|o| o.as_stream_mut()),
@@ -363,9 +364,34 @@ impl Pdf {
             };
             xobjects.set(name.as_str(), *ap);
             let m = m.map(|x| format!("{x:.4}")).join(" ");
-            content.extend(format!("q {m} cm /{name} Do Q\n").bytes());
+            let draw = format!("q {m} cm /{name} Do Q\n");
+            // An annotation in a layer is drawn into it (ISO 32000-1, 8.11.3.2), so it is
+            // shown when the layer is, as before (PB-180). A rule written in place is stored
+            // as an object of its own: renderers look a tag's layer up by reference.
+            let oc = match oc {
+                Some(Object::Reference(id)) if self.doc.get_dictionary(*id).is_ok() => Some(*id),
+                Some(Object::Dictionary(d)) => Some(self.doc.add_object(d.clone())),
+                _ => None,
+            };
+            match oc {
+                Some(oc) => {
+                    let tag = loop {
+                        k += 1;
+                        let tag = format!("{prefix}{k}");
+                        if !props.has(tag.as_bytes()) {
+                            break tag;
+                        }
+                    };
+                    props.set(tag.as_str(), oc);
+                    content.extend(format!("/OC /{tag} BDC\n{draw}EMC\n").bytes());
+                }
+                None => content.extend(draw.bytes()),
+            }
         }
         res.set("XObject", xobjects);
+        if k > 0 {
+            res.set("Properties", props);
+        }
         let pd = self.doc.get_dictionary_mut(page)?;
         if kept.is_empty() {
             pd.remove(b"Annots");
@@ -425,7 +451,7 @@ impl Pdf {
                 }
                 Flat::Drop => {}
                 Flat::Draw => match self.placement(d) {
-                    Some(p) => shown.push(p),
+                    Some((ap, m)) => shown.push((ap, m, d.get(b"OC").ok().cloned())),
                     None if hold => {
                         let flags = d.get(b"F").ok().and_then(|o| self.int_value(o));
                         // Hidden ones still go undrawn: nothing shown is lost.
@@ -502,10 +528,14 @@ impl Pdf {
     }
 
     /// Take the removed widgets out of the field tree, then the fields left without
-    /// widgets, then the form when it has no fields left. Fields nested more than
-    /// [`MAX_DEPTH`] deep are kept, or with `strict` (for removing information, where one
-    /// kept could hold the value of a removed widget) make it fail.
+    /// widgets, then the form when it has no fields left: from the form's list down, and
+    /// from each removed widget up its `/Parent`s, so a field the list leaves out, found
+    /// from a widget kept, holds none of them either (PB-179). Fields nested more than
+    /// [`MAX_DEPTH`] deep below the list are kept, or with `strict` (for removing
+    /// information, where one kept could hold the value of a removed widget) make it fail.
     pub(crate) fn prune_fields(&mut self, removed: &HashSet<ObjectId>, strict: bool) -> Result<()> {
+        let mut gone = removed.clone();
+        self.unparent(&mut gone);
         let Some(form) = self.acro_form() else {
             return Ok(());
         };
@@ -515,7 +545,6 @@ impl Pdf {
         };
         let all = list(b"Fields").unwrap_or_default();
         let order = list(b"CO");
-        let mut gone = removed.clone();
         let mut seen = HashSet::new();
         let mut fields = Vec::new();
         for f in all {
@@ -542,6 +571,42 @@ impl Pdf {
         }
         self.form_changed();
         Ok(())
+    }
+
+    /// Take each of `gone` out of the kids of the field its `/Parent` names; a field left
+    /// with none goes too, the same way. Nothing is followed by recursion and each field
+    /// goes once, so a loop of parents ends.
+    fn unparent(&mut self, gone: &mut HashSet<ObjectId>) {
+        let mut todo: Vec<ObjectId> = gone.iter().copied().collect();
+        while let Some(id) = todo.pop() {
+            let doc = &self.doc;
+            let Ok(parent) = (doc.get_dictionary(id))
+                .and_then(|d| d.get(b"Parent"))
+                .and_then(Object::as_reference)
+            else {
+                continue;
+            };
+            let Ok((_, Object::Array(kids))) = (doc.get_dictionary(parent))
+                .and_then(|d| d.get(b"Kids"))
+                .and_then(|o| doc.dereference(o))
+            else {
+                continue;
+            };
+            let kept: Vec<Object> = (kids.iter())
+                .filter(|k| k.as_reference().map_or(true, |k| !gone.contains(&k)))
+                .cloned()
+                .collect();
+            if kept.len() == kids.len() {
+                continue;
+            }
+            if kept.is_empty() {
+                if gone.insert(parent) {
+                    todo.push(parent);
+                }
+            } else if let Ok(d) = self.doc.get_dictionary_mut(parent) {
+                d.set("Kids", kept);
+            }
+        }
     }
 
     fn remove_form(&mut self) -> Result<()> {

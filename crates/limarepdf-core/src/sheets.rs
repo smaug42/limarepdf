@@ -531,7 +531,7 @@ impl Pdf {
     pub fn print_planned(&self, pages: &[usize], plan: &[SheetPlan]) -> Result<Pdf> {
         let mut out = match pages {
             [] => Pdf::new(),
-            _ => self.extract(pages)?,
+            _ => self.extract_with(pages, None)?,
         };
         out.encryption = None;
         out.flatten_form_for_print()?;

@@ -812,6 +812,250 @@ fn named_destinations_deep_in_the_tree_go_with_their_page() {
     }
 }
 
+/// Two pages drawing with one resource dictionary, an object of their own. Page 1 draws the
+/// form `/Kept` and marked content with the properties `/KeptAlt`. Page 2 draws the form
+/// `/Gone`, the tiling pattern `/Paint` and marked content with the properties `/GoneAlt`,
+/// and has a stamp whose appearance the document's named appearances list too. All that page
+/// 2 draws is marked WALRUS.
+fn sharing_two_pages() -> Pdf {
+    let mut p = Pdf::new();
+    for i in 0..2 {
+        p.insert_blank(i, 300.0, 200.0).unwrap();
+    }
+    let pages = p.page_ids();
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding",
+    });
+    let fonts = || dictionary! { "Font" => dictionary! { "F1" => font } };
+    let shows = |text: &str| format!("BT /F1 8 Tf 2 5 Td ({text}) Tj ET").into_bytes();
+    let form = |p: &mut Pdf, text: &str| {
+        p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 100, 20]),
+                "Resources" => fonts(),
+            },
+            shows(text),
+        ))
+    };
+    let kept = form(&mut p, "Kept form");
+    let gone = form(&mut p, "WALRUS-FORM");
+    let stamp = form(&mut p, "WALRUS-STAMP");
+    let paint = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+            "BBox" => rect([0, 0, 100, 20]), "XStep" => 100, "YStep" => 20, "Resources" => fonts(),
+        },
+        shows("WALRUS-PATTERN"),
+    ));
+    let res = p.doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => font },
+        "XObject" => dictionary! { "Kept" => kept, "Gone" => gone },
+        "Pattern" => dictionary! { "Paint" => paint },
+        "Properties" => dictionary! {
+            "KeptAlt" => dictionary! { "ActualText" => s("Kept property") },
+            "GoneAlt" => dictionary! { "ActualText" => s("WALRUS-PROPERTY") },
+        },
+    });
+    let contents = [
+        "q /Kept Do Q /Span /KeptAlt BDC BT /F1 12 Tf 10 150 Td (Page one) Tj ET EMC",
+        "q /Gone Do Q /Pattern cs /Paint scn 10 40 200 40 re f \
+         /Span /GoneAlt BDC BT /F1 12 Tf 10 150 Td (WALRUS-PAGE) Tj ET EMC",
+    ];
+    for (&page, content) in pages.iter().zip(contents) {
+        let c = p
+            .doc
+            .add_object(Stream::new(Dictionary::new(), content.as_bytes().to_vec()));
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", c);
+        d.set("Resources", res);
+    }
+    let annot = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Stamp", "Rect" => rect([150, 100, 250, 120]),
+        "P" => pages[1], "AP" => dictionary! { "N" => stamp },
+    });
+    push_annot(&mut p, pages[1], annot);
+    p.doc.catalog_mut().unwrap().set(
+        "Names",
+        dictionary! { "AP" => dictionary! { "Names" => vec![s("Stamp"), stamp.into()] } },
+    );
+    p
+}
+
+/// What only pages that went drew goes with them from what they share with pages that stay
+/// (PB-137): forms, patterns and marked-content properties their resource dictionary lists
+/// for the others too, and their stamps' appearances the named appearances list.
+#[test]
+fn what_only_the_pages_that_went_drew_goes_from_what_they_share() {
+    let mut p = sharing_two_pages();
+    Saved::of(&mut p.clone()).assert_kept(&[
+        "WALRUS-FORM",
+        "WALRUS-PATTERN",
+        "WALRUS-PROPERTY",
+        "WALRUS-STAMP",
+    ]);
+    let mut part = p.extract(&[0]).unwrap();
+    let mut deleted = p.clone();
+    deleted.delete_pages(&[1]).unwrap();
+    for out in [&mut part, &mut deleted] {
+        let saved = Saved::of(out);
+        saved.assert_gone(&["WALRUS"]);
+        saved.assert_kept(&["Kept form", "Kept property", "Page one"]);
+        draws_the_same(&mut p, out, &[1]);
+    }
+
+    let dir = common::tool::Scratch::new("split-shared");
+    let file = |n: usize, _: Option<&str>| dir.join(format!("part-{n}.pdf"));
+    assert_eq!(p.split(SplitBy::Every(1), file).unwrap(), 2);
+    let read = |n: usize| Saved::new(std::fs::read(file(n, None)).unwrap());
+    read(1).assert_gone(&["WALRUS"]);
+    let second = read(2);
+    second.assert_gone(&["Kept form", "Kept property"]);
+    second.assert_kept(&["WALRUS-FORM", "WALRUS-PATTERN", "WALRUS-STAMP"]);
+
+    // A page that went, with a copy of the list of its own, is left as it was: a signed file
+    // saved by adding to it would otherwise write the page again.
+    let gone = p.page_ids()[1];
+    let page = p.doc.get_dictionary(gone).unwrap();
+    let res = page.get(b"Resources").unwrap().as_reference().unwrap();
+    let res = p.doc.get_dictionary(res).unwrap().clone();
+    let page = p.doc.get_dictionary_mut(gone).unwrap();
+    page.set("Resources", res);
+    let page = page.clone();
+    p.delete_pages(&[1]).unwrap();
+    let after = p.doc.get_dictionary(gone).unwrap();
+    assert!(after == &page, "the page that went changed");
+    Saved::of(&mut p).assert_gone(&["WALRUS"]);
+}
+
+/// Pages whose own objects the file keeps some other way can't go for certain (PB-137):
+/// deleting or leaving them out is refused, saying how, with nothing changed and, for a
+/// split, no file written. The ways: a
+/// custom catalog entry holding page 2's content, or its alternative text stored as an object
+/// of its own; the tag tree pointing at the form only page 2 draws; and page 1's private
+/// application data, which page 2's points at too, as Illustrator's pages share theirs.
+#[test]
+fn pages_whose_own_objects_the_file_keeps_another_way_are_refused() {
+    let ways = [
+        ("content", "another part of the file"),
+        ("alt", "another part of the file"),
+        ("tags", "the tag tree"),
+        ("private", "private application data"),
+    ];
+    for (way, said) in ways {
+        let mut p = sharing_two_pages();
+        let pages = p.page_ids();
+        let page = p.doc.get_dictionary(pages[1]).unwrap();
+        let content = page.get(b"Contents").unwrap().as_reference().unwrap();
+        let res = page.get(b"Resources").unwrap().as_reference().unwrap();
+        let xobjects = p.doc.get_dictionary(res).unwrap().get(b"XObject").unwrap();
+        let gone = xobjects.as_dict().unwrap().get(b"Gone").unwrap().clone();
+        match way {
+            "content" => p.doc.catalog_mut().unwrap().set("Extra", content),
+            "alt" => {
+                let alt = p.doc.add_object(s("WALRUS-ALT"));
+                let root = p.doc.new_object_id();
+                let elem = elem(
+                    &mut p,
+                    "Figure",
+                    root,
+                    dictionary! { "Pg" => pages[1], "K" => 0, "Alt" => alt },
+                );
+                let tree = dictionary! { "Type" => "StructTreeRoot", "K" => elem };
+                p.doc.objects.insert(root, tree.into());
+                let catalog = p.doc.catalog_mut().unwrap();
+                catalog.set("StructTreeRoot", root);
+                catalog.set("Extra", alt);
+            }
+            "tags" => {
+                let root = p.doc.new_object_id();
+                let objr = dictionary! { "Type" => "OBJR", "Obj" => gone };
+                let elem = elem(&mut p, "Figure", root, dictionary! { "K" => objr });
+                let tree = dictionary! { "Type" => "StructTreeRoot", "K" => elem };
+                p.doc.objects.insert(root, tree.into());
+                p.doc.catalog_mut().unwrap().set("StructTreeRoot", root);
+            }
+            _ => {
+                let data = p.doc.add_object(Stream::new(
+                    Dictionary::new(),
+                    b"WALRUS-PRIVATE artwork of both pages".to_vec(),
+                ));
+                let app = p.doc.add_object(dictionary! {
+                    "LastModified" => s("D:20261113"), "Private" => data,
+                });
+                for &page in &pages {
+                    let d = p.doc.get_dictionary_mut(page).unwrap();
+                    d.set("PieceInfo", dictionary! { "Illustrator" => app });
+                }
+            }
+        }
+        let before = p.clone().snapshot().unwrap();
+        let err = format!("{:#}", p.delete_pages(&[1]).unwrap_err());
+        assert!(err.contains("can't be removed for certain"), "{way}: {err}");
+        assert!(err.contains(said), "{way}: {err}");
+        assert_eq!(p.clone().snapshot().unwrap(), before, "{way}: changed");
+        let Err(err) = p.extract(&[0]) else {
+            panic!("{way}: extracting page 1 worked");
+        };
+        let err = format!("{err:#}");
+        assert!(err.contains(said), "{way}: {err}");
+        // Each page alone: a part that would keep the other's objects writes no file at all.
+        let dir = common::tool::Scratch::new(&format!("split-refused-{way}"));
+        let file = |n: usize, _: Option<&str>| dir.join(format!("part-{n}.pdf"));
+        let err = format!("{:#}", p.split(SplitBy::Every(1), file).unwrap_err());
+        assert!(err.contains(said), "{way}: {err}");
+        assert!(err.contains("no file was written"), "{way}: {err}");
+        let written: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(written.is_empty(), "{way}: {written:?} written");
+    }
+}
+
+/// A page that stays draws a form that can't be read, which may draw anything the resources
+/// it shares with the page list, so whether what only the pages that went drew is still used
+/// can't be told: their removal is refused, as redaction is (PB-137). What it lists that the
+/// pages that went didn't draw doesn't stop a removal.
+#[test]
+fn a_drawing_that_cant_be_read_listing_what_only_the_pages_that_went_drew_is_refused() {
+    fn content(p: &mut Pdf, i: usize) -> &mut Stream {
+        let page = p.doc.get_dictionary(p.page_ids()[i]).unwrap();
+        let id = page.get(b"Contents").unwrap().as_reference().unwrap();
+        p.doc.get_object_mut(id).unwrap().as_stream_mut().unwrap()
+    }
+    let mut p = sharing_two_pages();
+    let bad = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 100, 20]),
+            "Filter" => "JBIG2Decode",
+        },
+        b"not a drawing".to_vec(),
+    ));
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    let res = page.get(b"Resources").unwrap().as_reference().unwrap();
+    let res = p.doc.get_dictionary_mut(res).unwrap();
+    let xobjects = res.get_mut(b"XObject").unwrap().as_dict_mut().unwrap();
+    xobjects.set("Bad", bad);
+    let s = content(&mut p, 0);
+    let mut drawing = b"q /Bad Do Q ".to_vec();
+    drawing.extend(&s.content);
+    s.set_content(drawing);
+    let before = p.clone().snapshot().unwrap();
+    let said = "a drawing on page 1 couldn't be read, so removed content may still be in the file";
+    let err = format!("{:#}", p.delete_pages(&[1]).unwrap_err());
+    assert!(err.contains(said), "{err}");
+    assert_eq!(p.clone().snapshot().unwrap(), before, "changed");
+    let Err(err) = p.extract(&[0]) else {
+        panic!("extracting page 1 worked");
+    };
+    assert!(format!("{err:#}").contains(said), "{err:#}");
+
+    // Page 2 drawing only its text and its stamp: they go, and the form page 1 lists stays.
+    content(&mut p, 1).set_content(b"BT /F1 12 Tf 10 150 Td (WALRUS-PAGE) Tj ET".to_vec());
+    let mut deleted = p.clone();
+    deleted.delete_pages(&[1]).unwrap();
+    let saved = Saved::of(&mut deleted);
+    saved.assert_gone(&["WALRUS-PAGE", "WALRUS-STAMP"]);
+    saved.assert_kept(&["WALRUS-FORM", "Kept form"]);
+}
+
 /// Poppler and Ghostscript read only the kept pages' text:
 /// `cargo test -p limarepdf-core --test pages_removed -- --ignored cross_check`.
 #[test]

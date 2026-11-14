@@ -1352,7 +1352,7 @@ fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>, flatten: bool) -
     if pdf.xfa_only() {
         bail!("{XFA_ONLY}");
     }
-    let fields = pdf.form_fields();
+    let fields = pdf.every_form_field();
     let field = |name: &str| -> Result<&Field> {
         fields
             .iter()

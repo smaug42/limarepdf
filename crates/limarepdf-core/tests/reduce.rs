@@ -207,6 +207,45 @@ fn the_resolution_is_measured_where_the_picture_is_drawn_largest_through_drawing
     assert_eq!(size_of(&p, im), (600, 400));
 }
 
+/// A page draws a picture an inch wide (1,200 ppi) and, from inside forms nested `depth`
+/// deep that draw with the page's resources, four inches wide (300 ppi). Forms 8 deep are
+/// followed, so it is measured at 300 ppi; deeper, it is left, not measured at 1,200 ppi
+/// without the place it is drawn largest.
+#[test]
+fn a_picture_drawn_deeper_than_drawings_are_followed_is_left() {
+    // 13 deep, past the 12 once followed, before 9.
+    for depth in [8, 13, 9] {
+        let mut p = pages(1);
+        let im = p.doc.add_object(photo(1200, 800));
+        let mut xobjects = dictionary! {"Im1" => im};
+        for i in 1..=depth {
+            let content = match i == depth {
+                true => AT_300.to_string(),
+                false => format!("/Fm{} Do", i + 1),
+            };
+            let bbox = vec![0.into(), 0.into(), W.into(), H.into()];
+            let fm = p.doc.add_object(Stream::new(
+                dictionary! {"Type" => "XObject", "Subtype" => "Form", "BBox" => bbox},
+                content.into_bytes(),
+            ));
+            xobjects.set(format!("Fm{i}"), fm);
+        }
+        let page = "q 72 0 0 48 72 100 cm /Im1 Do Q /Fm1 Do";
+        draw(&mut p, 0, page, xobjects);
+        let before = p.doc.objects.clone();
+        let r = reduce(&mut p, &[0], PictureQuality::Web);
+        if depth == 8 {
+            assert_eq!(r.pictures, 1, "{r:?}");
+            assert_eq!(size_of(&p, im), (600, 400));
+            continue;
+        }
+        assert_eq!(r.pictures, 0, "{depth} deep: {:?}, {r:?}", size_of(&p, im));
+        let shared = r.kept.get(&KeptWhy::Shared);
+        assert_eq!(shared, Some(&1), "{depth} deep: {r:?}");
+        assert!(p.doc.objects == before, "{depth} deep");
+    }
+}
+
 /// A smaller copy beside the original the other page still needs would make the file
 /// larger, so the picture is left (pdfbox's `2990` grew by half when copies were made).
 #[test]
@@ -290,6 +329,37 @@ fn a_soft_mask_is_scaled_with_its_picture() {
     assert_ne!(m, mask);
     assert_eq!(size_of(&p, m), (600, 400));
     assert_eq!(filter_of(&p, m), b"FlateDecode");
+}
+
+/// Eight alike pictures with soft masks, each an inch wide (240 ppi): reduced twice, the
+/// same masks get the same numbers, so the same file comes out, and of the eight that lose
+/// as much, the first is named as losing most.
+#[test]
+fn reducing_twice_gives_the_same_file() {
+    let mut p = pages(1);
+    let mut xobjects = Dictionary::new();
+    let mut content = String::new();
+    let mut first = None;
+    for i in 0..8 {
+        let mask: Vec<u8> = (0..240 * 160).map(|i| (i % 240) as u8).collect();
+        let mask = p.doc.add_object(picture(240, 160, "DeviceGray", mask));
+        let mut pic = photo(240, 160);
+        pic.dict.set("SMask", mask);
+        let im = p.doc.add_object(pic);
+        first.get_or_insert(im);
+        xobjects.set(format!("Im{i}"), im);
+        content += &format!("q 72 0 0 48 {} 100 cm /Im{i} Do Q ", 72 * (i % 4 + 1));
+    }
+    draw(&mut p, 0, &content, xobjects);
+    let mut q = p.clone();
+    let (a, b) = (
+        reduce(&mut p, &[0], PictureQuality::Email),
+        reduce(&mut q, &[0], PictureQuality::Email),
+    );
+    assert_eq!(a.pictures, 8, "{a:?}");
+    assert_eq!(a, b);
+    assert_eq!(a.most.map(|m| m.picture), first);
+    assert!(p.to_bytes().unwrap() == q.to_bytes().unwrap());
 }
 
 #[test]

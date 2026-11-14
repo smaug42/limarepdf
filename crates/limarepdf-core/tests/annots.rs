@@ -5,12 +5,13 @@
 #[path = "common/tool.rs"]
 mod tool;
 
+use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
     Align, AnnotKind, BoxSetting, DateStyle, InkColor, LinkTarget, Mark, Pdf, Shape, ShapeLook,
     SignArt, SignRole, SignStyle, Stamp, StampColor, StampKind, StampPlace, Unfollowed,
 };
-use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
+use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream, StringFormat};
 
 fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
@@ -50,7 +51,11 @@ fn add(p: &mut Pdf, page: usize, subtype: &str, rect: [f32; 4], extra: Dictionar
 /// Pixels that are not white inside `r` (left, top, right, bottom in displayed points;
 /// 1 px per point), and how many of them are dark.
 fn ink(p: &mut Pdf, r: [usize; 4]) -> (usize, usize) {
-    let bmp = shot(p);
+    ink_of(&shot(p), r)
+}
+
+/// [`ink`] in `bmp`.
+fn ink_of(bmp: &render::Bitmap, r: [usize; 4]) -> (usize, usize) {
     let (mut any, mut dark) = (0, 0);
     for y in r[1]..r[3].min(bmp.height) {
         for x in r[0]..r[2].min(bmp.width) {
@@ -519,6 +524,112 @@ fn flattening_keeps_the_look_and_removes_the_annotations() {
     assert_eq!(ink(&mut p, [0, 0, 300, 200]), before);
 }
 
+/// Where [`squares_in_layers`] puts its squares, in displayed points: the one shown, the one
+/// in a layer that's off, and the one a rule naming that layer hides.
+const SHOWN: [usize; 4] = [10, 40, 100, 160];
+const IN_LAYER: [usize; 4] = [100, 40, 190, 160];
+const BY_RULE: [usize; 4] = [190, 40, 280, 160];
+
+/// Three black squares with drawings of their own on [`page`]: one shown, one in a layer
+/// that's off, and one whose rule, written in place, hides it while that layer is off.
+fn squares_in_layers(p: &mut Pdf) {
+    let off = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCG", "Name" => text("Off") });
+    p.doc.catalog_mut().unwrap().set(
+        "OCProperties",
+        dictionary! {
+            "OCGs" => vec![Object::Reference(off)],
+            "D" => dictionary! { "OFF" => vec![Object::Reference(off)] },
+        },
+    );
+    let rule = Object::Dictionary(dictionary! { "Type" => "OCMD", "OCGs" => off });
+    for (x, oc) in [
+        (20.0, None),
+        (110.0, Some(Object::Reference(off))),
+        (200.0, Some(rule)),
+    ] {
+        let look = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => nums(&[0.0, 0.0, 70.0, 100.0]),
+            },
+            b"0 g 0 0 70 100 re f".to_vec(),
+        );
+        let mut d = dictionary! {
+            "C" => nums(&[0.0, 0.0, 0.0]),
+            "AP" => dictionary! { "N" => p.doc.add_object(look) },
+            "F" => 4,
+        };
+        if let Some(oc) = oc {
+            d.set("OC", oc);
+        }
+        add(p, 0, "Square", [x, 50.0, x + 70.0, 150.0], d);
+    }
+}
+
+/// Switches every layer of `p` on.
+fn layers_on(p: &mut Pdf) {
+    let props = p
+        .doc
+        .catalog_mut()
+        .unwrap()
+        .get_mut(b"OCProperties")
+        .unwrap();
+    props.as_dict_mut().unwrap().set("D", dictionary! {});
+}
+
+/// An annotation in a layer that's off isn't shown: not in the page's picture, the app's,
+/// the one OCR reads or the one under text being edited, and the app neither draws nor
+/// picks it (PB-181: hayro 0.9 draws an annotation whatever its layer).
+#[test]
+fn an_annotation_in_a_layer_thats_off_isnt_shown() {
+    let mut p = page();
+    squares_in_layers(&mut p);
+    let shown = ink(&mut p, SHOWN);
+    assert_eq!(shown.1, 7000);
+    let pictures = [
+        ("page", p.render_snapshot().unwrap()),
+        ("app", p.app_snapshot().unwrap()),
+        ("OCR", p.drawing_snapshot().unwrap()),
+        ("editing", p.page_without(0, &[]).unwrap()),
+    ];
+    for (what, bytes) in pictures {
+        let hp = render::load(bytes, None).unwrap();
+        let bmp = Renderer::new(&hp).render(0, 1.0).unwrap();
+        assert_eq!(ink_of(&bmp, SHOWN), shown, "{what}");
+        assert_eq!(ink_of(&bmp, IN_LAYER), (0, 0), "{what}");
+        assert_eq!(ink_of(&bmp, BY_RULE), (0, 0), "{what}");
+    }
+    let annots = p.annotations();
+    let on: Vec<bool> = annots.iter().map(|a| a.on_page()).collect();
+    assert_eq!(on, [true, false, false]);
+    let hidden: Vec<bool> = annots.iter().map(|a| a.hidden()).collect();
+    assert_eq!(hidden, [false, true, true]);
+    // With the layer on, they are.
+    layers_on(&mut p);
+    assert_eq!(ink(&mut p, IN_LAYER), shown);
+    assert_eq!(ink(&mut p, BY_RULE), shown);
+    assert!(p.annotations().iter().all(|a| a.on_page()));
+}
+
+/// Flattening draws an annotation in a layer into that layer: it stays hidden while the
+/// layer is off, and shows when it's on (PB-180).
+#[test]
+fn flattening_draws_an_annotation_in_a_layer_into_it() {
+    let mut p = page();
+    squares_in_layers(&mut p);
+    let shown = ink(&mut p, SHOWN);
+    assert_eq!(p.flatten_annotations(None).unwrap().drawn, 3);
+    let mut p = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    assert!(p.annotations().is_empty());
+    assert_eq!(ink(&mut p, SHOWN), shown);
+    assert_eq!(ink(&mut p, IN_LAYER), (0, 0));
+    assert_eq!(ink(&mut p, BY_RULE), (0, 0));
+    layers_on(&mut p);
+    assert_eq!(ink(&mut p, IN_LAYER), shown);
+    assert_eq!(ink(&mut p, BY_RULE), shown);
+}
+
 #[test]
 fn flattening_some_pages_leaves_the_others() {
     let mut p = page();
@@ -542,6 +653,169 @@ fn flattening_some_pages_leaves_the_others() {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].page, 0);
     assert!(p.flatten_annotations(Some(&[5])).is_err());
+}
+
+/// Paper the size of [`page`] with no margins: a sheet is its page as it is.
+fn as_is() -> PageSetup {
+    PageSetup {
+        paper: Paper {
+            id: "page".into(),
+            label: "page".into(),
+            size: (300.0, 200.0),
+            margins: Some([0.0; 4]),
+        },
+        orientation: Orientation::Automatic,
+        scale: Scale::ShrinkOversized,
+        per_sheet: PerSheet::default(),
+        booklet: None,
+    }
+}
+
+/// PB-114: markup, a line, a polyline and ink are placed by their points, so each without a
+/// drawing whose `/Rect` has no area (a point, or a line away from it, as
+/// `pdfjs/issue14203.pdf` has them) is drawn there on screen, in print and flattened, as
+/// other readers draw them. None was: a drawing is placed by `/Rect`.
+#[test]
+fn an_annotation_placed_by_its_points_is_drawn_when_its_rect_has_no_area() {
+    let black = || nums(&[0.0, 0.0, 0.0]);
+    let quads = |x: f32| nums(&[x, 180.0, x + 100.0, 180.0, x, 160.0, x + 100.0, 160.0]);
+    let mut p = page();
+    // Each printed (`/F` 4), as the corpus's are.
+    let mut put = |sub: &str, rect: [f32; 4], mut extra: Dictionary| {
+        extra.set("F", 4);
+        add(&mut p, 0, sub, rect, extra);
+    };
+    put(
+        "Highlight",
+        [20.0, 170.0, 20.0, 170.0],
+        dictionary! { "QuadPoints" => quads(20.0) },
+    );
+    put(
+        "StrikeOut",
+        [150.0, 170.0, 150.0, 170.0],
+        dictionary! { "C" => black(), "QuadPoints" => quads(150.0) },
+    );
+    // Its `/Rect` away from it, as the corpus's lines have theirs, and an ending past its
+    // points.
+    put(
+        "Line",
+        [150.0, 40.0, 250.0, 40.0],
+        dictionary! {
+            "C" => black(),
+            "IC" => black(),
+            "L" => nums(&[20.0, 100.0, 120.0, 100.0]),
+            "LE" => vec![Object::from("None"), Object::from("Circle")],
+            "BS" => dictionary! { "W" => 2 },
+        },
+    );
+    put(
+        "PolyLine",
+        [150.0, 100.0, 250.0, 100.0],
+        dictionary! {
+            "C" => black(),
+            "Vertices" => nums(&[150.0, 100.0, 200.0, 100.0, 250.0, 100.0]),
+        },
+    );
+    put(
+        "Ink",
+        [20.0, 40.0, 120.0, 40.0],
+        dictionary! { "C" => black(), "InkList" => vec![nums(&[20.0, 40.0, 120.0, 40.0])] },
+    );
+    // Where each shows, in displayed points.
+    let shown = [
+        ("highlight", [25, 22, 115, 38]),
+        ("strikeout", [155, 20, 245, 40]),
+        ("line", [25, 98, 110, 102]),
+        ("line's ending", [121, 95, 127, 105]),
+        ("polyline", [155, 98, 245, 102]),
+        ("ink", [25, 158, 115, 162]),
+    ];
+    let mut missing = Vec::new();
+    let mut check = |what: &str, bmp: &render::Bitmap| {
+        for (name, r) in shown {
+            if ink_of(bmp, r).0 <= 20 {
+                missing.push(format!("{what}: {name}"));
+            }
+        }
+    };
+    check("on screen", &shot(&mut p));
+    let app = render::load(p.app_snapshot().unwrap(), None).unwrap();
+    check("in the app", &Renderer::new(&app).render(0, 1.0).unwrap());
+    let mut sheets = p.print_sheets(&[0], &as_is()).unwrap();
+    check("printed", &shot(&mut sheets));
+    let done = p.flatten_annotations(None).unwrap();
+    let mut p = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    check("flattened", &shot(&mut p));
+    assert!(missing.is_empty(), "not drawn: {missing:#?}");
+    assert_eq!((done.drawn, done.kept), (5, vec![]));
+    assert!(p.annotations().is_empty());
+}
+
+/// A line placed by its points, with its `/Rect` away from it, as `pdfjs/issue14203.pdf`
+/// has its lines: at y 100 from x 20 to 120, its `/Rect` a line at y 40.
+fn line_away_from_its_rect(p: &mut Pdf) -> ObjectId {
+    add(
+        p,
+        0,
+        "Line",
+        [150.0, 40.0, 250.0, 40.0],
+        dictionary! { "C" => nums(&[0.0, 0.0, 0.0]), "L" => nums(&[20.0, 100.0, 120.0, 100.0]) },
+    )
+}
+
+/// PB-114: an annotation placed by its points whose `/Rect` has no area is listed with the
+/// box around its drawing, so the app frames it and goes to it where it is drawn, and it
+/// moves from that box. Its box was its `/Rect`, away from it.
+#[test]
+fn an_annotation_placed_by_its_points_is_listed_and_moved_where_it_is_drawn() {
+    let mut p = page();
+    let line = line_away_from_its_rect(&mut p);
+    let b = p.annotations()[0].bbox;
+    // In displayed points (y down) the line runs from (20, 100) to (120, 100).
+    assert!(
+        b[0] <= 20.0 && b[2] >= 120.0 && b[1] < 100.0 && b[3] > 100.0 && b[3] - b[1] < 10.0,
+        "{b:?}"
+    );
+    // Moved 30 points right and 20 up, as the app moves it, from that box.
+    let to = [b[0] + 30.0, b[1] - 20.0, b[2] + 30.0, b[3] - 20.0];
+    p.move_annotation(0, line, to).unwrap();
+    let moved = &p.annotations()[0];
+    let ends = moved.paths[0].clone();
+    let want = [(50.0, 80.0), (150.0, 80.0)];
+    let near =
+        |(x, y): (f32, f32), (u, v): (f32, f32)| (x - u).abs() < 0.01 && (y - v).abs() < 0.01;
+    assert!(
+        ends.len() == 2 && ends.iter().zip(want).all(|(&e, w)| near(e, w)),
+        "{ends:?}"
+    );
+    assert!(ink(&mut p, [55, 78, 145, 82]).0 > 20, "drawn where it went");
+}
+
+/// PB-114: redacting where an annotation placed by its points is drawn removes it, as
+/// redacting where its `/Rect` is does: a line away from its `/Rect`, and a highlight whose
+/// `/Rect` is a point at its left end, each marked over its right half. Both were kept, drawn
+/// over the black.
+#[test]
+fn redacting_where_an_annotation_placed_by_its_points_is_drawn_removes_it() {
+    let mut p = page();
+    line_away_from_its_rect(&mut p);
+    add(
+        &mut p,
+        0,
+        "Highlight",
+        [20.0, 170.0, 20.0, 170.0],
+        dictionary! {
+            "QuadPoints" => nums(&[20.0, 180.0, 120.0, 180.0, 20.0, 160.0, 120.0, 160.0]),
+        },
+    );
+    // In displayed points (y down).
+    p.redact(&[
+        (0, [80.0, 90.0, 110.0, 110.0]),
+        (0, [80.0, 20.0, 110.0, 40.0]),
+    ])
+    .unwrap();
+    let left: Vec<AnnotKind> = p.annotations().into_iter().map(|a| a.kind).collect();
+    assert!(left.is_empty(), "kept: {left:?}");
 }
 
 #[test]

@@ -1242,6 +1242,34 @@ fn redacted_forms_nested_three_deep_leave_no_originals() {
     redact_form_secret(&mut p);
 }
 
+/// Forms nested 8 deep, each drawing the next with the page's resources, the last with the
+/// text under the mark: redacted inside, as deep as a page's text is read. Nested 9 deep, the
+/// text isn't read, and the form under the mark goes whole.
+#[test]
+fn forms_are_redacted_inside_as_deep_as_text_is_read() {
+    let nested = |depth: usize| {
+        let mut p = make(&["q /Fm1 Do Q"]);
+        let mut xobjects = Dictionary::new();
+        for i in 1..=depth {
+            let content = match i == depth {
+                true => FORM_SECRET.to_string(),
+                false => format!("q /Fm{} Do Q", i + 1),
+            };
+            xobjects.set(format!("Fm{i}"), form_with(&mut p, &content, None));
+        }
+        add_res(&mut p, 0, dictionary! { "XObject" => xobjects });
+        p
+    };
+    let mut p = nested(8);
+    let marks = marks_on(&p, 0, "formsecretzebra");
+    redact_form_secret(&mut p);
+    let mut p = nested(9);
+    assert_eq!(p.find_redaction_marks("formsecretzebra").unwrap(), []);
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    Saved::of(&mut p).assert_gone(&["FormSecretZebra", "Kept"]);
+}
+
 /// A picture drawn only inside a form nested in a form without resources of its own, wholly
 /// under a mark: neither the picture nor the forms it was drawn from stay in the file.
 #[test]
@@ -2622,6 +2650,59 @@ fn a_redacted_form_a_pattern_another_page_paints_with_is_kept_for_it_and_reporte
     assert!(!back.page_text(0).contains("FormSecretZebra"));
     assert_eq!(rep.pictures_elsewhere, [1]);
     assert_eq!(rep.picture_notices(), [notice(2)]);
+}
+
+/// A pattern and a soft mask set before the marked text, and painted with by it only, go
+/// with it (PB-177); painted with outside the mark too, they stay.
+#[test]
+fn a_pattern_set_for_the_marked_text_only_goes_with_it() {
+    for shown in [false, true] {
+        let after = if shown { "0 150 300 50 re f" } else { "" };
+        let content = format!(
+            "BT /F1 20 Tf 30 40 Td (Kept) Tj ET /Pattern cs /Pt scn /GS1 gs \
+             BT /F1 20 Tf 30 100 Td (Zebra) Tj ET {after}"
+        );
+        let mut p = make(&[&content]);
+        let font = helvetica_of(&p);
+        let mut drawing = |d: Dictionary, marker: &str| {
+            let text = format!("BT /F1 12 Tf 30 150 Td ({marker}) Tj ET");
+            p.doc.add_object(Stream::new(d, text.into_bytes()))
+        };
+        let bbox =
+            || -> Vec<Object> { [0, 0, 300, 200].into_iter().map(Object::Integer).collect() };
+        let fonts = || dictionary! { "Font" => dictionary! { "F1" => font.clone() } };
+        let pt = drawing(
+            dictionary! {
+                "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+                "BBox" => bbox(), "XStep" => 300, "YStep" => 200, "Resources" => fonts(),
+            },
+            "TileSecret",
+        );
+        let mask = drawing(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox(),
+                "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+                "Resources" => fonts(),
+            },
+            "MaskSecret",
+        );
+        let gs = dictionary! { "SMask" => dictionary! { "S" => "Luminosity", "G" => mask } };
+        add_res(
+            &mut p,
+            0,
+            dictionary! {
+                "Pattern" => dictionary! { "Pt" => pt },
+                "ExtGState" => dictionary! { "GS1" => gs },
+            },
+        );
+        let marks = marks_on(&p, 0, "zebra");
+        let drawings = ["TileSecret", "MaskSecret"];
+        let (gone, kept) = match shown {
+            true => (vec!["Zebra"], [&drawings[..], &["Kept"]].concat()),
+            false => ([&drawings[..], &["Zebra"]].concat(), vec!["Kept"]),
+        };
+        redacted(&mut p, &marks, &gone, &kept);
+    }
 }
 
 /// CP-03: page 1 draws a picture under the mark, and beside it a form, left as it is, which

@@ -443,11 +443,79 @@
   in the app and in `limarepdf-cli`. Before, when that number was too small, or past the largest number there is,
   opening the file reported an internal error; when it was far too large, drawing the file closed the app at once,
   without a word. Found by fuzzing.
+- Removing hidden layers removes everything only their content drew: forms, also one drawn by a form that stays,
+  and the patterns and soft masks only it painted with, as it already did pictures. Before, such a form or
+  pattern stayed in the saved file with its text, and a picture in a hidden layer stayed when a pattern nothing
+  paints with listed it too. When the file keeps one of them another way, as when the tag tree points at it, the
+  command stops and changes nothing, as redaction does, and says so.
+- Removing hidden layers looks into forms drawn inside forms however deep they go. Before, forms nested more than
+  32 deep made it stop and change nothing. Like redaction, it still stops, changing nothing, when following the
+  document's drawings would take too long.
+- Reduce file size leaves a picture also drawn inside drawings nested more than 8 deep, too deep to measure, and
+  counts it among those shared. Before, a picture drawn small on a page and large inside drawings nested more than
+  12 deep was made as small as the small place allowed, and showed blurred where it was drawn large.
+- Reducing the same file the same way gives the same file each time. Before, the pictures' soft masks could be
+  numbered in a different order from one time to the next, and of pictures that lost as much, the one previewed
+  could differ.
+- In a form with more than 10,000 fields, every field is filled, reset, cleared and checked, not only the 10,000
+  the app lists. Before, a field past those couldn't be filled by name (`limarepdf-cli form fill` said there was
+  none), Reset form left it as it was, and Remove hidden information took its drawing away along with its value,
+  set the form to ask other readers to draw every field, and didn't count it. A signature in it wasn't counted, so
+  saving didn't warn that a full rewrite breaks it, and redaction's report of what still holds the removed text
+  left it out. Pictures of the pages (Export pages as images, `limarepdf-cli render`) left its value out without naming
+  it, and Remove blank pages could delete a page holding only it, value and all. A form with XFA whose fields on
+  the pages were all past the first 10,000 was taken for one only Adobe Reader can fill.
+- Signing a form with more than 10,000 fields works. Before, signing in a new box always failed, saying the signed
+  document didn't check correctly; a field past the first 10,000 couldn't be signed by name or locked by a
+  signature's field locks; and where the form asks readers to draw its fields, those past the first 10,000 were
+  left without a drawing when signing turned that request off.
+- Redaction removes a pattern or soft mask that only the redacted content painted with, and the text it draws.
+  Before, it stayed in the saved file. Removing hidden layers removes one too when the page chooses it just before
+  the hidden content, outside the layer; before, choosing it there kept it in the file.
+- Removing hidden layers takes a form field's box in a hidden layer out of its field, and removes a field shown
+  only in such boxes, value and all. Before, the box went from the page but stayed in its field, so the box, its
+  drawing and the field's value stayed in the saved file.
+- Redaction and flattening some of a form's fields take a removed box out of its field even when the form's list
+  of fields leaves the field out, as some files do. Before, such a field kept the box: redaction stopped, changing
+  nothing, and said removed content might still be in the file, and flattening left the box in the file.
+- Flattening and printing draw a comment or form field that belongs to a layer into that layer, so it shows only
+  when the layer does. Before, it was drawn onto the page itself and always showed, even with its layer switched
+  off.
+- A comment or form field that belongs to a layer that is switched off isn't shown: not on the page, in exported
+  pictures, in text recognition or behind text being edited, and you can't select it on the page. Before, it was
+  shown as if its layer were on.
+- Removing comments, attached files or hidden layers stops, changes nothing and says why when the file still
+  points at a removed comment another way, as when a tagged document's tags point at it, as redaction does. Before,
+  the comment was taken off its page but stayed in the saved file through the tags, with its text or its attached
+  file. What only the removed comments drew or painted with is left out of the file too, as for redaction.
+- Redacting a comment that Acrobat kept an icon for, in the document's list of named appearances, removes the icon
+  from that list too. Before, redaction stopped, changing nothing, and said removed content might still be in the
+  file, through another part of it. Removing comments takes the icon out in the same way.
+- A password-protected file that keeps its protection settings in its last section rather than in an object of
+  their own opens with its password. Before, LimarePDF said every password was wrong, the right one too.
+- Deleting pages, Extract pages and Split leave out everything only the pages that went drew, as redaction does:
+  forms, patterns, marked content's properties, and the stamps' drawings that Acrobat's list of named appearances
+  keeps. Before, when those pages shared their list of drawings and fonts with pages that stay, as many files'
+  pages do, all of it stayed in the saved file with its text. When the file still holds something of the pages
+  that went another way, as when a tagged document's tags point at it, or a page that stays has a drawing that
+  can't be read, the command stops, changes nothing and says why; Split then writes no file. Before, that was kept
+  without a word, and Split could write some parts before stopping at one.
+- A highlight, underline, squiggly underline, strikeout, line, polyline or ink drawing that another app saved
+  without a drawing of its own, and with a box of no size (a point, or a line somewhere else), is shown, printed
+  and flattened where its own points put it, as other readers draw it. Before, it wasn't shown or printed, and
+  Flatten annotations left it as it was, among those it can't draw. Selected, it is framed there, and it moves from
+  there; changed, it is saved with the box around it. Redacting where it is drawn removes it, as redacting over its
+  box does. Before, it was framed at its box, and redaction kept it, with its comment, unless the marks also
+  covered its box; other readers drew it over the black.
 
 ### Changed
 
 - Building LimarePDF needs the latest stable Rust (`rustup update stable`); older versions aren't supported. The
   package no longer names a minimum Rust version.
+- Redaction, Reduce file size and Save all images follow drawings inside drawings as deep as reading a page's text
+  does, 8 deep. Redaction redacts inside the 8th as well (before, a drawing that deep under a mark was removed
+  whole), and Reduce file size and Save all images stop at the 8th instead of the 12th: a picture drawn only deeper
+  isn't saved.
 - The notice for a file other PDF apps may show differently says its Save as… button writes a copy "without the
   parts other apps may read differently". Before, it said every app reads that copy the same, which LimarePDF can't
   promise: other apps may still show it in their own ways.

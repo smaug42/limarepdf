@@ -755,6 +755,249 @@ fn a_hidden_layer_picture_listed_by_a_nested_form_is_removed() {
     saved.assert_kept(&["Page text"]);
 }
 
+/// A picture in a hidden layer that a pattern nothing paints with lists too (PB-111): the
+/// drawings don't reach the pattern, but the picture leaves its resources and the file.
+#[test]
+fn a_hidden_layer_picture_listed_by_an_unused_pattern_is_removed() {
+    let mut p = make(
+        "BT /F1 12 Tf 10 20 Td (Page text) Tj ET q 100 0 0 10 30 150 cm /Im Do Q",
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let samples = b"HiddenPicSecret!".to_vec();
+    let pic = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => samples.len() as i64,
+            "Height" => 1, "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8, "OC" => off,
+        },
+        samples,
+    ));
+    let pattern = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+            "BBox" => rect([0, 0, 300, 200]), "XStep" => 300, "YStep" => 200,
+            "Resources" => dictionary! { "XObject" => dictionary! { "Im" => pic } },
+        },
+        b"q 100 0 0 10 30 150 cm /Im Do Q".to_vec(),
+    ));
+    page_res_set(&mut p, "XObject", dictionary! { "Im" => pic }.into());
+    page_res_set(&mut p, "Pattern", dictionary! { "P1" => pattern }.into());
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["HiddenPicSecret"]);
+    saved.assert_kept(&["Page text"]);
+}
+
+/// A page drawing, only from its content in the hidden layer `/L1`, a form, a picture, a
+/// tiling pattern and a soft mask, each with a marker of its own; and a visible form drawing
+/// another form only from its content in `/L1` (PB-153). With `shown`, the page draws the
+/// form outside the layer too.
+fn drawn_from_hidden(shown: bool) -> Pdf {
+    let shown = if shown { " q /Fm Do Q" } else { "" };
+    let mut p = make(
+        &format!(
+            "BT /F1 12 Tf 10 20 Td (Page text) Tj ET q /Outer Do Q{shown} \
+             /OC /L1 BDC q /Fm Do Q q 100 0 0 10 30 150 cm /Im Do Q \
+             /Pattern cs /P1 scn 0 100 100 50 re f /GS1 gs 0 0 50 50 re f EMC"
+        ),
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let font = helvetica(&mut p);
+    let fonts = || dictionary! { "Font" => dictionary! { "F1" => font } };
+    let text = |marker: &str| format!("BT /F1 12 Tf 30 150 Td ({marker}) Tj ET");
+    let form = |p: &mut Pdf, res: Dictionary, content: String| {
+        p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+                "Resources" => res,
+            },
+            content.into_bytes(),
+        ))
+    };
+    let fm = form(&mut p, fonts(), text("WALRUS-FORM"));
+    let inner = form(&mut p, fonts(), text("WALRUS-NESTED"));
+    let mut res = fonts();
+    res.set("XObject", dictionary! { "Inner" => inner });
+    res.set("Properties", dictionary! { "L1" => off });
+    let content = format!("/OC /L1 BDC q /Inner Do Q EMC {}", text("Visible outer"));
+    let outer = form(&mut p, res, content);
+    let samples = b"WALRUS-PICTURE".to_vec();
+    let im = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => samples.len() as i64,
+            "Height" => 1, "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+        samples,
+    ));
+    let pattern = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+            "BBox" => rect([0, 0, 300, 200]), "XStep" => 300, "YStep" => 200,
+            "Resources" => fonts(),
+        },
+        text("WALRUS-PATTERN").into_bytes(),
+    ));
+    let mask = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+            "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+            "Resources" => fonts(),
+        },
+        text("WALRUS-MASK").into_bytes(),
+    ));
+    let xobjects = dictionary! { "Fm" => fm, "Im" => im, "Outer" => outer };
+    page_res_set(&mut p, "XObject", xobjects.into());
+    page_res_set(&mut p, "Pattern", dictionary! { "P1" => pattern }.into());
+    let gs = dictionary! { "SMask" => dictionary! { "S" => "Luminosity", "G" => mask } };
+    page_res_set(&mut p, "ExtGState", dictionary! { "GS1" => gs }.into());
+    page_res_set(&mut p, "Properties", dictionary! { "L1" => off }.into());
+    p
+}
+
+/// What only hidden layers draw goes with them (PB-153); what is drawn outside them too
+/// stays.
+#[test]
+fn what_only_hidden_layers_draw_is_removed() {
+    for shown in [false, true] {
+        let mut p = drawn_from_hidden(shown);
+        let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+        let saved = Saved::of(&mut p);
+        saved.assert_gone(&[
+            "WALRUS-NESTED",
+            "WALRUS-PICTURE",
+            "WALRUS-PATTERN",
+            "WALRUS-MASK",
+        ]);
+        saved.assert_kept(&["Page text", "Visible outer"]);
+        match shown {
+            true => saved.assert_kept(&["WALRUS-FORM"]),
+            false => saved.assert_gone(&["WALRUS-FORM"]),
+        }
+        assert_eq!(saved.hidden_layer_users(), Vec::<String>::new());
+        assert_eq!(saved.unreachable(), []);
+    }
+}
+
+/// A pattern and a soft mask hidden content sets are what is painted after it with them,
+/// so they stay; one it sets and restores before anything is painted goes.
+#[test]
+fn a_pattern_hidden_content_sets_for_what_follows_is_kept() {
+    let mut p = make(
+        "BT /F1 12 Tf 10 20 Td (Page text) Tj ET \
+         /OC /L1 BDC q /Pattern cs /P2 scn 0 0 9 9 re f Q /Pattern cs /P1 scn /GS1 gs EMC \
+         0 100 100 50 re f",
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let font = helvetica(&mut p);
+    let fonts = || dictionary! { "Font" => dictionary! { "F1" => font } };
+    let text = |marker: &str| format!("BT /F1 12 Tf 30 150 Td ({marker}) Tj ET").into_bytes();
+    let mut pattern = |marker: &str| {
+        p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+                "BBox" => rect([0, 0, 300, 200]), "XStep" => 300, "YStep" => 200,
+                "Resources" => fonts(),
+            },
+            text(marker),
+        ))
+    };
+    let (shown, hidden) = (pattern("Visible pattern"), pattern("WALRUS-PATTERN"));
+    let mask = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+            "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+            "Resources" => fonts(),
+        },
+        text("Visible mask"),
+    ));
+    let patterns = dictionary! { "P1" => shown, "P2" => hidden };
+    page_res_set(&mut p, "Pattern", patterns.into());
+    let gs = dictionary! { "SMask" => dictionary! { "S" => "Luminosity", "G" => mask } };
+    page_res_set(&mut p, "ExtGState", dictionary! { "GS1" => gs }.into());
+    page_res_set(&mut p, "Properties", dictionary! { "L1" => off }.into());
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-PATTERN"]);
+    saved.assert_kept(&["Page text", "Visible pattern", "Visible mask"]);
+    assert_eq!(saved.hidden_layer_users(), Vec::<String>::new());
+    assert_eq!(saved.unreachable(), []);
+}
+
+/// A pattern and a soft mask set before a hidden layer and painted with only inside it go
+/// with it, though what sets them is outside (PB-177); painted with after it too, they stay.
+#[test]
+fn a_pattern_set_for_hidden_content_only_goes_with_it() {
+    for shown in [false, true] {
+        let after = if shown { "0 100 100 50 re f" } else { "" };
+        let mut p = make(
+            &format!(
+                "BT /F1 12 Tf 10 20 Td (Page text) Tj ET /Pattern cs /P1 scn /GS1 gs \
+                 /OC /L1 BDC 0 0 9 9 re f EMC {after}"
+            ),
+            Dictionary::new(),
+        );
+        let off = add_layers(&mut p);
+        let font = helvetica(&mut p);
+        let fonts = || dictionary! { "Font" => dictionary! { "F1" => font } };
+        let text = |marker: &str| format!("BT /F1 12 Tf 30 150 Td ({marker}) Tj ET").into_bytes();
+        let pattern = p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+                "BBox" => rect([0, 0, 300, 200]), "XStep" => 300, "YStep" => 200,
+                "Resources" => fonts(),
+            },
+            text("WALRUS-PATTERN"),
+        ));
+        let mask = p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+                "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+                "Resources" => fonts(),
+            },
+            text("WALRUS-MASK"),
+        ));
+        page_res_set(&mut p, "Pattern", dictionary! { "P1" => pattern }.into());
+        let gs = dictionary! { "SMask" => dictionary! { "S" => "Luminosity", "G" => mask } };
+        page_res_set(&mut p, "ExtGState", dictionary! { "GS1" => gs }.into());
+        page_res_set(&mut p, "Properties", dictionary! { "L1" => off }.into());
+        let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+        let saved = Saved::of(&mut p);
+        match shown {
+            true => saved.assert_kept(&["WALRUS-PATTERN", "WALRUS-MASK"]),
+            false => saved.assert_gone(&["WALRUS-PATTERN", "WALRUS-MASK"]),
+        }
+        saved.assert_kept(&["Page text"]);
+        assert_eq!(saved.hidden_layer_users(), Vec::<String>::new());
+        assert_eq!(saved.unreachable(), []);
+    }
+}
+
+/// A form only a hidden layer draws that the tag tree points at too would stay in the file
+/// that way: the removal refuses, as redaction does, with nothing changed.
+#[test]
+fn what_only_hidden_layers_draw_that_the_tag_tree_keeps_is_refused() {
+    let mut p = drawn_from_hidden(false);
+    let page = p.page_ids()[0];
+    let res = p.doc.get_dictionary(page).unwrap().get(b"Resources");
+    let xobjects = res.unwrap().as_dict().unwrap().get(b"XObject").unwrap();
+    let fm = xobjects.as_dict().unwrap().get(b"Fm").unwrap().clone();
+    let figure = dictionary! {
+        "Type" => "StructElem", "S" => "Figure", "Pg" => page,
+        "K" => dictionary! { "Type" => "OBJR", "Obj" => fm, "Pg" => page },
+    };
+    let root = p
+        .doc
+        .add_object(dictionary! { "Type" => "StructTreeRoot", "K" => figure });
+    catalog_set(&mut p, "StructTreeRoot", root.into());
+    refuses_unchanged(p, "through the tag tree");
+}
+
 #[test]
 fn hidden_layers_in_appearances_and_patterns_are_removed() {
     let mut p = make(
@@ -873,24 +1116,29 @@ fn hidden_layers_in_a_drawing_shared_with_the_same_layer_names_are_removed() {
     assert!(users.is_empty(), "{users:?}");
 }
 
-/// A removal that can't look at everything refuses before changing anything, while finding
-/// what there is still works.
+/// The document as saved, from a copy (saving moves lopdf's object counter on), with the
+/// highest object number the highest in use: a refusal doesn't lower it, and puts back
+/// everything else.
+fn saved_bytes(p: &Pdf) -> Vec<u8> {
+    let mut copy = p.clone();
+    copy.doc.max_id = copy.doc.objects.keys().map(|id| id.0).max().unwrap_or(0);
+    copy.snapshot().unwrap()
+}
+
+/// A removal that can't look at everything, or finds after removing something that it is
+/// still kept, refuses with nothing changed, while finding what there is still works.
 fn refuses_unchanged(mut p: Pdf, why: &str) {
     p.set_info(&Info {
         title: Some("Walrus title".into()),
         ..Default::default()
     })
     .unwrap();
-    // Serialising moves lopdf's object counter on, so copies are compared.
-    let before = p.clone();
+    let before = saved_bytes(&p);
     let err = p
         .remove_hidden(&[Hidden::Metadata, Hidden::HiddenLayers])
         .unwrap_err();
     assert!(format!("{err:#}").contains(why), "{err:#}");
-    assert_eq!(
-        p.clone().snapshot().unwrap(),
-        before.clone().snapshot().unwrap()
-    );
+    assert_eq!(saved_bytes(&p), before);
     let found = p.find_hidden().unwrap();
     assert_eq!(found.count(Hidden::HiddenLayers), 1);
     assert_eq!(found.count(Hidden::Metadata), 1);
@@ -899,9 +1147,31 @@ fn refuses_unchanged(mut p: Pdf, why: &str) {
     assert_eq!(p.info().title, None);
 }
 
+/// Forms 40 deep, past the 32 the scan for hidden layers once stopped at: followed to the
+/// end, the hidden layer's content removed; with fewer steps than following them takes,
+/// refused with nothing changed.
 #[test]
-fn hidden_layers_nested_too_deep_to_look_at_are_refused() {
-    refuses_unchanged(nested_layers(40), "nested more than 32 deep");
+fn hidden_layers_in_forms_nested_40_deep_are_removed() {
+    use limarepdf_core::{budget_seam, TooComplex};
+    let mut p = nested_layers(40);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-DEEP"]);
+    saved.assert_kept(&["Visible deep", "Page text"]);
+    let users = saved.hidden_layer_users();
+    assert!(users.is_empty(), "{users:?}");
+    let mut p = nested_layers(40);
+    let before = p.state_before();
+    let (got, _) = budget_seam::with_limit(40, || p.remove_hidden(&[Hidden::HiddenLayers]));
+    let e = got.unwrap_err();
+    let too = e.downcast_ref::<TooComplex>().expect("too complex");
+    assert_eq!(
+        (too.what, too.limit),
+        ("checking the drawings", 40),
+        "{e:#}"
+    );
+    assert_eq!(p.state_since(&before), []);
 }
 
 #[test]
@@ -1633,7 +1903,8 @@ fn checking_layer_rules_has_a_step_limit() {
     let (got, taken) =
         budget_seam::with_limit(2001, || p.check_remove_hidden(&[Hidden::HiddenLayers]));
     got.unwrap();
-    assert_eq!(taken.first(), Some(&2001), "{taken:?}");
+    // The rules' steps; following the drawings has a budget of its own.
+    assert!(taken.contains(&2001), "{taken:?}");
     let mut p = wide_rule(2000);
     let before = p.state_before();
     let (got, _) = budget_seam::with_limit(2000, || p.remove_hidden(&[Hidden::HiddenLayers]));
@@ -2016,6 +2287,211 @@ fn a_comment_drawing_in_a_hidden_layer_goes_with_it() {
     add_annot(&mut p, annot);
     p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
     Saved::of(&mut p).assert_gone(&["AP-SECRET", "LAYER-B"]);
+}
+
+/// A comment going with a hidden layer leaves the form as it was, its XFA too: only form
+/// widgets going change it.
+#[test]
+fn a_hidden_comment_going_leaves_the_form_as_it_was() {
+    let mut p = make(
+        "BT /F1 12 Tf 30 100 Td (Visible text) Tj ET",
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let note = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Text", "Rect" => rect([20, 140, 40, 160]),
+        "Contents" => s("WALRUS-NOTE"), "OC" => off,
+    });
+    add_annot(&mut p, note);
+    let field = p.doc.add_object(dictionary! {
+        "FT" => "Tx", "T" => s("name"), "V" => s("Kept value"),
+    });
+    let form = dictionary! { "Fields" => vec![Object::Reference(field)], "XFA" => s("KEPT-XFA") };
+    catalog_set(&mut p, "AcroForm", form.into());
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-NOTE"]);
+    saved.assert_kept(&["Kept value", "KEPT-XFA"]);
+}
+
+/// A tagged file's tags point at its comments, a file attached as one too, so the tag tree
+/// would keep one removed, with its text or its file. Removing comments, attachments or
+/// hidden layers then refuses, as redaction does, with nothing changed, and the other kinds
+/// still go; the tags pointing at a comment that stays change nothing (PB-182).
+#[test]
+fn a_comment_the_tag_tree_points_at_is_refused() {
+    for (kind, tag_note, tag_file, refused) in [
+        (Hidden::Comments, true, true, true),
+        (Hidden::Attachments, false, true, true),
+        (Hidden::Attachments, true, false, false),
+        (Hidden::HiddenLayers, true, false, true),
+    ] {
+        let mut p = make(
+            "BT /F1 12 Tf 30 100 Td (Visible text) Tj ET",
+            Dictionary::new(),
+        );
+        let off = add_layers(&mut p);
+        let page = p.page_ids()[0];
+        let note = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Text", "Rect" => rect([20, 140, 40, 160]),
+            "Contents" => s("WALRUS-NOTE"), "OC" => off,
+        });
+        let file = p.doc.add_object(Stream::new(
+            dictionary! { "Type" => "EmbeddedFile" },
+            b"WALRUS-FILE".to_vec(),
+        ));
+        let spec = dictionary! {
+            "Type" => "Filespec", "F" => s("notes.txt"), "EF" => dictionary! { "F" => file },
+        };
+        let attached = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "FileAttachment", "Rect" => rect([60, 140, 80, 160]),
+            "FS" => spec,
+        });
+        add_annot(&mut p, note);
+        add_annot(&mut p, attached);
+        let tags: Vec<Object> = [(note, tag_note), (attached, tag_file)]
+            .into_iter()
+            .filter(|&(_, tagged)| tagged)
+            .map(|(id, _)| {
+                dictionary! {
+                    "Type" => "StructElem", "S" => "Annot", "Pg" => page,
+                    "K" => dictionary! { "Type" => "OBJR", "Obj" => id, "Pg" => page },
+                }
+                .into()
+            })
+            .collect();
+        let root = (p.doc).add_object(dictionary! { "Type" => "StructTreeRoot", "K" => tags });
+        catalog_set(&mut p, "StructTreeRoot", root.into());
+        p.set_info(&Info {
+            title: Some("Walrus title".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let gone = match kind {
+            Hidden::Attachments => "WALRUS-FILE",
+            _ => "WALRUS-NOTE",
+        };
+        let before = saved_bytes(&p);
+        match p.remove_hidden(&[kind, Hidden::Metadata]) {
+            Ok(_) => {
+                let saved = Saved::of(&mut p);
+                saved.assert_gone(&[gone]);
+                assert!(
+                    !refused,
+                    "{kind:?}: removed, though the tag tree points at it"
+                );
+                saved.assert_kept(&["WALRUS-NOTE"]);
+            }
+            Err(e) => {
+                assert!(refused, "{kind:?}: {e:#}");
+                assert!(format!("{e:#}").contains("through the tag tree"), "{e:#}");
+                assert_eq!(saved_bytes(&p), before, "{kind:?}");
+                p.remove_hidden(&[Hidden::Metadata]).unwrap();
+                assert_eq!(p.info().title, None);
+            }
+        }
+    }
+}
+
+/// Acrobat keeps the icons it drew comments with in the document's named appearances
+/// (`/Names /AP`). A comment removed, by Remove comments or by redaction, takes its icon out
+/// of them, so they don't keep it in the file, and an icon still drawn stays named (PB-182).
+#[test]
+fn a_removed_comments_named_icon_goes_with_it() {
+    for redact in [false, true] {
+        let mut p = make(
+            "BT /F1 12 Tf 30 100 Td (Visible text) Tj ET",
+            Dictionary::new(),
+        );
+        let font = helvetica(&mut p);
+        let mut icon = |text: &str| {
+            let content = format!("BT /F1 4 Tf 2 8 Td ({text}) Tj ET");
+            p.doc.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 20, 20]),
+                    "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+                },
+                content.into_bytes(),
+            ))
+        };
+        let (gone, kept) = (icon("WALRUS-ICON"), icon("WALRUS-KEPT"));
+        let note = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Text", "Rect" => rect([20, 140, 40, 160]),
+            "Contents" => s("A note"), "AP" => dictionary! { "N" => gone },
+        });
+        let link = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Link", "Rect" => rect([100, 140, 120, 160]),
+            "AP" => dictionary! { "N" => kept },
+        });
+        add_annot(&mut p, note);
+        add_annot(&mut p, link);
+        let leaf = p.doc.add_object(dictionary! {
+            "Names" => vec![s("~icon+Comment"), gone.into(), s("~icon+Link"), kept.into()],
+            "Limits" => vec![s("~icon+Comment"), s("~icon+Link")],
+        });
+        let names = dictionary! { "AP" => dictionary! { "Kids" => vec![Object::Reference(leaf)] } };
+        catalog_set(&mut p, "Names", names.into());
+        match redact {
+            false => {
+                p.remove_hidden(&[Hidden::Comments]).unwrap();
+            }
+            true => {
+                let report = p.redact(&[(0, [15.0, 35.0, 45.0, 65.0])]).unwrap();
+                assert!(report.left.is_empty(), "{:?}", report.left);
+            }
+        }
+        let saved = Saved::of(&mut p);
+        saved.assert_gone(&["WALRUS-ICON"]);
+        saved.assert_kept(&["WALRUS-KEPT", "Visible text"]);
+        let names = p.doc.get_dictionary(leaf).unwrap().get(b"Names").unwrap();
+        assert_eq!(names.as_array().unwrap().len(), 2, "redact {redact}");
+    }
+}
+
+/// A form field's box in a hidden layer goes from its field, and a field only such boxes
+/// showed goes with its value; a field with a box still shown stays (PB-178). With the form's
+/// fields nested more than 32 deep, too deep to take the box out of for certain, nothing
+/// changes.
+#[test]
+fn a_field_box_in_a_hidden_layer_goes_from_its_field() {
+    for (levels, refused) in [(33, false), (34, true)] {
+        let mut p = listed_below(levels);
+        let off = add_layers(&mut p);
+        let mut fields = Vec::new();
+        for (name, value, shown) in [("only", "WALRUS-ONLY", false), ("both", "Kept value", true)] {
+            let field = p.doc.new_object_id();
+            let tip = s(&format!("WALRUS-BOX-{name}"));
+            let mut kids = vec![Object::Reference(widget(
+                &mut p,
+                dictionary! { "OC" => off, "Parent" => field, "TU" => tip },
+            ))];
+            if shown {
+                kids.push(widget(&mut p, dictionary! { "Parent" => field }).into());
+            }
+            let d = dictionary! { "FT" => "Tx", "T" => s(name), "V" => s(value), "Kids" => kids };
+            p.doc.objects.insert(field, d.into());
+            fields.push(field);
+        }
+        let catalog = p.doc.catalog_mut().unwrap();
+        let form = catalog.get_mut(b"AcroForm").unwrap().as_dict_mut().unwrap();
+        let list = form.get_mut(b"Fields").unwrap().as_array_mut().unwrap();
+        list.extend(fields.iter().map(|&f| Object::Reference(f)));
+        if refused {
+            let before = p.clone().snapshot().unwrap();
+            let err = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap_err();
+            let err = format!("{err:#}");
+            assert!(err.contains("nested more than 32 deep"), "{err}");
+            assert_eq!(p.clone().snapshot().unwrap(), before);
+            continue;
+        }
+        p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        let both = p.doc.get_dictionary(fields[1]).unwrap();
+        let kids = both.get(b"Kids").unwrap().as_array().unwrap();
+        assert_eq!(kids.len(), 1, "{kids:?}");
+        let saved = Saved::of(&mut p);
+        saved.assert_gone(&["WALRUS-ONLY", "WALRUS-BOX"]);
+        saved.assert_kept(&["Kept value", "WALRUS-LISTED-TOP"]);
+    }
 }
 
 /// PB-85: a page cropped, with a form partly outside the crop box that the document's tag

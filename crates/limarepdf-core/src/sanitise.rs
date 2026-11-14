@@ -7,11 +7,13 @@ use crate::budget::{self, TooComplex, Work};
 use crate::fonts::FontCtx;
 use crate::inline::Inline;
 use crate::reach;
+use crate::retained::{unread_said, Removed, Retained};
 use crate::{Leftovers, Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// A kind of hidden information.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -149,8 +151,7 @@ const ACTIVE: [&[u8]; 6] = [
     b"GoToE",
 ];
 
-/// Deepest nesting of drawings (forms, patterns, glyphs, soft masks) looked into for hidden
-/// layers, and of the expressions in a layer rule. Deeper ones make the removal refuse
+/// Deepest nesting of the expressions in a layer rule. Deeper ones make the removal refuse
 /// rather than leave them.
 const MAX_NESTING: usize = 32;
 
@@ -193,7 +194,7 @@ enum Folded {
 /// them (ISO 32000-1, 8.11.2.2: `/VE` first, else `/OCGs` and `/P`). Every other layer
 /// counts as on. Each rule and each stored expression is worked out once, within one budget
 /// of [`RULE_STEPS`]; what the scan found the rules something uses do is kept here too.
-struct Layers {
+pub(crate) struct Layers {
     off: HashSet<ObjectId>,
     /// Stored expressions worked out: whether each is true, how many levels deep it
     /// reaches, and whether it names a layer that's off.
@@ -600,13 +601,12 @@ struct LayerScan {
     faults: bool,
 }
 
-/// A drawing the layer scan has looked into. One without resources of its own draws with
-/// those of where it is used, so its layer names can mean other layers there: for such a
-/// drawing, the resources it was first looked into with, and the names each set of resources
-/// it has been checked against gives hidden layers.
-#[derive(Default)]
+/// A drawing without resources of its own that the layer scan has looked into: it draws with
+/// those of where it is used, so its layer names can mean other layers there. The resources
+/// it was first looked into with, and the names each set of resources it has been checked
+/// against gives hidden layers.
 struct Seen {
-    first: Option<Dictionary>,
+    first: Rc<Dictionary>,
     checked: Vec<HiddenNames>,
 }
 
@@ -753,6 +753,65 @@ fn hidden_show(o: &Operation, t: &TextState, font: Option<&FontCtx>) -> (Vec<Ope
     (out, true)
 }
 
+/// Of the operators at `at` in `ops`, a pattern to paint with (`scn`, `SCN`) or a graphics
+/// state (`gs`) that hidden content set, those nothing paints while they hold: they are
+/// restored (`Q`), the colour is set again, or the drawing ends first. Kept, they would
+/// keep the pattern or soft mask only the hidden content painted with in the file (PB-153).
+fn unused_settings(ops: &[Operation], at: &[usize]) -> HashSet<usize> {
+    let mut depth = Vec::with_capacity(ops.len());
+    let mut d = 0usize;
+    for o in ops {
+        depth.push(d);
+        match o.operator.as_str() {
+            "q" => d += 1,
+            // One with nothing saved is passed over.
+            "Q" => d = d.saturating_sub(1),
+            _ => {}
+        }
+    }
+    let unused = |i: usize| {
+        let again: &[&str] = match ops[i].operator.as_str() {
+            "scn" => &["cs", "sc", "scn", "g", "rg", "k"],
+            "SCN" => &["CS", "SC", "SCN", "G", "RG", "K"],
+            _ => &[],
+        };
+        let set = depth[i];
+        for (o, &at) in ops.iter().zip(&depth).skip(i + 1) {
+            let name = o.operator.as_str();
+            if at == set && ((name == "Q" && set > 0) || again.contains(&name)) {
+                return true;
+            }
+            if paints(o) {
+                return false;
+            }
+        }
+        true
+    };
+    let selects = |o: &Operation| match o.operator.as_str() {
+        "scn" | "SCN" => matches!(o.operands.last(), Some(Object::Name(_))),
+        op => op == "gs",
+    };
+    (at.iter().copied())
+        .filter(|&i| selects(&ops[i]) && unused(i))
+        .collect()
+}
+
+/// Whether operator `o` may paint: one not known not to does.
+fn paints(o: &Operation) -> bool {
+    const NOT: &[&str] = &[
+        "m", "l", "c", "v", "y", "h", "re", "n", "W", "W*", "q", "Q", "cm", "w", "J", "j", "M",
+        "d", "ri", "i", "gs", "CS", "cs", "SC", "SCN", "sc", "scn", "G", "g", "RG", "rg", "K", "k",
+        "BT", "ET", "Tc", "Tw", "Tz", "TL", "Tf", "Tr", "Ts", "Td", "TD", "Tm", "T*", "BMC", "BDC",
+        "EMC", "MP", "DP", "BX", "EX", "d0", "d1",
+    ];
+    match o.operator.as_str() {
+        // Spacing without text, as hidden text leaves.
+        "TJ" => (o.operands.first().and_then(|a| a.as_array().ok()))
+            .is_none_or(|a| a.iter().any(|x| matches!(x, Object::String(..)))),
+        name => !NOT.contains(&name),
+    }
+}
+
 /// Why a stream's content couldn't be read.
 enum Unread {
     /// Its compressed data is cut off or damaged part way.
@@ -775,17 +834,24 @@ impl Pdf {
     /// Remove the kinds of hidden information in `what`. Unused objects go when the
     /// document is saved, which rewrites the whole file, so nothing removed is kept in it.
     /// Refuses, with nothing changed, when it couldn't remove all of a kind: hidden layers
-    /// in drawings it can't read or nested too deep, a layer rule it can't read, a form
-    /// nested too deep, content outside the crop box redaction's check finds left.
+    /// in drawings it can't read or too complex to follow, a layer rule it can't read, something
+    /// only hidden layers drew that the file still keeps another way (the tag tree, say), a
+    /// form nested too deep, content outside the crop box redaction's check finds left.
     pub fn remove_hidden(&mut self, what: &[Hidden]) -> Result<HiddenReport> {
         self.atomically(|p| p.remove_kinds(what, true))
     }
 
     /// Why [`Pdf::remove_hidden`] would refuse to remove `what`, if it would; changes nothing.
     /// For checking before anything else is done for the removal. Content outside the crop
-    /// box is only found left by redacting it.
+    /// box is only found left by redacting it, and what only hidden layers, comments or
+    /// attached files held that the file keeps another way, or a form field's box in a hidden
+    /// layer in fields nested too deep to take it out of, only by removing them.
     pub fn check_remove_hidden(&self, what: &[Hidden]) -> Result<()> {
-        if what.contains(&Hidden::HiddenLayers) && self.layers_to_remove()? {
+        let annots = |h| what.contains(&h) && !self.annots_of(h).is_empty();
+        if (what.contains(&Hidden::HiddenLayers) && self.layers_to_remove()?)
+            || annots(Hidden::Comments)
+            || annots(Hidden::Attachments)
+        {
             // What is no longer drawn is found by following the drawings afterwards.
             self.reach(&mut reach::work(), &mut reach::Decoded::new())?;
         }
@@ -831,9 +897,9 @@ impl Pdf {
                     n
                 }
                 Hidden::Comments => {
-                    self.remove_annotations(|a| !matches!(a.kind, crate::AnnotKind::Redact))?
+                    self.drop_annots_for_good(self.annots_of(h), strict, "comments")?
                 }
-                Hidden::Attachments => self.drop_attachments()?,
+                Hidden::Attachments => self.drop_attachments(strict)?,
                 Hidden::Scripts => self.drop_scripts(),
                 Hidden::Metadata => self.drop_metadata(),
                 Hidden::PrivateData => self.drop_private_data(),
@@ -908,21 +974,55 @@ impl Pdf {
         n + self.drop_names(&[b"IDS", b"URLS"])
     }
 
-    fn drop_attachments(&mut self) -> Result<usize> {
+    fn drop_attachments(&mut self, strict: bool) -> Result<usize> {
         let mut n = self.drop_names(&[b"EmbeddedFiles"]);
         if let Ok(c) = self.doc.catalog_mut() {
             n += usize::from(c.remove(b"Collection").is_some());
         }
         n += self.drop_keys_everywhere(&[b"AF"]);
-        let files: HashSet<ObjectId> = self
-            .every_annotation()
-            .into_iter()
-            .filter(|a| matches!(&a.kind, crate::AnnotKind::Other(s) if s == "FileAttachment"))
+        let files = self.annots_of(Hidden::Attachments);
+        Ok(n + self.drop_annots_for_good(files, strict, "attached files")?)
+    }
+
+    /// The annotations removing comments takes (all but redaction marks), or removing
+    /// attached files (those holding one).
+    fn annots_of(&self, h: Hidden) -> HashSet<ObjectId> {
+        (self.every_annotation().into_iter())
+            .filter(|a| match h {
+                Hidden::Comments => a.kind != crate::AnnotKind::Redact,
+                _ => matches!(&a.kind, crate::AnnotKind::Other(s) if s == "FileAttachment"),
+            })
             .map(|a| a.id)
-            .collect();
-        if !files.is_empty() {
-            n += self.drop_annotations(files)?;
+            .collect()
+    }
+
+    /// Remove the annotations `gone`, with the replies to them and their popups. When
+    /// `strict`, what only they drew or painted with goes from every resource list, as
+    /// redaction takes what the annotations it removes held, and removing `what` is refused
+    /// when the file still keeps any of it another way, the tag tree say (PB-182); the
+    /// caller's [`Pdf::atomically`] puts the change back.
+    fn drop_annots_for_good(
+        &mut self,
+        gone: HashSet<ObjectId>,
+        strict: bool,
+        what: &str,
+    ) -> Result<usize> {
+        if !strict || gone.is_empty() {
+            return self.drop_annotations(gone);
         }
+        let mut uses = reach::Decoded::new();
+        let before = self.reach(&mut reach::work(), &mut uses)?;
+        let (n, annots) = self.drop_annotations_ids(gone)?;
+        // No drawing changed, so what was read stays.
+        let after = self.reach(&mut reach::work_after(0), &mut uses)?;
+        let mut removed = Removed {
+            xobjects: before.drawn.difference(&after.drawn).copied().collect(),
+            painted: before.painted,
+            annots,
+            ..Removed::default()
+        };
+        self.annots_held(&mut removed);
+        refuse_left(what, self.clear_retained(&removed, &after))?;
         Ok(n)
     }
 
@@ -1054,14 +1154,30 @@ impl Pdf {
         Some((props, d, hidden))
     }
 
+    /// The layers switched off as the document opens, to tell what they hide; `None` when
+    /// it has no layer list. A rule that can't be read, or not within [`RULE_STEPS`], hides
+    /// nothing.
+    pub(crate) fn layers_off(&self) -> Option<Layers> {
+        self.layer_list().map(|(_, _, off)| Layers::new(off))
+    }
+
+    /// Whether annotation `annot` is in a layer `layers` hide, or a rule they make hide it
+    /// (`/OC`, ISO 32000-1, 12.5.2): it isn't shown then, as if hidden. hayro 0.9 draws it
+    /// all the same (PB-181), so the copies drawn mark it hidden.
+    pub(crate) fn annot_layer_off(&self, annot: &Dictionary, layers: &mut Layers) -> bool {
+        annot.get(b"OC").is_ok_and(|oc| self.oc_hidden(oc, layers))
+    }
+
     /// Delete the content of the layers (optional content groups) that are switched off,
     /// and what layer rules hide, and take those layers out of the layer list; rules kept
     /// that named them are rewritten without them. Returns how many were found (the layers
     /// switched off, and the rules hiding content with every layer they name on), and
     /// whether data with a wrong checksum was read. When `strict`, refuses with nothing
     /// changed if some rule couldn't be read, or there is something to remove and some
-    /// drawing couldn't be looked into; otherwise (finding) counts them and changes nothing
-    /// then. With nothing to remove, nothing changes.
+    /// drawing couldn't be looked into, or what only hidden content drew or painted with is
+    /// still kept another way, or the form's fields are nested too deep to take a removed
+    /// widget out of; otherwise (finding) counts them and changes nothing then. With
+    /// nothing to remove, nothing changes.
     fn drop_hidden_layers(&mut self, strict: bool) -> Result<(usize, bool)> {
         let Some((props, d, hidden)) = self.layer_list() else {
             return Ok((0, false));
@@ -1083,7 +1199,15 @@ impl Pdf {
         if !layers.to_remove() {
             return Ok((0, false));
         }
-        for (drawn, ops, inline) in scan.edits {
+        // What the drawings draw and paint with before the change, so that what only hidden
+        // content did goes with it. Finding, on a copy, only counts.
+        let before = match strict {
+            true => Some(self.reach(&mut reach::work(), &mut reach::Decoded::new())?),
+            false => None,
+        };
+        for (drawn, mut ops, inline) in scan.edits {
+            // Patterns and states set for hidden content only go with it.
+            reach::drop_unpainted(&mut ops);
             match drawn {
                 Drawn::Page(page) => self.commit(page, ops, 0, &inline)?,
                 Drawn::Stream(id) => {
@@ -1099,21 +1223,12 @@ impl Pdf {
                 }
             }
         }
-        // Pictures and forms in a hidden layer are no longer drawn: out of the resources.
+        // Pictures and forms in a hidden layer of their own, drawn or only listed.
         let mut layered = HashSet::new();
         for (id, o) in &self.doc.objects {
             let oc = o.as_stream().ok().and_then(|s| s.dict.get(b"OC").ok());
             if oc.is_some_and(|oc| self.oc_hidden(oc, &mut layers)) {
                 layered.insert(*id);
-            }
-        }
-        if !layered.is_empty() {
-            // The streams were changed in place, so they are read afresh. Finding (on a
-            // copy) leaves them listed when the drawings are too complex to follow.
-            match self.reach(&mut reach::work_after(0), &mut reach::Decoded::new()) {
-                Ok(reach) => self.drop_unused_xobjects(&layered, &reach)?,
-                Err(e) if strict => return Err(e.into()),
-                Err(_) => {}
             }
         }
         // Annotations in a hidden layer, and their drawings in one: a drawing for a state
@@ -1179,11 +1294,46 @@ impl Pdf {
                 d.set("AP", ap);
             }
         }
+        // Form widgets go from their fields too, and fields only they showed with them
+        // (PB-178).
+        let mut annots = HashSet::new();
         if !gone.is_empty() {
-            self.drop_annotations(gone)?;
+            annots = self.drop_annotations_ids(gone)?.1;
+            let widgets: HashSet<ObjectId> = (annots.iter().copied())
+                .filter(|&id| {
+                    let d = self.doc.get_dictionary(id);
+                    d.and_then(|d| d.get(b"Subtype"))
+                        .and_then(|o| o.as_name())
+                        .ok()
+                        == Some(b"Widget")
+                })
+                .collect();
+            if !widgets.is_empty() {
+                self.prune_fields(&widgets, strict)?;
+            }
         }
         self.drop_hidden_properties(&layers);
         self.rewrite_rules(&layers);
+
+        // What is no longer drawn or painted with, and the pictures and forms in a hidden
+        // layer, out of the resources, as redaction takes out its originals (PB-153), and
+        // the annotations removed with what they held (PB-182); refused when the file still
+        // keeps any of it another way.
+        if let Some(before) = before {
+            // The streams were changed in place, so they are read afresh.
+            let after = self.reach(&mut reach::work_after(0), &mut reach::Decoded::new())?;
+            let mut removed = Removed {
+                xobjects: (before.drawn.union(&layered))
+                    .filter(|x| !after.drawn.contains(*x))
+                    .copied()
+                    .collect(),
+                painted: before.painted,
+                annots,
+                ..Removed::default()
+            };
+            self.annots_held(&mut removed);
+            refuse_left("hidden layers", self.clear_retained(&removed, &after))?;
+        }
 
         // The layer list: hidden layers out, the rest on.
         let keep = |o: &Object| o.as_reference().map_or(true, |id| !hidden.contains(&id));
@@ -1267,44 +1417,45 @@ impl Pdf {
     }
 
     /// Every drawing that can hold content `layers` hide, without it: the pages' content,
-    /// then what their resources and their annotations' appearances draw (forms, tiling
-    /// patterns, Type 3 glyphs, soft masks), nested up to [`MAX_NESTING`], each once (layer
-    /// states are the document's, so a drawing with its own resources looks the same
-    /// wherever it is used). One without resources of its own is checked against every
-    /// place it is used from. What couldn't be read (a layer rule too), is nested deeper,
-    /// or would lose different content in different places, goes in `blocked`. Refuses when
-    /// working out the layer rules would take too many steps.
+    /// and every drawing their resources and their annotations' appearances list, at any
+    /// depth ([`Pdf::reach_listed`]: forms, tiling patterns, Type 3 glyphs, soft masks),
+    /// each once (layer states are the document's, so a drawing with its own resources
+    /// looks the same wherever it is used). One without resources of its own is checked
+    /// against every place it is used from. What couldn't be read (a layer rule too), or
+    /// would lose different content in different places, goes in `blocked`. Refuses when
+    /// following the drawings or working out the layer rules would take too many steps.
     fn scan_layers(&self, layers: &mut Layers) -> std::result::Result<LayerScan, TooComplex> {
         let mut scan = LayerScan::default();
         self.read_rules(layers, &mut scan);
-        let mut seen = HashMap::new();
-        for (i, page) in self.page_ids().into_iter().enumerate() {
-            let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-            let content = self.page_content(page);
-            let name = format!("page {}'s content", i + 1);
-            self.scan_read(Drawn::Page(page), content, &res, layers, &name, &mut scan);
-            self.scan_resources(&res, layers, &mut seen, 0, &mut scan);
-            for annot in self.all_annot_refs(page) {
-                let ap = self
-                    .doc
-                    .get_dictionary(annot)
-                    .ok()
-                    .and_then(|d| d.get(b"AP").ok())
-                    .map(|o| self.resolved_dict(Some(o)));
-                for (_, look) in ap.iter().flat_map(|ap| ap.iter()) {
-                    // A drawing, or a dictionary of drawings by state.
-                    let ids: Vec<ObjectId> = match self.doc.dereference(look) {
-                        Ok((_, Object::Dictionary(states))) => states
-                            .iter()
-                            .filter_map(|(_, s)| s.as_reference().ok())
-                            .collect(),
-                        _ => look.as_reference().ok().into_iter().collect(),
-                    };
-                    for id in ids {
-                        self.scan_drawing(id, &Dictionary::new(), layers, &mut seen, 0, &mut scan);
-                    }
+        let drawings = match self.reach_listed(&mut reach::work()) {
+            Ok(drawings) => drawings,
+            Err(too) => return Err(layers.too.take().unwrap_or(too)),
+        };
+        let pages = self.page_ids();
+        let mut seen: HashMap<ObjectId, Seen> = HashMap::new();
+        for (i, (stream, res)) in drawings.into_iter().enumerate() {
+            let Some(id) = stream else {
+                let page = pages[i];
+                let content = self.page_content(page);
+                let name = format!("page {}'s content", i + 1);
+                self.scan_read(Drawn::Page(page), content, &res, layers, &name, &mut scan);
+                continue;
+            };
+            let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) else {
+                continue;
+            };
+            if !s.dict.has(b"Resources") {
+                if let Some(was) = seen.get_mut(&id) {
+                    self.check_shared(id, s, &res, layers, was, &mut scan);
+                    continue;
                 }
+                let checked = vec![self.hidden_names(&res, layers)];
+                let first = res.clone();
+                seen.insert(id, Seen { first, checked });
             }
+            let read = readable(s);
+            let name = format!("a drawing in the file (object {})", id.0);
+            self.scan_read(Drawn::Stream(id), read, &res, layers, &name, &mut scan);
         }
         let mut once = HashSet::new();
         scan.blocked.retain(|b| once.insert(b.clone()));
@@ -1355,109 +1506,6 @@ impl Pdf {
         }
     }
 
-    /// [`Pdf::scan_layers`] for the drawings resources `res` hold, at nesting `depth`.
-    fn scan_resources(
-        &self,
-        res: &Dictionary,
-        layers: &mut Layers,
-        seen: &mut HashMap<ObjectId, Seen>,
-        depth: usize,
-        scan: &mut LayerScan,
-    ) {
-        let entries = |key: &[u8]| self.resolved_dict(res.get(key).ok());
-        let stream = |o: &Object| -> Option<(ObjectId, &lopdf::Stream)> {
-            let id = o.as_reference().ok()?;
-            Some((id, self.doc.get_object(id).ok()?.as_stream().ok()?))
-        };
-        let name_is = |d: &Dictionary, key: &[u8], v: &[u8]| {
-            d.get(key).and_then(|o| o.as_name()).ok() == Some(v)
-        };
-        let mut drawings: Vec<ObjectId> = Vec::new();
-        for (_, e) in entries(b"XObject").iter() {
-            if let Some((id, s)) = stream(e) {
-                if name_is(&s.dict, b"Subtype", b"Form") {
-                    drawings.push(id);
-                }
-            }
-        }
-        for (_, e) in entries(b"Pattern").iter() {
-            if let Some((id, _)) = stream(e) {
-                drawings.push(id);
-            }
-        }
-        for (_, e) in entries(b"ExtGState").iter() {
-            let gs = self.resolved_dict(Some(e));
-            let mask = self.resolved_dict(gs.get(b"SMask").ok());
-            if let Some((id, _)) = mask.get(b"G").ok().and_then(stream) {
-                drawings.push(id);
-            }
-        }
-        let mut glyphs: Vec<(ObjectId, Dictionary)> = Vec::new();
-        for (_, e) in entries(b"Font").iter() {
-            let font = self.resolved_dict(Some(e));
-            if !name_is(&font, b"Subtype", b"Type3") {
-                continue;
-            }
-            let fres = font
-                .get(b"Resources")
-                .ok()
-                .map_or_else(|| res.clone(), |o| self.resolved_dict(Some(o)));
-            let procs = self.resolved_dict(font.get(b"CharProcs").ok());
-            for (_, g) in procs.iter() {
-                if let Some((id, _)) = stream(g) {
-                    glyphs.push((id, fres.clone()));
-                }
-            }
-        }
-        let todo = drawings
-            .into_iter()
-            .map(|id| (id, res.clone()))
-            .chain(glyphs);
-        for (id, outer) in todo {
-            if !seen.contains_key(&id) && depth >= MAX_NESTING {
-                scan.blocked
-                    .push(format!("drawings are nested more than {MAX_NESTING} deep"));
-                return;
-            }
-            self.scan_drawing(id, &outer, layers, seen, depth + 1, scan);
-        }
-    }
-
-    /// [`Pdf::scan_layers`] for drawing `id`, which draws with its own resources, else with
-    /// `outer`. One looked into already is only checked against `outer`, when it draws with
-    /// it.
-    fn scan_drawing(
-        &self,
-        id: ObjectId,
-        outer: &Dictionary,
-        layers: &mut Layers,
-        seen: &mut HashMap<ObjectId, Seen>,
-        depth: usize,
-        scan: &mut LayerScan,
-    ) {
-        let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) else {
-            seen.entry(id).or_default();
-            return;
-        };
-        let own = s.dict.get(b"Resources").ok();
-        if let Some(was) = seen.get_mut(&id) {
-            if own.is_none() {
-                self.check_shared(id, s, outer, layers, was, scan);
-            }
-            return;
-        }
-        let res = own.map_or_else(|| outer.clone(), |o| self.resolved_dict(Some(o)));
-        let mut was = Seen::default();
-        if own.is_none() {
-            was.first = Some(res.clone());
-            was.checked.push(self.hidden_names(&res, layers));
-        }
-        seen.insert(id, was);
-        let name = format!("a drawing in the file (object {})", id.0);
-        self.scan_read(Drawn::Stream(id), readable(s), &res, layers, &name, scan);
-        self.scan_resources(&res, layers, seen, depth, scan);
-    }
-
     /// Check drawing `id` (stream `s`), which has no resources of its own and was looked
     /// into with `was.first`, against resources `res` of another place it is used from.
     /// Where it would lose other content, the removal can't be done on the one drawing:
@@ -1476,10 +1524,10 @@ impl Pdf {
             return;
         }
         was.checked.push(names);
-        let (Some(first), Ok((data, _))) = (&was.first, readable(s)) else {
+        let Ok((data, _)) = readable(s) else {
             return;
         };
-        let looks = [first, res].map(|r| self.without_hidden(&data, r, layers, false));
+        let looks = [&*was.first, res].map(|r| self.without_hidden(&data, r, layers, false));
         let name = format!("a drawing in the file (object {})", id.0);
         if let Some(why) = looks
             .iter()
@@ -1675,9 +1723,10 @@ impl Pdf {
     ///
     /// Hidden content still sets what is drawn after it (ISO 32000-1, 8.11.3.2), so only
     /// its painting goes: settings (colour, position, line style, text state) are kept, a
-    /// clipping path still clips, and hidden text becomes spacing as wide. Refuses with
-    /// [`Unsure`] where the result wouldn't look the same, and with [`InlineRule`] where a
-    /// rule written in it can't be read.
+    /// clipping path still clips, and hidden text becomes spacing as wide. A pattern or
+    /// graphics state it sets that nothing paints with goes too ([`unused_settings`]).
+    /// Refuses with [`Unsure`] where the result wouldn't look the same, and with
+    /// [`InlineRule`] where a rule written in it can't be read.
     #[allow(clippy::type_complexity)]
     fn without_hidden(
         &self,
@@ -1705,6 +1754,8 @@ impl Pdf {
         let mut path: Vec<Operation> = Vec::new();
         // A path begun in what is kept and not yet painted, which hidden content may paint.
         let mut open = false;
+        // Where the settings hidden content made are in `out`.
+        let mut settings = Vec::new();
         for mut o in ops {
             let name = o.operator.as_str();
             text.follow(&o, &mut saved);
@@ -1754,7 +1805,10 @@ impl Pdf {
                     // Painting.
                     "sh" | "Do" | "MP" | "DP" => {}
                     t if inline.raw(t).is_some() => {}
-                    _ => out.push(o),
+                    _ => {
+                        settings.push(out.len());
+                        out.push(o);
+                    }
                 }
                 continue;
             }
@@ -1810,6 +1864,13 @@ impl Pdf {
                 _ => {}
             }
             out.push(o);
+        }
+        let unused = unused_settings(&out, &settings);
+        if !unused.is_empty() {
+            out = (out.into_iter().enumerate())
+                .filter(|(i, _)| !unused.contains(i))
+                .map(|(_, o)| o)
+                .collect();
         }
         Ok(changed.then_some((out, inline)))
     }
@@ -1941,6 +2002,21 @@ fn refuse_blocked(scan: &LayerScan) -> Result<()> {
         "hidden layers can't be removed for certain: {}. Nothing was changed; leave out \
          hidden layers to remove the rest",
         scan.blocked.join("; ")
+    ))
+}
+
+/// A refusal to remove `what` when the check after removing it found the file still keeps
+/// something removed, or a drawing that can't be read may use it.
+fn refuse_left(what: &str, retained: Retained) -> Result<()> {
+    let mut left: Vec<String> = retained.unread.into_iter().map(unread_said).collect();
+    left.extend(retained.left);
+    if left.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{what} can't be removed for certain: the check after removing them found {}. Nothing \
+         was changed; leave out {what} to remove the rest",
+        left.join("; ")
     ))
 }
 

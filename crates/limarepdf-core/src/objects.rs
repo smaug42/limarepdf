@@ -270,9 +270,6 @@ impl Parsed {
     }
 }
 
-/// Deepest nesting of form XObjects whose text is read.
-const MAX_FORM_NESTING: usize = 8;
-
 /// What reading a page is called when its budget refuses it.
 const WHAT: &str = "reading the page";
 
@@ -894,9 +891,10 @@ impl Pdf {
                                     // resources of its own uses the page's. One that can't
                                     // be read is passed over, and so is one drawn again
                                     // inside itself (read once, on the way down); one too
-                                    // much to read refuses the page.
+                                    // much to read refuses the page. Deeper ones' text isn't
+                                    // read.
                                     let again = id.is_some() && forms.contains(&id);
-                                    if !again && forms.len() < MAX_FORM_NESTING {
+                                    if !again && forms.len() < crate::MAX_FORM_NESTING {
                                         work.take(1)?;
                                         let own = s.dict.get(b"Resources").ok();
                                         let c = s.get_plain_content_with_limit(crate::MAX_CONTENT);

@@ -1,4 +1,6 @@
-use crate::Result;
+use crate::forms::Reach;
+use crate::pages_gone::DrawnBefore;
+use crate::{reach, Result};
 use anyhow::{anyhow, bail, Context};
 use lopdf::dictionary;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
@@ -207,7 +209,7 @@ impl Pdf {
             // Some writers put `/Encrypt null` (meaning not encrypted) in the trailer, and
             // lopdf takes any `/Encrypt` entry as encryption. Read a copy with those
             // entries blanked; they are the same length, so every offset holds.
-            Err(e) => match blank_null_encrypt(bytes).or_else(|| pad_user_hash(bytes)) {
+            Err(e) => match blank_null_encrypt(bytes).or_else(|| encryption_lopdf_reads(bytes)) {
                 Some(c) => {
                     copy = c;
                     let doc = load(&copy).map_err(|_| e)?;
@@ -412,15 +414,18 @@ impl Pdf {
     /// copy, and reported as a picture that can't be decoded when the page is drawn (PB-81);
     /// so is a tiling pattern the renderer can't tile (PB-11). A shape filled with a pattern
     /// of a triangle or patch shading is drawn as the shading clipped to the shape, which
-    /// the renderer samples only where the shading is (PB-11). The document itself is not
-    /// changed.
+    /// the renderer samples only where the shading is (PB-11). An annotation in a layer
+    /// that's off is marked Hidden, as the renderer would draw it (PB-181). The document
+    /// itself is not changed.
     pub fn drawing_snapshot(&mut self) -> Result<Vec<u8>> {
         let swaps = crate::unfillable::swaps(&self.doc, &mut self.checked);
-        if swaps.is_empty() {
+        let ids = self.annots_where(|_| false);
+        if swaps.is_empty() && ids.is_empty() {
             return self.snapshot();
         }
         let mut copy = self.clone();
         crate::unfillable::put(&mut copy.doc, swaps);
+        copy.mark_hidden(ids);
         copy.snapshot()
     }
 
@@ -434,9 +439,11 @@ impl Pdf {
 
     /// Like [`Pdf::snapshot`], for drawing pages as the app shows them (`limarepdf-cli
     /// render`): annotations flagged Hidden or NoView aren't drawn, as hayro 0.9 honours both
-    /// (`annot_noview_flag_is_respected` in `tests/render_coverage.rs`). Form fields are drawn
+    /// (`annot_noview_flag_is_respected` in `tests/render_coverage.rs`), and nor are those in
+    /// a layer that's off, which it doesn't (PB-181). Form fields are drawn
     /// as [`Pdf::refresh_appearances`] would draw them, as the app draws them when opening a
-    /// file ([`Pdf::unshown_fields`] names those it can't draw). Pictures their data can't
+    /// file, but every one, also past the fields LimarePDF lists ([`Pdf::unshown_fields`]
+    /// names those it can't draw). Pictures their data can't
     /// fill and patterns the renderer can't tile are left out, as in
     /// [`Pdf::drawing_snapshot`]. The document itself is not changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
@@ -473,12 +480,14 @@ impl Pdf {
         bytes
     }
 
-    /// A snapshot in which annotations whose subtype `hide` picks are marked Hidden, and
+    /// A snapshot in which annotations whose subtype `hide` picks, and those in a layer
+    /// that's off (which the renderer would draw, PB-181), are marked Hidden, and
     /// annotations without a drawing get LimarePDF's (the document itself keeps
     /// none). In a signed document, or in any with `all_fields`, form fields are drawn this
-    /// way too, as [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a
-    /// signed document's fields into it when opening it, so that saving adds only the edits
-    /// made to what was signed. Pictures their data can't fill and patterns the renderer
+    /// way too, as [`Pdf::refresh_appearances`] would draw them (every field with
+    /// `all_fields`, those LimarePDF lists for the app's): the app doesn't draw a signed
+    /// document's fields into it when opening it, so that saving adds only the edits made to
+    /// what was signed. Pictures their data can't fill and patterns the renderer
     /// can't tile are left out, as in [`Pdf::drawing_snapshot`].
     fn snapshot_hiding(
         &mut self,
@@ -487,8 +496,15 @@ impl Pdf {
     ) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
         let missing = self.missing_appearances(&self.page_ids());
+        let reach = if all_fields {
+            Reach::Every
+        } else {
+            Reach::Listed
+        };
         let fields = (all_fields || self.signature_count() > 0)
-            && !self.appearances_to_draw(self.form_nodes()).is_empty();
+            && !self
+                .appearances_to_draw(self.field_nodes(reach).0)
+                .is_empty();
         let swaps = crate::unfillable::swaps(&self.doc, &mut self.checked);
         if ids.is_empty() && missing.is_empty() && !fields && swaps.is_empty() {
             return self.snapshot();
@@ -496,21 +512,28 @@ impl Pdf {
         let mut copy = self.clone();
         crate::unfillable::put(&mut copy.doc, swaps);
         if fields {
-            copy.refresh_appearances();
+            copy.refresh_reaching(reach);
         }
         copy.draw_annotations(&missing);
-        for (id, flags) in ids {
-            if let Ok(a) = copy.doc.get_dictionary_mut(id) {
-                a.set("F", flags | 2);
-            }
-        }
+        copy.mark_hidden(ids);
         let mut out = Vec::new();
         copy.doc.save_to(&mut out)?;
         Ok(out)
     }
 
-    /// Annotations not Hidden (bit 2) whose subtype `hide` picks, with their flags.
+    /// Sets the Hidden flag (bit 2) of annotations `ids`, given with their flags.
+    fn mark_hidden(&mut self, ids: Vec<(ObjectId, i64)>) {
+        for (id, flags) in ids {
+            if let Ok(a) = self.doc.get_dictionary_mut(id) {
+                a.set("F", flags | 2);
+            }
+        }
+    }
+
+    /// Annotations not Hidden (bit 2) whose subtype `hide` picks or that are in a layer
+    /// that's off, with their flags.
     fn annots_where(&self, hide: impl Fn(&[u8]) -> bool) -> Vec<(ObjectId, i64)> {
+        let mut layers = self.layers_off();
         let mut out = Vec::new();
         for page in self.page_ids() {
             let Some(annots) = self
@@ -531,7 +554,9 @@ impl Pdf {
                 };
                 let flags = d.get(b"F").ok().and_then(|f| self.num(f)).unwrap_or(0.0) as i64;
                 let sub = d.get(b"Subtype").and_then(|o| o.as_name()).unwrap_or(b"");
-                if flags & 2 == 0 && hide(sub) {
+                if flags & 2 == 0
+                    && (hide(sub) || (layers.as_mut()).is_some_and(|l| self.annot_layer_off(d, l)))
+                {
                     out.push((id, flags));
                 }
             }
@@ -743,27 +768,50 @@ impl Pdf {
         Ok(())
     }
 
+    /// Delete the given pages. Nothing of them is kept: bookmarks, named destinations, links,
+    /// form fields and the structure tree no longer refer to them, and what only they drew
+    /// goes from what they share with the others. Refused, with nothing changed, when the
+    /// file would still keep something only they held (PB-137).
     pub fn delete_pages(&mut self, idx: &[usize]) -> Result<()> {
         self.check_indices(idx)?;
         let del: HashSet<usize> = idx.iter().copied().collect();
         let ids = self.page_ids();
-        let keep: Vec<ObjectId> = ids
-            .iter()
-            .enumerate()
+        let (left, keep): (Vec<usize>, Vec<ObjectId>) = (ids.iter().enumerate())
             .filter(|(i, _)| !del.contains(i))
-            .map(|(_, id)| *id)
-            .collect();
+            .map(|(i, id)| (i, *id))
+            .unzip();
         if keep.is_empty() {
             bail!("cannot delete every page");
         }
-        // Bookmarks to the deleted pages stay, with no destination.
-        self.keep_pages(&keep, false)
+        self.atomically(|p| {
+            let mut cache = reach::Decoded::new();
+            let before = p.drawn_before(&mut cache)?;
+            // Bookmarks to the deleted pages stay, with no destination.
+            let removed = p.keep_pages(&keep, false)?;
+            p.clear_gone(removed, &before, &mut cache, "the pages", &left)
+        })
     }
 
     /// New document containing only the given pages (in the given order). Nothing of the
     /// other pages is kept: bookmarks, named destinations, links, form fields and the
-    /// structure tree no longer refer to them.
+    /// structure tree no longer refer to them, and what only they drew goes from what they
+    /// share with these. Refused when the new document would still keep something only they
+    /// held (PB-137).
     pub fn extract(&self, idx: &[usize]) -> Result<Pdf> {
+        self.check_indices(idx)?;
+        let mut cache = reach::Decoded::new();
+        let before = self.drawn_before(&mut cache)?;
+        self.extract_with(idx, Some((&before, &mut cache)))
+    }
+
+    /// [`Pdf::extract`], given what the pages draw ([`Pdf::drawn_before`], with what each
+    /// drawing's content uses when that was kept); or with no check of what the other pages
+    /// leave, for printing, which makes sheets of the pages to draw them and keeps nothing.
+    pub(crate) fn extract_with(
+        &self,
+        idx: &[usize],
+        check: Option<(&DrawnBefore, &mut reach::Decoded)>,
+    ) -> Result<Pdf> {
         self.check_indices(idx)?;
         if idx.is_empty() {
             bail!("no pages selected");
@@ -774,15 +822,19 @@ impl Pdf {
         let mut out = self.without_stream_data();
         let ids = out.page_ids();
         let sel: Vec<ObjectId> = idx.iter().map(|&i| ids[i]).collect();
-        out.keep_pages(&sel, true)?;
-        out.doc.prune_objects();
+        let removed = out.keep_pages(&sel, true)?;
+        let used: HashSet<ObjectId> = out.doc.traverse_objects(|_| {}).into_iter().collect();
         for (id, o) in &mut out.doc.objects {
             if let (Object::Stream(s), Some(Object::Stream(from))) = (o, self.doc.objects.get(id)) {
-                if s.content.is_empty() {
+                if s.content.is_empty() && used.contains(id) {
                     s.content = from.content.clone();
                 }
             }
         }
+        if let Some((before, cache)) = check {
+            out.clear_gone(removed, before, cache, "the other pages", idx)?;
+        }
+        out.doc.prune_objects();
         Ok(out)
     }
 
@@ -1016,8 +1068,10 @@ impl Pdf {
     }
 
     /// Split into files, part `n` (from 1) written to `path(n, title)`, replacing files of
-    /// the same name ([`Pdf::split_files`] lists them). Each part is written and dropped as
-    /// soon as it is made, so no more parts are held at once than are being made. Returns
+    /// the same name ([`Pdf::split_files`] lists them). Every part is made and checked as
+    /// [`Pdf::extract`] checks it before any file is written, so a part that would keep
+    /// something of the other pages writes none (PB-137). Then each part is made again,
+    /// written and dropped, so no more parts are held at once than are being made. Returns
     /// how many files were written. When every file was written but one wasn't confirmed on
     /// disk, the error is that file's [`crate::NotConfirmed`].
     pub fn split(
@@ -1026,13 +1080,32 @@ impl Pdf {
         path: impl Fn(usize, Option<&str>) -> std::path::PathBuf + Sync,
     ) -> Result<usize> {
         let parts = self.split_parts(by)?;
+        // Walked once for every part.
+        let before = self.drawn_before(&mut reach::Decoded::new())?;
+        parts
+            .par_iter()
+            .enumerate()
+            .try_for_each(|(i, (_, pages))| {
+                let mut cache = reach::Decoded::new();
+                self.extract_with(pages, Some((&before, &mut cache)))
+                    .map(drop)
+                    .with_context(|| {
+                        format!(
+                            "part {} of {} can't be made, so no file was written",
+                            i + 1,
+                            parts.len()
+                        )
+                    })
+            })?;
         let written = std::sync::atomic::AtomicUsize::new(0);
         let unconfirmed = std::sync::Mutex::new(None);
         let done = parts
             .par_iter()
             .enumerate()
             .try_for_each(|(i, (title, pages))| {
-                match self.extract(pages)?.save(path(i + 1, title.as_deref())) {
+                let mut cache = reach::Decoded::new();
+                let mut part = self.extract_with(pages, Some((&before, &mut cache)))?;
+                match part.save(path(i + 1, title.as_deref())) {
                     // Written: the other parts go on.
                     Err(e) if e.is::<crate::NotConfirmed>() => {
                         let mut u = unconfirmed.lock().unwrap_or_else(|e| e.into_inner());
@@ -1246,45 +1319,58 @@ fn blank_null_encrypt(bytes: &[u8]) -> Option<Vec<u8>> {
     copy
 }
 
-/// `bytes` with a copy of the encryption dictionary appended as an update, its `/U`
-/// padded to 32 bytes, or `None` when that isn't what stops lopdf. At revisions 3 and 4
-/// readers compare only the first 16 bytes of `/U`, and some writers store just those
-/// (PDFBox's test file 1910); lopdf refuses any length but 32, and then asks for a
-/// password the file doesn't have. `/U` has no other use at these revisions, so the
-/// padding changes nothing else. Appending keeps every offset in the file as it is.
-fn pad_user_hash(bytes: &[u8]) -> Option<Vec<u8>> {
+/// `bytes` with a copy of the encryption dictionary appended as an update in a form lopdf
+/// reads, or `None` when the dictionary's form isn't what stops lopdf. Appending keeps every
+/// offset in the file as it is. Two forms stop it:
+/// - The trailer holding the dictionary itself (pdf.js's test files issue6010_1 and _2):
+///   lopdf reads one only through a reference, and then refuses every password, the right
+///   one too (PB-183). The copy is an object of its own, numbered after every other.
+/// - At revisions 3 and 4 readers compare only the first 16 bytes of `/U`, and some writers
+///   store just those (PDFBox's test file 1910); lopdf refuses any length but 32, and then
+///   asks for a password the file doesn't have. `/U` has no other use at these revisions,
+///   so the copy's is padded, which changes nothing else.
+fn encryption_lopdf_reads(bytes: &[u8]) -> Option<Vec<u8>> {
     // Without a password lopdf reads just the trailer and the encryption dictionary.
     let doc =
         Document::load_from_with_options(Cursor::new(bytes), lopdf::LoadOptions::default()).ok()?;
-    let (n, g) = doc
-        .trailer
-        .get(b"Encrypt")
-        .and_then(Object::as_reference)
-        .ok()?;
-    let mut enc = doc.get_dictionary((n, g)).ok()?.clone();
+    let size = doc.trailer.get(b"Size").and_then(Object::as_i64).ok();
+    let ((n, g), mut enc, mut changed) = match doc.trailer.get(b"Encrypt").ok()? {
+        Object::Reference(id) => (*id, doc.get_dictionary(*id).ok()?.clone(), false),
+        Object::Dictionary(d) => {
+            let size = size.and_then(|s| u32::try_from(s).ok()).unwrap_or(0);
+            let n = size.max(doc.reference_table.max_id().max(doc.max_id) + 1);
+            ((n, 0), d.clone(), true)
+        }
+        _ => return None,
+    };
     let standard = enc.get(b"Filter").and_then(Object::as_name).ok() == Some(b"Standard");
     let revision = enc.get(b"R").and_then(Object::as_i64).ok();
-    let u = enc.get(b"U").and_then(Object::as_str).ok()?;
-    if !standard || !matches!(revision, Some(3 | 4)) || !(16..32).contains(&u.len()) {
+    let short = (enc.get(b"U").and_then(Object::as_str).ok())
+        .filter(|u| standard && matches!(revision, Some(3 | 4)) && (16..32).contains(&u.len()))
+        .map(<[u8]>::to_vec);
+    if let Some(mut padded) = short {
+        padded.resize(32, 0);
+        enc.set(
+            "U",
+            Object::String(padded, lopdf::StringFormat::Hexadecimal),
+        );
+        changed = true;
+    }
+    if !changed {
         return None;
     }
-    let mut padded = u.to_vec();
-    padded.resize(32, 0);
-    enc.set(
-        "U",
-        Object::String(padded, lopdf::StringFormat::Hexadecimal),
-    );
 
     // lopdf counts offsets from the header, as in `blank_null_encrypt`.
     let header = bytes.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
     let mut out = bytes.to_vec();
     out.push(b'\n');
     let mut trailer = Dictionary::new();
-    for key in [&b"Size"[..], b"Root", b"Info", b"ID"] {
+    for key in [&b"Root"[..], b"Info", b"ID"] {
         if let Ok(v) = doc.trailer.get(key) {
             trailer.set(key, v.clone());
         }
     }
+    trailer.set("Size", size.unwrap_or(0).max(i64::from(n) + 1));
     trailer.set("Encrypt", (n, g));
     trailer.set("Prev", doc.xref_start as i64);
     let at = out.len() - header;

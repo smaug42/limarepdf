@@ -1,14 +1,15 @@
 //! Page labels: the page numbers a document shows, such as i, ii, 1, 2 or A-1.
 
 use crate::doc::{decode_text, encode_text};
+use crate::trees::MAX_DEPTH;
 use crate::{Pdf, Result};
 use anyhow::bail;
 use lopdf::{Dictionary, Object, ObjectId, StringFormat};
 use std::collections::{HashMap, HashSet};
 
-/// Limits that keep a malformed or hostile number tree from running away.
+/// Limits that keep a malformed or hostile number tree from running away; its depth is
+/// [`crate::trees::MAX_DEPTH`], as for every name and number tree.
 const MAX_NODES: usize = 10_000;
-const MAX_DEPTH: usize = 32;
 
 /// How a label's number is written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

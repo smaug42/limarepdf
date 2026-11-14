@@ -130,3 +130,159 @@ digital IDs through `digital::in_id_folder`. The command line's `not_an_input` a
 which a caller that keeps its own copy says so; the copy is `Pdf::before`, put back by `Pdf::go_back`. Core
 `redact::Leftovers`. The app's `Tab::edit_inner` (`tab.rs`), which holds the document, and Replace all's `write`
 and `settle` (`editor/replace_all.rs`), which hold its copy.
+
+## Redaction
+
+**What it promises.**
+
+- What the marks cover goes from the file, not only from view: each character at least a quarter under the marks
+  taken together, the drawings mostly under them (a line or fill crossing an edge is cut out of the marks instead),
+  a picture's pixels under them (a picture LimarePDF can't read goes whole), alternative text on what lost
+  anything and on every tag above it, and the comments, links and form fields touching the marks, with their
+  replies, values, appearances and what they held. Each is touching by its `/Rect`, and a comment placed by its
+  points whose `/Rect` has no area also where it is drawn (PB-114). What is outside the marks stays as it was, the
+  characters left in their places.
+- Nothing redaction removed stays reachable in the saved file. Redaction reads the redacted pages again: no text is
+  left under the marks, and every picture there is blacked out under them. Then it follows the file from its
+  trailer as saving keeps it, looking for what it removed: the originals replaced or removed (a picture's with its
+  soft mask, mask and alternate versions), the patterns and soft masks only removed content painted with, the
+  pages' old content, thumbnails and private data, the alternative text taken off, and the removed annotations
+  with their appearances and what they held. Every list of resources, shared or not, stops listing what nothing
+  draws, and a removed comment's appearance leaves the document's named appearances. Anything still reached,
+  through the tag tree, private application data or another part of the file, or that a drawing which can't be
+  read may use, makes redaction refuse with `Leftovers` naming it, and nothing is changed
+  ([Failure atomicity](#failure-atomicity)).
+- What content left as it was still draws (an original outside the marks, on another page, in a pattern, a soft
+  mask, a Type 3 glyph or a comment that stays) is kept for it, and the report names each page that draws it,
+  once.
+- Redaction refuses before changing anything when it can't follow all it would have to remove: a form field
+  touching a mark in a form nested more than 32 deep; a parent tree nested more than 32 deep or past 100,000
+  parts; a page too complex to read; or drawings too complex to follow. The walk over the drawings has a budget,
+  `reach::STEPS`: 2²² (4,194,304) steps, 32 times the most any of the 1,080 corpus files that open takes
+  (129,066, `pdfjs/issue6692.pdf`, measured 2026-11-04 with the budget lifted). It runs before the change; the
+  walk after it is allowed twice that, plus the objects added.
+- Deleting pages and making documents of some (Extract, Split) are held to the same (PB-137, D-22 (a)): what only
+  the pages that went drew leaves the resource lists they share with the pages that stay, and the file is followed
+  from its trailer for the pages, their content, thumbnails and private data, their comments and fields with what
+  those held, the alternative text taken off, and what only they drew. Anything still reached, or that a drawing
+  which can't be read on a page that stays may use, refuses the removal, naming the route, with nothing changed;
+  Split makes and checks every part before writing any file. What the pages that stay draw is kept for them. The
+  walk over the drawings has the same budget.
+- Flattening isn't held to this: it draws what it removes into the page, so what notes and fields show stays by
+  design.
+
+**Checked by.**
+
+- Core `redact.rs`: what goes, kind by kind (`removes_the_marked_characters_and_keeps_the_rest_in_place`,
+  `a_character_goes_when_a_quarter_of_it_is_under_the_marks`,
+  `removes_drawings_under_a_mark_and_clips_those_crossing_it`, `blacks_out_the_covered_part_of_a_picture`,
+  `removes_annotations_touching_a_mark`, `alternative_text_far_up_the_structure_tree_goes` and the rest); the
+  saved bytes (`the_saved_output_holds_nothing_of_the_marked_text_or_what_touches_it`,
+  `an_earlier_revision_of_the_file_leaves_nothing_in_the_redacted_output`); each route refused
+  (`a_redacted_form_the_tag_tree_points_at_is_refused`, `a_removed_link_the_tag_tree_points_at_is_refused`,
+  `a_redacted_form_another_page_s_private_data_points_at_is_refused`,
+  `removed_content_another_part_of_the_file_points_at_is_refused`,
+  `a_redacted_form_a_drawing_that_can_t_be_read_lists_is_refused`,
+  `what_a_removed_comment_held_that_something_else_points_at_is_refused`,
+  `removed_alternative_text_something_else_points_at_is_refused`,
+  `a_blacked_out_picture_s_alternate_version_or_soft_mask_something_else_points_at_is_refused`); what stays for
+  content left as it was (the tests ending `and_reported`, and
+  `a_redacted_form_another_page_draws_is_kept_for_it`) and what goes when nothing draws it (those ending
+  `leaves_no_original`); the limits (`drawings_too_complex_to_follow_are_refused_with_nothing_changed`,
+  `a_parent_tree_nested_too_deep_is_refused_unchanged`, `a_parent_tree_too_large_to_search_is_refused_unchanged`,
+  `a_widget_under_a_mark_in_a_form_nested_too_deep_is_refused_unchanged`) and `too_complex.rs`'s
+  `a_redaction_over_a_page_too_complex_to_read_changes_nothing`.
+- Core `annots.rs`: `redacting_where_an_annotation_placed_by_its_points_is_drawn_removes_it` (PB-114).
+- Core `pages_removed.rs`, for deleting, extracting and splitting:
+  `what_only_the_pages_that_went_drew_goes_from_what_they_share`;
+  `pages_whose_own_objects_the_file_keeps_another_way_are_refused` (each route, and no part written);
+  `a_drawing_that_cant_be_read_listing_what_only_the_pages_that_went_drew_is_refused`; and the tests before them
+  for what refers to the pages that went.
+- Core, by property: `destructive.rs`'s `redaction_removes_what_is_under_its_marks_and_keeps_the_rest`, and
+  `flattening_notes_keeps_what_they_show` and `flattening_the_form_keeps_what_its_widgets_show` for flattening.
+- Other readers: the `cross_check_` tests in `redact.rs` read the saved file with poppler and Ghostscript (run on
+  request, not by default).
+- The app: `applying_what_the_tag_tree_would_keep_changes_nothing`. The command line: `redact.rs`'s
+  `redact_refuses_what_the_tag_tree_would_keep_and_writes_nothing` and
+  `redact_warns_where_an_original_picture_is_still_drawn`.
+
+**Limits.**
+
+- A route still reaching something removed is refused, not cut: a tagged document whose tags point at a removed
+  link or comment can't be redacted there (PF-73, after the freeze).
+- What [Redaction](../redaction.md#limits) lists: the gap shows how long the removed text was, embedded fonts
+  keep the shapes of the letters they hold, vertical writing and tiling patterns aren't redacted, a blacked-out
+  picture keeps its own XMP metadata, and the removed text found elsewhere (other pages, bookmarks, comments,
+  fields, the document's properties) is reported, not removed.
+- The walk after the change can't fail on a document the walk before passed: argued, not proven. Should it, the
+  change is undone as any failure is.
+- The same for pages: a tagged document whose tags point into what only the pages that went drew (a form their
+  marked content is in) can't lose those pages (PF-73 too).
+- Printing some pages makes a document of them without the check: it goes to the printer, not to a file.
+- A signed document is saved after what was signed, so the pages deleted stay in the signed version
+  ([The version that was signed](../signatures-in-depth.md#the-version-that-was-signed)), unless the whole file is
+  written.
+
+**Owner.** Core `Pdf::redact` and `Pdf::apply_redactions` (`redact.rs`), with `redact::Leftovers` and
+`RedactReport`; the pictures in `redact_img.rs`; the walk over the drawings, `Pdf::reach` with `reach::STEPS`
+(`reach.rs`, charged to a `budget::Work`); the check afterwards, `Pdf::clear_retained` with `retained::Removed`
+and its `routes_to` (`retained.rs`). For pages, `Pdf::delete_pages`, `Pdf::extract` and `Pdf::split` (`doc.rs`)
+through `extract_with`, and `drawn_before`, `keep_pages` and `clear_gone` (`pages_gone.rs`). What the check follows
+is in [How it is built](architecture.md).
+
+## Sanitise
+
+**What it promises.**
+
+- Remove hidden information (`Pdf::remove_hidden`, `limarepdf-cli sanitise`) removes each kind it is given
+  everywhere the file holds it, or refuses and changes nothing: document information and every XMP stream;
+  scripts and actions that run by themselves at any depth (in a chain of next actions, written in or stored
+  apart), leaving ordinary links; attached files; the content of hidden layers and what layer rules hide,
+  wherever it is drawn; thumbnails and private application data; comments, with their replies; every form
+  field's value, also those taken from a parent, defaults, rich text and the drawings showing them; bookmarks;
+  and content outside the crop box, which is redacted, with redaction's check.
+- Removing hidden layers doesn't change what shows: what hidden content set (a colour, a position, a clip) still
+  applies after it, and hidden text leaves a gap as wide. Where removing it would change what shows, it refuses.
+- What a removal leaves undrawn (the pictures and forms only hidden content drew, the patterns and soft masks only
+  it painted with) and the annotations it takes (comments, those holding attached files, those in a hidden layer),
+  with their appearances and what they held, are held to redaction's rule: nothing lists them, and a route still
+  reaching one, through the tag tree, private application data or another part of the file, refuses (PB-153,
+  PB-182). A removed comment's appearance leaves the document's named appearances.
+- It refuses, with nothing changed, when it can't tell what is hidden: a drawing or layer rule it can't read, a
+  rule nested more than 32 deep or past 2²⁰ steps (`RULE_STEPS`), drawings too complex to follow (redaction's
+  budget), compressed data cut off or damaged part way, a drawing without resources of its own used where its
+  layers mean different things, and form fields nested more than 32 deep. `Pdf::check_remove_hidden` finds these
+  before anything else is done; what the check afterwards finds is found only by removing.
+- Saving rewrites the whole file, without the objects nothing uses and without earlier versions of it.
+
+**Checked by.**
+
+- Core `sanitise.rs`: a test for each kind (`removes_metadata_and_xmp`, `removes_scripts_but_keeps_web_links`,
+  `scripts_in_nested_direct_actions_are_removed`, `scripts_in_stored_lists_of_next_actions_are_removed`,
+  `removes_attachments`, `removes_the_content_of_hidden_layers`, `form_values_are_cleared_everywhere_they_are_kept`,
+  `cuts_what_lies_outside_the_crop_box`); what shows (`removing_hidden_layers_keeps_what_shows`,
+  `hidden_layers_whose_removal_would_change_what_shows_are_refused`); held to redaction's rule
+  (`what_only_hidden_layers_draw_is_removed`, `what_only_hidden_layers_draw_that_the_tag_tree_keeps_is_refused`,
+  `a_comment_the_tag_tree_points_at_is_refused`, `a_removed_comments_named_icon_goes_with_it`,
+  `content_outside_the_crop_box_that_redaction_leaves_is_refused`); the refusals (the other tests ending
+  `refused`, and `checking_layer_rules_has_a_step_limit`).
+- Core, by property: `destructive.rs`'s `removing_hidden_layers_removes_only_what_they_alone_hold`,
+  `removing_scripts_removes_every_script_and_keeps_the_rest`,
+  `removing_form_values_removes_every_value_and_keeps_the_rest` and
+  `removing_comments_removes_every_note_and_keeps_the_rest`.
+- Other readers: `sanitise.rs`'s `cross_check_` tests, with poppler and Ghostscript (run on request).
+- The app: `app/tests/hidden.rs`. The command line: `sanitise.rs`'s
+  `content_outside_the_crop_box_redaction_leaves_is_refused`.
+
+**Limits.**
+
+- As for redaction, a route still reaching something removed is refused, not cut (PF-73).
+- Data in the older compressions (LZW, run length) is checked only as far as lopdf reads it. In a file where
+  nothing is hidden, a damaged drawing doesn't stop the command, and a layer rule inside it is missed.
+- A form only for Adobe Reader (XFA only) keeps its XFA; signature fields keep their values.
+- Counting what there is (`Pdf::find_hidden`, on a copy) doesn't refuse: when the walk over the drawings fails
+  there, the pictures stay counted.
+
+**Owner.** Core `Pdf::remove_hidden`, `Pdf::check_remove_hidden` and `Pdf::find_hidden` (`sanitise.rs`), with
+`drop_hidden_layers` and `scan_layers` for hidden layers and `refuse_left` for the check afterwards, which is
+redaction's `Pdf::clear_retained`. The app's Remove hidden information dialog (`dialogs::remove_hidden`).

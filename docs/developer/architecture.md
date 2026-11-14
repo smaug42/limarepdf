@@ -65,7 +65,14 @@ field is found by the name every reader finds. Windows-1252 can't be told from P
 
 Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, LimarePDF draws the field's appearance itself
 (`form_ap.rs`, written into the file by `form_write.rs`) rather than asking other readers to, so filled fields look
-the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.rs`.
+the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.rs`. Field lists go by purpose
+(PB-174): `Pdf::form_fields` and `listed_nodes` take the first 10,000 (`MAX_FIELDS`), for what the app shows: the
+on-screen pages, the empty signature boxes offered (`empty_signature_fields`), typing in a field (`field_setting`)
+and `form list`; everything else takes every field
+(`Pdf::every_form_field`, `form_nodes`, `Reach::Every`): finding a field by name (setting, signing, `form fill`),
+reset, removing values, counting and checking signatures, field locks, new signature field names, redaction's
+report, flattening, printing, the pages' pictures (`render_snapshot`, `unshown_fields`), drawing fields before
+signing and telling XFA-only forms apart.
 
 Every dialog in the desktop app is built from the same parts in `crates/limarepdf-gui/src/dialogs.rs`, so they all
 look like Print: `Shell` (the window over the dimmed app, its title and file, and the dialogs' look from
@@ -106,11 +113,16 @@ when the trailers name no usable catalog, the last catalog object with a page tr
 
 Two workarounds in `crates/limarepdf-core/src/doc.rs` read a corrected copy of a file when lopdf refuses it (offsets
 stay where they were, so nothing counts as repaired). `blank_null_encrypt` blanks a trailer's `/Encrypt null`, which
-lopdf takes as encryption. `pad_user_hash` handles a standard-security file at revision 3 or 4 whose `/U` is
-shorter than 32 bytes: readers compare only its first 16 bytes there, and some writers store just those (PDFBox's
-test file 1910), but lopdf (0.46 too) refuses any length but 32 (`InvalidHashLength`) and so reports a wrong password.
-The copy has the encryption dictionary appended as an update with `/U` zero-padded to 32 bytes. The workaround
-stays until lopdf accepts the shorter `/U`; no issue has been filed upstream.
+lopdf takes as encryption. `encryption_lopdf_reads` appends a copy of the encryption dictionary as an update in a form
+lopdf reads, for two forms it doesn't:
+- A trailer holding the dictionary itself rather than a reference to it (pdf.js's test files issue6010_1 and _2;
+  PB-183). lopdf 0.47 looks for it only through a reference (`Document::get_encrypted`), so it refused every
+  password, the right one too. The copy gets the next free object number, and the update's trailer points at it.
+- A standard-security file at revision 3 or 4 whose `/U` is shorter than 32 bytes: readers compare only its first 16
+  bytes there, and some writers store just those (PDFBox's test file 1910), but lopdf (0.46 too) refuses any length
+  but 32 (`InvalidHashLength`) and so reports a wrong password. The copy's `/U` is zero-padded to 32 bytes.
+
+The workarounds stay until lopdf reads both; no issue has been filed upstream.
 
 A document's pages are its page tree's entries whose object is a `/Type /Page` dictionary (`doc::pages`, behind
 `Pdf::page_count`, `Pdf::page_ids` and `page_index`). lopdf's own list (`get_pages`, since 0.46) also counts an
@@ -187,6 +199,15 @@ patterns' cells are redrawn, a page's streams as one; left as they are: a shadin
 leaves out), a pattern with an `/ExtGState`, fills in Type 3 glyphs and in forms without resources of their own, and
 a stream two drawings share, which is drawn with the resources of each. `tests/mesh_fills.rs` draws each case both
 ways and finds them the same (a skewed shape's smoothed edges differ in 933 pixels of 1.9 million).
+
+hayro 0.9 draws an annotation whatever its `/OC` says: it checks only the Hidden and NoView flags, though it honours
+a drawing's own `/OC` and marked content tagged with a layer. So a comment or field in a layer that's off showed
+in the app and in every picture of the page (PB-181; recorded, not filed upstream). The same copies
+(`snapshot_hiding`, `drawing_snapshot`) mark such an annotation Hidden, and `page_without` leaves it out
+(`drawn_annots`). Whether it is in one is worked out as Remove hidden information works it out, with the layers off
+as the document opens and the rules read within their steps (`Pdf::layers_off`, `annot_layer_off`). The app
+neither draws nor picks it: `Annot::layer_off` makes `on_page` false and `hidden` true. `tests/annots.rs`,
+`tests/form_flatten.rs`.
 
 The page colour modes (View > Page colours; [Rendering](../rendering.md#page-colour-modes)) are worked out on the
 drawn page, pixel by pixel, in `crates/limarepdf-core/src/page_colours.rs` (`PageColours::pixel`, `recolour`). Only
@@ -1023,7 +1044,8 @@ colours side by side when mixed), the bar outlined in the text colour so black s
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with
-spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
+spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies, as deep as a page's text
+is read (`crate::MAX_FORM_NESTING`, 8; WP-03, 7 before); a deeper form under a mark goes whole. Pictures are decoded,
 blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed again to check that nothing readable
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
 `sanitise.rs`. See [Redaction](../redaction.md).
@@ -1044,8 +1066,7 @@ annotation appearance state (`Reach::appearances`) and what a readable node cert
 page. A replacement (a cut picture, a redacted form's copy) is bound under a fresh name in the
 copy made for the marked invocation only; an original name is never re-pointed, so a kept drawing drawing it by
 an inherited name keeps the original (S1-01's amendment A1, CP-03). Fonts and other resource kinds are left
-alone. Remove hidden information unlists dropped pictures with `drop_unused_xobjects`, from `Reach::holders` only
-(PB-111: the resources of a pattern nothing paints with aren't among them).
+alone.
 
 After the change, `retained.rs` (`Pdf::clear_retained`; amendments A2 and A3, CP-01 and CP-02) works with the walk
 after and what redaction removed (`retained::Removed`: the originals replaced or removed under a mark, the
@@ -1062,8 +1083,30 @@ followed after everything else, so an object something else reaches counts as th
 reaching anything removed is a `report.left` sentence naming it ("removed content may still be in the file,
 through the tag tree"), which makes both callers refuse: the app rolls back, the CLI writes nothing. Nothing is
 cut on those routes (that needs its own design).
+Removing hidden layers takes the same steps (`drop_hidden_layers`, PB-153; PB-111 with it): a walk before the
+change (which refuses, as the check does, when the drawings are too complex) and one after every edit; the
+removed set is the pictures and forms drawn before and not after, with those carrying a hidden `/OC` of their
+own, and the tiling patterns and soft masks painted with before and not after (`Reach::painted`: `scn` and
+`SCN` with a name, and the soft mask of a state `gs` sets, `reach::mask_drawing`; `Removed::painted`);
+`clear_retained` unlists them from every `/XObject`, `/Pattern` and `/ExtGState` (by the state whose mask it is)
+in the file, and a route still reaching one refuses, rolled back by `atomically`. Redaction passes `painted` too
+(PB-177). Both first take out of each rewritten content the pattern and state settings nothing paints with
+(`reach::drop_unpainted`: `scn` or `SCN` naming a pattern, and `gs`, replaced, restored or left at the end before
+anything paints; a text operator showing no characters, as redaction's spacing-only `TJ`, paints nothing), so a
+setting left from removed content doesn't keep its pattern or soft mask painted with. Widgets in a hidden layer
+leave their fields as redaction's do (`prune_fields`, PB-178), not only the pages' `/Annots`. `prune_fields`
+first takes each removed widget out of the `/Kids` of the field its `/Parent` names, and a field left without
+kids out of its own parent, iteratively (`unparent`, PB-179), so a field the form's list leaves out doesn't keep
+one; then it walks down from the list as before.
 Decoded content is cached by object (`reach::Decoded`) and shared by the walks before and after a redaction,
 which only adds objects; Remove hidden information edits streams in place, so its walk after starts afresh.
+Its scan for hidden content (`scan_layers`, WP-03) runs on `Pdf::reach_listed`: the same walk following every
+name the resources list, used or not, without reading the content, each set of resources (by fingerprint)
+followed once, so it costs a step per entry of each drawing's resources and per name listed, not per page. Each
+node carries its stream (`Node::stream`, `None` for a page's content) and the resources it draws with
+(`Node::res`); a drawing without resources of its own is looked into with the first and compared with the others
+(`check_shared`). Drawings are followed to any depth within the walk's budget; the scan's own recursion, with
+its 32-deep limit, is gone. `drop_hidden_properties` stays a scan of every object, the boundary's safe superset.
 
 The walk is charged against a `budget::Work` (`budget.rs`, `TooComplex`), one step per drawing reached, name
 looked up, page, annotation, holder and entry of inherited resources. `reach::STEPS` is 2²² (4,194,304): 32
@@ -1071,7 +1114,8 @@ times the corpus maximum, 129,066 steps (`pdfjs/issue6692.pdf`, 109 pages; the 1
 2026-11-04 with the budget lifted). The walk runs first as a check, refusing before anything changes; the walk
 after the change is allowed twice the limit plus the objects added, so it can't fail midway on a document that
 passed (argued, not proven: should it, the app undoes the step). Finding hidden information (the count run on
-a copy, not strict) leaves the pictures listed when that walk fails rather than refusing. The budget belongs in `contracts.md` once WP-10 writes it.
+a copy, not strict) leaves the pictures listed when that walk fails rather than refusing. The budget is part of
+[Redaction's contract](contracts.md#redaction).
 
 Reading a page (`objects.rs`, `parse_as_page`; S1-06, H-07) has a budget of its own: a step per operator and per
 form opened, plus one per KiB of the form's content, charged across every form the page draws, however often (a
@@ -1088,7 +1132,8 @@ S1-01's 32 times by the user's choice (2026-11-05, at 12.9 times; CP-05 brought 
 more of the same reading, the limit unchanged): 32 times would be about 16 s, and the editor reads a page more
 than once. An edit reads its own new content back before writing it (`parse_as_page`) within the same limit, so no
 edit makes a page that can't then be read. A form drawn again inside itself is passed over where it repeats
-(each form read once on the way down, as pdf.js does; its `issue19800-eq.pdf`), and the nesting limit, 8, stays.
+(each form read once on the way down, as pdf.js does; its `issue19800-eq.pdf`), and the nesting limit, 8, stays:
+`crate::MAX_FORM_NESTING`, which redacting inside drawings and reducing pictures follow too (WP-03).
 A form whose content can't be decoded is passed over too; only a `TooComplex` refusal goes up to the page. Then
 editing refuses (`page_objects` fails), redaction reads the text under every mark before changing any page and
 refuses, search names each page it can't read, with why (`Matches::unread`, shown under Search results), and
@@ -1147,6 +1192,20 @@ share one depth rule (PB-05): fields at most `forms::MAX_DEPTH` (32) below the t
 further, as `form_nodes` reads them: `value_nodes` and `field_goes` refuse a node with kids deeper than that, and
 `orphan_widgets` a widget with more than 33 parents.
 
+Deleting pages, extracting and splitting are held to redaction's promise (PB-137, D-22 (a)). `drawn_before` walks
+the document's drawings first (`Pdf::reach`) and keeps what was drawn and painted, and the subset drawn for certain
+by a drawing that could be read (`sure`, with the marked-content properties likewise). `keep_pages` then removes
+the pages with their content, thumbnails, private data, comments and fields (with what `annots_held` finds those
+held) and the alternative text, and cuts references to them. `clear_gone` walks again: what nothing draws now,
+and what was drawn for certain, go to `retained::clear_retained` as removed, which keeps what the pages that stay
+still draw and refuses what only a drawing that can't be read may draw. Properties nothing uses now go the same
+way, with their alternative text. A resource list inside what went (a removed page's own) is left as it was, so a
+signed file saved by adding to it doesn't write the page again. Anything still reached refuses the removal with `retained`'s route; deleting
+runs `atomically` and extracting changes only the new document, so nothing changes. `extract_with` takes the walk from before so that a split walks
+the document once; `Pdf::split` makes and checks every part before writing any, so a refused part writes no file,
+then makes each again to write it (so no more parts are held at once than are being made). Printing some pages
+(`sheets.rs`) extracts them unchecked, since nothing is saved.
+
 Hidden layers (`Pdf::without_hidden`, BUG-16): content in a hidden layer still sets the graphics and text state
 for what follows it (ISO 32000-1, 8.11.3.2), so only its painting goes. Inside a hidden marked-content section,
 state operators (colour, `cm`, `q`/`Q`, line style, `gs`, text state and positioning, `BT`/`ET`) are kept as
@@ -1163,7 +1222,10 @@ a form or other drawing with nothing known, as it inherits where it is used. Ref
 for, it is taken as 0); hidden text of unknown width (no font set in the drawing, a CMap LimarePDF can't split
 for certain) followed by a visible `Tj`/`TJ` before a line move, `BT` or `ET` resets the position; a path left
 open at the section's end. A drawing without resources of its own takes its fonts from where it is used too, so
-`HiddenNames` includes the fonts, and `check_shared` compares the result for each set.
+`HiddenNames` includes the fonts, and `check_shared` compares the result for each set. A pattern choice (`scn`,
+`SCN` with a name) or graphics state (`gs`) hidden content sets that nothing paints with while it holds
+(restored by `Q`, set again at the same depth, or the drawing's end, with only operators known not to paint
+between: `unused_settings`, `paints`) goes too, so the pattern or soft mask it names isn't counted as used.
 
 Appending pages (`Pdf::append`) doesn't merge forms. Before adding a file with form fields, Append PDFs
 (`App::append_read`, BUG-19) refuses if `Pdf::undrawable_fields` (the whole-form form of `unprintable_fields`) names
@@ -1247,7 +1309,19 @@ UTC (`comment_dates_are_shown_in_local_time` checks fixed comment dates there); 
 Annotation drawings LimarePDF makes are built in `annot_ap.rs`. A line's endings (`line_end`) are painted with a
 pen of their own: on a dashed line it sets an empty dash pattern (`[] 0 d`) before the ending, as `Pen::paint`
 only writes `d` when the pen has a pattern and the shaft's dashes would otherwise carry on into it. The same
-drawing is what flattening writes into the page.
+drawing is what flattening writes into the page. An annotation in a layer (`/OC`) is drawn into that layer, in
+marked content tagged with it (`/OC /LimareField1 BDC … EMC`, the layer or rule named in the page's
+`/Properties`), so it shows when the layer does, as before (PB-180). That is `flatten_page`, so flattening the
+form or comments, finishing signing and printing all do it; a rule written in place is stored as an object of its
+own, since renderers look a tag's layer up by reference.
+
+A drawing is placed by the annotation's `/Rect`, which flattening and every renderer map its box onto. Markup,
+links, lines, polygons, polylines and ink (`BY_POINTS`) are drawn from their own points instead, so one whose
+`/Rect` has no area (a point, or a line away from it, as `pdfjs/issue14203.pdf` has them) is given the box around
+what it draws (`extent`: the paths' points, a curve's control points, past them by the widest line plus a point)
+as its drawing's box and its `/Rect` (PB-114). `annot_rect` gives that box without drawing: `Pdf::annotations`
+and `page_links` list it, `move_annotation` moves from it as the app does, and redaction removes the annotation
+when a mark touches it or its `/Rect`.
 
 Links (ENH-17) are `links.rs`, kept apart from comments: `AnnotKind::of` leaves them out, so they are never in
 the Comments view or `Pdf::annotations`. `Pdf::page_links` reads every link of a page with an area: its id
@@ -1785,12 +1859,15 @@ render copies don't go through it. The saved-output checker (`tests/common/saved
 an object stream by the stream's header, and searches object streams decoded as every Flate segment.
 
 **Reducing pictures** (ENH-19's stage 1; `reduce.rs`, `Pdf::reduce_pictures`, `limarepdf-cli reduce`): every page
-is walked (its content after `inline::extract`, through the form XObjects it draws, 12 deep, with `q`/`Q`/`cm` and
-each form's `/Matrix`), recording for each picture where it is drawn (`Use`: page, transform, and the object
-holding the `/XObject` dictionary its name was found in: a resources object, the `/XObject` dictionary's own, or
-the page or form holding it directly). A picture with a use on a chosen page is reduced only when every use is on
-a chosen page and every object referring to it (`referrers`, one pass over the objects) is one of those holders;
-otherwise (a page not chosen, a comment's or field's appearance, a pattern) it is counted `Shared` and left, since
+is walked (its content after `inline::extract`, through the form XObjects it draws, 8 deep as a page's text is read,
+`crate::MAX_FORM_NESTING`, 12 before WP-03, with `q`/`Q`/`cm` and each form's `/Matrix`), recording for each
+picture where it is drawn (`Use`: page, transform, and the object holding the `/XObject` dictionary its name was
+found in: a resources object, the `/XObject` dictionary's own, or the page or form holding it directly). A form
+deeper than that isn't walked: every picture its resources list, and those of the forms they list at any depth,
+goes in `Walk::deep` (`unfollowed`, PB-175), as where and how large it is drawn there isn't known. A picture with a
+use on a chosen page is reduced only when every use is on a chosen page, it isn't in `Walk::deep`, and every object
+referring to it (`referrers`, one pass over the objects) is one of those holders; otherwise (a page not chosen, a
+comment's or field's appearance, a pattern, a drawing too deep) it is counted `Shared` and left, since
 a copy beside the original the rest still needs makes the file larger (pdfbox's `2990` grew by half when copies
 were tried). Its resolution is the lowest over its uses of `min(width / drawn width, height / drawn height)` in
 pixels per inch (`shown_ppi`, the lengths of the transform's axes, so turns and skews count); above the choice's
@@ -1798,7 +1875,9 @@ by more than 5% it is decoded through `redact_img::decode`, scaled with Catmull-
 through `redact_img::encode` (which now writes the new `/Width` and `/Height`): a JPEG as JPEG at the lower of its
 own quality (`imgs::jpeg_quality`) and the choice's, a picture of at most 256 colours losslessly (Flate), others
 as JPEG at the choice's (HD and High fidelity 90, Print 85, Web 80, Email 75). A soft mask is scaled with it (to
-the picture's new size when it had the picture's, as `/Matte` needs) into a new object, Flate. The new picture
+the picture's new size when it had the picture's, as `/Matte` needs) into a new object, Flate; the pictures are
+gone through in object order (`wanted` is a `BTreeSet`, PB-176), so the masks take the same numbers each run and
+the same file comes out. The new picture
 replaces the old in place (`objects.insert`, so Undo's comparison keeps the old), only when it and its mask are
 smaller than before. Left and counted by `KeptWhy`: other spaces than grey and RGB (`plain_components`:
 `imgs::device_equivalent`'s `Plain` or `Calibrated`, so Device, Cal, ICCBased of 1 or 3, saved again in that space;
@@ -1806,7 +1885,7 @@ never Indexed, Separation, DeviceN, Lab; a name followed through the page's colo
 most 8 times and never back to one already met, S1-08, M-01), not 8 bits, `/Decode`, `/Mask`, `/ImageMask`,
 filters other than DCT, Flate, LZW, run length and the ASCII ones, a JPEG whose components don't match its space,
 a mask that isn't 8-bit grey, inline pictures. `Reduced::most` names the picture that lost the most bytes, for the
-app's preview.
+app's preview; of several that lost as much, the first in object order.
 
 **Reduce file size in the app** (ENH-19's stage 2): `Act::ReduceSize` (File group, so no band place; greyed by
 `reducible` while busy, saving or for a signed tab, `Ctx::signed` from `Tab::signed`, whose `why_not` fix gives

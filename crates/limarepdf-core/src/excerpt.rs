@@ -107,7 +107,7 @@ impl Pdf {
         let page = self.page_id_at(page_index)?;
         let on_page: HashSet<ObjectId> = self.all_annot_refs(page).into_iter().collect();
         let undrawn = self.signature_count() > 0
-            && (self.appearances_to_draw(self.form_nodes()).iter())
+            && (self.appearances_to_draw(self.listed_nodes()).iter())
                 .any(|(_, _, widgets)| widgets.iter().any(|w| on_page.contains(w)));
         if undrawn {
             let mut copy = self.clone();
@@ -200,8 +200,9 @@ impl Pdf {
 
     /// The annotations on `page` that the app's pages draw ([`Pdf::app_snapshot`]), each
     /// with its number, for a page alone: those with a look of their own or `missing` one
-    /// LimarePDF draws, not hidden or kept from view, and not sticky notes (the app draws
-    /// those over the page itself). Each is cut from what reaches the rest of the document:
+    /// LimarePDF draws, not hidden, kept from view or in a layer that's off (PB-181), and not
+    /// sticky notes (the app draws those over the page itself). Each is cut from what reaches
+    /// the rest of the document:
     /// its page, its field's other parts and value, its pop-up, the comment it replies to,
     /// its actions.
     fn drawn_annots(&self, page: ObjectId, missing: &HashSet<ObjectId>) -> Vec<(ObjectId, Object)> {
@@ -215,6 +216,7 @@ impl Pdf {
         let Ok((_, Object::Array(annots))) = self.doc.dereference(annots) else {
             return Vec::new();
         };
+        let mut layers = self.layers_off();
         let mut out = Vec::new();
         for r in annots {
             let Ok(id) = r.as_reference() else { continue };
@@ -225,6 +227,9 @@ impl Pdf {
             let sub = d.get(b"Subtype").and_then(|o| o.as_name()).unwrap_or(b"");
             let looks = d.has(b"AP") || missing.contains(&id);
             if flags & (2 | 32) != 0 || matches!(sub, b"Text" | b"Popup") || !looks {
+                continue;
+            }
+            if (layers.as_mut()).is_some_and(|l| self.annot_layer_off(d, l)) {
                 continue;
             }
             let mut d = d.clone();

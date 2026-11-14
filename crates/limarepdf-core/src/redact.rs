@@ -32,7 +32,7 @@ use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::span_boxes;
 use crate::reach::{self, Decoded, Reach, Uses};
 use crate::redact_img::{black_out, inline_stream, is_clear};
-use crate::retained::{alt_refs, references_in, Removed};
+use crate::retained::{alt_refs, references_in, unread_said, Removed};
 use crate::trees::{self, Lookup};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -122,8 +122,6 @@ const MOSTLY: f32 = 0.5;
 const CHAR_SHARE: f32 = 0.25;
 /// Half the size of the clip rectangle that a mark is cut out of, in points.
 const FAR: f32 = 1.0e5;
-/// Deepest nesting of form XObjects redacted inside; deeper ones under a mark go whole.
-const MAX_NESTING: usize = 8;
 /// Places listed for each piece of removed text found elsewhere.
 const MAX_PLACES: usize = 10;
 
@@ -607,7 +605,9 @@ impl<'a> Redactor<'a> {
                                 .unwrap_or(mx::ID);
                             let fctm = mul(fm, gs.ctm);
                             if self.hit(mx::transform_rect(fctm, bbox)) {
-                                let redone = if nesting + 1 < MAX_NESTING {
+                                // Redacted inside as deep as drawings are followed; deeper
+                                // ones under a mark go whole.
+                                let redone = if nesting < crate::MAX_FORM_NESTING {
                                     self.form(s, &res, fctm, nesting + 1)?
                                 } else {
                                     None
@@ -670,8 +670,9 @@ impl<'a> Redactor<'a> {
         // others point at (the originals of what was replaced, alternative text taken off)
         // isn't kept in the file through it. A drawing kept inside draws outside the marks,
         // so it keeps drawing the originals it names: a copy is drawn only where it was made,
-        // by a name of its own.
+        // by a name of its own. Patterns and states set for what was taken out go first.
         if changed {
+            reach::drop_unpainted(&mut out);
             let own = Uses::of_ops(&out);
             match self.needs(&res, &own) {
                 Some((xs, ps)) => {
@@ -1287,11 +1288,15 @@ impl Pdf {
         }
         // Drawings too complex to follow are refused now, not halfway through: every
         // annotation's appearances too, so those written into `/Annots` get objects first.
+        // What they paint with now, so that a pattern only what goes painted with goes too.
         self.own_direct_annots()?;
         let mut uses = Decoded::new();
-        self.reach(&mut reach::work(), &mut uses)?;
+        let before = self.reach(&mut reach::work(), &mut uses)?;
         let mut report = RedactReport::default();
-        let mut removed = Removed::default();
+        let mut removed = Removed {
+            painted: before.painted,
+            ..Removed::default()
+        };
         let (mut alts, mut unread, mut added_all) = (Vec::new(), Vec::new(), 0);
         for &p in by_page.keys() {
             let page = self.page_id_at(p)?;
@@ -1362,31 +1367,19 @@ impl Pdf {
             report.pages.push(out);
         }
         removed.alts.extend(alts.iter().cloned());
-        let mut looks = Vec::new();
-        for &id in &removed.annots {
-            let Ok(d) = self.doc.get_dictionary(id) else {
-                continue;
-            };
-            looks.extend(self.appearances_of(d).0);
-            removed.held.extend(self.annot_holds(d));
-        }
+        self.annots_held(&mut removed);
         // Every annotation removed was listed on its page, so the walk before redacting
         // followed these appearances, unchanged since, within this budget.
+        let looks: Vec<ObjectId> = removed.looks.iter().copied().collect();
         let drawn = self.drawn_by(&looks, &mut reach::work(), &mut uses)?;
         removed.xobjects.extend(drawn);
-        removed.looks.extend(looks);
         let reach = self.reach(&mut reach::work_after(added_all), &mut uses)?;
         let retained = self.clear_retained(&removed, &reach);
         report.left = self.check_left(&by_page);
         unread.extend(retained.unread);
         unread.sort_unstable();
         unread.dedup();
-        report.left.extend(unread.iter().map(|p| {
-            format!(
-                "a drawing on page {} couldn't be read, so removed content may still be in the file",
-                p + 1
-            )
-        }));
+        report.left.extend(unread.iter().map(|&p| unread_said(p)));
         report.left.extend(retained.left);
         report.pictures_elsewhere = retained.pictures;
         report.elsewhere = self.find_elsewhere(&report, &alts, &reach);
@@ -1446,10 +1439,13 @@ impl Pdf {
             if sub == b"Redact" {
                 continue;
             }
-            let Some(b) = d.get(b"Rect").ok().and_then(|o| self.rect(o)) else {
-                continue;
-            };
-            if areas.iter().any(|&a| touches(norm(b), a)) {
+            // Its `/Rect`, and for one placed by its points, where it is drawn (PB-114).
+            let boxes = [
+                d.get(b"Rect").ok().and_then(|o| self.rect(o)),
+                self.annot_rect(d),
+            ];
+            let hit = |b: &[f32; 4]| areas.iter().any(|&a| touches(norm(*b), a));
+            if boxes.iter().flatten().any(hit) {
                 gone.insert(id);
                 if sub == b"Widget" {
                     widgets.insert(id);
@@ -1558,76 +1554,6 @@ impl Pdf {
             }
         }
         out
-    }
-
-    /// Of the pictures and forms `dropped`, take those nothing draws any more (as `reach`,
-    /// a walk after the change, found) out of the resources of everything reached that
-    /// has resources (pages, page-tree nodes, forms, patterns, Type 3 fonts), so they
-    /// aren't kept in the file.
-    pub(crate) fn drop_unused_xobjects(
-        &mut self,
-        dropped: &HashSet<ObjectId>,
-        reach: &Reach,
-    ) -> Result<()> {
-        let unused: HashSet<ObjectId> = dropped.difference(&reach.drawn).copied().collect();
-        if unused.is_empty() {
-            return Ok(());
-        }
-        for &h in &reach.holders {
-            self.unlist_xobjects(h, &unused)?;
-        }
-        Ok(())
-    }
-
-    /// Remove the `/XObject` entries pointing at `gone` from `holder`'s own resources;
-    /// `holder` a dictionary or a stream's.
-    fn unlist_xobjects(&mut self, holder: ObjectId, gone: &HashSet<ObjectId>) -> Result<()> {
-        let hd = match self.doc.get_object(holder) {
-            Ok(Object::Dictionary(d)) => d,
-            Ok(Object::Stream(s)) => &s.dict,
-            _ => return Ok(()),
-        };
-        let (res_id, mut res) = match hd.get(b"Resources") {
-            Ok(Object::Reference(id)) => match self.doc.get_dictionary(*id) {
-                Ok(d) => (Some(*id), d.clone()),
-                Err(_) => return Ok(()),
-            },
-            Ok(Object::Dictionary(d)) => (None, d.clone()),
-            _ => return Ok(()),
-        };
-        let (xo_id, mut xo) = match res.get(b"XObject") {
-            Ok(Object::Reference(id)) => match self.doc.get_dictionary(*id) {
-                Ok(d) => (Some(*id), d.clone()),
-                Err(_) => return Ok(()),
-            },
-            Ok(Object::Dictionary(d)) => (None, d.clone()),
-            _ => return Ok(()),
-        };
-        let names: Vec<Vec<u8>> = xo
-            .iter()
-            .filter(|(_, v)| v.as_reference().is_ok_and(|id| gone.contains(&id)))
-            .map(|(k, _)| k.clone())
-            .collect();
-        if names.is_empty() {
-            return Ok(());
-        }
-        for k in &names {
-            xo.remove(k);
-        }
-        match xo_id {
-            Some(id) => *self.doc.get_dictionary_mut(id)? = xo,
-            None => {
-                res.set("XObject", xo);
-                match res_id {
-                    Some(id) => *self.doc.get_dictionary_mut(id)? = res,
-                    None => match self.doc.get_object_mut(holder)? {
-                        Object::Stream(s) => s.dict.set("Resources", res),
-                        o => o.as_dict_mut()?.set("Resources", res),
-                    },
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Read the redacted pages again: any character or picture still touching a mark.
@@ -1755,7 +1681,7 @@ impl Pdf {
             let all = format!("{} {} {}", a.contents, a.author, a.subject);
             other.push((format!("a comment on page {}", a.page + 1), fold(&all)));
         }
-        for f in self.form_fields() {
+        for f in self.every_form_field() {
             if let crate::FieldValue::Text(v) = &f.value {
                 other.push((format!("form field \u{201c}{}\u{201d}", f.name), fold(v)));
             }

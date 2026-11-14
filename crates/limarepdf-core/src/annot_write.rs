@@ -459,8 +459,9 @@ impl Pdf {
         let (to_user, _, _) = self.vis_down(page);
         let new = mx::transform_rect(to_user, to);
         let d = self.doc.get_dictionary(id)?;
+        // From the box it is listed with, which the app moves.
         let old = self
-            .rect(d.get(b"Rect")?)
+            .annot_rect(d)
             .ok_or_else(|| anyhow!("the annotation has no box"))?;
         let (ow, oh) = (old[2] - old[0], old[3] - old[1]);
         let (nw, nh) = (new[2] - new[0], new[3] - new[1]);

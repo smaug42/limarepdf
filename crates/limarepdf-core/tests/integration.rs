@@ -181,6 +181,68 @@ fn empty_password_files_with_a_short_user_hash_open() {
     }
 }
 
+/// `bytes` with the trailer holding the encryption dictionary itself in place of a
+/// reference to it, as some writers save it (pdf.js's test files issue6010_1 and _2). The
+/// dictionary's object stays, unused. The trailer, a table's or a cross-reference stream's
+/// dictionary, is the last thing in the file to name `/Encrypt`, and nothing after it is
+/// found by its offset, so every offset holds.
+fn encryption_in_the_trailer(bytes: &[u8]) -> Vec<u8> {
+    let filter = find(bytes, b"/Filter/Standard").expect("no encryption dictionary");
+    let obj = bytes[..filter].windows(3).rposition(|w| w == b"obj");
+    let at = obj.unwrap() + 3;
+    let end = filter + find(&bytes[filter..], b"endobj").unwrap();
+    let key = bytes.windows(9).rposition(|w| w == b"/Encrypt ").unwrap() + 8;
+    assert!(key > end, "the trailer comes first");
+    let r = key + find(&bytes[key..], b"R").unwrap() + 1;
+    let dict = bytes[at..end].trim_ascii();
+    [&bytes[..key], b" ", dict, &bytes[r..]].concat()
+}
+
+#[test]
+fn files_holding_their_encryption_in_the_trailer_open() {
+    // lopdf reads the encryption dictionary only through a reference, so it refused the
+    // right password (PB-183).
+    use lopdf::xref::XrefType;
+    for (cipher, xref) in [
+        (Cipher::Rc4_40, XrefType::CrossReferenceTable),
+        (Cipher::Rc4_128, XrefType::CrossReferenceStream),
+        (Cipher::Aes128, XrefType::CrossReferenceStream),
+        (Cipher::Aes256, XrefType::CrossReferenceTable),
+        (Cipher::Aes256, XrefType::CrossReferenceStream),
+    ] {
+        for user in ["user", ""] {
+            let case = format!("{cipher:?}, {xref:?}, user password {user:?}");
+            let mut p = doc_with_text();
+            p.doc.reference_table.cross_reference_type = xref;
+            p.set_encryption(Some(Encryption {
+                user_password: user.into(),
+                owner_password: "owner".into(),
+                cipher,
+                restrictions: Restrictions::default(),
+            }));
+            let bytes = encryption_in_the_trailer(&p.to_bytes().unwrap());
+            assert!(find(&bytes, b"/Encrypt <<").is_some(), "{case}");
+            let given = (!user.is_empty()).then_some("user");
+            let opened = Pdf::from_bytes(&bytes, given).unwrap_or_else(|e| panic!("{case}: {e:#}"));
+            assert_eq!(opened.page_count(), 2, "{case}");
+            let text = opened.page_text(0);
+            assert!(text.contains("needle"), "{case}: text not read");
+            assert!(opened.encrypted(), "{case}: not seen as protected");
+            assert_eq!(opened.password_needed(), !user.is_empty(), "{case}");
+            assert!(!opened.repaired(), "{case}: not damaged");
+            assert_eq!(opened.differs(), None, "{case}");
+            let owners = Pdf::from_bytes(&bytes, Some("owner"));
+            assert!(owners.is_ok(), "{case}: the owner's");
+            if !user.is_empty() {
+                for wrong in [Some("wrong"), None] {
+                    let e = Pdf::from_bytes(&bytes, wrong).err().expect("opened");
+                    assert!(e.downcast_ref::<NeedsPassword>().is_some(), "{case}: {e:#}");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn files_tell_whether_they_needed_a_password() {
     let protect = |user: &str| {

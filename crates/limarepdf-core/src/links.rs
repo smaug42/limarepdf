@@ -214,7 +214,7 @@ impl Pdf {
             if a.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Link") {
                 continue;
             }
-            let Some(rect) = a.get(b"Rect").ok().and_then(|o| self.rect(o)) else {
+            let Some(rect) = self.annot_rect(a) else {
                 continue;
             };
             let bbox = mx::transform_rect(to_vis, rect);

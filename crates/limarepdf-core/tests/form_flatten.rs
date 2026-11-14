@@ -144,6 +144,79 @@ fn draws_the_fields_where_they_were_and_removes_the_form() {
     }
 }
 
+/// [`doc`] with two filled-in fields that print: one at the top in a layer that's off, and
+/// one at the bottom.
+fn field_in_a_layer() -> Pdf {
+    let (mut p, ids) = doc(vec![
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("off"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+            "F" => 4,
+        }),
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("on"), "Rect" => rect(10.0, 20.0, 150.0, 20.0),
+            "F" => 4,
+        }),
+    ]);
+    let off = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCG", "Name" => text("Off") });
+    p.doc.catalog_mut().unwrap().set(
+        "OCProperties",
+        dictionary! {
+            "OCGs" => vec![Object::Reference(off)],
+            "D" => dictionary! { "OFF" => vec![Object::Reference(off)] },
+        },
+    );
+    p.doc.get_dictionary_mut(ids[0]).unwrap().set("OC", off);
+    for name in ["off", "on"] {
+        p.set_field(name, FieldValue::Text("MMMM".into())).unwrap();
+    }
+    p.refresh_appearances();
+    p
+}
+
+/// Switches every layer of `p` on.
+fn layers_on(p: &mut Pdf) {
+    let props = p
+        .doc
+        .catalog_mut()
+        .unwrap()
+        .get_mut(b"OCProperties")
+        .unwrap();
+    props.as_dict_mut().unwrap().set("D", dictionary! {});
+}
+
+/// A field in a layer that's off isn't drawn (PB-181: hayro 0.9 draws an annotation
+/// whatever its layer).
+#[test]
+fn a_field_in_a_layer_thats_off_isnt_drawn() {
+    let mut p = field_in_a_layer();
+    // Only the field shown, at the bottom.
+    let shown = ink(&mut p, 0).expect("the field shown drawn");
+    assert!(shown[1] > 100, "{shown:?}");
+    layers_on(&mut p);
+    let all = ink(&mut p, 0).unwrap();
+    assert!(all[1] < 100, "{all:?}");
+}
+
+/// A field's box in a layer is drawn into that layer by flattening and printing, so it
+/// stays hidden while the layer is off, and shows when it's on (PB-180).
+#[test]
+fn a_field_box_in_a_layer_is_drawn_into_it() {
+    let mut p = field_in_a_layer();
+    let mut printed = p.print_sheets(&[0], &as_is()).unwrap();
+    let mut printed = Pdf::from_bytes(&printed.to_bytes().unwrap(), None).unwrap();
+    assert_eq!(p.flatten_form(None).unwrap(), 2);
+    let mut flat = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    for (what, q) in [("printed", &mut printed), ("flattened", &mut flat)] {
+        let shown = ink(q, 0).expect("the field shown drawn");
+        assert!(shown[1] > 100, "{what}: {shown:?}");
+        layers_on(q);
+        let all = ink(q, 0).unwrap();
+        assert!(all[1] < 100, "{what}: {all:?}");
+    }
+}
+
 #[test]
 fn draws_the_chosen_state_of_a_checkbox() {
     let mark = |p: &mut Pdf, op: &str| {

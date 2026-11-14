@@ -14,7 +14,7 @@ use crate::cms_write;
 use crate::doc::encode_text;
 use crate::embed::unwritable;
 use crate::form_ap::nums;
-use crate::forms::FieldKind;
+use crate::forms::{FieldKind, Reach};
 use crate::ids::UnlockedId;
 use crate::incremental;
 use crate::layout::Setter;
@@ -243,7 +243,7 @@ fn check_rules(rep: &SignatureReport, pdf: &Pdf, req: &SignRequest) -> Result<()
             if rep.signatures.iter().any(|s| s.fields.contains(name)) {
                 bail!("the field \"{name}\" is already signed");
             }
-            let Some(field) = pdf.form_fields().into_iter().find(|f| &f.name == name) else {
+            let Some(field) = pdf.every_form_field().into_iter().find(|f| &f.name == name) else {
                 bail!("the document has no field named \"{name}\"");
             };
             if field.kind != FieldKind::Signature {
@@ -299,7 +299,7 @@ fn settle_appearances(pdf: &mut Pdf) -> Result<()> {
         .and_then(|o| pdf.doc.dereference(o).ok())
         .is_some_and(|(_, o)| o.as_bool().unwrap_or(false));
     if asks {
-        pdf.refresh_appearances();
+        pdf.refresh_reaching(Reach::Every);
         let form = pdf.acro_form_id()?;
         pdf.doc.get_dictionary_mut(form)?.remove(b"NeedAppearances");
     }
@@ -531,7 +531,7 @@ fn effective_ff(pdf: &Pdf, mut id: ObjectId) -> i64 {
 /// "Signature1", "Signature2", ...: the first name no top-level field has.
 fn free_field_name(pdf: &Pdf) -> String {
     let mut taken: HashSet<String> = pdf
-        .form_fields()
+        .every_form_field()
         .into_iter()
         .filter_map(|f| f.name.split('.').next().map(str::to_string))
         .collect();

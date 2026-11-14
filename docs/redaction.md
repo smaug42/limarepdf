@@ -97,7 +97,8 @@ For each area:
 
 Pictures and grouped content that nothing draws any more are left out of the saved file: also those only other
 grouped content, a pattern, a soft mask or a Type 3 font listed, and a redacted group's original, which its
-redacted copy replaces where the mark was. A redacted picture's original goes with its soft mask, mask and
+redacted copy replaces where the mark was. So are a pattern and a soft mask only removed content painted with, and
+what they draw. A redacted picture's original goes with its soft mask, mask and
 alternate versions, and a removed comment with the drawings it showed and the pictures and grouped content they
 draw. Every list of resources in the document stops listing them, also a list other pages share and one nothing
 draws with; the rest of each list stays as it was.
@@ -131,13 +132,15 @@ nothing and says what it found, and `limarepdf-cli redact` lists it and doesn't 
 
 It then follows everything the saved file would keep, from its start, and checks that nothing redaction removed is
 still kept another way. What it removed includes the pages' old content, a redacted picture's or group's original
-(a picture's with its soft mask, mask and alternate versions), alternative text taken off (also text stored apart
+(a picture's with its soft mask, mask and alternate versions), the patterns and soft masks only removed content
+painted with, alternative text taken off (also text stored apart
 from what held it, and a property stored apart that held it), removed comments, links and fields (a comment with
 what it showed and the text it held), and the pages' thumbnails and private data. The other ways are the tag tree,
 private application data and any other part of the file. LimarePDF doesn't cut them, so when one is found the app
 changes nothing and says which ("removed content may still be in the file, through the tag tree"), and
 `limarepdf-cli redact` doesn't write the file. In a tagged document the tags point at links and comments too, so
-removing one they point at refuses this way.
+removing one they point at refuses this way. A removed comment's drawing listed in the document's named appearances,
+where Acrobat keeps the icons it drew comments with, is taken out of that list instead.
 
 It then looks for the removed text, and the removed alternative text, elsewhere in the document: on any page, in
 the alternative text of what each page draws ("alternative text on page 2"), in bookmarks, comments, form fields
@@ -167,19 +170,23 @@ What is ticked at first:
   written into it or stored apart (a link that opens a web page and then runs a script loses only the script).
   Ordinary links to pages and web addresses stay. A form with both XFA and ordinary fields loses its XFA part (it
   holds scripts); a form made only for Adobe Reader (XFA only) keeps it.
-- **Attached files:** files attached to the document or to comments.
+- **Attached files:** files attached to the document or to comments. When a comment holding a file is still kept
+  another way, as when the tag tree points at it, the command stops with a message saying what, and changes
+  nothing (as for redaction); leave attached files out to remove the rest.
 - **Hidden layers and their content:** the content of layers that are switched off is deleted, and so is content
-  a layer rule hides, wherever it is drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments'
+  a layer rule hides, wherever it is drawn: on the pages, in forms drawn inside forms (however deep), in comments'
   and fields' drawings, in patterns, soft masks and Type 3 fonts. A layer rule combines layers ("shown when layer A
   is on and layer B is off"), and rules can sit inside rules; LimarePDF reads them as other PDF readers do, so
-  what a rule hides goes even when every layer it names is on. A picture only hidden content drew is left out of
-  the saved file, also when it was listed by a form inside a form. Layers that are off leave the layer list;
+  what a rule hides goes even when every layer it names is on. A picture or form only hidden content drew, and a
+  pattern or soft mask only it painted with, is left out of the saved file, also when it was listed by a form
+  inside a form or by a pattern nothing paints with. A comment or a form field's box in a hidden layer goes, and a
+  field shown only in such boxes goes with its value. Layers that are off leave the layer list;
   layers that are shown stay. A rule that stays but named a removed layer is rewritten without it, so switching
   the layers that stay still shows and hides what it did. What shows doesn't change: a colour, position or clip
   hidden content sets still applies to what is drawn after it, and hidden text is replaced by a gap as wide, so
   text after it on the line stays where it was. The number shown is the layers switched off plus the rules that
   hide content though every layer they name is on. If some drawing or layer rule can't be read (a rule with an
-  operator LimarePDF doesn't know, or containing itself), or is nested deeper, LimarePDF can't tell whether it
+  operator LimarePDF doesn't know, or containing itself), or a rule is nested too deep, LimarePDF can't tell whether it
   holds hidden content, so the command stops with a message saying what, and changes nothing; a rule that can't
   be read counts in the number, so Remove can say why. It stops in the same way for a drawing without resources
   of its own that is used in places giving its layers or fonts different meanings (hidden in one, shown in
@@ -187,7 +194,9 @@ What is ticked at first:
   change what shows: hidden text that clips what comes after it, hidden text whose width LimarePDF can't work out
   (its font is set where the drawing is used) with visible text after it on the same line, or a shape begun in a
   hidden layer and painted outside it, or when the document's drawings are too complex to follow (as for
-  redaction). Leave hidden layers out to remove the rest. Compressed data is checked to its end: if it is cut off
+  redaction); when a form field's box in a hidden layer belongs to a form nested more than 32 deep (as for
+  redaction); and when something only hidden content drew, or a comment in a hidden layer, is still kept another
+  way, as when the tag tree points at it (as for redaction). Leave hidden layers out to remove the rest. Compressed data is checked to its end: if it is cut off
   or damaged part way, the command stops in the same way ("Part of this document is damaged..."). Data that is
   complete but whose checksum at the end is wrong is read in full, as other PDF readers read it, and the result
   says so.
@@ -199,10 +208,14 @@ What is ticked at first:
 Not ticked at first, as they are often wanted:
 
 - **Comments and markup** (redaction marks stay), every one, also on a page with more than the 10,000 the app
-  shows. Attached files are removed in the same way.
-- **Form field values:** every field's value is cleared for good, read-only fields included, along with default
-  values (so Reset form brings nothing back), values a field takes from a parent field, rich text and the drawings
-  that showed them; checkboxes and radio buttons are switched off. Fields LimarePDF can't draw lose their drawing,
+  shows, with the replies to them, and what only their drawings drew. Attached files are removed in the same way.
+  When a removed comment is still kept another way, as when a tagged document's tags point at it, the command
+  stops with a message saying what, and changes nothing (as for redaction); leave comments out to remove the
+  rest.
+- **Form field values:** every field's value is cleared for good, also in a form with more than the 10,000 fields
+  the app lists, read-only fields included, along with default values (so Reset form brings nothing back), values
+  a field takes from a parent field, rich text and the drawings that showed them; checkboxes and radio buttons are
+  switched off. Fields LimarePDF can't draw lose their drawing,
   and readers draw them empty. Signature fields are left alone. The fields themselves, and their choices, stay. A
   form nested more than 32 deep (fields inside fields, form boxes included, also boxes the form's list of fields
   leaves out) can't be followed to its end, so the command stops with a message and changes nothing; leave form
