@@ -1114,7 +1114,8 @@ times the corpus maximum, 129,066 steps (`pdfjs/issue6692.pdf`, 109 pages; the 1
 2026-11-04 with the budget lifted). The walk runs first as a check, refusing before anything changes; the walk
 after the change is allowed twice the limit plus the objects added, so it can't fail midway on a document that
 passed (argued, not proven: should it, the app undoes the step). Finding hidden information (the count run on
-a copy, not strict) leaves the pictures listed when that walk fails rather than refusing. The budget belongs in `contracts.md` once WP-10 writes it.
+a copy, not strict) leaves the pictures listed when that walk fails rather than refusing. The budget is part of
+[Redaction's contract](contracts.md#redaction).
 
 Reading a page (`objects.rs`, `parse_as_page`; S1-06, H-07) has a budget of its own: a step per operator and per
 form opened, plus one per KiB of the form's content, charged across every form the page draws, however often (a
