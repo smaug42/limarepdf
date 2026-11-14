@@ -4063,6 +4063,7 @@ mod tests {
             name: String::new(),
             modified: String::new(),
             flags: 0,
+            layer_off: false,
             reply_to: reply_to.map(|r| (r, 0)),
             has_appearance: true,
             text_style: None,

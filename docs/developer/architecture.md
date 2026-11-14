@@ -195,6 +195,15 @@ leaves out), a pattern with an `/ExtGState`, fills in Type 3 glyphs and in forms
 a stream two drawings share, which is drawn with the resources of each. `tests/mesh_fills.rs` draws each case both
 ways and finds them the same (a skewed shape's smoothed edges differ in 933 pixels of 1.9 million).
 
+hayro 0.9 draws an annotation whatever its `/OC` says: it checks only the Hidden and NoView flags, though it honours
+a drawing's own `/OC` and marked content tagged with a layer. So a comment or field in a layer that's off showed
+in the app and in every picture of the page (PB-181; recorded, not filed upstream). The same copies
+(`snapshot_hiding`, `drawing_snapshot`) mark such an annotation Hidden, and `page_without` leaves it out
+(`drawn_annots`). Whether it is in one is worked out as Remove hidden information works it out, with the layers off
+as the document opens and the rules read within their steps (`Pdf::layers_off`, `annot_layer_off`). The app
+neither draws nor picks it: `Annot::layer_off` makes `on_page` false and `hidden` true. `tests/annots.rs`,
+`tests/form_flatten.rs`.
+
 The page colour modes (View > Page colours; [Rendering](../rendering.md#page-colour-modes)) are worked out on the
 drawn page, pixel by pixel, in `crates/limarepdf-core/src/page_colours.rs` (`PageColours::pixel`, `recolour`). Only
 `Renderer::render_in` and `render_region_in`, which draw pages and tiles for display, call it, so printing, exports
@@ -1280,7 +1289,11 @@ UTC (`comment_dates_are_shown_in_local_time` checks fixed comment dates there); 
 Annotation drawings LimarePDF makes are built in `annot_ap.rs`. A line's endings (`line_end`) are painted with a
 pen of their own: on a dashed line it sets an empty dash pattern (`[] 0 d`) before the ending, as `Pen::paint`
 only writes `d` when the pen has a pattern and the shaft's dashes would otherwise carry on into it. The same
-drawing is what flattening writes into the page.
+drawing is what flattening writes into the page. An annotation in a layer (`/OC`) is drawn into that layer, in
+marked content tagged with it (`/OC /LimareField1 BDC … EMC`, the layer or rule named in the page's
+`/Properties`), so it shows when the layer does, as before (PB-180). That is `flatten_page`, so flattening the
+form or comments, finishing signing and printing all do it; a rule written in place is stored as an object of its
+own, since renderers look a tag's layer up by reference.
 
 Links (ENH-17) are `links.rs`, kept apart from comments: `AnnotKind::of` leaves them out, so they are never in
 the Comments view or `Pdf::annotations`. `Pdf::page_links` reads every link of a page with an area: its id

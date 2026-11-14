@@ -7,6 +7,7 @@ use crate::doc::decode_text;
 use crate::form_flatten::{self, Flat};
 use crate::form_write::parse_da;
 use crate::matrix as mx;
+use crate::sanitise::Layers;
 use crate::{Align, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::{Dictionary, Object, ObjectId};
@@ -184,6 +185,9 @@ pub struct Annot {
     pub modified: String,
     /// The annotation flags (`/F`).
     pub flags: i64,
+    /// In a layer that's off, or that a layer rule hides while the layers are as the
+    /// document opens: not shown, as if hidden.
+    pub layer_off: bool,
     /// The comment this one replies to (`/IRT`).
     pub reply_to: Option<(u32, u16)>,
     /// Whether the file has a drawing for it. LimarePDF draws the common kinds itself when
@@ -256,14 +260,15 @@ impl Annot {
         }
     }
 
+    /// Flagged Hidden, or in a layer that's off.
     pub fn hidden(&self) -> bool {
-        self.flags & HIDDEN != 0
+        self.flags & HIDDEN != 0 || self.layer_off
     }
 
     /// Whether it is shown on the page: not hidden and not a reply, which is listed with
     /// the comment it answers.
     pub fn on_page(&self) -> bool {
-        self.flags & (HIDDEN | NO_VIEW) == 0 && self.reply_to.is_none()
+        self.flags & (HIDDEN | NO_VIEW) == 0 && !self.layer_off && self.reply_to.is_none()
     }
 
     /// Locked or read-only: it may not be moved, changed or deleted in the app.
@@ -276,9 +281,10 @@ impl Pdf {
     /// The annotations on every page, page by page in the file's order.
     pub fn annotations(&self) -> Vec<Annot> {
         let ids = self.page_ids();
+        let mut layers = self.layers_off();
         (0..ids.len())
             .flat_map(|i| {
-                self.annotations_in(i, ids[i], self.annot_refs(ids[i]))
+                self.annotations_in(i, ids[i], self.annot_refs(ids[i]), &mut layers)
                     .unwrap_or_default()
             })
             .collect()
@@ -288,35 +294,39 @@ impl Pdf {
     /// drawn in).
     pub fn page_annotations(&self, page_index: usize) -> Result<Vec<Annot>> {
         let page = self.page_id_at(page_index)?;
-        self.annotations_in(page_index, page, self.annot_refs(page))
+        let mut layers = self.layers_off();
+        self.annotations_in(page_index, page, self.annot_refs(page), &mut layers)
     }
 
     /// Every annotation on every page, without [`Pdf::annot_refs`]'s limit: for removing
     /// information, where one left out could keep what should go.
     pub(crate) fn every_annotation(&self) -> Vec<Annot> {
         let ids = self.page_ids();
+        let mut layers = self.layers_off();
         (0..ids.len())
             .flat_map(|i| {
-                self.annotations_in(i, ids[i], self.all_annot_refs(ids[i]))
+                self.annotations_in(i, ids[i], self.all_annot_refs(ids[i]), &mut layers)
                     .unwrap_or_default()
             })
             .collect()
     }
 
-    /// The annotations `refs` of page `page`, number `page_index` (zero-based). The page is
-    /// given, not looked up by number: listing every page's annotations would otherwise go
-    /// through the page tree once a page (ENH-35: 63 ms on 300 pages).
+    /// The annotations `refs` of page `page`, number `page_index` (zero-based), and whether
+    /// each is in a layer `layers` hide. The page is given, not looked up by number: listing
+    /// every page's annotations would otherwise go through the page tree once a page
+    /// (ENH-35: 63 ms on 300 pages).
     fn annotations_in(
         &self,
         page_index: usize,
         page: ObjectId,
         refs: Vec<ObjectId>,
+        layers: &mut Option<Layers>,
     ) -> Result<Vec<Annot>> {
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         Ok(refs
             .into_iter()
-            .filter_map(|id| self.annot(id, page_index, to_vis))
+            .filter_map(|id| self.annot(id, page_index, to_vis, layers))
             .collect())
     }
 
@@ -583,7 +593,13 @@ impl Pdf {
                 .is_ok_and(|p| gone.contains(&p))
     }
 
-    fn annot(&self, id: ObjectId, page: usize, to_vis: mx::M) -> Option<Annot> {
+    fn annot(
+        &self,
+        id: ObjectId,
+        page: usize,
+        to_vis: mx::M,
+        layers: &mut Option<Layers>,
+    ) -> Option<Annot> {
         let d = self.doc.get_dictionary(id).ok()?;
         let kind = AnnotKind::of(d.get(b"Subtype").ok()?.as_name().ok()?)?;
         let rect = self.rect(d.get(b"Rect").ok()?)?;
@@ -713,6 +729,7 @@ impl Pdf {
                 .or_else(|| date(b"CreationDate"))
                 .unwrap_or_default(),
             flags: self.flags(d),
+            layer_off: (layers.as_mut()).is_some_and(|l| self.annot_layer_off(d, l)),
             reply_to: d.get(b"IRT").and_then(|o| o.as_reference()).ok(),
             has_appearance: d
                 .get(b"AP")

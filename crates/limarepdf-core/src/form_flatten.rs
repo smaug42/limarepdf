@@ -35,8 +35,9 @@ pub(crate) struct Plan {
     annots: Vec<Object>,
     /// Which entries stay on the page.
     keep: Vec<bool>,
-    /// The drawings to draw in, each with the matrix that puts it on the page.
-    shown: Vec<(ObjectId, M)>,
+    /// The drawings to draw in, each with the matrix that puts it on the page, and the
+    /// layer or layer rule its annotation is in (`/OC`), if any.
+    shown: Vec<(ObjectId, M, Option<Object>)>,
     /// The unplaced annotations kept, one for each entry.
     held: Vec<ObjectId>,
     /// The entries that go with each annotation: its popup, and the replies to it.
@@ -342,9 +343,10 @@ impl Pdf {
 
         let mut res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
         let mut xobjects = self.resolved_dict(res.get(b"XObject").ok());
+        let mut props = self.resolved_dict(res.get(b"Properties").ok());
         let mut content = Vec::new();
-        let mut n = 0;
-        for (ap, m) in &shown {
+        let (mut n, mut k) = (0, 0);
+        for (ap, m, oc) in &shown {
             if let (Some(dr), Ok(s)) = (
                 dr,
                 self.doc.get_object_mut(*ap).and_then(|o| o.as_stream_mut()),
@@ -362,9 +364,34 @@ impl Pdf {
             };
             xobjects.set(name.as_str(), *ap);
             let m = m.map(|x| format!("{x:.4}")).join(" ");
-            content.extend(format!("q {m} cm /{name} Do Q\n").bytes());
+            let draw = format!("q {m} cm /{name} Do Q\n");
+            // An annotation in a layer is drawn into it (ISO 32000-1, 8.11.3.2), so it is
+            // shown when the layer is, as before (PB-180). A rule written in place is stored
+            // as an object of its own: renderers look a tag's layer up by reference.
+            let oc = match oc {
+                Some(Object::Reference(id)) if self.doc.get_dictionary(*id).is_ok() => Some(*id),
+                Some(Object::Dictionary(d)) => Some(self.doc.add_object(d.clone())),
+                _ => None,
+            };
+            match oc {
+                Some(oc) => {
+                    let tag = loop {
+                        k += 1;
+                        let tag = format!("{prefix}{k}");
+                        if !props.has(tag.as_bytes()) {
+                            break tag;
+                        }
+                    };
+                    props.set(tag.as_str(), oc);
+                    content.extend(format!("/OC /{tag} BDC\n{draw}EMC\n").bytes());
+                }
+                None => content.extend(draw.bytes()),
+            }
         }
         res.set("XObject", xobjects);
+        if k > 0 {
+            res.set("Properties", props);
+        }
         let pd = self.doc.get_dictionary_mut(page)?;
         if kept.is_empty() {
             pd.remove(b"Annots");
@@ -424,7 +451,7 @@ impl Pdf {
                 }
                 Flat::Drop => {}
                 Flat::Draw => match self.placement(d) {
-                    Some(p) => shown.push(p),
+                    Some((ap, m)) => shown.push((ap, m, d.get(b"OC").ok().cloned())),
                     None if hold => {
                         let flags = d.get(b"F").ok().and_then(|o| self.int_value(o));
                         // Hidden ones still go undrawn: nothing shown is lost.

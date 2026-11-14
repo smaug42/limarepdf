@@ -10,7 +10,7 @@ use limarepdf_core::{
     Align, AnnotKind, BoxSetting, DateStyle, InkColor, LinkTarget, Mark, Pdf, Shape, ShapeLook,
     SignArt, SignRole, SignStyle, Stamp, StampColor, StampKind, StampPlace, Unfollowed,
 };
-use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
+use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream, StringFormat};
 
 fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
@@ -50,7 +50,11 @@ fn add(p: &mut Pdf, page: usize, subtype: &str, rect: [f32; 4], extra: Dictionar
 /// Pixels that are not white inside `r` (left, top, right, bottom in displayed points;
 /// 1 px per point), and how many of them are dark.
 fn ink(p: &mut Pdf, r: [usize; 4]) -> (usize, usize) {
-    let bmp = shot(p);
+    ink_of(&shot(p), r)
+}
+
+/// [`ink`] in `bmp`.
+fn ink_of(bmp: &render::Bitmap, r: [usize; 4]) -> (usize, usize) {
     let (mut any, mut dark) = (0, 0);
     for y in r[1]..r[3].min(bmp.height) {
         for x in r[0]..r[2].min(bmp.width) {
@@ -517,6 +521,112 @@ fn flattening_keeps_the_look_and_removes_the_annotations() {
     let bytes = p.to_bytes().unwrap();
     let mut p = Pdf::from_bytes(&bytes, None).unwrap();
     assert_eq!(ink(&mut p, [0, 0, 300, 200]), before);
+}
+
+/// Where [`squares_in_layers`] puts its squares, in displayed points: the one shown, the one
+/// in a layer that's off, and the one a rule naming that layer hides.
+const SHOWN: [usize; 4] = [10, 40, 100, 160];
+const IN_LAYER: [usize; 4] = [100, 40, 190, 160];
+const BY_RULE: [usize; 4] = [190, 40, 280, 160];
+
+/// Three black squares with drawings of their own on [`page`]: one shown, one in a layer
+/// that's off, and one whose rule, written in place, hides it while that layer is off.
+fn squares_in_layers(p: &mut Pdf) {
+    let off = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCG", "Name" => text("Off") });
+    p.doc.catalog_mut().unwrap().set(
+        "OCProperties",
+        dictionary! {
+            "OCGs" => vec![Object::Reference(off)],
+            "D" => dictionary! { "OFF" => vec![Object::Reference(off)] },
+        },
+    );
+    let rule = Object::Dictionary(dictionary! { "Type" => "OCMD", "OCGs" => off });
+    for (x, oc) in [
+        (20.0, None),
+        (110.0, Some(Object::Reference(off))),
+        (200.0, Some(rule)),
+    ] {
+        let look = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => nums(&[0.0, 0.0, 70.0, 100.0]),
+            },
+            b"0 g 0 0 70 100 re f".to_vec(),
+        );
+        let mut d = dictionary! {
+            "C" => nums(&[0.0, 0.0, 0.0]),
+            "AP" => dictionary! { "N" => p.doc.add_object(look) },
+            "F" => 4,
+        };
+        if let Some(oc) = oc {
+            d.set("OC", oc);
+        }
+        add(p, 0, "Square", [x, 50.0, x + 70.0, 150.0], d);
+    }
+}
+
+/// Switches every layer of `p` on.
+fn layers_on(p: &mut Pdf) {
+    let props = p
+        .doc
+        .catalog_mut()
+        .unwrap()
+        .get_mut(b"OCProperties")
+        .unwrap();
+    props.as_dict_mut().unwrap().set("D", dictionary! {});
+}
+
+/// An annotation in a layer that's off isn't shown: not in the page's picture, the app's,
+/// the one OCR reads or the one under text being edited, and the app neither draws nor
+/// picks it (PB-181: hayro 0.9 draws an annotation whatever its layer).
+#[test]
+fn an_annotation_in_a_layer_thats_off_isnt_shown() {
+    let mut p = page();
+    squares_in_layers(&mut p);
+    let shown = ink(&mut p, SHOWN);
+    assert_eq!(shown.1, 7000);
+    let pictures = [
+        ("page", p.render_snapshot().unwrap()),
+        ("app", p.app_snapshot().unwrap()),
+        ("OCR", p.drawing_snapshot().unwrap()),
+        ("editing", p.page_without(0, &[]).unwrap()),
+    ];
+    for (what, bytes) in pictures {
+        let hp = render::load(bytes, None).unwrap();
+        let bmp = Renderer::new(&hp).render(0, 1.0).unwrap();
+        assert_eq!(ink_of(&bmp, SHOWN), shown, "{what}");
+        assert_eq!(ink_of(&bmp, IN_LAYER), (0, 0), "{what}");
+        assert_eq!(ink_of(&bmp, BY_RULE), (0, 0), "{what}");
+    }
+    let annots = p.annotations();
+    let on: Vec<bool> = annots.iter().map(|a| a.on_page()).collect();
+    assert_eq!(on, [true, false, false]);
+    let hidden: Vec<bool> = annots.iter().map(|a| a.hidden()).collect();
+    assert_eq!(hidden, [false, true, true]);
+    // With the layer on, they are.
+    layers_on(&mut p);
+    assert_eq!(ink(&mut p, IN_LAYER), shown);
+    assert_eq!(ink(&mut p, BY_RULE), shown);
+    assert!(p.annotations().iter().all(|a| a.on_page()));
+}
+
+/// Flattening draws an annotation in a layer into that layer: it stays hidden while the
+/// layer is off, and shows when it's on (PB-180).
+#[test]
+fn flattening_draws_an_annotation_in_a_layer_into_it() {
+    let mut p = page();
+    squares_in_layers(&mut p);
+    let shown = ink(&mut p, SHOWN);
+    assert_eq!(p.flatten_annotations(None).unwrap().drawn, 3);
+    let mut p = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    assert!(p.annotations().is_empty());
+    assert_eq!(ink(&mut p, SHOWN), shown);
+    assert_eq!(ink(&mut p, IN_LAYER), (0, 0));
+    assert_eq!(ink(&mut p, BY_RULE), (0, 0));
+    layers_on(&mut p);
+    assert_eq!(ink(&mut p, IN_LAYER), shown);
+    assert_eq!(ink(&mut p, BY_RULE), shown);
 }
 
 #[test]

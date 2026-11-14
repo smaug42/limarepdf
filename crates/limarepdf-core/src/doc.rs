@@ -413,15 +413,18 @@ impl Pdf {
     /// copy, and reported as a picture that can't be decoded when the page is drawn (PB-81);
     /// so is a tiling pattern the renderer can't tile (PB-11). A shape filled with a pattern
     /// of a triangle or patch shading is drawn as the shading clipped to the shape, which
-    /// the renderer samples only where the shading is (PB-11). The document itself is not
-    /// changed.
+    /// the renderer samples only where the shading is (PB-11). An annotation in a layer
+    /// that's off is marked Hidden, as the renderer would draw it (PB-181). The document
+    /// itself is not changed.
     pub fn drawing_snapshot(&mut self) -> Result<Vec<u8>> {
         let swaps = crate::unfillable::swaps(&self.doc, &mut self.checked);
-        if swaps.is_empty() {
+        let ids = self.annots_where(|_| false);
+        if swaps.is_empty() && ids.is_empty() {
             return self.snapshot();
         }
         let mut copy = self.clone();
         crate::unfillable::put(&mut copy.doc, swaps);
+        copy.mark_hidden(ids);
         copy.snapshot()
     }
 
@@ -435,7 +438,8 @@ impl Pdf {
 
     /// Like [`Pdf::snapshot`], for drawing pages as the app shows them (`limarepdf-cli
     /// render`): annotations flagged Hidden or NoView aren't drawn, as hayro 0.9 honours both
-    /// (`annot_noview_flag_is_respected` in `tests/render_coverage.rs`). Form fields are drawn
+    /// (`annot_noview_flag_is_respected` in `tests/render_coverage.rs`), and nor are those in
+    /// a layer that's off, which it doesn't (PB-181). Form fields are drawn
     /// as [`Pdf::refresh_appearances`] would draw them, as the app draws them when opening a
     /// file, but every one, also past the fields LimarePDF lists ([`Pdf::unshown_fields`]
     /// names those it can't draw). Pictures their data can't
@@ -475,7 +479,8 @@ impl Pdf {
         bytes
     }
 
-    /// A snapshot in which annotations whose subtype `hide` picks are marked Hidden, and
+    /// A snapshot in which annotations whose subtype `hide` picks, and those in a layer
+    /// that's off (which the renderer would draw, PB-181), are marked Hidden, and
     /// annotations without a drawing get LimarePDF's (the document itself keeps
     /// none). In a signed document, or in any with `all_fields`, form fields are drawn this
     /// way too, as [`Pdf::refresh_appearances`] would draw them (every field with
@@ -509,18 +514,25 @@ impl Pdf {
             copy.refresh_reaching(reach);
         }
         copy.draw_annotations(&missing);
-        for (id, flags) in ids {
-            if let Ok(a) = copy.doc.get_dictionary_mut(id) {
-                a.set("F", flags | 2);
-            }
-        }
+        copy.mark_hidden(ids);
         let mut out = Vec::new();
         copy.doc.save_to(&mut out)?;
         Ok(out)
     }
 
-    /// Annotations not Hidden (bit 2) whose subtype `hide` picks, with their flags.
+    /// Sets the Hidden flag (bit 2) of annotations `ids`, given with their flags.
+    fn mark_hidden(&mut self, ids: Vec<(ObjectId, i64)>) {
+        for (id, flags) in ids {
+            if let Ok(a) = self.doc.get_dictionary_mut(id) {
+                a.set("F", flags | 2);
+            }
+        }
+    }
+
+    /// Annotations not Hidden (bit 2) whose subtype `hide` picks or that are in a layer
+    /// that's off, with their flags.
     fn annots_where(&self, hide: impl Fn(&[u8]) -> bool) -> Vec<(ObjectId, i64)> {
+        let mut layers = self.layers_off();
         let mut out = Vec::new();
         for page in self.page_ids() {
             let Some(annots) = self
@@ -541,7 +553,9 @@ impl Pdf {
                 };
                 let flags = d.get(b"F").ok().and_then(|f| self.num(f)).unwrap_or(0.0) as i64;
                 let sub = d.get(b"Subtype").and_then(|o| o.as_name()).unwrap_or(b"");
-                if flags & 2 == 0 && hide(sub) {
+                if flags & 2 == 0
+                    && (hide(sub) || (layers.as_mut()).is_some_and(|l| self.annot_layer_off(d, l)))
+                {
                     out.push((id, flags));
                 }
             }

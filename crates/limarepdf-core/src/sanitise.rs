@@ -194,7 +194,7 @@ enum Folded {
 /// them (ISO 32000-1, 8.11.2.2: `/VE` first, else `/OCGs` and `/P`). Every other layer
 /// counts as on. Each rule and each stored expression is worked out once, within one budget
 /// of [`RULE_STEPS`]; what the scan found the rules something uses do is kept here too.
-struct Layers {
+pub(crate) struct Layers {
     off: HashSet<ObjectId>,
     /// Stored expressions worked out: whether each is true, how many levels deep it
     /// reaches, and whether it names a layer that's off.
@@ -1114,6 +1114,20 @@ impl Pdf {
             refs(d.get(b"OFF").ok()).into_iter().collect()
         };
         Some((props, d, hidden))
+    }
+
+    /// The layers switched off as the document opens, to tell what they hide; `None` when
+    /// it has no layer list. A rule that can't be read, or not within [`RULE_STEPS`], hides
+    /// nothing.
+    pub(crate) fn layers_off(&self) -> Option<Layers> {
+        self.layer_list().map(|(_, _, off)| Layers::new(off))
+    }
+
+    /// Whether annotation `annot` is in a layer `layers` hide, or a rule they make hide it
+    /// (`/OC`, ISO 32000-1, 12.5.2): it isn't shown then, as if hidden. hayro 0.9 draws it
+    /// all the same (PB-181), so the copies drawn mark it hidden.
+    pub(crate) fn annot_layer_off(&self, annot: &Dictionary, layers: &mut Layers) -> bool {
+        annot.get(b"OC").is_ok_and(|oc| self.oc_hidden(oc, layers))
     }
 
     /// Delete the content of the layers (optional content groups) that are switched off,

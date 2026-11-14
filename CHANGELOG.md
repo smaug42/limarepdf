@@ -478,6 +478,12 @@
 - Redaction and flattening some of a form's fields take a removed box out of its field even when the form's list
   of fields leaves the field out, as some files do. Before, such a field kept the box: redaction stopped, changing
   nothing, and said removed content might still be in the file, and flattening left the box in the file.
+- Flattening and printing draw a comment or form field that belongs to a layer into that layer, so it shows only
+  when the layer does. Before, it was drawn onto the page itself and always showed, even with its layer switched
+  off.
+- A comment or form field that belongs to a layer that is switched off isn't shown: not on the page, in exported
+  pictures, in text recognition or behind text being edited, and you can't select it on the page. Before, it was
+  shown as if its layer were on.
 
 ### Changed
 
