@@ -32,7 +32,7 @@ use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::span_boxes;
 use crate::reach::{self, Decoded, Reach, Uses};
 use crate::redact_img::{black_out, inline_stream, is_clear};
-use crate::retained::{alt_refs, references_in, Removed};
+use crate::retained::{alt_refs, references_in, unread_said, Removed};
 use crate::trees::{self, Lookup};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -1367,31 +1367,19 @@ impl Pdf {
             report.pages.push(out);
         }
         removed.alts.extend(alts.iter().cloned());
-        let mut looks = Vec::new();
-        for &id in &removed.annots {
-            let Ok(d) = self.doc.get_dictionary(id) else {
-                continue;
-            };
-            looks.extend(self.appearances_of(d).0);
-            removed.held.extend(self.annot_holds(d));
-        }
+        self.annots_held(&mut removed);
         // Every annotation removed was listed on its page, so the walk before redacting
         // followed these appearances, unchanged since, within this budget.
+        let looks: Vec<ObjectId> = removed.looks.iter().copied().collect();
         let drawn = self.drawn_by(&looks, &mut reach::work(), &mut uses)?;
         removed.xobjects.extend(drawn);
-        removed.looks.extend(looks);
         let reach = self.reach(&mut reach::work_after(added_all), &mut uses)?;
         let retained = self.clear_retained(&removed, &reach);
         report.left = self.check_left(&by_page);
         unread.extend(retained.unread);
         unread.sort_unstable();
         unread.dedup();
-        report.left.extend(unread.iter().map(|p| {
-            format!(
-                "a drawing on page {} couldn't be read, so removed content may still be in the file",
-                p + 1
-            )
-        }));
+        report.left.extend(unread.iter().map(|&p| unread_said(p)));
         report.left.extend(retained.left);
         report.pictures_elsewhere = retained.pictures;
         report.elsewhere = self.find_elsewhere(&report, &alts, &reach);

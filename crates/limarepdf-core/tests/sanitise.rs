@@ -2314,6 +2314,140 @@ fn a_hidden_comment_going_leaves_the_form_as_it_was() {
     saved.assert_kept(&["Kept value", "KEPT-XFA"]);
 }
 
+/// A tagged file's tags point at its comments, a file attached as one too, so the tag tree
+/// would keep one removed, with its text or its file. Removing comments, attachments or
+/// hidden layers then refuses, as redaction does, with nothing changed, and the other kinds
+/// still go; the tags pointing at a comment that stays change nothing (PB-182).
+#[test]
+fn a_comment_the_tag_tree_points_at_is_refused() {
+    for (kind, tag_note, tag_file, refused) in [
+        (Hidden::Comments, true, true, true),
+        (Hidden::Attachments, false, true, true),
+        (Hidden::Attachments, true, false, false),
+        (Hidden::HiddenLayers, true, false, true),
+    ] {
+        let mut p = make(
+            "BT /F1 12 Tf 30 100 Td (Visible text) Tj ET",
+            Dictionary::new(),
+        );
+        let off = add_layers(&mut p);
+        let page = p.page_ids()[0];
+        let note = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Text", "Rect" => rect([20, 140, 40, 160]),
+            "Contents" => s("WALRUS-NOTE"), "OC" => off,
+        });
+        let file = p.doc.add_object(Stream::new(
+            dictionary! { "Type" => "EmbeddedFile" },
+            b"WALRUS-FILE".to_vec(),
+        ));
+        let spec = dictionary! {
+            "Type" => "Filespec", "F" => s("notes.txt"), "EF" => dictionary! { "F" => file },
+        };
+        let attached = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "FileAttachment", "Rect" => rect([60, 140, 80, 160]),
+            "FS" => spec,
+        });
+        add_annot(&mut p, note);
+        add_annot(&mut p, attached);
+        let tags: Vec<Object> = [(note, tag_note), (attached, tag_file)]
+            .into_iter()
+            .filter(|&(_, tagged)| tagged)
+            .map(|(id, _)| {
+                dictionary! {
+                    "Type" => "StructElem", "S" => "Annot", "Pg" => page,
+                    "K" => dictionary! { "Type" => "OBJR", "Obj" => id, "Pg" => page },
+                }
+                .into()
+            })
+            .collect();
+        let root = (p.doc).add_object(dictionary! { "Type" => "StructTreeRoot", "K" => tags });
+        catalog_set(&mut p, "StructTreeRoot", root.into());
+        p.set_info(&Info {
+            title: Some("Walrus title".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let gone = match kind {
+            Hidden::Attachments => "WALRUS-FILE",
+            _ => "WALRUS-NOTE",
+        };
+        let before = saved_bytes(&p);
+        match p.remove_hidden(&[kind, Hidden::Metadata]) {
+            Ok(_) => {
+                let saved = Saved::of(&mut p);
+                saved.assert_gone(&[gone]);
+                assert!(
+                    !refused,
+                    "{kind:?}: removed, though the tag tree points at it"
+                );
+                saved.assert_kept(&["WALRUS-NOTE"]);
+            }
+            Err(e) => {
+                assert!(refused, "{kind:?}: {e:#}");
+                assert!(format!("{e:#}").contains("through the tag tree"), "{e:#}");
+                assert_eq!(saved_bytes(&p), before, "{kind:?}");
+                p.remove_hidden(&[Hidden::Metadata]).unwrap();
+                assert_eq!(p.info().title, None);
+            }
+        }
+    }
+}
+
+/// Acrobat keeps the icons it drew comments with in the document's named appearances
+/// (`/Names /AP`). A comment removed, by Remove comments or by redaction, takes its icon out
+/// of them, so they don't keep it in the file, and an icon still drawn stays named (PB-182).
+#[test]
+fn a_removed_comments_named_icon_goes_with_it() {
+    for redact in [false, true] {
+        let mut p = make(
+            "BT /F1 12 Tf 30 100 Td (Visible text) Tj ET",
+            Dictionary::new(),
+        );
+        let font = helvetica(&mut p);
+        let mut icon = |text: &str| {
+            let content = format!("BT /F1 4 Tf 2 8 Td ({text}) Tj ET");
+            p.doc.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 20, 20]),
+                    "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+                },
+                content.into_bytes(),
+            ))
+        };
+        let (gone, kept) = (icon("WALRUS-ICON"), icon("WALRUS-KEPT"));
+        let note = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Text", "Rect" => rect([20, 140, 40, 160]),
+            "Contents" => s("A note"), "AP" => dictionary! { "N" => gone },
+        });
+        let link = p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Link", "Rect" => rect([100, 140, 120, 160]),
+            "AP" => dictionary! { "N" => kept },
+        });
+        add_annot(&mut p, note);
+        add_annot(&mut p, link);
+        let leaf = p.doc.add_object(dictionary! {
+            "Names" => vec![s("~icon+Comment"), gone.into(), s("~icon+Link"), kept.into()],
+            "Limits" => vec![s("~icon+Comment"), s("~icon+Link")],
+        });
+        let names = dictionary! { "AP" => dictionary! { "Kids" => vec![Object::Reference(leaf)] } };
+        catalog_set(&mut p, "Names", names.into());
+        match redact {
+            false => {
+                p.remove_hidden(&[Hidden::Comments]).unwrap();
+            }
+            true => {
+                let report = p.redact(&[(0, [15.0, 35.0, 45.0, 65.0])]).unwrap();
+                assert!(report.left.is_empty(), "{:?}", report.left);
+            }
+        }
+        let saved = Saved::of(&mut p);
+        saved.assert_gone(&["WALRUS-ICON"]);
+        saved.assert_kept(&["WALRUS-KEPT", "Visible text"]);
+        let names = p.doc.get_dictionary(leaf).unwrap().get(b"Names").unwrap();
+        assert_eq!(names.as_array().unwrap().len(), 2, "redact {redact}");
+    }
+}
+
 /// A form field's box in a hidden layer goes from its field, and a field only such boxes
 /// showed goes with its value; a field with a box still shown stays (PB-178). With the form's
 /// fields nested more than 32 deep, too deep to take the box out of for certain, nothing

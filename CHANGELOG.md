@@ -484,6 +484,13 @@
 - A comment or form field that belongs to a layer that is switched off isn't shown: not on the page, in exported
   pictures, in text recognition or behind text being edited, and you can't select it on the page. Before, it was
   shown as if its layer were on.
+- Removing comments, attached files or hidden layers stops, changes nothing and says why when the file still
+  points at a removed comment another way, as when a tagged document's tags point at it, as redaction does. Before,
+  the comment was taken off its page but stayed in the saved file through the tags, with its text or its attached
+  file. What only the removed comments drew or painted with is left out of the file too, as for redaction.
+- Redacting a comment that Acrobat kept an icon for, in the document's list of named appearances, removes the icon
+  from that list too. Before, redaction stopped, changing nothing, and said removed content might still be in the
+  file, through another part of it. Removing comments takes the icon out in the same way.
 
 ### Changed
 

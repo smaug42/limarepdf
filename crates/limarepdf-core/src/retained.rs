@@ -8,7 +8,9 @@
 //!   mask painted with before and not after (PB-177), and a marked-content property
 //!   holding alternative text that was taken off that nothing uses any more.
 //!   Dictionaries shared with what didn't change are edited where they are, for those
-//!   entries only. Every change is worked out before any is made.
+//!   entries only. The document's named appearances (Acrobat's cache of the icons it drew
+//!   comments with) stop naming an appearance nothing draws any more. Every change is
+//!   worked out before any is made.
 //! * An original that a drawing left as it was still draws is kept for it, unchanged, and
 //!   the pages drawing it are reported. The appearances of the annotations removed, and the
 //!   pictures and forms they draw, count as originals, and so do an original picture's soft
@@ -24,10 +26,12 @@
 //!
 //! Removing hidden layers takes the same steps (PB-153): the originals are the pictures and
 //! forms drawn before and not after, and patterns and soft masks go as they do for
-//! redaction.
+//! redaction. So does removing comments or attached files, and the annotations hidden layers
+//! take (PB-182): the annotations removed, their appearances and what they held must not be
+//! reachable any more.
 
 use crate::reach::{self, mask_drawing, Reach, ALT};
-use crate::Pdf;
+use crate::{trees, Pdf};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -72,6 +76,15 @@ pub(crate) struct Retained {
     pub left: Vec<String>,
 }
 
+/// What the check after removing says of page `p` (zero-based), where a drawing that can't be
+/// read may use something removed.
+pub(crate) fn unread_said(p: usize) -> String {
+    format!(
+        "a drawing on page {} couldn't be read, so removed content may still be in the file",
+        p + 1
+    )
+}
+
 /// The routes [`routes_to`] tells apart, in the order it follows them.
 const ROUTES: [&str; 3] = [
     "another part of the file",
@@ -112,6 +125,10 @@ fn dict_mut(o: &mut Object) -> Option<&mut Dictionary> {
 
 impl Place {
     fn get<'a>(&self, doc: &'a Document) -> Option<&'a Dictionary> {
+        dict(self.object(doc)?)
+    }
+
+    fn object<'a>(&self, doc: &'a Document) -> Option<&'a Object> {
         let mut o = doc.objects.get(&self.id)?;
         for s in &self.path {
             o = match s {
@@ -119,10 +136,14 @@ impl Place {
                 Step::Index(i) => o.as_array().ok()?.get(*i)?,
             };
         }
-        dict(o)
+        Some(o)
     }
 
     fn get_mut<'a>(&self, doc: &'a mut Document) -> Option<&'a mut Dictionary> {
+        dict_mut(self.object_mut(doc)?)
+    }
+
+    fn object_mut<'a>(&self, doc: &'a mut Document) -> Option<&'a mut Object> {
         let mut o = doc.objects.get_mut(&self.id)?;
         for s in &self.path {
             o = match s {
@@ -130,7 +151,16 @@ impl Place {
                 Step::Index(i) => o.as_array_mut().ok()?.get_mut(*i)?,
             };
         }
-        dict_mut(o)
+        Some(o)
+    }
+
+    /// The array here, if it is one.
+    fn list<'a>(&self, doc: &'a Document) -> Option<&'a Vec<Object>> {
+        self.object(doc)?.as_array().ok()
+    }
+
+    fn array_mut<'a>(&self, doc: &'a mut Document) -> Option<&'a mut Vec<Object>> {
+        self.object_mut(doc)?.as_array_mut().ok()
     }
 
     /// Where `o`, found by `step` from here, is: the object it refers to, or here.
@@ -223,6 +253,51 @@ fn unlisted(
         }
     }
     edits
+}
+
+/// The leaves of the document's named appearances (the catalog's `/Names /AP` tree, where
+/// Acrobat keeps the icons it drew comments with), down to [`trees::MAX_DEPTH`]: one listed
+/// deeper still keeps the route check failing.
+fn named_appearances(doc: &Document) -> Vec<Place> {
+    let at = |here: &Place, key: &[u8]| {
+        let o = here.get(doc)?.get(key).ok()?;
+        Some(here.to(Step::Key(key.to_vec()), o))
+    };
+    let Ok(root) = doc.trailer.get(b"Root").and_then(|o| o.as_reference()) else {
+        return Vec::new();
+    };
+    let catalog = Place {
+        id: root,
+        path: Vec::new(),
+    };
+    let Some(tree) = at(&catalog, b"Names").and_then(|n| at(&n, b"AP")) else {
+        return Vec::new();
+    };
+    let (mut todo, mut seen, mut out) = (vec![(tree, 0)], HashSet::new(), Vec::new());
+    while let Some((here, depth)) = todo.pop() {
+        if depth > trees::MAX_DEPTH || !seen.insert(here.clone()) {
+            continue;
+        }
+        let Some(d) = here.get(doc) else {
+            continue;
+        };
+        if d.has(b"Names") {
+            out.push(here.clone());
+        }
+        let Some(kids) = at(&here, b"Kids") else {
+            continue;
+        };
+        for (i, k) in (kids.list(doc).into_iter().flatten()).enumerate() {
+            todo.push((kids.to(Step::Index(i), k), depth + 1));
+        }
+    }
+    out
+}
+
+/// The pairs of the named appearances' leaf `leaf`, as an array to edit.
+fn names_mut<'a>(doc: &'a mut Document, leaf: &Place) -> Option<&'a mut Vec<Object>> {
+    let names = leaf.get(doc)?.get(b"Names").ok()?;
+    leaf.to(Step::Key(b"Names".to_vec()), names).array_mut(doc)
 }
 
 /// Marked-content properties as resource dictionaries list them: by the object they refer
@@ -437,6 +512,18 @@ impl Pdf {
         out
     }
 
+    /// Into `removed`, the appearances of the annotations it holds, which have left their
+    /// pages, and what else they held as objects of their own.
+    pub(crate) fn annots_held(&self, removed: &mut Removed) {
+        for &id in &removed.annots {
+            let Ok(d) = self.doc.get_dictionary(id) else {
+                continue;
+            };
+            removed.looks.extend(self.appearances_of(d).0);
+            removed.held.extend(self.annot_holds(d));
+        }
+    }
+
     /// After redacting: take what `removed` left in the file and nothing draws or uses any
     /// more out of every resource dictionary, as `reach` (a walk after the change) found,
     /// then look for anything removed that the file still keeps another way.
@@ -498,6 +585,18 @@ impl Pdf {
         edits.extend(unlisted(doc, states, |v| {
             painted_with(mask_drawing(self, &self.resolved_dict(Some(v))))
         }));
+        // The named appearances' pairs naming an appearance nothing draws any more.
+        let named: Vec<(Place, HashSet<usize>)> = (named_appearances(doc).into_iter())
+            .filter_map(|leaf| {
+                let list = leaf.get(doc)?.get(b"Names").ok()?;
+                let list = doc.dereference(list).ok()?.1.as_array().ok()?;
+                let gone: HashSet<usize> = (list.as_chunks::<2>().0.iter().enumerate())
+                    .filter(|(_, [_, v])| v.as_reference().is_ok_and(|id| unused(&id)))
+                    .map(|(i, _)| i)
+                    .collect();
+                (!gone.is_empty()).then_some((leaf, gone))
+            })
+            .collect();
         let mut unsure_props = Props::default();
         let mut texts = removed.texts.clone();
         for m in pmaps.into_iter().filter(|_| !removed.alts.is_empty()) {
@@ -548,6 +647,15 @@ impl Pdf {
                 for k in &gone {
                     d.remove(k);
                 }
+            }
+        }
+        for (leaf, gone) in named {
+            if let Some(list) = names_mut(&mut self.doc, &leaf) {
+                let mut i = 0;
+                list.retain(|_| {
+                    i += 1;
+                    !gone.contains(&((i - 1) / 2))
+                });
             }
         }
 

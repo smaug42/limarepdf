@@ -7,7 +7,7 @@ use crate::budget::{self, TooComplex, Work};
 use crate::fonts::FontCtx;
 use crate::inline::Inline;
 use crate::reach;
-use crate::retained::Removed;
+use crate::retained::{unread_said, Removed, Retained};
 use crate::{Leftovers, Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
@@ -843,11 +843,15 @@ impl Pdf {
 
     /// Why [`Pdf::remove_hidden`] would refuse to remove `what`, if it would; changes nothing.
     /// For checking before anything else is done for the removal. Content outside the crop
-    /// box is only found left by redacting it, and what only hidden layers drew that the
-    /// file keeps another way, or a form field's box in one in fields nested too deep to take
-    /// it out of, only by removing them.
+    /// box is only found left by redacting it, and what only hidden layers, comments or
+    /// attached files held that the file keeps another way, or a form field's box in a hidden
+    /// layer in fields nested too deep to take it out of, only by removing them.
     pub fn check_remove_hidden(&self, what: &[Hidden]) -> Result<()> {
-        if what.contains(&Hidden::HiddenLayers) && self.layers_to_remove()? {
+        let annots = |h| what.contains(&h) && !self.annots_of(h).is_empty();
+        if (what.contains(&Hidden::HiddenLayers) && self.layers_to_remove()?)
+            || annots(Hidden::Comments)
+            || annots(Hidden::Attachments)
+        {
             // What is no longer drawn is found by following the drawings afterwards.
             self.reach(&mut reach::work(), &mut reach::Decoded::new())?;
         }
@@ -893,9 +897,9 @@ impl Pdf {
                     n
                 }
                 Hidden::Comments => {
-                    self.remove_annotations(|a| !matches!(a.kind, crate::AnnotKind::Redact))?
+                    self.drop_annots_for_good(self.annots_of(h), strict, "comments")?
                 }
-                Hidden::Attachments => self.drop_attachments()?,
+                Hidden::Attachments => self.drop_attachments(strict)?,
                 Hidden::Scripts => self.drop_scripts(),
                 Hidden::Metadata => self.drop_metadata(),
                 Hidden::PrivateData => self.drop_private_data(),
@@ -970,21 +974,55 @@ impl Pdf {
         n + self.drop_names(&[b"IDS", b"URLS"])
     }
 
-    fn drop_attachments(&mut self) -> Result<usize> {
+    fn drop_attachments(&mut self, strict: bool) -> Result<usize> {
         let mut n = self.drop_names(&[b"EmbeddedFiles"]);
         if let Ok(c) = self.doc.catalog_mut() {
             n += usize::from(c.remove(b"Collection").is_some());
         }
         n += self.drop_keys_everywhere(&[b"AF"]);
-        let files: HashSet<ObjectId> = self
-            .every_annotation()
-            .into_iter()
-            .filter(|a| matches!(&a.kind, crate::AnnotKind::Other(s) if s == "FileAttachment"))
+        let files = self.annots_of(Hidden::Attachments);
+        Ok(n + self.drop_annots_for_good(files, strict, "attached files")?)
+    }
+
+    /// The annotations removing comments takes (all but redaction marks), or removing
+    /// attached files (those holding one).
+    fn annots_of(&self, h: Hidden) -> HashSet<ObjectId> {
+        (self.every_annotation().into_iter())
+            .filter(|a| match h {
+                Hidden::Comments => a.kind != crate::AnnotKind::Redact,
+                _ => matches!(&a.kind, crate::AnnotKind::Other(s) if s == "FileAttachment"),
+            })
             .map(|a| a.id)
-            .collect();
-        if !files.is_empty() {
-            n += self.drop_annotations(files)?;
+            .collect()
+    }
+
+    /// Remove the annotations `gone`, with the replies to them and their popups. When
+    /// `strict`, what only they drew or painted with goes from every resource list, as
+    /// redaction takes what the annotations it removes held, and removing `what` is refused
+    /// when the file still keeps any of it another way, the tag tree say (PB-182); the
+    /// caller's [`Pdf::atomically`] puts the change back.
+    fn drop_annots_for_good(
+        &mut self,
+        gone: HashSet<ObjectId>,
+        strict: bool,
+        what: &str,
+    ) -> Result<usize> {
+        if !strict || gone.is_empty() {
+            return self.drop_annotations(gone);
         }
+        let mut uses = reach::Decoded::new();
+        let before = self.reach(&mut reach::work(), &mut uses)?;
+        let (n, annots) = self.drop_annotations_ids(gone)?;
+        // No drawing changed, so what was read stays.
+        let after = self.reach(&mut reach::work_after(0), &mut uses)?;
+        let mut removed = Removed {
+            xobjects: before.drawn.difference(&after.drawn).copied().collect(),
+            painted: before.painted,
+            annots,
+            ..Removed::default()
+        };
+        self.annots_held(&mut removed);
+        refuse_left(what, self.clear_retained(&removed, &after))?;
         Ok(n)
     }
 
@@ -1258,9 +1296,10 @@ impl Pdf {
         }
         // Form widgets go from their fields too, and fields only they showed with them
         // (PB-178).
+        let mut annots = HashSet::new();
         if !gone.is_empty() {
-            let (_, off) = self.drop_annotations_ids(gone)?;
-            let widgets: HashSet<ObjectId> = (off.into_iter())
+            annots = self.drop_annotations_ids(gone)?.1;
+            let widgets: HashSet<ObjectId> = (annots.iter().copied())
                 .filter(|&id| {
                     let d = self.doc.get_dictionary(id);
                     d.and_then(|d| d.get(b"Subtype"))
@@ -1277,28 +1316,23 @@ impl Pdf {
         self.rewrite_rules(&layers);
 
         // What is no longer drawn or painted with, and the pictures and forms in a hidden
-        // layer, out of the resources, as redaction takes out its originals (PB-153);
-        // refused when the file still keeps any of it another way.
+        // layer, out of the resources, as redaction takes out its originals (PB-153), and
+        // the annotations removed with what they held (PB-182); refused when the file still
+        // keeps any of it another way.
         if let Some(before) = before {
             // The streams were changed in place, so they are read afresh.
             let after = self.reach(&mut reach::work_after(0), &mut reach::Decoded::new())?;
-            let removed = Removed {
+            let mut removed = Removed {
                 xobjects: (before.drawn.union(&layered))
                     .filter(|x| !after.drawn.contains(*x))
                     .copied()
                     .collect(),
                 painted: before.painted,
+                annots,
                 ..Removed::default()
             };
-            let left = self.clear_retained(&removed, &after).left;
-            if !left.is_empty() {
-                return Err(anyhow!(
-                    "hidden layers can't be removed for certain: the check after removing \
-                     them found {}. Nothing was changed; leave out hidden layers to remove the \
-                     rest",
-                    left.join("; ")
-                ));
-            }
+            self.annots_held(&mut removed);
+            refuse_left("hidden layers", self.clear_retained(&removed, &after))?;
         }
 
         // The layer list: hidden layers out, the rest on.
@@ -1968,6 +2002,21 @@ fn refuse_blocked(scan: &LayerScan) -> Result<()> {
         "hidden layers can't be removed for certain: {}. Nothing was changed; leave out \
          hidden layers to remove the rest",
         scan.blocked.join("; ")
+    ))
+}
+
+/// A refusal to remove `what` when the check after removing it found the file still keeps
+/// something removed, or a drawing that can't be read may use it.
+fn refuse_left(what: &str, retained: Retained) -> Result<()> {
+    let mut left: Vec<String> = retained.unread.into_iter().map(unread_said).collect();
+    left.extend(retained.left);
+    if left.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{what} can't be removed for certain: the check after removing them found {}. Nothing \
+         was changed; leave out {what} to remove the rest",
+        left.join("; ")
     ))
 }
 
