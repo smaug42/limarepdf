@@ -160,6 +160,13 @@ and `settle` (`editor/replace_all.rs`), which hold its copy.
   `reach::STEPS`: 2²² (4,194,304) steps, 32 times the most any of the 1,080 corpus files that open takes
   (129,066, `pdfjs/issue6692.pdf`, measured 2026-11-04 with the budget lifted). It runs before the change; the
   walk after it is allowed twice that, plus the objects added.
+- Deleting pages and making documents of some (Extract, Split) are held to the same (PB-137, D-22 (a)): what only
+  the pages that went drew leaves the resource lists they share with the pages that stay, and the file is followed
+  from its trailer for the pages, their content, thumbnails and private data, their comments and fields with what
+  those held, the alternative text taken off, and what only they drew. Anything still reached, or that a drawing
+  which can't be read on a page that stays may use, refuses the removal, naming the route, with nothing changed;
+  Split makes and checks every part before writing any file. What the pages that stay draw is kept for them. The
+  walk over the drawings has the same budget.
 - Flattening isn't held to this: it draws what it removes into the page, so what notes and fields show stays by
   design.
 
@@ -184,6 +191,11 @@ and `settle` (`editor/replace_all.rs`), which hold its copy.
   `a_parent_tree_nested_too_deep_is_refused_unchanged`, `a_parent_tree_too_large_to_search_is_refused_unchanged`,
   `a_widget_under_a_mark_in_a_form_nested_too_deep_is_refused_unchanged`) and `too_complex.rs`'s
   `a_redaction_over_a_page_too_complex_to_read_changes_nothing`.
+- Core `pages_removed.rs`, for deleting, extracting and splitting:
+  `what_only_the_pages_that_went_drew_goes_from_what_they_share`;
+  `pages_whose_own_objects_the_file_keeps_another_way_are_refused` (each route, and no part written);
+  `a_drawing_that_cant_be_read_listing_what_only_the_pages_that_went_drew_is_refused`; and the tests before them
+  for what refers to the pages that went.
 - Core, by property: `destructive.rs`'s `redaction_removes_what_is_under_its_marks_and_keeps_the_rest`, and
   `flattening_notes_keeps_what_they_show` and `flattening_the_form_keeps_what_its_widgets_show` for flattening.
 - Other readers: the `cross_check_` tests in `redact.rs` read the saved file with poppler and Ghostscript (run on
@@ -202,13 +214,19 @@ and `settle` (`editor/replace_all.rs`), which hold its copy.
   fields, the document's properties) is reported, not removed.
 - The walk after the change can't fail on a document the walk before passed: argued, not proven. Should it, the
   change is undone as any failure is.
-- Deleting and extracting pages aren't held to this yet (PB-137): a removed page's own objects can stay reachable
-  through other parts of the file.
+- The same for pages: a tagged document whose tags point into what only the pages that went drew (a form their
+  marked content is in) can't lose those pages (PF-73 too).
+- Printing some pages makes a document of them without the check: it goes to the printer, not to a file.
+- A signed document is saved after what was signed, so the pages deleted stay in the signed version
+  ([The version that was signed](../signatures-in-depth.md#the-version-that-was-signed)), unless the whole file is
+  written.
 
 **Owner.** Core `Pdf::redact` and `Pdf::apply_redactions` (`redact.rs`), with `redact::Leftovers` and
 `RedactReport`; the pictures in `redact_img.rs`; the walk over the drawings, `Pdf::reach` with `reach::STEPS`
 (`reach.rs`, charged to a `budget::Work`); the check afterwards, `Pdf::clear_retained` with `retained::Removed`
-and its `routes_to` (`retained.rs`). What the check follows is in [How it is built](architecture.md).
+and its `routes_to` (`retained.rs`). For pages, `Pdf::delete_pages`, `Pdf::extract` and `Pdf::split` (`doc.rs`)
+through `extract_with`, and `drawn_before`, `keep_pages` and `clear_gone` (`pages_gone.rs`). What the check follows
+is in [How it is built](architecture.md).
 
 ## Sanitise
 

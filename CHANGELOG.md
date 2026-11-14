@@ -493,6 +493,13 @@
   file, through another part of it. Removing comments takes the icon out in the same way.
 - A password-protected file that keeps its protection settings in its last section rather than in an object of
   their own opens with its password. Before, LimarePDF said every password was wrong, the right one too.
+- Deleting pages, Extract pages and Split leave out everything only the pages that went drew, as redaction does:
+  forms, patterns, marked content's properties, and the stamps' drawings that Acrobat's list of named appearances
+  keeps. Before, when those pages shared their list of drawings and fonts with pages that stay, as many files'
+  pages do, all of it stayed in the saved file with its text. When the file still holds something of the pages
+  that went another way, as when a tagged document's tags point at it, or a page that stays has a drawing that
+  can't be read, the command stops, changes nothing and says why; Split then writes no file. Before, that was kept
+  without a word, and Split could write some parts before stopping at one.
 
 ### Changed
 

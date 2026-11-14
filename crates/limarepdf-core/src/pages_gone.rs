@@ -1,15 +1,35 @@
 //! What pages leave behind when they go (extract, delete, split). The page tree is only one
 //! way to reach a page: bookmarks, named destinations, links, the opening action, form
 //! fields and the structure tree refer to pages and their annotations too, and a save keeps
-//! everything still referred to. So the references to what went are cut, and the saved
-//! file holds nothing of those pages.
+//! everything still referred to. So the references to what went are cut. Then, as redaction
+//! does (`retained.rs`), what only those pages drew goes from the resource dictionaries they
+//! share with the others, and the file is followed from its trailer: when it still reaches
+//! anything only they held, the pages' removal is refused with nothing changed (PB-137). So
+//! the saved file holds nothing of those pages.
 
 use crate::forms::MAX_DEPTH;
+use crate::reach::{self, Decoded, ALT};
+use crate::retained::{alt_refs, references_in, unread_said, Props, Removed};
 use crate::trees;
 use crate::{Pdf, Result};
 use anyhow::bail;
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
+
+/// What the pages drew before some went, for the check after ([`Pdf::clear_gone`]): what a
+/// [`Pdf::reach`] walk found, without what can't go to other threads, so that splitting walks
+/// the document once for all its parts.
+pub(crate) struct DrawnBefore {
+    xobjects: HashSet<ObjectId>,
+    /// Those a drawing certainly drawn that can be read draws: one of them that only a
+    /// drawing which can't be read lists afterwards may have been only the pages' that went.
+    sure: HashSet<ObjectId>,
+    painted: HashSet<ObjectId>,
+    /// The marked-content properties used.
+    properties: Props,
+    /// Those used for certain, as [`DrawnBefore::sure`].
+    sure_properties: Props,
+}
 
 /// What went: the pages, the annotations only they listed, and the form fields left with no
 /// widget; and the named destinations that went to those pages.
@@ -128,12 +148,90 @@ impl Gone {
 }
 
 impl Pdf {
+    /// What the pages draw, for [`Pdf::clear_gone`] after some go: refused, before anything
+    /// is changed, for a document too complex to follow ([`reach::STEPS`]). `cache` keeps
+    /// what each drawing's content uses, for the walk after.
+    pub(crate) fn drawn_before(&self, cache: &mut Decoded) -> Result<DrawnBefore> {
+        let reach = self.reach(&mut reach::work(), cache)?;
+        let certain = reach.certain(self.page_count());
+        let mut sure = HashSet::new();
+        let (mut properties, mut sure_properties) = (Props::default(), Props::default());
+        for (i, node) in reach.nodes.iter().enumerate() {
+            let read = certain[i] && !node.unread;
+            for p in &node.properties {
+                properties.add(p);
+                if read {
+                    sure_properties.add(p);
+                }
+            }
+            if read {
+                sure.extend(node.xobjects.iter().copied());
+            }
+        }
+        Ok(DrawnBefore {
+            xobjects: reach.drawn,
+            sure,
+            painted: reach.painted,
+            properties,
+            sure_properties,
+        })
+    }
+
+    /// After pages went ([`Pdf::keep_pages`] said what): take what only they drew (`before`
+    /// says what the pages drew) out of every resource dictionary, as redaction takes its
+    /// originals ([`Pdf::clear_retained`]), then refuse when the file still keeps anything
+    /// removed, or a drawing that can't be read may use it. `what` names the pages that went
+    /// in the refusal; `numbers` gives the number each page left had before (zero-based).
+    pub(crate) fn clear_gone(
+        &mut self,
+        mut removed: Removed,
+        before: &DrawnBefore,
+        cache: &mut Decoded,
+        what: &str,
+        numbers: &[usize],
+    ) -> Result<()> {
+        let after = self.reach(&mut reach::work_after(0), cache)?;
+        // What nothing draws now, and what was drawn for certain: `clear_retained` keeps what
+        // still is, and refuses what only a drawing that can't be read may draw now.
+        removed.xobjects = (before.xobjects.difference(&after.drawn))
+            .chain(&before.sure)
+            .copied()
+            .collect();
+        removed.painted = before.painted.clone();
+        let mut used = Props::default();
+        for p in after.nodes.iter().flat_map(|n| &n.properties) {
+            used.add(p);
+        }
+        let gone = |p: &Object| !used.has(p) || before.sure_properties.has(p);
+        for p in before.properties.listed().filter(gone) {
+            let d = self.resolved_dict(Some(&p));
+            removed.alts.extend(reach::alt_texts(Some(&self.doc), &d));
+        }
+        let retained = self.clear_retained(&removed, &after);
+        let unread = retained.unread.into_iter();
+        let mut left: Vec<String> = unread
+            .map(|p| unread_said(numbers.get(p).copied().unwrap_or(p)))
+            .collect();
+        left.extend(retained.left);
+        if !left.is_empty() {
+            bail!(
+                "{what} can't be removed for certain: the check after removing them found {}. \
+                 Nothing was changed",
+                left.join("; ")
+            );
+        }
+        Ok(())
+    }
+
     /// Make `keep` the document's pages, in that order, and cut what the other pages leave
     /// behind. With `bookmarks`, bookmarks to the other pages go too (keeping one without a
     /// destination when it has kept children), as for a new document of some pages; without,
     /// they stay and lose their destination, as when deleting pages. Refuses, with nothing
-    /// changed, when it can't tell everything that goes: a form nested too deep.
-    pub(crate) fn keep_pages(&mut self, keep: &[ObjectId], bookmarks: bool) -> Result<()> {
+    /// changed, when it can't tell everything that goes: a form nested too deep. Returns what
+    /// went, for [`Pdf::clear_gone`]: the pages, their content, thumbnails and what their
+    /// private application data points at, the annotations and fields that went, and the
+    /// alternative text taken off the tags.
+    pub(crate) fn keep_pages(&mut self, keep: &[ObjectId], bookmarks: bool) -> Result<Removed> {
         let kept: HashSet<ObjectId> = keep.iter().copied().collect();
         let all = self.page_ids();
         let pages: HashSet<ObjectId> = all.iter().copied().filter(|p| !kept.contains(p)).collect();
@@ -143,9 +241,23 @@ impl Pdf {
             Vec::new()
         };
         let gone = self.what_goes(keep, pages)?;
+        let mut removed = Removed {
+            annots: gone.objects.difference(&gone.pages).copied().collect(),
+            ..Removed::default()
+        };
+        for &page in &gone.pages {
+            removed.pages.insert(page);
+            removed.pages.extend(self.content_ids(page));
+            let d = self.doc.get_dictionary(page).ok();
+            for k in [&b"Thumb"[..], b"PieceInfo"] {
+                let o = d.and_then(|d| d.get(k).ok());
+                removed.pages.extend(o.into_iter().flat_map(references_in));
+            }
+        }
+        self.annots_held(&mut removed);
         self.flatten()?;
         self.set_page_order(keep)?;
-        self.strip_gone_alt(&gone);
+        removed.texts = self.strip_gone_alt(&gone);
         let pairs: std::collections::HashMap<ObjectId, &[u8]> =
             pair_arrays(&self.doc).into_iter().collect();
         let ids: Vec<ObjectId> = self.doc.objects.keys().copied().collect();
@@ -170,7 +282,7 @@ impl Pdf {
                 self.remove_bookmark(i)?;
             }
         }
-        Ok(())
+        Ok(removed)
     }
 
     /// The bookmarks that go to `pages` (of the page order `all`) and have no child that
@@ -305,8 +417,8 @@ impl Pdf {
     /// object reference to something that went. Items are followed whether they are held
     /// directly or as objects of their own, in an array or not (audit R06). Each element is
     /// looked at once, so loops in the tree end, and as nothing is followed by recursion there
-    /// is no depth to stop at.
-    fn strip_gone_alt(&mut self, gone: &Gone) {
+    /// is no depth to stop at. Returns the text taken off that was an object of its own.
+    fn strip_gone_alt(&mut self, gone: &Gone) -> HashSet<ObjectId> {
         let doc = &self.doc;
         let elems: HashSet<ObjectId> = doc
             .objects
@@ -442,12 +554,15 @@ impl Pdf {
                 todo.extend(parents.get(&e).into_iter().flatten());
             }
         }
+        let mut texts = HashSet::new();
         for id in strip {
             if let Ok(d) = self.doc.get_dictionary_mut(id) {
-                for k in [&b"ActualText"[..], b"Alt", b"E"] {
+                texts.extend(alt_refs(d));
+                for k in ALT {
                     d.remove(k);
                 }
             }
         }
+        texts
     }
 }

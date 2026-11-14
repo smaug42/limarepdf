@@ -1,5 +1,6 @@
 use crate::forms::Reach;
-use crate::Result;
+use crate::pages_gone::DrawnBefore;
+use crate::{reach, Result};
 use anyhow::{anyhow, bail, Context};
 use lopdf::dictionary;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
@@ -767,27 +768,50 @@ impl Pdf {
         Ok(())
     }
 
+    /// Delete the given pages. Nothing of them is kept: bookmarks, named destinations, links,
+    /// form fields and the structure tree no longer refer to them, and what only they drew
+    /// goes from what they share with the others. Refused, with nothing changed, when the
+    /// file would still keep something only they held (PB-137).
     pub fn delete_pages(&mut self, idx: &[usize]) -> Result<()> {
         self.check_indices(idx)?;
         let del: HashSet<usize> = idx.iter().copied().collect();
         let ids = self.page_ids();
-        let keep: Vec<ObjectId> = ids
-            .iter()
-            .enumerate()
+        let (left, keep): (Vec<usize>, Vec<ObjectId>) = (ids.iter().enumerate())
             .filter(|(i, _)| !del.contains(i))
-            .map(|(_, id)| *id)
-            .collect();
+            .map(|(i, id)| (i, *id))
+            .unzip();
         if keep.is_empty() {
             bail!("cannot delete every page");
         }
-        // Bookmarks to the deleted pages stay, with no destination.
-        self.keep_pages(&keep, false)
+        self.atomically(|p| {
+            let mut cache = reach::Decoded::new();
+            let before = p.drawn_before(&mut cache)?;
+            // Bookmarks to the deleted pages stay, with no destination.
+            let removed = p.keep_pages(&keep, false)?;
+            p.clear_gone(removed, &before, &mut cache, "the pages", &left)
+        })
     }
 
     /// New document containing only the given pages (in the given order). Nothing of the
     /// other pages is kept: bookmarks, named destinations, links, form fields and the
-    /// structure tree no longer refer to them.
+    /// structure tree no longer refer to them, and what only they drew goes from what they
+    /// share with these. Refused when the new document would still keep something only they
+    /// held (PB-137).
     pub fn extract(&self, idx: &[usize]) -> Result<Pdf> {
+        self.check_indices(idx)?;
+        let mut cache = reach::Decoded::new();
+        let before = self.drawn_before(&mut cache)?;
+        self.extract_with(idx, Some((&before, &mut cache)))
+    }
+
+    /// [`Pdf::extract`], given what the pages draw ([`Pdf::drawn_before`], with what each
+    /// drawing's content uses when that was kept); or with no check of what the other pages
+    /// leave, for printing, which makes sheets of the pages to draw them and keeps nothing.
+    pub(crate) fn extract_with(
+        &self,
+        idx: &[usize],
+        check: Option<(&DrawnBefore, &mut reach::Decoded)>,
+    ) -> Result<Pdf> {
         self.check_indices(idx)?;
         if idx.is_empty() {
             bail!("no pages selected");
@@ -798,15 +822,19 @@ impl Pdf {
         let mut out = self.without_stream_data();
         let ids = out.page_ids();
         let sel: Vec<ObjectId> = idx.iter().map(|&i| ids[i]).collect();
-        out.keep_pages(&sel, true)?;
-        out.doc.prune_objects();
+        let removed = out.keep_pages(&sel, true)?;
+        let used: HashSet<ObjectId> = out.doc.traverse_objects(|_| {}).into_iter().collect();
         for (id, o) in &mut out.doc.objects {
             if let (Object::Stream(s), Some(Object::Stream(from))) = (o, self.doc.objects.get(id)) {
-                if s.content.is_empty() {
+                if s.content.is_empty() && used.contains(id) {
                     s.content = from.content.clone();
                 }
             }
         }
+        if let Some((before, cache)) = check {
+            out.clear_gone(removed, before, cache, "the other pages", idx)?;
+        }
+        out.doc.prune_objects();
         Ok(out)
     }
 
@@ -1040,8 +1068,10 @@ impl Pdf {
     }
 
     /// Split into files, part `n` (from 1) written to `path(n, title)`, replacing files of
-    /// the same name ([`Pdf::split_files`] lists them). Each part is written and dropped as
-    /// soon as it is made, so no more parts are held at once than are being made. Returns
+    /// the same name ([`Pdf::split_files`] lists them). Every part is made and checked as
+    /// [`Pdf::extract`] checks it before any file is written, so a part that would keep
+    /// something of the other pages writes none (PB-137). Then each part is made again,
+    /// written and dropped, so no more parts are held at once than are being made. Returns
     /// how many files were written. When every file was written but one wasn't confirmed on
     /// disk, the error is that file's [`crate::NotConfirmed`].
     pub fn split(
@@ -1050,13 +1080,32 @@ impl Pdf {
         path: impl Fn(usize, Option<&str>) -> std::path::PathBuf + Sync,
     ) -> Result<usize> {
         let parts = self.split_parts(by)?;
+        // Walked once for every part.
+        let before = self.drawn_before(&mut reach::Decoded::new())?;
+        parts
+            .par_iter()
+            .enumerate()
+            .try_for_each(|(i, (_, pages))| {
+                let mut cache = reach::Decoded::new();
+                self.extract_with(pages, Some((&before, &mut cache)))
+                    .map(drop)
+                    .with_context(|| {
+                        format!(
+                            "part {} of {} can't be made, so no file was written",
+                            i + 1,
+                            parts.len()
+                        )
+                    })
+            })?;
         let written = std::sync::atomic::AtomicUsize::new(0);
         let unconfirmed = std::sync::Mutex::new(None);
         let done = parts
             .par_iter()
             .enumerate()
             .try_for_each(|(i, (title, pages))| {
-                match self.extract(pages)?.save(path(i + 1, title.as_deref())) {
+                let mut cache = reach::Decoded::new();
+                let mut part = self.extract_with(pages, Some((&before, &mut cache)))?;
+                match part.save(path(i + 1, title.as_deref())) {
                     // Written: the other parts go on.
                     Err(e) if e.is::<crate::NotConfirmed>() => {
                         let mut u = unconfirmed.lock().unwrap_or_else(|e| e.into_inner());

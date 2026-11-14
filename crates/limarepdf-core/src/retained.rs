@@ -28,7 +28,9 @@
 //! forms drawn before and not after, and patterns and soft masks go as they do for
 //! redaction. So does removing comments or attached files, and the annotations hidden layers
 //! take (PB-182): the annotations removed, their appearances and what they held must not be
-//! reachable any more.
+//! reachable any more. And so do deleting pages and making a document of some (PB-137): the
+//! originals are what the pages that went drew and the others don't, and what only those
+//! pages held must not be reachable any more.
 
 use crate::reach::{self, mask_drawing, Reach, ALT};
 use crate::{trees, Pdf};
@@ -49,7 +51,8 @@ pub(crate) struct Removed {
     /// The properties alternative text was taken off that were objects of their own.
     pub properties: HashSet<ObjectId>,
     /// What the redacted pages no longer hold: their content before redacting, their
-    /// thumbnails and what their private application data pointed at.
+    /// thumbnails and what their private application data pointed at. Or the pages that
+    /// went, with the same of theirs.
     pub pages: HashSet<ObjectId>,
     /// The annotations removed, with the replies to them and their popups.
     pub annots: HashSet<ObjectId>,
@@ -303,13 +306,13 @@ fn names_mut<'a>(doc: &'a mut Document, leaf: &Place) -> Option<&'a mut Vec<Obje
 /// Marked-content properties as resource dictionaries list them: by the object they refer
 /// to, or as written there.
 #[derive(Default)]
-struct Props {
+pub(crate) struct Props {
     refs: HashSet<ObjectId>,
     direct: Vec<Object>,
 }
 
 impl Props {
-    fn add(&mut self, o: &Object) {
+    pub(crate) fn add(&mut self, o: &Object) {
         match o {
             Object::Reference(id) => {
                 self.refs.insert(*id);
@@ -319,11 +322,17 @@ impl Props {
         }
     }
 
-    fn has(&self, o: &Object) -> bool {
+    pub(crate) fn has(&self, o: &Object) -> bool {
         match o {
             Object::Reference(id) => self.refs.contains(id),
             o => self.direct.contains(o),
         }
+    }
+
+    /// Each as resource dictionaries list it.
+    pub(crate) fn listed(&self) -> impl Iterator<Item = Object> + '_ {
+        let refs = self.refs.iter().map(|&id| Object::Reference(id));
+        refs.chain(self.direct.iter().cloned())
     }
 
     fn is_empty(&self) -> bool {
@@ -641,7 +650,12 @@ impl Pdf {
             }),
         };
 
-        // Then made together. A place missing now was inside an entry removed before it.
+        // Then made together. A place missing now was inside an entry removed before it. One in
+        // what went is left as it was: it must be out of reach anyway, and changed, a signed
+        // file saved by adding to it would write it again.
+        let edits = edits
+            .into_iter()
+            .filter(|(m, _)| !removed.pages.contains(&m.id));
         for (m, gone) in edits {
             if let Some(d) = m.get_mut(&mut self.doc) {
                 for k in &gone {

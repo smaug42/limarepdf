@@ -1192,6 +1192,20 @@ share one depth rule (PB-05): fields at most `forms::MAX_DEPTH` (32) below the t
 further, as `form_nodes` reads them: `value_nodes` and `field_goes` refuse a node with kids deeper than that, and
 `orphan_widgets` a widget with more than 33 parents.
 
+Deleting pages, extracting and splitting are held to redaction's promise (PB-137, D-22 (a)). `drawn_before` walks
+the document's drawings first (`Pdf::reach`) and keeps what was drawn and painted, and the subset drawn for certain
+by a drawing that could be read (`sure`, with the marked-content properties likewise). `keep_pages` then removes
+the pages with their content, thumbnails, private data, comments and fields (with what `annots_held` finds those
+held) and the alternative text, and cuts references to them. `clear_gone` walks again: what nothing draws now,
+and what was drawn for certain, go to `retained::clear_retained` as removed, which keeps what the pages that stay
+still draw and refuses what only a drawing that can't be read may draw. Properties nothing uses now go the same
+way, with their alternative text. A resource list inside what went (a removed page's own) is left as it was, so a
+signed file saved by adding to it doesn't write the page again. Anything still reached refuses the removal with `retained`'s route; deleting
+runs `atomically` and extracting changes only the new document, so nothing changes. `extract_with` takes the walk from before so that a split walks
+the document once; `Pdf::split` makes and checks every part before writing any, so a refused part writes no file,
+then makes each again to write it (so no more parts are held at once than are being made). Printing some pages
+(`sheets.rs`) extracts them unchecked, since nothing is saved.
+
 Hidden layers (`Pdf::without_hidden`, BUG-16): content in a hidden layer still sets the graphics and text state
 for what follows it (ISO 32000-1, 8.11.3.2), so only its painting goes. Inside a hidden marked-content section,
 state operators (colour, `cm`, `q`/`Q`, line style, `gs`, text state and positioning, `BT`/`ET`) are kept as
