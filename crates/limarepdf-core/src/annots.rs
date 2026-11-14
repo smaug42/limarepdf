@@ -602,7 +602,7 @@ impl Pdf {
     ) -> Option<Annot> {
         let d = self.doc.get_dictionary(id).ok()?;
         let kind = AnnotKind::of(d.get(b"Subtype").ok()?.as_name().ok()?)?;
-        let rect = self.rect(d.get(b"Rect").ok()?)?;
+        let rect = self.annot_rect(d)?;
         let text = |key: &[u8]| {
             d.get(key)
                 .ok()

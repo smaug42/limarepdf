@@ -5,6 +5,7 @@
 #[path = "common/tool.rs"]
 mod tool;
 
+use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
     Align, AnnotKind, BoxSetting, DateStyle, InkColor, LinkTarget, Mark, Pdf, Shape, ShapeLook,
@@ -652,6 +653,169 @@ fn flattening_some_pages_leaves_the_others() {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].page, 0);
     assert!(p.flatten_annotations(Some(&[5])).is_err());
+}
+
+/// Paper the size of [`page`] with no margins: a sheet is its page as it is.
+fn as_is() -> PageSetup {
+    PageSetup {
+        paper: Paper {
+            id: "page".into(),
+            label: "page".into(),
+            size: (300.0, 200.0),
+            margins: Some([0.0; 4]),
+        },
+        orientation: Orientation::Automatic,
+        scale: Scale::ShrinkOversized,
+        per_sheet: PerSheet::default(),
+        booklet: None,
+    }
+}
+
+/// PB-114: markup, a line, a polyline and ink are placed by their points, so each without a
+/// drawing whose `/Rect` has no area (a point, or a line away from it, as
+/// `pdfjs/issue14203.pdf` has them) is drawn there on screen, in print and flattened, as
+/// other readers draw them. None was: a drawing is placed by `/Rect`.
+#[test]
+fn an_annotation_placed_by_its_points_is_drawn_when_its_rect_has_no_area() {
+    let black = || nums(&[0.0, 0.0, 0.0]);
+    let quads = |x: f32| nums(&[x, 180.0, x + 100.0, 180.0, x, 160.0, x + 100.0, 160.0]);
+    let mut p = page();
+    // Each printed (`/F` 4), as the corpus's are.
+    let mut put = |sub: &str, rect: [f32; 4], mut extra: Dictionary| {
+        extra.set("F", 4);
+        add(&mut p, 0, sub, rect, extra);
+    };
+    put(
+        "Highlight",
+        [20.0, 170.0, 20.0, 170.0],
+        dictionary! { "QuadPoints" => quads(20.0) },
+    );
+    put(
+        "StrikeOut",
+        [150.0, 170.0, 150.0, 170.0],
+        dictionary! { "C" => black(), "QuadPoints" => quads(150.0) },
+    );
+    // Its `/Rect` away from it, as the corpus's lines have theirs, and an ending past its
+    // points.
+    put(
+        "Line",
+        [150.0, 40.0, 250.0, 40.0],
+        dictionary! {
+            "C" => black(),
+            "IC" => black(),
+            "L" => nums(&[20.0, 100.0, 120.0, 100.0]),
+            "LE" => vec![Object::from("None"), Object::from("Circle")],
+            "BS" => dictionary! { "W" => 2 },
+        },
+    );
+    put(
+        "PolyLine",
+        [150.0, 100.0, 250.0, 100.0],
+        dictionary! {
+            "C" => black(),
+            "Vertices" => nums(&[150.0, 100.0, 200.0, 100.0, 250.0, 100.0]),
+        },
+    );
+    put(
+        "Ink",
+        [20.0, 40.0, 120.0, 40.0],
+        dictionary! { "C" => black(), "InkList" => vec![nums(&[20.0, 40.0, 120.0, 40.0])] },
+    );
+    // Where each shows, in displayed points.
+    let shown = [
+        ("highlight", [25, 22, 115, 38]),
+        ("strikeout", [155, 20, 245, 40]),
+        ("line", [25, 98, 110, 102]),
+        ("line's ending", [121, 95, 127, 105]),
+        ("polyline", [155, 98, 245, 102]),
+        ("ink", [25, 158, 115, 162]),
+    ];
+    let mut missing = Vec::new();
+    let mut check = |what: &str, bmp: &render::Bitmap| {
+        for (name, r) in shown {
+            if ink_of(bmp, r).0 <= 20 {
+                missing.push(format!("{what}: {name}"));
+            }
+        }
+    };
+    check("on screen", &shot(&mut p));
+    let app = render::load(p.app_snapshot().unwrap(), None).unwrap();
+    check("in the app", &Renderer::new(&app).render(0, 1.0).unwrap());
+    let mut sheets = p.print_sheets(&[0], &as_is()).unwrap();
+    check("printed", &shot(&mut sheets));
+    let done = p.flatten_annotations(None).unwrap();
+    let mut p = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    check("flattened", &shot(&mut p));
+    assert!(missing.is_empty(), "not drawn: {missing:#?}");
+    assert_eq!((done.drawn, done.kept), (5, vec![]));
+    assert!(p.annotations().is_empty());
+}
+
+/// A line placed by its points, with its `/Rect` away from it, as `pdfjs/issue14203.pdf`
+/// has its lines: at y 100 from x 20 to 120, its `/Rect` a line at y 40.
+fn line_away_from_its_rect(p: &mut Pdf) -> ObjectId {
+    add(
+        p,
+        0,
+        "Line",
+        [150.0, 40.0, 250.0, 40.0],
+        dictionary! { "C" => nums(&[0.0, 0.0, 0.0]), "L" => nums(&[20.0, 100.0, 120.0, 100.0]) },
+    )
+}
+
+/// PB-114: an annotation placed by its points whose `/Rect` has no area is listed with the
+/// box around its drawing, so the app frames it and goes to it where it is drawn, and it
+/// moves from that box. Its box was its `/Rect`, away from it.
+#[test]
+fn an_annotation_placed_by_its_points_is_listed_and_moved_where_it_is_drawn() {
+    let mut p = page();
+    let line = line_away_from_its_rect(&mut p);
+    let b = p.annotations()[0].bbox;
+    // In displayed points (y down) the line runs from (20, 100) to (120, 100).
+    assert!(
+        b[0] <= 20.0 && b[2] >= 120.0 && b[1] < 100.0 && b[3] > 100.0 && b[3] - b[1] < 10.0,
+        "{b:?}"
+    );
+    // Moved 30 points right and 20 up, as the app moves it, from that box.
+    let to = [b[0] + 30.0, b[1] - 20.0, b[2] + 30.0, b[3] - 20.0];
+    p.move_annotation(0, line, to).unwrap();
+    let moved = &p.annotations()[0];
+    let ends = moved.paths[0].clone();
+    let want = [(50.0, 80.0), (150.0, 80.0)];
+    let near =
+        |(x, y): (f32, f32), (u, v): (f32, f32)| (x - u).abs() < 0.01 && (y - v).abs() < 0.01;
+    assert!(
+        ends.len() == 2 && ends.iter().zip(want).all(|(&e, w)| near(e, w)),
+        "{ends:?}"
+    );
+    assert!(ink(&mut p, [55, 78, 145, 82]).0 > 20, "drawn where it went");
+}
+
+/// PB-114: redacting where an annotation placed by its points is drawn removes it, as
+/// redacting where its `/Rect` is does: a line away from its `/Rect`, and a highlight whose
+/// `/Rect` is a point at its left end, each marked over its right half. Both were kept, drawn
+/// over the black.
+#[test]
+fn redacting_where_an_annotation_placed_by_its_points_is_drawn_removes_it() {
+    let mut p = page();
+    line_away_from_its_rect(&mut p);
+    add(
+        &mut p,
+        0,
+        "Highlight",
+        [20.0, 170.0, 20.0, 170.0],
+        dictionary! {
+            "QuadPoints" => nums(&[20.0, 180.0, 120.0, 180.0, 20.0, 160.0, 120.0, 160.0]),
+        },
+    );
+    // In displayed points (y down).
+    p.redact(&[
+        (0, [80.0, 90.0, 110.0, 110.0]),
+        (0, [80.0, 20.0, 110.0, 40.0]),
+    ])
+    .unwrap();
+    let left: Vec<AnnotKind> = p.annotations().into_iter().map(|a| a.kind).collect();
+    assert!(left.is_empty(), "kept: {left:?}");
 }
 
 #[test]

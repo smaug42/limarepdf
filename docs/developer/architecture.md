@@ -1315,6 +1315,14 @@ marked content tagged with it (`/OC /LimareField1 BDC … EMC`, the layer or rul
 form or comments, finishing signing and printing all do it; a rule written in place is stored as an object of its
 own, since renderers look a tag's layer up by reference.
 
+A drawing is placed by the annotation's `/Rect`, which flattening and every renderer map its box onto. Markup,
+links, lines, polygons, polylines and ink (`BY_POINTS`) are drawn from their own points instead, so one whose
+`/Rect` has no area (a point, or a line away from it, as `pdfjs/issue14203.pdf` has them) is given the box around
+what it draws (`extent`: the paths' points, a curve's control points, past them by the widest line plus a point)
+as its drawing's box and its `/Rect` (PB-114). `annot_rect` gives that box without drawing: `Pdf::annotations`
+and `page_links` list it, `move_annotation` moves from it as the app does, and redaction removes the annotation
+when a mark touches it or its `/Rect`.
+
 Links (ENH-17) are `links.rs`, kept apart from comments: `AnnotKind::of` leaves them out, so they are never in
 the Comments view or `Pdf::annotations`. `Pdf::page_links` reads every link of a page with an area: its id
 (`LinkId::Object`, or `LinkId::Inline` for a link written inside the page's `/Annots` rather than as an object,

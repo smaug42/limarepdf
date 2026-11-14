@@ -139,8 +139,9 @@ and `settle` (`editor/replace_all.rs`), which hold its copy.
   taken together, the drawings mostly under them (a line or fill crossing an edge is cut out of the marks instead),
   a picture's pixels under them (a picture LimarePDF can't read goes whole), alternative text on what lost
   anything and on every tag above it, and the comments, links and form fields touching the marks, with their
-  replies, values, appearances and what they held. What is outside the marks stays as it was, the characters left
-  in their places.
+  replies, values, appearances and what they held. Each is touching by its `/Rect`, and a comment placed by its
+  points whose `/Rect` has no area also where it is drawn (PB-114). What is outside the marks stays as it was, the
+  characters left in their places.
 - Nothing redaction removed stays reachable in the saved file. Redaction reads the redacted pages again: no text is
   left under the marks, and every picture there is blacked out under them. Then it follows the file from its
   trailer as saving keeps it, looking for what it removed: the originals replaced or removed (a picture's with its
@@ -191,6 +192,7 @@ and `settle` (`editor/replace_all.rs`), which hold its copy.
   `a_parent_tree_nested_too_deep_is_refused_unchanged`, `a_parent_tree_too_large_to_search_is_refused_unchanged`,
   `a_widget_under_a_mark_in_a_form_nested_too_deep_is_refused_unchanged`) and `too_complex.rs`'s
   `a_redaction_over_a_page_too_complex_to_read_changes_nothing`.
+- Core `annots.rs`: `redacting_where_an_annotation_placed_by_its_points_is_drawn_removes_it` (PB-114).
 - Core `pages_removed.rs`, for deleting, extracting and splitting:
   `what_only_the_pages_that_went_drew_goes_from_what_they_share`;
   `pages_whose_own_objects_the_file_keeps_another_way_are_refused` (each route, and no part written);

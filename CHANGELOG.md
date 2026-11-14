@@ -500,6 +500,13 @@
   that went another way, as when a tagged document's tags point at it, or a page that stays has a drawing that
   can't be read, the command stops, changes nothing and says why; Split then writes no file. Before, that was kept
   without a word, and Split could write some parts before stopping at one.
+- A highlight, underline, squiggly underline, strikeout, line, polyline or ink drawing that another app saved
+  without a drawing of its own, and with a box of no size (a point, or a line somewhere else), is shown, printed
+  and flattened where its own points put it, as other readers draw it. Before, it wasn't shown or printed, and
+  Flatten annotations left it as it was, among those it can't draw. Selected, it is framed there, and it moves from
+  there; changed, it is saved with the box around it. Redacting where it is drawn removes it, as redacting over its
+  box does. Before, it was framed at its box, and redaction kept it, with its comment, unless the marks also
+  covered its box; other readers drew it over the black.
 
 ### Changed
 

@@ -44,6 +44,21 @@ pub(crate) fn drawable(s: &[u8]) -> bool {
     DRAWN.contains(&s) || ICONS.contains(&s)
 }
 
+/// Subtypes whose drawing is placed by their points (`/QuadPoints`, `/L`, `/Vertices`,
+/// `/InkList`), not by `/Rect`.
+const BY_POINTS: [&[u8]; 10] = [
+    b"Redact",
+    b"Highlight",
+    b"Underline",
+    b"StrikeOut",
+    b"Squiggly",
+    b"Link",
+    b"Line",
+    b"Polygon",
+    b"PolyLine",
+    b"Ink",
+];
+
 /// Resource names in the appearances LimarePDF draws.
 const FONT: &str = "Helv";
 const GS: &str = "LimareGs";
@@ -77,6 +92,8 @@ struct Drawing {
     text: Option<Typeset>,
     /// Turns the drawing to fit `/Rect`, for text boxes on turned pages.
     matrix: Option<[f32; 6]>,
+    /// A `/Rect` for an annotation whose own has no area: the drawing's box (PB-114).
+    rect: Option<[f32; 4]>,
 }
 
 /// How a text box sets its text ([`Pdf::text_box_setting`]): to lay text out while it is
@@ -169,7 +186,12 @@ impl Pdf {
         let mut standard: Vec<(FontChoice, ObjectId)> = Vec::new();
         let mut n = 0;
         for &id in ids {
-            let Some(d) = self.annotation_drawing(id) else {
+            let Some(d) = self
+                .doc
+                .get_dictionary(id)
+                .ok()
+                .and_then(|a| self.annotation_drawing(a))
+            else {
                 continue;
             };
             let mut res = Dictionary::new();
@@ -197,6 +219,9 @@ impl Pdf {
             let ap = self.doc.add_object(Stream::new(form, content));
             if let Ok(a) = self.doc.get_dictionary_mut(id) {
                 a.set("AP", dictionary! { "N" => ap });
+                if let Some(r) = d.rect {
+                    a.set("Rect", nums(&r));
+                }
                 n += 1;
             }
         }
@@ -301,9 +326,21 @@ impl Pdf {
             .replace('\r', "\n")
     }
 
-    /// The appearance for one annotation, or `None` for a type LimarePDF doesn't draw.
-    fn annotation_drawing(&self, id: ObjectId) -> Option<Drawing> {
-        let d = self.doc.get_dictionary(id).ok()?;
+    /// Where annotation `d` is on the page: its `/Rect`, or for one placed by its points whose
+    /// `/Rect` has no area, the box around what LimarePDF draws for it, which drawing it
+    /// gives it as its `/Rect` (PB-114). `None` without a `/Rect`.
+    pub(crate) fn annot_rect(&self, d: &Dictionary) -> Option<[f32; 4]> {
+        let rect = self.rect(d.get(b"Rect").ok()?)?;
+        let sub = d.get(b"Subtype").and_then(|o| o.as_name()).unwrap_or(b"");
+        if !no_area(rect) || !BY_POINTS.contains(&sub) {
+            return Some(rect);
+        }
+        let drawn = self.annotation_drawing(d).and_then(|a| a.rect);
+        Some(drawn.unwrap_or(rect))
+    }
+
+    /// The appearance for annotation `d`, or `None` for a type LimarePDF doesn't draw.
+    fn annotation_drawing(&self, d: &Dictionary) -> Option<Drawing> {
         let rect = self.rect(d.get(b"Rect").ok()?)?;
         let sub = d.get(b"Subtype").ok()?.as_name().ok()?;
         let has_ap = d
@@ -479,12 +516,17 @@ impl Pdf {
             }
             _ => return None,
         }
+        // One placed by its points whose `/Rect` has no area, so nothing could be placed in
+        // it, gets the box around what it draws as its `/Rect`, where other readers draw it.
+        let placed = no_area(rect) && BY_POINTS.contains(&sub);
+        let new_rect = placed.then(|| extent(&ops)).flatten();
         Some(Drawing {
             content: with_gs(encode(ops), alpha, blend),
-            bbox: rect,
+            bbox: new_rect.unwrap_or(rect),
             gs: gs_dict(alpha, blend),
             text: None,
             matrix: None,
+            rect: new_rect,
         })
     }
 
@@ -675,6 +717,7 @@ impl Pdf {
                 after: b"\nQ\n".to_vec(),
             }),
             matrix: g.matrix,
+            rect: None,
         }
     }
 
@@ -877,6 +920,43 @@ fn polyline(ops: &mut Vec<Operation>, p: &[(f32, f32)]) {
     for (i, &(x, y)) in p.iter().enumerate() {
         ops.push(op(if i == 0 { "m" } else { "l" }, nums(&[x, y])));
     }
+}
+
+/// Whether `r` is too thin to place a drawing in, as flattening finds it.
+fn no_area(r: [f32; 4]) -> bool {
+    r[2] - r[0] < 1e-3 || r[3] - r[1] < 1e-3
+}
+
+/// The box around the paths `ops` draw (a curve lies within its control points), with room
+/// past them for their widest line, its caps and an arrow's point; `None` when they draw
+/// none.
+fn extent(ops: &[Operation]) -> Option<[f32; 4]> {
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    let mut w: f32 = 1.0;
+    for o in ops {
+        let v: Vec<f32> = o
+            .operands
+            .iter()
+            .filter_map(|x| x.as_float().ok())
+            .collect();
+        let points: Vec<(f32, f32)> = match o.operator.as_str() {
+            "w" => {
+                w = w.max(v.first().copied().unwrap_or(0.0));
+                continue;
+            }
+            "re" if v.len() == 4 => vec![(v[0], v[1]), (v[0] + v[2], v[1] + v[3])],
+            "m" | "l" | "c" | "v" | "y" => {
+                v.as_chunks::<2>().0.iter().map(|&[x, y]| (x, y)).collect()
+            }
+            _ => continue,
+        };
+        for (x, y) in points {
+            (b[0], b[1]) = (b[0].min(x), b[1].min(y));
+            (b[2], b[3]) = (b[2].max(x), b[3].max(y));
+        }
+    }
+    let room = w + 1.0;
+    (b[0] <= b[2]).then(|| [b[0] - room, b[1] - room, b[2] + room, b[3] + room])
 }
 
 /// An ellipse filling `r`, as four Bézier curves.
@@ -1274,6 +1354,7 @@ fn stamp(rect: [f32; 4], name: &[u8], alpha: f32) -> Drawing {
             after: Vec::new(),
         }),
         matrix: None,
+        rect: None,
     }
 }
 

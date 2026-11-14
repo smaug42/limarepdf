@@ -1439,10 +1439,13 @@ impl Pdf {
             if sub == b"Redact" {
                 continue;
             }
-            let Some(b) = d.get(b"Rect").ok().and_then(|o| self.rect(o)) else {
-                continue;
-            };
-            if areas.iter().any(|&a| touches(norm(b), a)) {
+            // Its `/Rect`, and for one placed by its points, where it is drawn (PB-114).
+            let boxes = [
+                d.get(b"Rect").ok().and_then(|o| self.rect(o)),
+                self.annot_rect(d),
+            ];
+            let hit = |b: &[f32; 4]| areas.iter().any(|&a| touches(norm(*b), a));
+            if boxes.iter().flatten().any(hit) {
                 gone.insert(id);
                 if sub == b"Widget" {
                     widgets.insert(id);
