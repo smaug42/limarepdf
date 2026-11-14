@@ -208,7 +208,7 @@ impl Pdf {
             // Some writers put `/Encrypt null` (meaning not encrypted) in the trailer, and
             // lopdf takes any `/Encrypt` entry as encryption. Read a copy with those
             // entries blanked; they are the same length, so every offset holds.
-            Err(e) => match blank_null_encrypt(bytes).or_else(|| pad_user_hash(bytes)) {
+            Err(e) => match blank_null_encrypt(bytes).or_else(|| encryption_lopdf_reads(bytes)) {
                 Some(c) => {
                     copy = c;
                     let doc = load(&copy).map_err(|_| e)?;
@@ -1270,45 +1270,58 @@ fn blank_null_encrypt(bytes: &[u8]) -> Option<Vec<u8>> {
     copy
 }
 
-/// `bytes` with a copy of the encryption dictionary appended as an update, its `/U`
-/// padded to 32 bytes, or `None` when that isn't what stops lopdf. At revisions 3 and 4
-/// readers compare only the first 16 bytes of `/U`, and some writers store just those
-/// (PDFBox's test file 1910); lopdf refuses any length but 32, and then asks for a
-/// password the file doesn't have. `/U` has no other use at these revisions, so the
-/// padding changes nothing else. Appending keeps every offset in the file as it is.
-fn pad_user_hash(bytes: &[u8]) -> Option<Vec<u8>> {
+/// `bytes` with a copy of the encryption dictionary appended as an update in a form lopdf
+/// reads, or `None` when the dictionary's form isn't what stops lopdf. Appending keeps every
+/// offset in the file as it is. Two forms stop it:
+/// - The trailer holding the dictionary itself (pdf.js's test files issue6010_1 and _2):
+///   lopdf reads one only through a reference, and then refuses every password, the right
+///   one too (PB-183). The copy is an object of its own, numbered after every other.
+/// - At revisions 3 and 4 readers compare only the first 16 bytes of `/U`, and some writers
+///   store just those (PDFBox's test file 1910); lopdf refuses any length but 32, and then
+///   asks for a password the file doesn't have. `/U` has no other use at these revisions,
+///   so the copy's is padded, which changes nothing else.
+fn encryption_lopdf_reads(bytes: &[u8]) -> Option<Vec<u8>> {
     // Without a password lopdf reads just the trailer and the encryption dictionary.
     let doc =
         Document::load_from_with_options(Cursor::new(bytes), lopdf::LoadOptions::default()).ok()?;
-    let (n, g) = doc
-        .trailer
-        .get(b"Encrypt")
-        .and_then(Object::as_reference)
-        .ok()?;
-    let mut enc = doc.get_dictionary((n, g)).ok()?.clone();
+    let size = doc.trailer.get(b"Size").and_then(Object::as_i64).ok();
+    let ((n, g), mut enc, mut changed) = match doc.trailer.get(b"Encrypt").ok()? {
+        Object::Reference(id) => (*id, doc.get_dictionary(*id).ok()?.clone(), false),
+        Object::Dictionary(d) => {
+            let size = size.and_then(|s| u32::try_from(s).ok()).unwrap_or(0);
+            let n = size.max(doc.reference_table.max_id().max(doc.max_id) + 1);
+            ((n, 0), d.clone(), true)
+        }
+        _ => return None,
+    };
     let standard = enc.get(b"Filter").and_then(Object::as_name).ok() == Some(b"Standard");
     let revision = enc.get(b"R").and_then(Object::as_i64).ok();
-    let u = enc.get(b"U").and_then(Object::as_str).ok()?;
-    if !standard || !matches!(revision, Some(3 | 4)) || !(16..32).contains(&u.len()) {
+    let short = (enc.get(b"U").and_then(Object::as_str).ok())
+        .filter(|u| standard && matches!(revision, Some(3 | 4)) && (16..32).contains(&u.len()))
+        .map(<[u8]>::to_vec);
+    if let Some(mut padded) = short {
+        padded.resize(32, 0);
+        enc.set(
+            "U",
+            Object::String(padded, lopdf::StringFormat::Hexadecimal),
+        );
+        changed = true;
+    }
+    if !changed {
         return None;
     }
-    let mut padded = u.to_vec();
-    padded.resize(32, 0);
-    enc.set(
-        "U",
-        Object::String(padded, lopdf::StringFormat::Hexadecimal),
-    );
 
     // lopdf counts offsets from the header, as in `blank_null_encrypt`.
     let header = bytes.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
     let mut out = bytes.to_vec();
     out.push(b'\n');
     let mut trailer = Dictionary::new();
-    for key in [&b"Size"[..], b"Root", b"Info", b"ID"] {
+    for key in [&b"Root"[..], b"Info", b"ID"] {
         if let Ok(v) = doc.trailer.get(key) {
             trailer.set(key, v.clone());
         }
     }
+    trailer.set("Size", size.unwrap_or(0).max(i64::from(n) + 1));
     trailer.set("Encrypt", (n, g));
     trailer.set("Prev", doc.xref_start as i64);
     let at = out.len() - header;

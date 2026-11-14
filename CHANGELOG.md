@@ -491,6 +491,8 @@
 - Redacting a comment that Acrobat kept an icon for, in the document's list of named appearances, removes the icon
   from that list too. Before, redaction stopped, changing nothing, and said removed content might still be in the
   file, through another part of it. Removing comments takes the icon out in the same way.
+- A password-protected file that keeps its protection settings in its last section rather than in an object of
+  their own opens with its password. Before, LimarePDF said every password was wrong, the right one too.
 
 ### Changed
 

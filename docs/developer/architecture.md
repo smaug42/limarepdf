@@ -113,11 +113,16 @@ when the trailers name no usable catalog, the last catalog object with a page tr
 
 Two workarounds in `crates/limarepdf-core/src/doc.rs` read a corrected copy of a file when lopdf refuses it (offsets
 stay where they were, so nothing counts as repaired). `blank_null_encrypt` blanks a trailer's `/Encrypt null`, which
-lopdf takes as encryption. `pad_user_hash` handles a standard-security file at revision 3 or 4 whose `/U` is
-shorter than 32 bytes: readers compare only its first 16 bytes there, and some writers store just those (PDFBox's
-test file 1910), but lopdf (0.46 too) refuses any length but 32 (`InvalidHashLength`) and so reports a wrong password.
-The copy has the encryption dictionary appended as an update with `/U` zero-padded to 32 bytes. The workaround
-stays until lopdf accepts the shorter `/U`; no issue has been filed upstream.
+lopdf takes as encryption. `encryption_lopdf_reads` appends a copy of the encryption dictionary as an update in a form
+lopdf reads, for two forms it doesn't:
+- A trailer holding the dictionary itself rather than a reference to it (pdf.js's test files issue6010_1 and _2;
+  PB-183). lopdf 0.47 looks for it only through a reference (`Document::get_encrypted`), so it refused every
+  password, the right one too. The copy gets the next free object number, and the update's trailer points at it.
+- A standard-security file at revision 3 or 4 whose `/U` is shorter than 32 bytes: readers compare only its first 16
+  bytes there, and some writers store just those (PDFBox's test file 1910), but lopdf (0.46 too) refuses any length
+  but 32 (`InvalidHashLength`) and so reports a wrong password. The copy's `/U` is zero-padded to 32 bytes.
+
+The workarounds stay until lopdf reads both; no issue has been filed upstream.
 
 A document's pages are its page tree's entries whose object is a `/Type /Page` dictionary (`doc::pages`, behind
 `Pdf::page_count`, `Pdf::page_ids` and `page_index`). lopdf's own list (`get_pages`, since 0.46) also counts an
