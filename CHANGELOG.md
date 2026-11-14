@@ -457,6 +457,18 @@
 - Reducing the same file the same way gives the same file each time. Before, the pictures' soft masks could be
   numbered in a different order from one time to the next, and of pictures that lost as much, the one previewed
   could differ.
+- In a form with more than 10,000 fields, every field is filled, reset, cleared and checked, not only the 10,000
+  the app lists. Before, a field past those couldn't be filled by name (`limarepdf-cli form fill` said there was
+  none), Reset form left it as it was, and Remove hidden information took its drawing away along with its value,
+  set the form to ask other readers to draw every field, and didn't count it. A signature in it wasn't counted, so
+  saving didn't warn that a full rewrite breaks it, and redaction's report of what still holds the removed text
+  left it out. Pictures of the pages (Export pages as images, `limarepdf-cli render`) left its value out without naming
+  it, and Remove blank pages could delete a page holding only it, value and all. A form with XFA whose fields on
+  the pages were all past the first 10,000 was taken for one only Adobe Reader can fill.
+- Signing a form with more than 10,000 fields works. Before, signing in a new box always failed, saying the signed
+  document didn't check correctly; a field past the first 10,000 couldn't be signed by name or locked by a
+  signature's field locks; and where the form asks readers to draw its fields, those past the first 10,000 were
+  left without a drawing when signing turned that request off.
 
 ### Changed
 

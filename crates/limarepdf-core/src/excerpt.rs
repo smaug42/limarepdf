@@ -107,7 +107,7 @@ impl Pdf {
         let page = self.page_id_at(page_index)?;
         let on_page: HashSet<ObjectId> = self.all_annot_refs(page).into_iter().collect();
         let undrawn = self.signature_count() > 0
-            && (self.appearances_to_draw(self.form_nodes()).iter())
+            && (self.appearances_to_draw(self.listed_nodes()).iter())
                 .any(|(_, _, widgets)| widgets.iter().any(|w| on_page.contains(w)));
         if undrawn {
             let mut copy = self.clone();

@@ -626,6 +626,123 @@ fn fields_locked_by_a_signer_cant_be_signed() {
     );
 }
 
+// ------------------------------------------------------------------ past the fields listed
+
+/// How many fields LimarePDF lists.
+const LISTED: usize = 10_000;
+
+/// The object whose `/T` is `name`.
+fn named(p: &Pdf, name: &str) -> ObjectId {
+    let found = p.doc.objects.iter().find(|(_, o)| {
+        o.as_dict()
+            .and_then(|d| d.get(b"T"))
+            .and_then(Object::as_str)
+            .is_ok_and(|t| t == name.as_bytes())
+    });
+    *found.unwrap_or_else(|| panic!("no field {name}")).0
+}
+
+/// The form of `p`, a document [`form_doc`] made.
+fn form_of(p: &mut Pdf) -> &mut Dictionary {
+    let form = p.doc.catalog().unwrap().get(b"AcroForm").unwrap();
+    match form.as_reference() {
+        Ok(id) => p.doc.get_dictionary_mut(id).unwrap(),
+        Err(_) => (p.doc.catalog_mut().unwrap().get_mut(b"AcroForm").unwrap())
+            .as_dict_mut()
+            .unwrap(),
+    }
+}
+
+/// `bytes`, a document [`form_doc`] made, with [`LISTED`] empty text fields on its page,
+/// sharing one drawing, listed in its form after the fields named in `first` and before
+/// the rest, which so come past those LimarePDF lists.
+fn crowded(bytes: &[u8], first: &[&str]) -> Vec<u8> {
+    let mut p = Pdf::from_bytes(bytes, None).unwrap();
+    let small = || -> Object { vec![0.into(), 0.into(), 10.into(), 10.into()].into() };
+    let look = p.doc.add_object(lopdf::Stream::new(
+        dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => small() },
+        Vec::new(),
+    ));
+    let fillers: Vec<Object> = (0..LISTED)
+        .map(|i| {
+            let d = dictionary! {
+                "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx",
+                "T" => Object::string_literal(format!("f{i}")), "F" => 4, "Rect" => small(),
+                "AP" => dictionary! { "N" => look },
+            };
+            p.doc.add_object(d).into()
+        })
+        .collect();
+    let first: Vec<ObjectId> = first.iter().map(|n| named(&p, n)).collect();
+    let form = form_of(&mut p);
+    let rest = (form.get(b"Fields").unwrap().as_array().unwrap().iter())
+        .filter(|f| !f.as_reference().is_ok_and(|f| first.contains(&f)))
+        .cloned();
+    let mut fields: Vec<Object> = first.iter().map(|&f| f.into()).collect();
+    fields.extend(fillers.iter().cloned().chain(rest));
+    form.set("Fields", fields);
+    let page = p.page_ids()[0];
+    let page = p.doc.get_dictionary_mut(page).unwrap();
+    let mut annots = page.get(b"Annots").unwrap().as_array().unwrap().clone();
+    annots.extend(fillers);
+    page.set("Annots", annots);
+    p.snapshot().unwrap()
+}
+
+/// A signature field past those LimarePDF lists is signed by name, and its signature
+/// checked. It wasn't found.
+#[test]
+fn signs_a_field_past_those_listed() {
+    let doc = crowded(&form_doc(&[("Approver", None)], false), &[]);
+    let s = sign(&doc, &req(rsa(), field("Approver")));
+    assert_eq!(s.field, "Approver");
+    let rep = newest_is_good(&s.bytes, rsa());
+    assert_eq!(rep.signatures[0].fields, ["Approver"]);
+}
+
+/// A signer's field lock makes a field past those listed read-only too. It was left
+/// fillable.
+#[test]
+fn a_field_lock_reaches_past_the_fields_listed() {
+    let doc = form_doc(&[("Approver", Some(lock("Include", &["Name"])))], false);
+    let doc = crowded(&doc, &["Approver"]);
+    let s = sign(&doc, &req(rsa(), field("Approver")));
+    newest_is_good(&s.bytes, rsa());
+    let w = widget(&s.bytes, "Name");
+    assert_eq!(w.get(b"Ff").map_or(0, |f| f.as_i64().unwrap()) & 1, 1);
+}
+
+/// A new signature field doesn't take the name of one past those listed, here
+/// "Signature1" inside a field of no name. It did, so two fields had one name.
+#[test]
+fn a_new_signature_field_is_named_apart_from_those_past_the_fields_listed() {
+    let mut p = Pdf::from_bytes(&form_doc(&[("Signature1", None)], false), None).unwrap();
+    let sig = named(&p, "Signature1");
+    let top = p.doc.add_object(dictionary! { "Kids" => vec![sig.into()] });
+    p.doc.get_dictionary_mut(sig).unwrap().set("Parent", top);
+    let form = form_of(&mut p);
+    let mut fields = form.get(b"Fields").unwrap().as_array().unwrap().clone();
+    fields.retain(|f| f.as_reference().ok() != Some(sig));
+    fields.push(top.into());
+    form.set("Fields", fields);
+    let doc = crowded(&p.snapshot().unwrap(), &[]);
+
+    let s = sign(&doc, &req(rsa(), new_box(2)));
+    assert_eq!(s.field, "Signature2");
+    newest_is_good(&s.bytes, rsa());
+}
+
+/// Signing draws the fields past those listed when the form asks readers to draw its
+/// fields, as it does the others, before it stops asking. They were left without a
+/// drawing, showing nothing.
+#[test]
+fn fields_past_those_listed_are_drawn_before_signing_when_the_form_asks() {
+    let doc = crowded(&form_doc(&[], true), &[]);
+    let s = sign(&doc, &req(rsa(), new_box(2)));
+    newest_is_good(&s.bytes, rsa());
+    assert!(widget(&s.bytes, "Name").has(b"AP"));
+}
+
 // ------------------------------------------------------------------ edits
 
 #[test]

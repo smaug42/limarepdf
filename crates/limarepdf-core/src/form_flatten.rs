@@ -142,7 +142,7 @@ impl Pdf {
     /// ([`Pdf::render_snapshot`]): widgets showing a value that has no drawing, which
     /// LimarePDF can't draw either. Changes nothing.
     pub fn unshown_fields(&self, pages: &[usize]) -> Vec<String> {
-        self.lost_values(pages, flat_widget, Reach::Listed)
+        self.lost_values(pages, flat_widget, Reach::Every)
     }
 
     /// The fields whose values flattening the whole form ([`Pdf::flatten_form`]) would

@@ -1685,7 +1685,7 @@ impl Pdf {
             let all = format!("{} {} {}", a.contents, a.author, a.subject);
             other.push((format!("a comment on page {}", a.page + 1), fold(&all)));
         }
-        for f in self.form_fields() {
+        for f in self.every_form_field() {
             if let crate::FieldValue::Text(v) = &f.value {
                 other.push((format!("form field \u{201c}{}\u{201d}", f.name), fold(v)));
             }

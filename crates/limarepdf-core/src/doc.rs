@@ -1,3 +1,4 @@
+use crate::forms::Reach;
 use crate::Result;
 use anyhow::{anyhow, bail, Context};
 use lopdf::dictionary;
@@ -436,7 +437,8 @@ impl Pdf {
     /// render`): annotations flagged Hidden or NoView aren't drawn, as hayro 0.9 honours both
     /// (`annot_noview_flag_is_respected` in `tests/render_coverage.rs`). Form fields are drawn
     /// as [`Pdf::refresh_appearances`] would draw them, as the app draws them when opening a
-    /// file ([`Pdf::unshown_fields`] names those it can't draw). Pictures their data can't
+    /// file, but every one, also past the fields LimarePDF lists ([`Pdf::unshown_fields`]
+    /// names those it can't draw). Pictures their data can't
     /// fill and patterns the renderer can't tile are left out, as in
     /// [`Pdf::drawing_snapshot`]. The document itself is not changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
@@ -476,9 +478,10 @@ impl Pdf {
     /// A snapshot in which annotations whose subtype `hide` picks are marked Hidden, and
     /// annotations without a drawing get LimarePDF's (the document itself keeps
     /// none). In a signed document, or in any with `all_fields`, form fields are drawn this
-    /// way too, as [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a
-    /// signed document's fields into it when opening it, so that saving adds only the edits
-    /// made to what was signed. Pictures their data can't fill and patterns the renderer
+    /// way too, as [`Pdf::refresh_appearances`] would draw them (every field with
+    /// `all_fields`, those LimarePDF lists for the app's): the app doesn't draw a signed
+    /// document's fields into it when opening it, so that saving adds only the edits made to
+    /// what was signed. Pictures their data can't fill and patterns the renderer
     /// can't tile are left out, as in [`Pdf::drawing_snapshot`].
     fn snapshot_hiding(
         &mut self,
@@ -487,8 +490,15 @@ impl Pdf {
     ) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
         let missing = self.missing_appearances(&self.page_ids());
+        let reach = if all_fields {
+            Reach::Every
+        } else {
+            Reach::Listed
+        };
         let fields = (all_fields || self.signature_count() > 0)
-            && !self.appearances_to_draw(self.form_nodes()).is_empty();
+            && !self
+                .appearances_to_draw(self.field_nodes(reach).0)
+                .is_empty();
         let swaps = crate::unfillable::swaps(&self.doc, &mut self.checked);
         if ids.is_empty() && missing.is_empty() && !fields && swaps.is_empty() {
             return self.snapshot();
@@ -496,7 +506,7 @@ impl Pdf {
         let mut copy = self.clone();
         crate::unfillable::put(&mut copy.doc, swaps);
         if fields {
-            copy.refresh_appearances();
+            copy.refresh_reaching(reach);
         }
         copy.draw_annotations(&missing);
         for (id, flags) in ids {

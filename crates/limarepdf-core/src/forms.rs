@@ -152,10 +152,10 @@ pub(crate) struct Node {
 /// How much of the field tree a walk takes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Reach {
-    /// The fields LimarePDF lists: the first [`MAX_FIELDS`].
+    /// The fields LimarePDF lists, for showing them: the first [`MAX_FIELDS`].
     Listed,
-    /// Every field: for flattening and printing, where a field left out loses its value
-    /// (PB-90).
+    /// Every field: for all else, where a field left out would lose its value (flattening
+    /// and printing, PB-90; removing values, PB-174), be missed by name or go uncounted.
     Every,
 }
 
@@ -174,9 +174,16 @@ struct Walk {
 }
 
 impl Pdf {
-    /// The form's fields, in the order the form lists them; empty when there is no form.
+    /// The form's fields, in the order the form lists them, for showing them: at most the
+    /// first 10,000 ([`Pdf::every_form_field`] has them all). Empty when there is no form.
     /// Broken entries are skipped, never fatal.
     pub fn form_fields(&self) -> Vec<Field> {
+        self.listed_nodes().into_iter().map(|(f, _)| f).collect()
+    }
+
+    /// Every field of the form, without [`Pdf::form_fields`]' limit: for finding a field by
+    /// name and for what has to know of each one.
+    pub fn every_form_field(&self) -> Vec<Field> {
         self.form_nodes().into_iter().map(|(f, _)| f).collect()
     }
 
@@ -192,10 +199,10 @@ impl Pdf {
             .count()
     }
 
-    /// The signature fields that hold no digital signature, in the order the form lists
-    /// them: where a digital signature can go.
+    /// The signature fields among those [`Pdf::form_fields`] lists that hold no digital
+    /// signature, in the order the form lists them: where a digital signature can go.
     pub fn empty_signature_fields(&self) -> Vec<Field> {
-        self.form_nodes()
+        self.listed_nodes()
             .into_iter()
             .filter(|(f, n)| {
                 f.kind == FieldKind::Signature
@@ -216,8 +223,14 @@ impl Pdf {
             .collect()
     }
 
-    /// The fields with where each is in the file: those LimarePDF lists.
+    /// Every field with where it is in the file.
     pub(crate) fn form_nodes(&self) -> Vec<(Field, Node)> {
+        self.field_nodes(Reach::Every).0
+    }
+
+    /// The fields LimarePDF lists ([`Pdf::form_fields`]) with where each is in the file:
+    /// for showing them.
+    pub(crate) fn listed_nodes(&self) -> Vec<(Field, Node)> {
         self.field_nodes(Reach::Listed).0
     }
 
@@ -260,9 +273,9 @@ impl Pdf {
     }
 
     /// Every node of the field tree, fields and widgets, each once, with whether it belongs to
-    /// a signature field (by its own or an inherited `/FT`). Unlike [`Pdf::form_fields`] it
-    /// has no field limit, and it fails rather than skip what is nested too deep: for
-    /// removing values, where a node left out could keep one.
+    /// a signature field (by its own or an inherited `/FT`). Unlike [`Pdf::every_form_field`]
+    /// it fails rather than skip what is nested too deep: for removing values, where a node
+    /// left out could keep one.
     pub(crate) fn value_nodes(&self) -> anyhow::Result<Vec<(ObjectId, bool)>> {
         fn walk(
             p: &Pdf,
@@ -333,7 +346,7 @@ impl Pdf {
             .and_then(|c| c.get(b"NeedsRendering").ok())
             .and_then(|o| o.as_bool().ok())
             .unwrap_or(false);
-        needs_rendering || !self.form_fields().iter().any(|f| !f.widgets.is_empty())
+        needs_rendering || !self.form_nodes().iter().any(|(f, _)| !f.widgets.is_empty())
     }
 
     /// The catalog's `/AcroForm` dictionary.

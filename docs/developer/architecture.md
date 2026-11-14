@@ -65,7 +65,14 @@ field is found by the name every reader finds. Windows-1252 can't be told from P
 
 Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, LimarePDF draws the field's appearance itself
 (`form_ap.rs`, written into the file by `form_write.rs`) rather than asking other readers to, so filled fields look
-the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.rs`.
+the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.rs`. Field lists go by purpose
+(PB-174): `Pdf::form_fields` and `listed_nodes` take the first 10,000 (`MAX_FIELDS`), for what the app shows: the
+on-screen pages, the empty signature boxes offered (`empty_signature_fields`), typing in a field (`field_setting`)
+and `form list`; everything else takes every field
+(`Pdf::every_form_field`, `form_nodes`, `Reach::Every`): finding a field by name (setting, signing, `form fill`),
+reset, removing values, counting and checking signatures, field locks, new signature field names, redaction's
+report, flattening, printing, the pages' pictures (`render_snapshot`, `unshown_fields`), drawing fields before
+signing and telling XFA-only forms apart.
 
 Every dialog in the desktop app is built from the same parts in `crates/limarepdf-gui/src/dialogs.rs`, so they all
 look like Print: `Shell` (the window over the dimmed app, its title and file, and the dialogs' look from

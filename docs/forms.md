@@ -55,6 +55,11 @@ shows the field you are in: its name, its description and whether it is required
   10,000 fields LimarePDF lists. A form whose fields are nested more than 32 levels deep (fields inside fields)
   can't be followed to its end, so flattening it stops with a message and nothing is changed.
 
+The app shows and lists the first 10,000 fields of a form. In a form with more, the rest can't be clicked or
+counted here, but everything else deals with every field: Reset form, flattening, printing, exporting pages as
+images, removing form values, signing, redaction's report, and `limarepdf-cli form fill`, which sets any field by
+name.
+
 ## Signature fields
 
 - Clicking an empty signature field puts your fill-and-sign signature in it (see [Fill and sign](fill-and-sign.md)).

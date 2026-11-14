@@ -199,8 +199,9 @@ impl Pdf {
                 }
             }
         }
-        // Widgets the tree reaches beyond the fields read above (a form of more fields than
-        // [`Pdf::form_fields`] reads): their drawings go, as they can't be redrawn.
+        // Widgets the tree reaches that no field read above holds (a field of no type
+        // LimarePDF knows, widgets beside fields of their own): their drawings go, as they
+        // can't be redrawn.
         for &(id, sig) in &nodes {
             let widget = self.doc.get_dictionary(id).is_ok_and(|d| d.has(b"Rect"));
             if !sig && widget && !reached.contains(&id) {
@@ -300,8 +301,9 @@ impl Pdf {
         }
     }
 
-    /// Draw the appearances that are missing, so that every field shows its value; all
-    /// of the text and choice fields' appearances when the form asks for that
+    /// Draw the appearances that are missing, so that every field [`Pdf::form_fields`] lists
+    /// shows its value, as the app shows them; all of their text and choice fields'
+    /// appearances when the form asks for that
     /// (`/NeedAppearances`). Fields LimarePDF can't draw are left as they are. Returns how
     /// many widgets were drawn.
     pub fn refresh_appearances(&mut self) -> usize {
@@ -309,7 +311,7 @@ impl Pdf {
     }
 
     /// [`Pdf::refresh_appearances`] for the fields `reach` takes: every field for
-    /// flattening and printing.
+    /// flattening, printing, the pages' pictures and signing.
     pub(crate) fn refresh_reaching(&mut self, reach: Reach) -> usize {
         let mut n = 0;
         let nodes = self.field_nodes(reach).0;
@@ -842,11 +844,12 @@ impl Pdf {
     /// How the text field `name`'s value is set in its widget `widget` ([`Widget::id`]), to
     /// lay text out while it is typed as it will be written ([`BoxSetting::lines`]): in the
     /// font its `/DA` names when that takes the text, as [`Pdf::set_field`] writes it; `None`
-    /// when it isn't a text field or has no such widget.
+    /// when it isn't a text field among those [`Pdf::form_fields`] lists or has no such
+    /// widget.
     ///
     /// [`Widget::id`]: crate::Widget::id
     pub fn field_setting(&self, name: &str, widget: (u32, u16)) -> Option<BoxSetting> {
-        let (field, node) = (self.form_nodes().into_iter()).find(|(f, _)| f.name == name)?;
+        let (field, node) = (self.listed_nodes().into_iter()).find(|(f, _)| f.name == name)?;
         if !matches!(field.kind, FieldKind::Text { .. }) || !node.widgets.contains(&widget) {
             return None;
         }

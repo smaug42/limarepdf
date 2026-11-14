@@ -202,9 +202,10 @@ Not ticked at first, as they are often wanted:
 
 - **Comments and markup** (redaction marks stay), every one, also on a page with more than the 10,000 the app
   shows. Attached files are removed in the same way.
-- **Form field values:** every field's value is cleared for good, read-only fields included, along with default
-  values (so Reset form brings nothing back), values a field takes from a parent field, rich text and the drawings
-  that showed them; checkboxes and radio buttons are switched off. Fields LimarePDF can't draw lose their drawing,
+- **Form field values:** every field's value is cleared for good, also in a form with more than the 10,000 fields
+  the app lists, read-only fields included, along with default values (so Reset form brings nothing back), values
+  a field takes from a parent field, rich text and the drawings that showed them; checkboxes and radio buttons are
+  switched off. Fields LimarePDF can't draw lose their drawing,
   and readers draw them empty. Signature fields are left alone. The fields themselves, and their choices, stay. A
   form nested more than 32 deep (fields inside fields, form boxes included, also boxes the form's list of fields
   leaves out) can't be followed to its end, so the command stops with a message and changes nothing; leave form
