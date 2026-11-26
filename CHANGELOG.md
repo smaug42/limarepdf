@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- On Windows, LimarePDF starts on computers without the Visual C++ runtime. 0.14.1 and earlier needed it: without
+  it, Windows said `VCRUNTIME140.dll` was not found, and neither the app nor `limarepdf-cli` started.
 - LimarePDF isn't on the AUR, though 0.14.1's notes said it was: the AUR isn't taking new accounts for now. On Arch
   Linux, x86_64, install the release's `limarepdf-<version>-1-x86_64.pkg.tar.zst` with `sudo pacman -U`
   ([Install](docs/install.md#arch-linux)).

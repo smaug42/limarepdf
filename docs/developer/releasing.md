@@ -107,11 +107,17 @@ the two Macs. Each builds natively, on a runner of its own architecture, and giv
 `target`) to `check-package.py`, which checks that the programs' headers name that architecture: a runner's
 toolchain emulating its other architecture would build programs that run there, but aren't the package's.
 
+The Windows programs carry the C runtime (`+crt-static` in `.cargo/config.toml`, which a `RUSTFLAGS` set in the
+environment replaces): the Visual C++ runtime's DLLs aren't part of Windows, so programs needing them don't start on
+a computer that hasn't installed them (#324). GitHub's Windows runners have them, so no install or run there would
+show it; `check-package.py` reads the programs' DLLs instead.
+
 The packages and installers (deb, rpm, MSI, dmg) don't carry `docs/`: `packaging/package-docs.sh` writes their
 README, changelog and security notes into `target/package-docs/` with every relative link pointed at the version's
 tag on GitHub (pages under `blob/`, images under `raw/`), so those links work once the version is tagged.
 `packaging/check-package.py [--target TRIPLE]... <folder>` checks a layout as installed: the programs, built for the
-targets' architectures (each one's ELF, PE or Mach-O header says, universal or not), the README, changelog,
+targets' architectures (each one's ELF, PE or Mach-O header says, universal or not) and, on Windows, importing none
+of the Visual C++ runtime's DLLs (`VCRUNTIME140.dll` and the like, delay-loaded or not), the README, changelog,
 security notes, OCR model notes and every licence (the font ones and the crates' included) there, every relative
 link reaching a file and heading in the folder, every link to the version's tag reaching one in the repository, and
 the crates' licences matching the crates built ([below](#third-party-licences)). CI runs it on each archive before
@@ -281,7 +287,9 @@ from the files there), and each MSI's product code with the upgrade code, publis
 msitools' `msiinfo`. It fails when an MSI doesn't match `SHA256SUMS`, isn't for the version, or the two differ in
 those, and when a fill-in is left. It writes winget's into
 `<out>/winget-pkgs/manifests/c/ClaytonCornell/LimarePDF/<version>/` and Scoop's into
-`<out>/scoop-limarepdf/bucket/limarepdf.json`.
+`<out>/scoop-limarepdf/bucket/limarepdf.json`. The manifests name no dependencies: the programs need nothing Windows
+doesn't have. 0.14.1's installer manifest names the Visual C++ runtime (`Microsoft.VCRedist.2015+.x64` and `.arm64`,
+added by hand), which its programs needed (#324).
 
 After the builds, the `winget-scoop` job writes the manifests from the MSIs and zips, and `winget-scoop-check` checks
 them on Windows x64 and Arm64 with `packaging/windows/check-manifests.ps1 <manifests> <dist>`. Every download address
