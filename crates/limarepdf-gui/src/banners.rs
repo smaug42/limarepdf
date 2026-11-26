@@ -6,7 +6,7 @@ use crate::icon;
 use crate::theme::Tone;
 use limarepdf_core::render::{self, Missing};
 use limarepdf_core::short_list as list;
-use limarepdf_core::{FieldKind, ObjectKind, Pdf};
+use limarepdf_core::{FieldKind, Pdf};
 use std::collections::BTreeSet;
 
 /// Pages looked at for scans; enough to tell, and quick when opening a large file.
@@ -340,15 +340,9 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
 fn scanned_pages(pdf: &Pdf) -> usize {
     (0..pdf.page_count().min(SCAN_PAGES))
         .filter(|&i| {
-            let (Ok(objs), Ok((w, h))) = (pdf.page_objects(i), pdf.page_size(i)) else {
-                return false;
-            };
-            let area = |b: [f32; 4]| (b[2] - b[0]).abs() * (b[3] - b[1]).abs();
-            let text = pdf.page_has_text(i);
-            let image = objs
-                .iter()
-                .any(|o| o.kind == ObjectKind::Image && area(o.bbox) >= 0.5 * w * h);
-            !text && image && !pdf.page_has_unreadable_picture(i)
+            !pdf.page_has_text(i)
+                && pdf.page_has_large_picture(i)
+                && !pdf.page_has_unreadable_picture(i)
         })
         .count()
 }

@@ -91,6 +91,8 @@ pub enum Apply {
         update: bool,
     },
     Ocr,
+    /// Remove the recognised text from the OCR form's pages.
+    RemoveOcr,
     Scans,
     Export,
     Split,
@@ -118,7 +120,7 @@ impl Apply {
                 kind: Stamp::Watermark,
                 ..
             } => "Watermark",
-            Apply::Ocr => "Recognise text (OCR)",
+            Apply::Ocr | Apply::RemoveOcr => "Recognise text (OCR)",
             Apply::Scans => "Optimise scanned pages",
             Apply::Export => "Export pages as images",
             Apply::Split => "Split into files",
@@ -389,6 +391,8 @@ pub struct Forms {
     pub wm: Wm,
     pub hf: Hf,
     pub ocr: String,
+    /// Read pages with recognised text again, replacing it.
+    pub ocr_again: bool,
     pub scan_pages: String,
     pub scan: ScanOptions,
     pub export: Export,
@@ -850,10 +854,19 @@ fn tool_ui(ui: &mut Ui, s: Section, f: &mut Forms, p: &Parts) -> Option<Apply> {
             stamp_change(ui, Stamp::HeaderFooter, press, p.hf_behind)
         }
         Section::Ocr => {
-            note(ui, "Pages without text, in Latin-script languages.");
+            note(
+                ui,
+                "Scans and pages without text, in Latin-script languages.",
+            );
             range_row(ui, &mut f.ocr);
+            ui.checkbox(&mut f.ocr_again, "Read recognised pages again");
             let run = egui::Button::new("Recognise");
-            ui.add_enabled(!p.busy, run).clicked().then_some(Apply::Ocr)
+            let mut apply = ui.add_enabled(!p.busy, run).clicked().then_some(Apply::Ocr);
+            let remove = egui::Button::new("Remove recognised text");
+            if ui.add_enabled(!p.busy, remove).clicked() {
+                apply = Some(Apply::RemoveOcr);
+            }
+            apply
         }
         Section::Scans => {
             scan_ui(ui, &mut f.scan_pages, &mut f.scan, p.busy).then_some(Apply::Scans)

@@ -3,7 +3,7 @@
 mod common;
 
 use image::{DynamicImage, GrayImage, Luma, Rgb, RgbImage};
-use limarepdf_core::{render, ImageImport, Pdf, ScanMode, ScanOptions, ScanResult};
+use limarepdf_core::{render, ImageImport, OcrResult, Pdf, ScanMode, ScanOptions, ScanResult};
 use lopdf::{dictionary, Dictionary, Object, Stream};
 use std::io::Cursor;
 
@@ -235,6 +235,34 @@ fn scan_with_invisible_text_is_not_straightened() {
         ..opts()
     };
     assert_eq!(optimized(&optimize(&mut p, &o)).3, None);
+}
+
+/// A page recognised first is straightened once its recognised text is removed (#224).
+#[test]
+fn scan_is_straightened_once_its_recognised_text_is_removed() {
+    let mut p = scanned(DynamicImage::ImageLuma8(text_scan(2.0)), 300.0);
+    let page = p.page_ids()[0];
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    let layer = p.doc.add_object(Stream::new(
+        Dictionary::new(),
+        b"BT 3 Tr /F1 12 Tf 10 10 Td (word) Tj ET".to_vec(),
+    ));
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let old = d.get(b"Contents").unwrap().clone();
+    d.set("Contents", vec![old, Object::Reference(layer)]);
+    let res = d.get_mut(b"Resources").unwrap().as_dict_mut().unwrap();
+    res.set("Font", dictionary! { "F1" => font });
+    let r = p.remove_recognised_text(&[0]).unwrap();
+    assert_eq!(r, [(0, OcrResult::Removed { lines: 1 })]);
+    let o = ScanOptions {
+        deskew: true,
+        ..opts()
+    };
+    let a = optimized(&optimize(&mut p, &o)).3;
+    let a = a.expect("not straightened");
+    assert!((a + 2.0).abs() < 0.15, "corrected {a} degrees");
 }
 
 #[test]

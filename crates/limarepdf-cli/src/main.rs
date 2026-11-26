@@ -195,9 +195,19 @@ enum Cmd {
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
         jpeg_quality: Option<u8>,
     },
-    /// Recognise text on pages that have none (scans) and add it as an invisible,
+    /// Recognise text on scans and pages without text and add it as an invisible,
     /// searchable layer. Reads languages written in Latin letters, accents included
     Ocr {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long, default_value = "all")]
+        pages: String,
+        /// Read pages that have recognised text again, replacing it
+        #[arg(long)]
+        again: bool,
+    },
+    /// Remove recognised text (an invisible OCR layer) from pages; they look the same
+    RemoveOcr {
         #[command(flatten)]
         io: Io,
         #[arg(long, default_value = "all")]
@@ -1613,6 +1623,19 @@ fn note_repaired(p: &Path, pdf: Pdf) -> Pdf {
         );
     }
     pdf
+}
+
+/// What recognising text, or removing recognised text, did to each page.
+fn print_ocr(done: &[(usize, OcrResult)]) -> Result<()> {
+    for (i, r) in done {
+        let page = i + 1;
+        match r {
+            OcrResult::Added { lines, words } => out!("page {page}: {lines} lines, {words} words"),
+            OcrResult::Removed { lines } => out!("page {page}: {lines} lines removed"),
+            OcrResult::Skipped(why) => out!("page {page}: skipped: {why}"),
+        }
+    }
+    Ok(())
 }
 
 fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
@@ -3377,18 +3400,18 @@ fn run(cmd: Cmd) -> Result<()> {
                 Err(_) => out!("wrote {}", io.output.display()),
             }
         }
-        Cmd::Ocr { io, pages } => run_edit(&io, |p| {
+        Cmd::Ocr { io, pages, again } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;
             let ocr = Ocr::bundled()?;
-            for (i, r) in p.ocr_pages(&idx, &ocr)? {
-                match r {
-                    OcrResult::Added { lines, words } => {
-                        out!("page {}: {lines} lines, {words} words", i + 1)
-                    }
-                    OcrResult::Skipped(why) => out!("page {}: skipped: {why}", i + 1),
-                }
-            }
-            Ok(())
+            let done = match again {
+                true => p.ocr_pages_again(&idx, &ocr)?,
+                false => p.ocr_pages(&idx, &ocr)?,
+            };
+            print_ocr(&done)
+        })?,
+        Cmd::RemoveOcr { io, pages } => run_edit(&io, |p| {
+            let idx = parse_page_range(&pages, p.page_count())?;
+            print_ocr(&p.remove_recognised_text(&idx)?)
         })?,
         Cmd::InsertImages {
             io,

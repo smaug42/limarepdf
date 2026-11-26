@@ -9,13 +9,15 @@
 
 use crate::embed::Face;
 use crate::fonts::winansi_byte;
+use crate::matrix as mx;
+use crate::objects::{ordered_words, Parsed, TextData};
 use crate::overlay::FONT_PREFIX;
 use crate::scan::binarise;
-use crate::{render, FontChoice, Pdf, Result};
+use crate::{render, FontChoice, ObjectKind, Pdf, Result};
 use anyhow::{anyhow, bail};
 use image::imageops::{self, FilterType};
 use image::{GrayImage, Luma};
-use lopdf::ObjectId;
+use lopdf::{Object, ObjectId};
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
 use rayon::prelude::*;
 use rten::Model;
@@ -49,6 +51,8 @@ type PageRead = std::result::Result<(Vec<OcrLine>, f32), String>;
 pub enum OcrResult {
     /// A text layer was added.
     Added { lines: usize, words: usize },
+    /// Recognised text was removed: this many lines ([`Pdf::remove_recognised_text`]).
+    Removed { lines: usize },
     /// The page was left as it was, for the reason given.
     Skipped(String),
 }
@@ -487,27 +491,109 @@ fn line_words(
         .collect()
 }
 
+/// `lines` without the words that land on the page's own words, `own`: words the page has
+/// as text already. `own` is in displayed-page points (y down), the words' boxes in pixels
+/// of the page drawn at `scale`. A line left without words goes.
+fn without_own(lines: Vec<OcrLine>, own: &[[f32; 4]], scale: f32) -> Vec<OcrLine> {
+    let area = |b: [f32; 4]| (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
+    // Half the smaller box covered by the other.
+    let on_own = |w: &OcrWord| {
+        let b = w.bbox.map(|v| v / scale);
+        own.iter().any(|o| {
+            let (x0, y0) = (b[0].max(o[0]), b[1].max(o[1]));
+            let both = area([x0, y0, b[2].min(o[2]), b[3].min(o[3])]);
+            both > 0.0 && both >= 0.5 * area(b).min(area(*o))
+        })
+    };
+    (lines.into_iter())
+        .map(|mut l| {
+            l.words.retain(|w| !on_own(w));
+            l
+        })
+        .filter(|l| !l.words.is_empty())
+        .collect()
+}
+
+/// The page's recognised text, as ids in `parsed.objs`: its recognised lines and the forms
+/// drawing only recognised text, with how many lines they hold. Or why it can't be taken
+/// out: a form drawing other content too holds some, or an inline picture would be lost.
+fn recognised_objs(parsed: &Parsed) -> std::result::Result<(Vec<usize>, usize), String> {
+    let other = "the recognised text is in a form that draws other content too, so it is left";
+    let mut objs = Vec::new();
+    let mut lines = 0;
+    for f in &parsed.recognised_forms {
+        let form = (parsed.objs.iter()).position(|o| o.kind == ObjectKind::Form && o.first == f.op);
+        match form {
+            Some(id) if !f.other => {
+                objs.push(id);
+                lines += f.lines;
+            }
+            _ => return Err(other.into()),
+        }
+    }
+    for (id, o) in parsed.objs.iter().enumerate() {
+        if o.text.as_ref().is_some_and(TextData::recognised) {
+            objs.push(id);
+            lines += 1;
+        }
+    }
+    if !objs.is_empty() && parsed.ops.iter().any(|o| o.operator == "BI") {
+        return Err("the page has an inline image that would be lost in rewriting it".into());
+    }
+    Ok((objs, lines))
+}
+
+/// The name an operator names first: a font for `Tf`, a picture or a form for `Do`.
+fn name_operand(o: &lopdf::content::Operation) -> Option<Vec<u8>> {
+    Some(o.operands.first()?.as_name().ok()?.to_vec())
+}
+
 impl Pdf {
     /// Recognise the text on `pages` (0-based) and add it as an invisible, searchable,
-    /// selectable text layer. Pages that already have text are skipped, so running this
-    /// twice adds nothing. Run [`Pdf::optimize_scans`] first if wanted: it does not
-    /// straighten pages that have text.
+    /// selectable text layer. Pages with recognised text ([`TextData::recognised`]) are
+    /// skipped, so running this twice adds nothing; [`Pdf::ocr_pages_again`] reads them
+    /// again. Pages with text of their own are skipped too, unless a picture covers half the
+    /// page or more, as on a scan with a page number or a stamp: those are read, and words
+    /// that land on the page's own text are left out. Run [`Pdf::optimize_scans`] first if
+    /// wanted: it does not straighten pages that have text.
     pub fn ocr_pages(&mut self, pages: &[usize], ocr: &Ocr) -> Result<Vec<(usize, OcrResult)>> {
+        self.ocr_with(pages, ocr, false)
+    }
+
+    /// [`Pdf::ocr_pages`], with pages that have recognised text read again: their recognised
+    /// text is replaced with what is read, or kept when nothing is. A page whose recognised
+    /// text is in a form drawing other content too is skipped, as
+    /// [`Pdf::remove_recognised_text`] leaves it.
+    pub fn ocr_pages_again(
+        &mut self,
+        pages: &[usize],
+        ocr: &Ocr,
+    ) -> Result<Vec<(usize, OcrResult)>> {
+        self.ocr_with(pages, ocr, true)
+    }
+
+    fn ocr_with(
+        &mut self,
+        pages: &[usize],
+        ocr: &Ocr,
+        again: bool,
+    ) -> Result<Vec<(usize, OcrResult)>> {
         let ids = self.page_ids();
         if let Some(&bad) = pages.iter().find(|&&p| p >= ids.len()) {
             bail!("no page {}", bad + 1);
         }
         let mut todo = Vec::new();
+        let mut targets = HashMap::new();
         let mut out: Vec<(usize, OcrResult)> = Vec::new();
         let mut asked = HashSet::new();
         // A page asked twice is read once.
         for &p in pages.iter().filter(|&&p| asked.insert(p)) {
-            match self.parse_page_of(ids[p]) {
-                Ok(parsed) if parsed.shows_text() => {
-                    out.push((p, OcrResult::Skipped("the page already has text".into())))
+            match self.ocr_target(ids[p], again) {
+                Ok(t) => {
+                    todo.push(p);
+                    targets.insert(p, t);
                 }
-                Ok(_) => todo.push(p),
-                Err(e) => out.push((p, OcrResult::Skipped(format!("cannot read the page: {e}")))),
+                Err(why) => out.push((p, OcrResult::Skipped(why))),
             }
         }
         let hp = render::load(self.drawing_snapshot()?, None)?;
@@ -536,10 +622,15 @@ impl Pdf {
             .collect();
         let mut read = Vec::new();
         for (p, r) in found {
-            match r {
+            let own = &targets[&p];
+            match r.map(|(lines, scale)| (without_own(lines, own, scale), scale)) {
                 Err(why) => out.push((p, OcrResult::Skipped(why))),
                 Ok((lines, _)) if lines.is_empty() => {
-                    out.push((p, OcrResult::Skipped("no text found".into())))
+                    let why = match own.is_empty() {
+                        true => "no text found",
+                        false => "no text found besides the page's own",
+                    };
+                    out.push((p, OcrResult::Skipped(why.into())))
                 }
                 Ok((lines, scale)) => read.push((p, lines, scale)),
             }
@@ -547,7 +638,17 @@ impl Pdf {
         let layers: Vec<_> = (read.iter())
             .map(|(p, lines, scale)| (ids[*p], &lines[..], *scale))
             .collect();
-        self.add_text_layers(&layers)?;
+        self.atomically(|pdf| {
+            // The text read replaces the recognised text a page had.
+            for &(page, _, _) in layers.iter().filter(|_| again) {
+                let parsed = pdf.parse_page_of(page)?;
+                let (objs, _) = recognised_objs(&parsed).map_err(|why| anyhow!(why))?;
+                if !objs.is_empty() {
+                    pdf.strip_recognised(page, &parsed, &objs)?;
+                }
+            }
+            pdf.add_text_layers(&layers)
+        })?;
         for (p, lines, _) in read {
             let words = lines.iter().map(|l| l.words.len()).sum();
             let added = OcrResult::Added {
@@ -562,6 +663,135 @@ impl Pdf {
             .collect();
         out.sort_by_key(|(p, _)| first.get(p).copied());
         Ok(out)
+    }
+
+    /// The boxes of the words of the page's own text, if the page with object `page` is to
+    /// be read ([`Pdf::ocr_pages`]), in displayed-page points (y down); or why it isn't.
+    /// `again` reads pages with recognised text again.
+    fn ocr_target(
+        &self,
+        page: ObjectId,
+        again: bool,
+    ) -> std::result::Result<Vec<[f32; 4]>, String> {
+        let parsed =
+            (self.parse_page_of(page)).map_err(|e| format!("cannot read the page: {e}"))?;
+        let lines: Vec<&TextData> = parsed.text_lines().collect();
+        let recognised = lines.iter().any(|t| t.recognised());
+        if recognised && !again {
+            return Err("the page already has recognised text".into());
+        }
+        if recognised {
+            recognised_objs(&parsed)?;
+        }
+        let own: Vec<&TextData> = lines.into_iter().filter(|t| !t.recognised()).collect();
+        // Text shown that isn't read as lines is the page's own, and where it is isn't known.
+        let unread = own.is_empty() && !recognised && parsed.shows_text();
+        if unread || !(own.is_empty() || recognised || self.large_picture(page, &parsed)) {
+            return Err("the page already has text".into());
+        }
+        let (vd, _, _) = self.vis_down(page);
+        let to_vis = mx::inv(vd).ok_or("cannot read the page: degenerate page transform")?;
+        let words = ordered_words(&own, to_vis);
+        Ok(words.into_iter().map(|(w, _, _)| w.bbox).collect())
+    }
+
+    /// Take the recognised text off `pages` (0-based): invisible text as OCR adds it
+    /// ([`TextData::recognised`]), in a page's content or in a form drawing nothing else (as
+    /// ocrmypdf adds it). The pages look as they did, and keep their own text, invisible text
+    /// that clips too. The fonts and forms only the recognised text used leave the pages'
+    /// resources. A page whose recognised text is in a form drawing other content too is
+    /// left as it is.
+    pub fn remove_recognised_text(&mut self, pages: &[usize]) -> Result<Vec<(usize, OcrResult)>> {
+        let ids = self.page_ids();
+        if let Some(&bad) = pages.iter().find(|&&p| p >= ids.len()) {
+            bail!("no page {}", bad + 1);
+        }
+        let mut asked = HashSet::new();
+        self.atomically(|pdf| {
+            let mut out = Vec::new();
+            for &p in pages.iter().filter(|&&p| asked.insert(p)) {
+                let parsed = match pdf.parse_page_of(ids[p]) {
+                    Ok(parsed) => parsed,
+                    Err(e) => {
+                        let why = format!("cannot read the page: {e}");
+                        out.push((p, OcrResult::Skipped(why)));
+                        continue;
+                    }
+                };
+                let r = match recognised_objs(&parsed) {
+                    Err(why) => OcrResult::Skipped(why),
+                    Ok((objs, _)) if objs.is_empty() => {
+                        OcrResult::Skipped("the page has no recognised text".into())
+                    }
+                    // Nothing is changed when it fails.
+                    Ok((objs, lines)) => match pdf.strip_recognised(ids[p], &parsed, &objs) {
+                        Ok(()) => OcrResult::Removed { lines },
+                        Err(e) => OcrResult::Skipped(format!("{e:#}")),
+                    },
+                };
+                out.push((p, r));
+            }
+            Ok(out)
+        })
+    }
+
+    /// Take `objs` out of the page with object `page`, its content `parsed`: its
+    /// recognised text ([`recognised_objs`]). The fonts and forms only they used leave the
+    /// page's resources, unless a form the page still draws has no resources of its own and
+    /// may use them too.
+    fn strip_recognised(&mut self, page: ObjectId, parsed: &Parsed, objs: &[usize]) -> Result<()> {
+        let mut ops = Pdf::without_objects(parsed, objs)?;
+        let mut res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
+        let xobjects = self.resolved_dict(res.get(b"XObject").ok());
+        let drawn: Vec<Vec<u8>> = (ops.iter().filter(|o| o.operator == "Do"))
+            .filter_map(name_operand)
+            .collect();
+        let borrows = drawn.iter().any(|n| {
+            let s = xobjects
+                .get(n)
+                .ok()
+                .and_then(|o| self.doc.dereference(o).ok());
+            s.and_then(|(_, s)| s.as_stream().ok()).is_some_and(|s| {
+                s.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Form")
+                    && !s.dict.has(b"Resources")
+            })
+        });
+        if borrows {
+            return self.commit(page, ops, parsed.depth_left, &parsed.inline);
+        }
+        // The fonts no line left is in, and the forms nothing draws now.
+        let (mut fonts, mut forms) = (HashSet::new(), HashSet::new());
+        for o in objs.iter().map(|&id| &parsed.objs[id]) {
+            match &o.text {
+                Some(t) => fonts.extend(t.spans.iter().map(|s| s.font.clone())),
+                None => forms.extend(name_operand(&parsed.ops[o.first])),
+            }
+        }
+        let kept = (parsed.objs.iter().enumerate()).filter(|(id, _)| !objs.contains(id));
+        for t in kept.filter_map(|(_, o)| o.text.as_ref()) {
+            for s in &t.spans {
+                fonts.remove(&s.font);
+            }
+        }
+        for n in &drawn {
+            forms.remove(n);
+        }
+        // Nothing shown is in those fonts now, so what chooses them goes too.
+        ops.retain(|o| o.operator != "Tf" || !name_operand(o).is_some_and(|n| fonts.contains(&n)));
+        self.commit(page, ops, parsed.depth_left, &parsed.inline)?;
+        let unused = [("Font", fonts), ("XObject", forms)];
+        if unused.iter().all(|(_, u)| u.is_empty()) {
+            return Ok(());
+        }
+        for (cat, unused) in unused.iter().filter(|(_, u)| !u.is_empty()) {
+            let mut d = self.resolved_dict(res.get(cat.as_bytes()).ok());
+            for n in unused {
+                d.remove(n);
+            }
+            res.set(*cat, d);
+        }
+        self.doc.get_dictionary_mut(page)?.set("Resources", res);
+        Ok(())
     }
 
     /// Each page's recognised lines added on top of it as invisible text: (page, its

@@ -176,6 +176,14 @@ pub(crate) struct TextData {
     pub spans: Vec<Span>,
 }
 
+impl TextData {
+    /// Whether the line is recognised text, as OCR adds it: every show is invisible in render
+    /// mode 3. Invisible text in mode 7 clips what is drawn after it, so it is the page's own.
+    pub fn recognised(&self) -> bool {
+        self.runs.iter().all(|r| r.state.tr == 3)
+    }
+}
+
 /// Shows `runs.0..runs.1` of a line, its characters `chars.0..chars.1`, in one font, size,
 /// fill and rise.
 #[derive(Clone, Debug)]
@@ -249,6 +257,18 @@ pub(crate) struct Parsed {
     /// The page's own lines' decorations, each with its line's index in `objs`
     /// ([`decorate::read`]); none for a form's content.
     pub decorations: Vec<(usize, Decoration)>,
+    /// The forms the content draws that hold recognised text ([`TextData::recognised`]).
+    pub recognised_forms: Vec<RecognisedForm>,
+}
+
+/// A form holding recognised text, as ocrmypdf adds it to a page.
+pub(crate) struct RecognisedForm {
+    /// Its `Do`'s index in `ops`.
+    pub op: usize,
+    /// Its recognised lines, those of forms inside it too.
+    pub lines: usize,
+    /// It draws more than recognised text: text of its own, a picture, a path or a form.
+    pub other: bool,
 }
 
 impl Parsed {
@@ -268,6 +288,15 @@ impl Parsed {
             .filter_map(|o| o.text.as_ref())
             .chain(&self.form_text)
     }
+}
+
+/// The form drawn by the `Do` at `op`, its content `p`, if it holds recognised text.
+fn recognised_form(op: usize, p: &Parsed) -> Option<RecognisedForm> {
+    let lines = p.text_lines().filter(|t| t.recognised()).count();
+    let other = (p.objs.iter()).any(|o| !o.text.as_ref().is_some_and(TextData::recognised))
+        || p.form_text.iter().any(|t| !t.recognised())
+        || p.ops.iter().any(|o| o.operator == "sh");
+    (lines > 0).then_some(RecognisedForm { op, lines, other })
 }
 
 /// What reading a page is called when its budget refuses it.
@@ -489,6 +518,7 @@ impl Pdf {
         };
         let mut font_cache: HashMap<Vec<u8>, Option<FontCtx>> = HashMap::new();
         let mut form_text: Vec<TextData> = Vec::new();
+        let mut recognised_forms = Vec::new();
 
         let mut stack: Vec<Gs> = Vec::new();
         let mut gs = Gs {
@@ -917,6 +947,9 @@ impl Pdf {
                                             forms.pop();
                                             match inner {
                                                 Ok(p) => {
+                                                    if let Some(f) = recognised_form(i, &p) {
+                                                        recognised_forms.push(f);
+                                                    }
                                                     form_text.extend(
                                                         p.objs.into_iter().filter_map(|o| o.text),
                                                     );
@@ -970,6 +1003,7 @@ impl Pdf {
             inline,
             form_text,
             decorations,
+            recognised_forms,
         })
     }
 
@@ -1114,6 +1148,23 @@ impl Pdf {
         self.parse_page(page_index).is_ok_and(|p| p.shows_text())
     }
 
+    /// Whether a page (0-based) shows a picture covering at least half of it, as a scan's
+    /// page does. Pictures inside form XObjects aren't looked at. False when the page cannot
+    /// be read.
+    pub fn page_has_large_picture(&self, page_index: usize) -> bool {
+        let Ok(page) = self.page_id_at(page_index) else {
+            return false;
+        };
+        (self.parse_page_of(page)).is_ok_and(|p| self.large_picture(page, &p))
+    }
+
+    /// [`Pdf::page_has_large_picture`] of the page with object `page`, its content `parsed`.
+    pub(crate) fn large_picture(&self, page: ObjectId, parsed: &Parsed) -> bool {
+        let area = |b: [f32; 4]| (b[2] - b[0]).abs() * (b[3] - b[1]).abs();
+        let half = 0.5 * area(self.page_box(page));
+        (parsed.objs.iter()).any(|o| o.kind == ObjectKind::Image && area(o.bbox) >= half)
+    }
+
     /// Whether a page's own resources hold a picture whose data is plainly unreadable
     /// (judged from the start of its data, not by decoding it). Pictures inside form
     /// XObjects aren't looked at.
@@ -1203,7 +1254,7 @@ pub(crate) type SearchParts = (
 
 /// The words of a page's text lines in reading order (see [`Pdf::page_words`]), each with
 /// the index of the text line it came from and its first character there.
-fn ordered_words(lines: &[&TextData], to_vis: M) -> Vec<(PageWord, usize, usize)> {
+pub(crate) fn ordered_words(lines: &[&TextData], to_vis: M) -> Vec<(PageWord, usize, usize)> {
     let mut out = Vec::new();
     for (li, t) in lines.iter().enumerate() {
         let chars: Vec<char> = t.text.chars().collect();
