@@ -69,7 +69,8 @@ jobs:
       # request starts; every ignored test listed once in tools/ignored-tests.toml, with its
       # group. Each tool's self-test first, so a broken tool can't pass. The package check's
       # self-test is here too; the packages themselves are checked where they're built. So is the
-      # OCR measure's, which needs scans and a release build to run.
+      # OCR measure's, which needs scans and a release build to run. compare-cli.sh's test stands
+      # in for Cargo and both CLIs, so nothing is built.
       - name: Repository checks
         run: |
           python3 -I tools/check-scratch.py --self-test
@@ -82,6 +83,7 @@ jobs:
           python3 -I tools/check-ignored-tests.py
           python3 -I packaging/check-package.py --self-test
           python3 -I tools/ocr-accuracy.py --self-test
+          bash crates/limarepdf-core/tools/test-compare-cli.sh
       - name: Formatting
         run: cargo fmt --all --check
       # Each platform in turn, all of them reported even when one fails.

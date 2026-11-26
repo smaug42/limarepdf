@@ -38,7 +38,8 @@ folder through `include!`, `include_str!` or `include_bytes!`, called with `()`,
 tools/check-doc-links.py`, the link check (every tracked Markdown file's relative links and images, and anchors
 into Markdown files). The latter is the only link checker the docs name. `python3 -I tools/check-ignored-tests.py`
 (S2-15) checks that every ignored test is in `tools/ignored-tests.toml` once, with its group ("Ignored tests today"
-above).
+above). `bash crates/limarepdf-core/tools/test-compare-cli.sh` checks `compare-cli.sh` (below) with stand-ins for Cargo
+and both CLIs, so nothing is built.
 
 **"The document is unchanged"** in a test means `Pdf::state_since(&before)` is empty, `before` taken with
 `Pdf::state_before()` (core's `state.rs`; built only for tests, through `cfg(test)` or the `test-seams` feature,
@@ -268,11 +269,17 @@ To see what a change does to real files, compare the CLI before and after it:
 `bash crates/limarepdf-core/tools/compare-cli.sh BASE-CLI [PDF...]`, where BASE-CLI is `limarepdf-cli` built
 (`--profile ci-test`) before the change and copied out of `target`. It builds this tree's CLI and runs `verify` and
 `info` with both on every PDF in `tests/data`, the fetched corpus and `dss/` samples too when they're there. Then it
-writes `target/tmp/compare-cli/summary.txt` (`COMPARE_CLI_OUT`): the differences in `verify`'s output, the signed
-files' exit codes, the notes `info` prints on stderr (such as "other PDF apps may show it differently") before and
-after with their differences, and the time each `info` pass took. PDFs given after BASE-CLI, crafted attack files say,
-are run through both in full. A run over the 1,207 files takes about two minutes. The signature-change fixes of
-2026-11-20 were checked so: the notes it showed new were each read and judged, and six false positives fixed.
+writes `target/tmp/compare-cli/summary.txt` (`COMPARE_CLI_OUT`; a folder it didn't make is refused):
+the differences in `verify`'s output and exit codes, the signed files' exit codes, the notes `info` prints on
+stderr (such as "other PDF apps may show it differently") and its exit codes before and after with their
+differences, and the time each `info` pass took. It takes the CLI that Cargo reports building, so
+`CARGO_TARGET_DIR` is followed. PDFs given after BASE-CLI, crafted attack files say, are compared too
+and shown in full. It exits 0 when nothing differs, 1 when something does and 2 when the comparison
+couldn't be made. Its test beside it, `test-compare-cli.sh`, run in CI's lint job, covers an `info` that fails
+only after the change, a `CARGO_TARGET_DIR` elsewhere, its own folder used again, a folder it didn't make, a failed
+diff and a build that names no CLI. A run over the 1,207 files takes about two minutes. The signature-change fixes of
+2026-11-20 were checked so: the notes it showed new were each read and judged, and six false
+positives fixed.
 
 The timings and memory figures in [Performance](performance.md) come from
 `python3 crates/limarepdf-core/tools/measure.py`, run from the repository (Linux or macOS, Python's standard library
