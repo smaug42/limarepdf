@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Text recognition reads scans that carry a little text of their own, such as a page number, a Bates number or a
+  stamp: a page with text is read when a picture covers at least half of it, and words where the page's own text is
+  are left out, so nothing is doubled. Before, any text on a page made it be skipped.
+- Recognised text can be read again or removed: **Read recognised pages again** and **Remove recognised text** in
+  the Recognise text (OCR) tool, and `limarepdf-cli ocr --again` and `limarepdf-cli remove-ocr`. Pages keep their
+  look and their own text. Remove, optimise and recognise again to straighten a page recognised before it was
+  optimised. Recognised text is invisible text, LimarePDF's own or another app's, such as OCRmyPDF's
+  ([Scans and OCR](docs/scanning-and-ocr.md#reading-again-and-removing-recognised-text)).
+
 ### Fixed
 
 - On Windows, LimarePDF starts on computers without the Visual C++ runtime. 0.14.1 and earlier needed it: without

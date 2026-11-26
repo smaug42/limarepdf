@@ -287,6 +287,8 @@ fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
                 pages += 1;
                 words += w;
             }
+            // Removing's, not recognising's.
+            OcrResult::Removed { .. } => {}
             OcrResult::Skipped(why) => skipped.push(format!("Page {}: {why}", p + 1)),
         }
     }
@@ -298,6 +300,25 @@ fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
             menu::way(Act::ToggleHidden)
         ));
     }
+    push_skipped(&mut text, &skipped);
+    (pages > 0, text)
+}
+
+/// Summary of removing recognised text for the user, and whether any page changed.
+fn removal_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
+    let (mut pages, mut lines) = (0, 0);
+    let mut skipped = Vec::new();
+    for (p, r) in report {
+        match r {
+            OcrResult::Removed { lines: l } => {
+                pages += 1;
+                lines += l;
+            }
+            OcrResult::Added { .. } => {}
+            OcrResult::Skipped(why) => skipped.push(format!("Page {}: {why}", p + 1)),
+        }
+    }
+    let mut text = format!("Recognised text removed from {pages} page(s): {lines} lines.");
     push_skipped(&mut text, &skipped);
     (pages > 0, text)
 }
@@ -5011,10 +5032,24 @@ impl App {
             Apply::Stamp { kind, update } => {
                 self.tabs[active].stamp_from_form(ctx, kind, update);
             }
-            Apply::Ocr => match parse_page_range(&self.tabs[active].forms.ocr, n) {
-                Ok(idx) => self.spawn_job(ctx, OCR_JOB, Vec::new(), move |p| {
-                    let ocr = limarepdf_core::Ocr::bundled()?;
-                    Ok(ocr_summary(&p.ocr_pages(&idx, &ocr)?))
+            Apply::Ocr => {
+                let f = &self.tabs[active].forms;
+                let again = f.ocr_again;
+                match parse_page_range(&f.ocr, n) {
+                    Ok(idx) => self.spawn_job(ctx, OCR_JOB, Vec::new(), move |p| {
+                        let ocr = limarepdf_core::Ocr::bundled()?;
+                        let done = match again {
+                            true => p.ocr_pages_again(&idx, &ocr)?,
+                            false => p.ocr_pages(&idx, &ocr)?,
+                        };
+                        Ok(ocr_summary(&done))
+                    }),
+                    Err(e) => self.tabs[active].error = Some(e.to_string()),
+                }
+            }
+            Apply::RemoveOcr => match parse_page_range(&self.tabs[active].forms.ocr, n) {
+                Ok(idx) => self.spawn_job(ctx, "Remove recognised text", Vec::new(), move |p| {
+                    Ok(removal_summary(&p.remove_recognised_text(&idx)?))
                 }),
                 Err(e) => self.tabs[active].error = Some(e.to_string()),
             },

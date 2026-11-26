@@ -21,7 +21,9 @@ the pictures in LimarePDF.
 A PDF that is already a scan works the same way: start at step 3. When a document's pages are scans without text,
 a notice above the pages says so, with a **Recognise text** button.
 
-Optimise before recognising text: pages with text over them, such as recognised text, aren't straightened.
+Optimise before recognising text: pages with text over them, such as recognised text, aren't straightened. To
+straighten a page that was recognised already, remove its recognised text, optimise it, then recognise it again
+([Reading again and removing recognised text](#reading-again-and-removing-recognised-text)).
 
 ## Importing images
 
@@ -52,7 +54,8 @@ Works on pages that are one image covering the page.
 - **Colours:** a scan with a colour profile or a calibration keeps it when it stays colour or stays grey, so its
   colours don't change. Made grey or black and white, it is made from its colours as they show.
 - An image is replaced only when the result is smaller, or was straightened or cleaned.
-- Pages with text, such as an OCR layer, are not straightened, so optimise before recognising text.
+- Pages with text, such as an OCR layer, are not straightened, so optimise before recognising text, or remove the
+  recognised text first.
 - Only the pages chosen change. A picture they share with other pages (or other parts of the document) stays as it
   was there, so the file then holds both; the report says when. A picture shared by several chosen pages is
   optimised once, as carefully as the most demanding of them needs: at the lowest resolution any of them shows it
@@ -64,9 +67,17 @@ or all. It runs in the background and can be undone. On the command line: `limar
 
 ## Recognising text (OCR)
 
-OCR adds an invisible text layer to pages without text, so they can be searched, selected and copied. The page
-looks the same.
+OCR adds an invisible text layer to scans and other pages without text, so they can be searched, selected and
+copied. The page looks the same.
 
+- **Which pages:** pages without text, and scans with a little text of their own, such as a page number, a Bates
+  number or a stamp: a page with text is read when a picture covers at least half of it. Words read where the page's
+  own text is are left out, so nothing is doubled, and searching, selecting and copying take in both. Other pages
+  with text are skipped, and so are pages with recognised text unless they are read again. The report gives each
+  skipped page's reason.
+- **Recognised text:** invisible text, as OCR adds it: LimarePDF's own, and other apps' such as OCRmyPDF's, also
+  when it is in a group of its own (a form XObject). A line counts when all of it is invisible. Invisible text that
+  cuts out a shape for what is drawn after it (clipping) is the page's own.
 - **Languages:** those written in Latin letters, accents included: English, French, Spanish, German, Polish,
   Czech, Hungarian and others, with signs such as €, £, °, © and ¿. A few come out as something like them: curly
   quotes as straight ones, … as three dots, and ť and ď, which fonts often draw with a mark like an apostrophe, as t
@@ -82,6 +93,20 @@ looks the same.
 
 Where: **Pages > Recognise text**, which opens the Recognise text (OCR) tool in the inspector, for the selected
 pages or all. It runs in the background and can be undone. On the command line: `limarepdf-cli ocr`.
+
+### Reading again and removing recognised text
+
+- **Read recognised pages again,** a checkbox in the Recognise text (OCR) tool, reads pages with recognised text
+  anew, for example after a poor read, and replaces their recognised text with the new read. A page keeps its old
+  text when the new read finds none.
+- **Remove recognised text,** a button in the same tool, takes the recognised text off the chosen pages. They look
+  the same, and their own text stays.
+- **To straighten a recognised page:** remove its recognised text, optimise it, then recognise it.
+- **Left as it is,** with the reason given: recognised text in a group (a form XObject) that draws other content
+  too. Reading again skips those pages.
+
+Each runs in the background and is one undo step. On the command line: `limarepdf-cli ocr --again` and
+`limarepdf-cli remove-ocr`.
 
 ### Seeing and correcting recognised text
 
