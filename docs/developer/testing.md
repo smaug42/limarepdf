@@ -1861,6 +1861,16 @@ just installed exited with 0x8A150002 (invalid command line arguments) on `winge
 image as #317's passing runs, and the job run again passed. The check now tries `winget --version` for up to a
 minute after installing it, logging each failed try.
 
+The Visual C++ runtime (#324; 2026-11-26). `check-package.py --self-test` (22 cases) reads the DLLs of made-up
+Windows programs, with an import table and a delay-load table: one importing `VCRUNTIME140.dll`, or delay-loading
+`msvcp140.dll`, is reported; one needing only Windows's DLLs (`KERNEL32.dll`, `ucrtbase.dll`,
+`api-ms-win-crt-runtime-l1-1-0.dll`, `msvcrt.dll`, `USER32.dll` delay-loaded) isn't, nor is a Linux program.
+Written first, its stub failed the three cases expecting DLLs. objdump and pefile read the made-up programs' DLLs as
+the check does. On 0.14.1's four Windows programs (x64 and Arm64, from the release's zips) it lists the DLLs pefile
+lists (29 for the app, 14 for `limarepdf-cli`), and objdump's on x64, and reports each program for
+`VCRUNTIME140.dll`. With the check alone, PR #326's CI (run 45856148720) failed both Windows builds at packaging, on
+both programs: "needs the Visual C++ runtime (VCRUNTIME140.dll), which Windows doesn't have".
+
 ## Acceptance checks
 
 The automated tests cover the library and the command line. These checks cover what they can't: the desktop app used
