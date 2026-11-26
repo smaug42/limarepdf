@@ -1869,7 +1869,9 @@ Written first, its stub failed the three cases expecting DLLs. objdump and pefil
 the check does. On 0.14.1's four Windows programs (x64 and Arm64, from the release's zips) it lists the DLLs pefile
 lists (29 for the app, 14 for `limarepdf-cli`), and objdump's on x64, and reports each program for
 `VCRUNTIME140.dll`. With the check alone, PR #326's CI (run 45856148720) failed both Windows builds at packaging, on
-both programs: "needs the Visual C++ runtime (VCRUNTIME140.dll), which Windows doesn't have".
+both programs: "needs the Visual C++ runtime (VCRUNTIME140.dll), which Windows doesn't have". With the programs built
+with the C runtime static, its run 45860317609 on `c67ccc8` was green: the check read both Windows zips and both
+installed MSIs with "0 problem(s)", and the tests passed on both Windows runners.
 
 ## Acceptance checks
 
