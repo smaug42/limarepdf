@@ -10,6 +10,8 @@ are off), less the workspace's own. The notices for fonts and code that crates b
 
 Each program must be built for the targets' architectures, as its header says (ELF, PE, or Mach-O, universal or
 not): a toolchain for another architecture, an emulated one say, builds programs that run but aren't the package's.
+A Windows program must not import the Visual C++ runtime's DLLs, delay-loaded or not: Windows doesn't have them, so
+a program needing them doesn't start on a computer that hasn't installed them (#324), though GitHub's runners have.
 
     python3 packaging/check-package.py [--target TRIPLE]... <folder>
     python3 packaging/check-package.py --self-test
@@ -53,6 +55,9 @@ SHIPPED = ["limarepdf-gui", "limarepdf-cli"]
 ELF = {62: "x86_64", 183: "aarch64"}
 PE = {0x8664: "x86_64", 0xAA64: "aarch64"}
 MACHO = {0x01000007: "x86_64", 0x0100000C: "aarch64"}
+# The Visual C++ runtime's DLLs, which Windows doesn't have (vcruntime140.dll, msvcp140.dll, ...). The Universal C
+# runtime (ucrtbase.dll, api-ms-win-crt-*.dll) is part of Windows 10 and 11, and msvcrt.dll is Windows's own.
+VC_RUNTIME = re.compile(r"(vcruntime|msvcp|concrt|vccorlib|vcamp|vcomp|mfc)\d", re.I)
 # What a crate's bundled fonts or code need in the folder when the crate is built: (crate, file, text). cargo-about
 # finds most of these only through about.toml's clarifications, which drop a notice with no more than a warning
 # when the crate's file changes.
@@ -152,14 +157,63 @@ def machines(head):
 
 
 def architectures(programs, targets):
-    """The problems with the programs' architectures, given each program's first bytes (name: bytes) and the
-    targets."""
+    """The problems with the programs' architectures, given each program's bytes (name: bytes) and the targets."""
     wanted = {t.split("-")[0] for t in targets}
     problems = []
     for name, head in sorted(programs.items()):
         got = machines(head)
         if got != wanted:
             problems.append(f"{name}: built for {' and '.join(sorted(got))}, not {' and '.join(sorted(wanted))}")
+    return problems
+
+
+def imports(data):
+    """The DLLs a Windows program imports, delay-loaded ones too, as its import tables name them; none for another
+    kind of program."""
+
+    def number(start, size=4):
+        return int.from_bytes(data[start : start + size], "little")
+
+    pe = number(0x3C)
+    if data[:2] != b"MZ" or data[pe : pe + 4] != b"PE\0\0":
+        return []
+    optional = pe + 24
+    directories = optional + (112 if number(optional, 2) == 0x20B else 96)  # PE32+ or PE32
+    sections = [optional + number(pe + 20, 2) + 40 * i for i in range(number(pe + 6, 2))]
+
+    def offset(rva):
+        """Where an address in memory is in the file, by the section holding it."""
+        for s in sections:
+            start, size = number(s + 12), number(s + 8) or number(s + 16)
+            if start <= rva < start + size:
+                return rva - start + number(s + 20)
+        return None
+
+    def name(rva):
+        start = offset(rva)
+        end = -1 if start is None else data.find(b"\0", start)
+        return data[start:end].decode("ascii", "replace") if end >= 0 else "an unreadable name"
+
+    names = []
+    # The import table's entries are 20 bytes, the name's address at 12; the delay-load table's 32, at 4. Each ends
+    # with an empty entry.
+    for directory, size, at in ((1, 20, 12), (13, 32, 4)):
+        rva = number(directories + 8 * directory)
+        start = offset(rva) if rva else None
+        while start is not None and any(data[start : start + size]):
+            names.append(name(number(start + at)))
+            start += size
+    return names
+
+
+def runtimes(programs):
+    """The problems with the programs' DLLs, given each program's bytes (name: bytes): none may be the Visual C++
+    runtime's."""
+    problems = []
+    for name, data in sorted(programs.items()):
+        needs = sorted({d for d in imports(data) if VC_RUNTIME.match(d)}, key=str.lower)
+        if needs:
+            problems.append(f"{name}: needs the Visual C++ runtime ({', '.join(needs)}), which Windows doesn't have")
     return problems
 
 
@@ -211,17 +265,17 @@ def check(folder, targets):
                     problems.append(f"{md.relative_to(folder)}:{number}: {link}: {why}")
     wanted = {NOTICES} | {file for _, file, _ in BUNDLED}
     files = {p.name: p.read_text(encoding="utf-8") for p in folder.rglob("*") if p.name in wanted and p.is_file()}
-    heads = {}
-    for p in folder.rglob("*"):
-        if p.name.removesuffix(".exe") in PROGRAMS and p.is_file():
-            with p.open("rb") as f:
-                heads[p.name] = f.read(4096)
-    return problems + architectures(heads, targets) + notices(files, built(targets))
+    # Read whole: a Windows program's import tables can be anywhere in it.
+    programs = {
+        p.name: p.read_bytes() for p in folder.rglob("*") if p.name.removesuffix(".exe") in PROGRAMS and p.is_file()
+    }
+    return problems + architectures(programs, targets) + runtimes(programs) + notices(files, built(targets))
 
 
 def self_test():
     """The crates built, from a workspace with each kind of dependency (tools/tests/package), the notices checked
-    against them, and the programs' architectures read from made-up headers."""
+    against them, the programs' architectures read from made-up headers, and the DLLs from made-up Windows
+    programs."""
     ws = REPO / "tools" / "tests" / "package" / "ws"
     every = {("common", "1.0.0"), ("common", "2.0.0"), ("mid", "0.1.0"), ("derive-it", "0.1.0"), ("via-inner", "0.1.0")}
     linux = every | {("linux-only", "0.1.0")}
@@ -244,6 +298,35 @@ def self_test():
             return b"\xcf\xfa\xed\xfe" + cpus[0].to_bytes(4, "little")
         entries = b"".join(c.to_bytes(4, "big") + bytes(16) for c in cpus)
         return b"\xca\xfe\xba\xbe" + len(cpus).to_bytes(4, "big") + entries
+
+    def windows(imported, delayed=()):
+        """A made-up x64 Windows program whose one section (at 0x1000 in memory, 0x200 in the file) holds its import
+        table, its delay-load table, the DLLs' names and the one list of what it takes from each: the first
+        function, by number."""
+
+        def le(n, size=4):
+            return n.to_bytes(size, "little")
+
+        rva, at = 0x1000, 0x200
+        delay = 20 * (len(imported) + 1)
+        thunks = delay + 32 * (len(delayed) + 1)
+        body = bytearray(thunks) + le(1 << 63 | 1, 8) + bytes(8)
+        taken = le(rva + thunks)
+        for i, dll in enumerate(imported):  # what it takes, the name's address, the addresses it fills in
+            body[20 * i : 20 * i + 20] = taken + bytes(8) + le(rva + len(body)) + taken
+            body += dll.encode() + b"\0"
+        for i, dll in enumerate(delayed):  # addresses not pointers, the name's, the module's, filled in, taken
+            body[delay + 32 * i : delay + 32 * i + 20] = le(1) + le(rva + len(body)) + bytes(4) + taken + taken
+            body += dll.encode() + b"\0"
+        directories = bytearray(16 * 8)  # each an address and a size
+        directories[8:16] = le(rva) + le(delay)  # 1, the import table
+        if delayed:
+            directories[104:112] = le(rva + delay) + le(32 * (len(delayed) + 1))  # 13, the delay-load table
+        optional = le(0x20B, 2) + bytes(106) + le(16) + directories  # PE32+: the directories' count at 108
+        coff = le(0x8664, 2) + le(1, 2) + bytes(12) + le(len(optional), 2) + bytes(2)
+        section = b".rdata\0\0" + le(len(body)) + le(rva) + le(len(body)) + le(at) + bytes(16)
+        head = b"MZ" + bytes(0x3A) + le(0x40) + b"PE\0\0" + coff + optional + section
+        return head + bytes(at - len(head)) + body
 
     linux_x86, linux_arm = ["x86_64-unknown-linux-gnu"], ["aarch64-unknown-linux-gnu"]
     windows_arm, both_macs = ["aarch64-pc-windows-msvc"], ["aarch64-apple-darwin", "x86_64-apple-darwin"]
@@ -272,6 +355,36 @@ def self_test():
             lambda: architectures({"limarepdf": b"#!/bin/sh\n"}, linux_x86),
             ["limarepdf: built for an unknown architecture, not x86_64"],
         ),
+        (
+            "a Windows program's DLLs, delay-loaded ones too",
+            lambda: imports(windows(["KERNEL32.dll", "VCRUNTIME140.dll"], ["bcrypt.dll"])),
+            ["KERNEL32.dll", "VCRUNTIME140.dll", "bcrypt.dll"],
+        ),
+        (
+            "a Windows program needing the Visual C++ runtime",
+            lambda: runtimes(
+                {"limarepdf.exe": windows(["KERNEL32.dll", "VCRUNTIME140.dll", "api-ms-win-crt-heap-l1-1-0.dll"])}
+            ),
+            ["limarepdf.exe: needs the Visual C++ runtime (VCRUNTIME140.dll), which Windows doesn't have"],
+        ),
+        (
+            "a Visual C++ runtime DLL delay-loaded",
+            lambda: runtimes({"limarepdf-cli.exe": windows(["KERNEL32.dll"], ["msvcp140.dll"])}),
+            ["limarepdf-cli.exe: needs the Visual C++ runtime (msvcp140.dll), which Windows doesn't have"],
+        ),
+        (
+            "a Windows program needing only Windows's DLLs",
+            lambda: runtimes(
+                {
+                    "limarepdf.exe": windows(
+                        ["KERNEL32.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "msvcrt.dll"],
+                        ["USER32.dll"],
+                    )
+                }
+            ),
+            [],
+        ),
+        ("a Linux program", lambda: runtimes({"limarepdf": elf(62)}), []),
         ("Linux's crates", lambda: built(["x86_64-unknown-linux-gnu"], ws, ["app"]), linux),
         ("both Macs' crates", lambda: built(["aarch64-apple-darwin", "x86_64-apple-darwin"], ws, ["app"]), macs),
         ("every notice", lambda: notices({NOTICES: page(linux)}, linux), []),

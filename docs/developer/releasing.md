@@ -111,7 +111,8 @@ The packages and installers (deb, rpm, MSI, dmg) don't carry `docs/`: `packaging
 README, changelog and security notes into `target/package-docs/` with every relative link pointed at the version's
 tag on GitHub (pages under `blob/`, images under `raw/`), so those links work once the version is tagged.
 `packaging/check-package.py [--target TRIPLE]... <folder>` checks a layout as installed: the programs, built for the
-targets' architectures (each one's ELF, PE or Mach-O header says, universal or not), the README, changelog,
+targets' architectures (each one's ELF, PE or Mach-O header says, universal or not) and, on Windows, importing none
+of the Visual C++ runtime's DLLs (`VCRUNTIME140.dll` and the like, delay-loaded or not), the README, changelog,
 security notes, OCR model notes and every licence (the font ones and the crates' included) there, every relative
 link reaching a file and heading in the folder, every link to the version's tag reaching one in the repository, and
 the crates' licences matching the crates built ([below](#third-party-licences)). CI runs it on each archive before
