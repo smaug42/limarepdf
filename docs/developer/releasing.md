@@ -92,11 +92,13 @@ release already there and fails.
 
 ## What CI builds
 
-`.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and `v*` tags. Each platform job runs the tests
-in the `ci-test` profile (`Cargo.toml`: optimised with overflow checks, as released, but without link-time
-optimisation, which every test executable would otherwise go through on its own), then builds the binaries with
-`--release` and packages (both with `--locked`: built from `Cargo.lock` exactly, the versions the `deny` job
-checked; a `Cargo.lock` out of date with `Cargo.toml` fails the job instead of being updated on the runner)
+`.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and `v*` tags. Each platform has two jobs side
+by side. Its `test` job runs the tests in the `ci-test` profile (`Cargo.toml`: optimised with overflow checks, as
+released, but without link-time optimisation, which every test executable would otherwise go through on its own).
+That build can't be reused by the release build, so one job doing both took as long as the two together (about 38
+minutes on the Intel Mac). Its `build` job builds the binaries with `--release` and packages (both jobs build with
+`--locked`: from `Cargo.lock` exactly, the versions the `deny` job checked; a `Cargo.lock` out of date with
+`Cargo.toml` fails the job instead of being updated on the runner)
 `limarepdf-<version>-<platform>.tar.gz` (`.zip` on Windows), holding the binaries, the README, `CHANGELOG.md`, `SECURITY.md`, `docs/` and
 the licences. The archives are made on the runner because Actions artifacts lose Unix file permissions; on the
 Actions page each artifact therefore downloads as a zip with the archive inside. The Mac builds target macOS 11
@@ -107,9 +109,10 @@ requests and tags restore `main`'s, so a pull request's caches can't push `main`
 which left the next run building every crate again (an hour or more). A pull request that changes `Cargo.lock`
 builds the crates it changes on each push.
 
-There are six platform jobs: Linux and Windows on x86_64 and on Arm64 (`ubuntu-24.04-arm`, `windows-11-arm`), and
-the two Macs. Each builds natively, on a runner of its own architecture, and gives its target triple (the matrix's
-`target`) to `check-package.py`, which checks that the programs' headers name that architecture: a runner's
+There are six platforms, each with its `test` and `build` jobs: Linux and Windows on x86_64 and on Arm64
+(`ubuntu-24.04-arm`, `windows-11-arm`), and the two Macs. The two jobs share one matrix (a YAML anchor). Each builds
+natively, on a runner of its own architecture, and the build job gives its target triple (the matrix's `target`) to
+`check-package.py`, which checks that the programs' headers name that architecture: a runner's
 toolchain emulating its other architecture would build programs that run there, but aren't the package's.
 
 The Windows programs carry the C runtime (`+crt-static` in `.cargo/config.toml`, which a `RUSTFLAGS` set in the
@@ -180,7 +183,7 @@ only a build warning; uninstalling; the desktop shortcut asked for, kept by an u
 an x64 MSI of the same version and the Arm64 one over it, and expects one LimarePDF installed, and none after
 uninstalling. The screens themselves are only checked by hand (testing.md's platform smoke checks).
 
-After the release build, the platform jobs and `macos-dmg` check that neither program has core's test seam (the
+After the release build, the build jobs and `macos-dmg` check that neither program has core's test seam (the
 `test-seams` feature, which only the app's and the CLI's tests turn on: architecture.md's "atomic.rs" paragraph),
 by looking for its variable's name, `LIMAREPDF_TEST_SYNC_FAILS`, in the binaries.
 
@@ -363,7 +366,7 @@ signs and attests nothing for real:
 - the files themselves get `SHA256SUMS` only, and are uploaded unsigned as the `release-dry-run-unsigned` artifact,
   with a notice on the run and its summary saying so.
 
-Like a release, it waits for the `deny` job: the run's graph shows `dry-run` after `deny`, `build`, `macos-dmg`, `linux-install`, `arch` and `winget-scoop-check`,
+Like a release, it waits for the `deny` job: the run's graph shows `dry-run` after `deny`, `test`, `build`, `macos-dmg`, `linux-install`, `arch` and `winget-scoop-check`,
 and a failed `deny` skips it. What it can't try is the release key itself in CI (the environment's secrets and the
 approval): a tag run, or `packages.yml`'s `sign` job, is the first to use them.
 

@@ -148,10 +148,11 @@ jobs:
   # the runner's other architecture can't ship.
   # Linux is built on Ubuntu 24.04, not ubuntu-latest: the binaries need the glibc they were
   # built against, and 24.04's, 2.39, is the floor docs/install.md names.
+  # The tests run in the test job, on the same platforms, beside this one.
   build:
     strategy:
       fail-fast: false
-      matrix:
+      matrix: &platforms
         include:
           - { os: ubuntu-24.04,     name: linux-x86_64,   target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, name: linux-arm64,    target: aarch64-unknown-linux-gnu }
@@ -168,11 +169,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Optimised as released, without link-time optimisation (Cargo.toml's ci-test profile).
-      # --locked here and below: built from Cargo.lock exactly, the versions the deny job
-      # checked, failing if it is out of date rather than updating it.
-      - name: Test
-        run: cargo test --workspace --profile ci-test --locked
+      # --locked here and in the test job: built from Cargo.lock exactly, the versions the deny
+      # job checked, failing if it is out of date rather than updating it.
       - name: Build
         run: cargo build --workspace --release --locked
       # Core's test seam (REL-10, the `test-seams` feature) is for tests only: the programs
@@ -342,8 +340,28 @@ jobs:
             dist/*.AppImage
             dist/*.msi
 
+  # The tests on each platform the build job builds for, in a job of their own beside it: they
+  # compile in Cargo.toml's ci-test profile (optimised with overflow checks, as released, but
+  # without link-time optimisation), which the release build can't reuse, so one job running both
+  # took as long as the two together.
+  test:
+    strategy:
+      fail-fast: false
+      matrix: *platforms
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test
+        run: cargo test --workspace --profile ci-test --locked
+
   # A universal LimarePDF.app (Apple Silicon and Intel) in a .dmg; packaging/macos/make-dmg.sh.
-  # The tests ran in the build job on both Macs.
+  # The tests ran in the test job on both Macs.
   macos-dmg:
     runs-on: macos-latest
     steps:
@@ -523,7 +541,7 @@ jobs:
   # stops before anything is signed or attested. It waits for the deny job, so it never
   # starts after a known advisory.
   release:
-    needs: [deny, build, macos-dmg, linux-install, arch, winget-scoop-check]
+    needs: [deny, test, build, macos-dmg, linux-install, arch, winget-scoop-check]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: release-signing
@@ -588,7 +606,7 @@ jobs:
   # published key must still be able to sign for 60 days. The files themselves get SHA256SUMS
   # only and are uploaded as release-dry-run-unsigned. Like a release, it waits for the deny job.
   dry-run:
-    needs: [deny, build, macos-dmg, linux-install, arch, winget-scoop-check]
+    needs: [deny, test, build, macos-dmg, linux-install, arch, winget-scoop-check]
     if: inputs.dry_run && !startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
