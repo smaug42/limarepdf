@@ -361,20 +361,35 @@ jobs:
         run: cargo test --workspace --profile ci-test --locked
 
   # A universal LimarePDF.app (Apple Silicon and Intel) in a .dmg; packaging/macos/make-dmg.sh.
-  # The tests ran in the test job on both Macs.
+  # Its programs are the two Mac build jobs', tested beside them, joined here rather than built
+  # again. The cache only keeps cargo-about and the crates' sources, for the licences.
   macos-dmg:
+    needs: build
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build
-        run: cargo build --workspace --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: limarepdf-macos-*64
+          path: ${{ runner.temp }}/mac
+          merge-multiple: true
+      # Each archive's programs where a build of both targets leaves them, for make-dmg.sh.
+      - name: The Mac programs
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          for t in arm64:aarch64-apple-darwin x86_64:x86_64-apple-darwin; do
+            name="limarepdf-$version-macos-${t%%:*}"
+            mkdir -p "target/${t#*:}/release"
+            tar -xzf "$RUNNER_TEMP/mac/$name.tar.gz" -C "target/${t#*:}/release" --strip-components 1 \
+              "$name/limarepdf" "$name/limarepdf-cli"
+          done
       # As in the build job: no test seam in the programs released.
       - name: No test seam
         run: |

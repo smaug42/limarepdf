@@ -159,10 +159,12 @@ dry-run jobs wait for it. To run it locally, with the packages and the AppImage 
 `podman run --rm -v "$PWD:/w:ro" -w /w docker.io/library/ubuntu:24.04 bash packaging/check-linux-install.sh dist`,
 and the same with each of the job's other images.
 
-The `macos-dmg` job builds both Mac targets on one runner and runs `packaging/macos/make-dmg.sh`: it joins each
-binary with `lipo`, makes `LimarePDF.app` from `packaging/macos/Info.plist` (which registers LimarePDF for PDFs) and an icon made
-with `iconutil`, signs it ad hoc, and wraps it in `LimarePDF-<version>.dmg` with `hdiutil`. It then mounts the dmg,
-checks the app's files and that both halves of each binary say macOS 11.
+The `macos-dmg` job waits for the build jobs and takes the two Mac archives' programs, the ones their jobs checked,
+putting them where a build of both targets leaves them (`target/<target>/release/`). It doesn't build them again.
+Then it runs `packaging/macos/make-dmg.sh`, which joins each binary with `lipo`, makes `LimarePDF.app` from
+`packaging/macos/Info.plist` (which registers LimarePDF for PDFs) and an icon made with `iconutil`, signs it ad
+hoc, and wraps it in `LimarePDF-<version>.dmg` with `hdiutil`. It then mounts the dmg, checks the app's files and
+that both halves of each binary say macOS 11.
 
 The Windows jobs also build `limarepdf-<version>-x86_64.msi`, and on Arm `limarepdf-<version>-arm64.msi` (`-arch
 arm64`), from `packaging/windows/limarepdf.wxs` with WiX 5 (a .NET tool, pinned because later versions add an EULA
