@@ -28,6 +28,9 @@ permissions:
 env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
+# Swatinem/rust-cache keeps a cache for each job. Only runs on main save it (`save-if`): pull
+# requests and tags restore main's, so a pull request's caches can't push main's out of the
+# repository's 10 GB and leave the next run building every crate again.
 jobs:
   # cargo deny (deny.toml) against every crate in Cargo.lock, for every platform: known
   # security advisories (RustSec), licences, crates.io as the only source, duplicate versions
@@ -64,6 +67,8 @@ jobs:
           components: clippy, rustfmt
           targets: x86_64-pc-windows-gnu, aarch64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # No tracked code reading from a build folder and no audit scratch tracked; the docs'
       # relative links and anchors; the signing secrets only in release-signing jobs that no pull
       # request starts; every ignored test listed once in tools/ignored-tests.toml, with its
@@ -111,6 +116,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Poppler, Ghostscript and OpenSSL
         run: |
           sudo apt-get update
@@ -130,6 +137,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check the fuzz targets
         env:
           RUSTFLAGS: --cfg fuzzing -D warnings
@@ -158,6 +166,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Optimised as released, without link-time optimisation (Cargo.toml's ci-test profile).
       # --locked here and below: built from Cargo.lock exactly, the versions the deny job
       # checked, failing if it is out of date rather than updating it.
@@ -343,6 +353,8 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build
         run: cargo build --workspace --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
       # As in the build job: no test seam in the programs released.

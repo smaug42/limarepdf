@@ -102,6 +102,11 @@ the licences. The archives are made on the runner because Actions artifacts lose
 Actions page each artifact therefore downloads as a zip with the archive inside. The Mac builds target macOS 11
 (`MACOSX_DEPLOYMENT_TARGET` at the top of the workflow; Rust's own default for Intel is 10.12).
 
+Each job keeps its own build cache (`Swatinem/rust-cache`), and only runs on `main` save one (`save-if`). Pull
+requests and tags restore `main`'s, so a pull request's caches can't push `main`'s out of the repository's 10 GB,
+which left the next run building every crate again (an hour or more). A pull request that changes `Cargo.lock`
+builds the crates it changes on each push.
+
 There are six platform jobs: Linux and Windows on x86_64 and on Arm64 (`ubuntu-24.04-arm`, `windows-11-arm`), and
 the two Macs. Each builds natively, on a runner of its own architecture, and gives its target triple (the matrix's
 `target`) to `check-package.py`, which checks that the programs' headers name that architecture: a runner's
