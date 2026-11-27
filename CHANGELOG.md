@@ -12,6 +12,10 @@
   look and their own text. Remove, optimise and recognise again to straighten a page recognised before it was
   optimised. Recognised text is invisible text, LimarePDF's own or another app's, such as OCRmyPDF's
   ([Scans and OCR](docs/scanning-and-ocr.md#reading-again-and-removing-recognised-text)).
+- Text recognition turns a page scanned on its side or upside down upright, as **Pages > Rotate** turns it, and
+  reads it; the report says which pages were turned, and the turn and the text are one undo step. Before, such a
+  page was read as it lay, and 7–19% of the test sheet's words were found; now 99% are. A page of only
+  a few words is left as it lies ([Scans and OCR](docs/scanning-and-ocr.md#recognising-text-ocr)).
 
 ### Fixed
 
@@ -35,6 +39,13 @@
 - The guide says what text recognition reads and how well, measured on real scans: office, flatbed and phone scans,
   faxes and old French, Spanish and German books, with advice for tilted pages, small print and faxes
   ([Scans and OCR](docs/scanning-and-ocr.md#getting-good-results)).
+- Text recognition reads a page tilted by up to 5° without optimising it first. On the test sheet tilted 2.5°, 99%
+  of the words were found, from 77% before; tilted 4°, 99.7%, from 57%. Scanned on a flatbed and tilted about 3°,
+  it read with 1.2–2.9% character errors in apps that read text with Poppler, such as Evince, Okular and
+  `pdftotext`, from 13–38% before. Its recognised text is written level, in the order of its lines, so a word
+  near the side of a tilted page is highlighted a little off its print; the report names pages tilted 2° or more,
+  where that shows, and says how to straighten them
+  ([Scans and OCR](docs/scanning-and-ocr.md#tilted-pages)).
 
 ## [0.14.1] - 2026-11-25
 

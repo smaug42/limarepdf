@@ -279,13 +279,32 @@ fn want_papers(
 
 /// Summary of an OCR run for the user, and whether any page changed.
 fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
-    let (mut pages, mut words) = (0, 0);
-    let mut skipped = Vec::new();
+    let (mut pages, mut words, mut any_tilted) = (0, 0, false);
+    let (mut skipped, mut lay) = (Vec::new(), Vec::new());
     for (p, r) in report {
         match r {
-            OcrResult::Added { words: w, .. } => {
+            OcrResult::Added {
+                words: w,
+                turned: t,
+                tilted,
+                ..
+            } => {
                 pages += 1;
                 words += w;
+                let was = match t {
+                    0 => None,
+                    180 => Some("upside down"),
+                    _ => Some("on its side"),
+                };
+                let tilt = tilted.map(|a| format!("tilted {:.1}°", a.abs()));
+                any_tilted |= tilt.is_some();
+                let how = match (was, tilt) {
+                    (Some(was), Some(tilt)) => format!("turned upright, as it was {was}; {tilt}"),
+                    (Some(was), None) => format!("turned upright, as it was {was}"),
+                    (None, Some(tilt)) => tilt,
+                    (None, None) => continue,
+                };
+                lay.push(format!("Page {}: {how}.", p + 1));
             }
             // Removing's, not recognising's.
             OcrResult::Removed { .. } => {}
@@ -293,6 +312,22 @@ fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
         }
     }
     let mut text = format!("Text added to {pages} page(s): {words} words.");
+    for s in lay.iter().take(12) {
+        text.push('\n');
+        text.push_str(s);
+    }
+    if lay.len() > 12 {
+        text.push_str("\n…");
+    }
+    if any_tilted {
+        text.push_str(&format!(
+            "\n\nA tilted page stays tilted, and its text is written level, so a word found near \
+             the side of the page is highlighted a little off it. To straighten the page, remove \
+             its recognised text ({}), optimise it ({}), then recognise it again.",
+            menu::way(Act::Ocr),
+            menu::way(Act::Scans)
+        ));
+    }
     if pages > 0 {
         text.push_str(&format!(
             "\n\nThe text is invisible. To see it, search for a word, or turn on {}; misread \
@@ -16458,6 +16493,53 @@ mod tests {
         assert!(text.contains("Page 1's original picture is also used elsewhere"));
         let (_, text) = scan_summary(&[(0, done(false))]);
         assert!(!text.contains("elsewhere"), "{text}");
+    }
+
+    #[test]
+    fn ocr_summary_says_which_pages_were_turned_upright() {
+        let added = |turned| OcrResult::Added {
+            lines: 3,
+            words: 10,
+            turned,
+            tilted: None,
+        };
+        let (changed, text) = ocr_summary(&[(0, added(0)), (1, added(90)), (3, added(180))]);
+        assert!(changed);
+        let lines = [
+            "Text added to 3 page(s): 30 words.",
+            "Page 2: turned upright, as it was on its side.",
+            "Page 4: turned upright, as it was upside down.",
+        ];
+        assert!(text.starts_with(&(lines.join("\n") + "\n\n")), "{text}");
+        assert!(!text.contains("Page 1"), "{text}");
+        assert!(!text.contains("tilted"), "{text}");
+        let (_, text) = ocr_summary(&[(0, added(0))]);
+        assert!(!text.contains("upright"), "{text}");
+    }
+
+    /// Pages tilted 2° or more are named, with how to straighten them (#320).
+    #[test]
+    fn ocr_summary_says_which_pages_are_tilted() {
+        let added = |turned, tilted| OcrResult::Added {
+            lines: 3,
+            words: 10,
+            turned,
+            tilted,
+        };
+        let report = [
+            (0, added(0, None)),
+            (1, added(0, Some(-2.46))),
+            (2, added(180, Some(3.0))),
+        ];
+        let (_, text) = ocr_summary(&report);
+        let lines = [
+            "Text added to 3 page(s): 30 words.",
+            "Page 2: tilted 2.5°.",
+            "Page 3: turned upright, as it was upside down; tilted 3.0°.",
+        ];
+        assert!(text.starts_with(&(lines.join("\n") + "\n\n")), "{text}");
+        assert!(text.contains("To straighten the page"), "{text}");
+        assert!(text.contains(&menu::way(Act::Scans)), "{text}");
     }
 
     #[test]

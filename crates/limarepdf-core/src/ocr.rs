@@ -12,7 +12,7 @@ use crate::fonts::winansi_byte;
 use crate::matrix as mx;
 use crate::objects::{ordered_words, Parsed, TextData};
 use crate::overlay::FONT_PREFIX;
-use crate::scan::binarise;
+use crate::scan::{best_angle, binarise, rotate_onto};
 use crate::{render, FontChoice, ObjectKind, Pdf, Result};
 use anyhow::{anyhow, bail};
 use image::imageops::{self, FilterType};
@@ -44,13 +44,24 @@ const BATCH: usize = 8;
 const LINE_MIN: f32 = 2.2;
 
 /// Recognised lines of a page and the scale it was rendered at, or why it failed.
-type PageRead = std::result::Result<(Vec<OcrLine>, f32), String>;
+type PageRead = std::result::Result<(Upright, f32), String>;
 
 /// What happened to one page.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OcrResult {
-    /// A text layer was added.
-    Added { lines: usize, words: usize },
+    /// A text layer was added. A page lying on its side or upside down was turned upright
+    /// first: `turned` is how far its turn on screen (`/Rotate`) went round, clockwise, in
+    /// degrees (0, 90, 180 or 270).
+    Added {
+        lines: usize,
+        words: usize,
+        turned: u16,
+        /// How far the page is tilted, in degrees, when that shows: from 2°. Positive means
+        /// tilted clockwise (lines run down to the right). Its text is written level, so a
+        /// word found near the side of the page is highlighted off its print; straightening
+        /// the page mends that: remove its recognised text, optimise it, recognise it again.
+        tilted: Option<f32>,
+    },
     /// Recognised text was removed: this many lines ([`Pdf::remove_recognised_text`]).
     Removed { lines: usize },
     /// The page was left as it was, for the reason given.
@@ -164,10 +175,12 @@ impl Ocr {
     }
 
     /// The characters of a line in the first `steps` of its output, each with its first
-    /// and last step.
-    fn decode(&self, out: NdTensorView<f32, 2>, steps: usize) -> Vec<(char, usize, usize)> {
+    /// and last step, and how sure the model is of them: the mean likelihood of each step's
+    /// character, 0 when there are none.
+    fn decode(&self, out: NdTensorView<f32, 2>, steps: usize) -> Read {
         let mut read: Vec<(char, usize, usize)> = Vec::new();
         let mut last = 0;
+        let (mut sure, mut n) = (0.0, 0);
         for t in 0..steps.min(out.size(0)) {
             let row = out.slice(t);
             let best = self
@@ -175,6 +188,10 @@ impl Ocr {
                 .iter()
                 .max_by(|a, b| row[a.0].total_cmp(&row[b.0]));
             let &(class, c) = best.expect("the blank is always read");
+            if c.is_some() {
+                sure += row[class];
+                n += 1;
+            }
             match c {
                 Some(_) if class == last => read.last_mut().expect("read just before").2 = t,
                 Some(c) => read.push((c, t, t)),
@@ -182,17 +199,139 @@ impl Ocr {
             }
             last = class;
         }
-        read
+        (read, if n > 0 { sure / n as f32 } else { 0.0 })
     }
 
-    /// Read the text in a greyscale image (`luma`: `width` x `height`, row by row).
-    /// Lines are returned in reading order.
+    /// What the model reads in each line picture: [`Ocr::decode`].
+    fn read_pictures(&self, pictures: &[&GrayImage]) -> Result<Vec<Read>> {
+        // Lines of about the same width read together, so little of each batch is padding.
+        let mut order: Vec<usize> = (0..pictures.len()).collect();
+        order.sort_by_key(|&i| pictures[i].width());
+        let mut read = vec![(Vec::new(), 0.0); pictures.len()];
+        for batch in order.chunks(BATCH) {
+            let widest = batch.iter().map(|&i| pictures[i].width()).max();
+            let wide = widest.unwrap_or(STEP).div_ceil(STEP) * STEP;
+            // White, (255 / 255 - 0.5) / 0.5, beyond each line's end.
+            let shape = [batch.len(), 3, LINE_HEIGHT as usize, wide as usize];
+            let mut t = NdTensor::full(shape, 1.0);
+            for (k, &i) in batch.iter().enumerate() {
+                for (x, y, px) in pictures[i].enumerate_pixels() {
+                    let v = px.0[0] as f32 / 127.5 - 1.0;
+                    for c in 0..3 {
+                        t[[k, c, y as usize, x as usize]] = v;
+                    }
+                }
+            }
+            let out = self.run(t)?;
+            for (k, &i) in batch.iter().enumerate() {
+                let steps = pictures[i].width().div_ceil(STEP) as usize;
+                read[i] = self.decode(out.slice(k), steps);
+            }
+        }
+        Ok(read)
+    }
+
+    /// Read the text in a greyscale image (`luma`: `width` x `height`, row by row), its lines
+    /// running across it. Lines are returned in reading order. [`Pdf::ocr_pages`] turns a
+    /// page upright and straightens it first.
     pub fn read(&self, luma: &[u8], width: u32, height: u32) -> Result<Vec<OcrLine>> {
         let img = GrayImage::from_raw(width, height, luma.to_vec())
             .ok_or_else(|| anyhow!("image data does not match its size"))?;
-        let (words, th) = find_words(&img);
+        let found = self.find_lines(&img, 0.0)?;
+        let read = self.read_pictures(&found.pictures())?;
+        Ok(found.lines(&img, read))
+    }
+
+    /// The lines of `img` read upright: turned a quarter if they run down it, straightened,
+    /// and turned round if they are upside down. A page with too little to tell how it lies
+    /// is read as it is.
+    pub(crate) fn read_upright(&self, img: GrayImage) -> Result<Upright> {
+        let (w, h) = img.dimensions();
+        let lies = lie(&img);
+        let (down, slope) = lies.unwrap_or((false, 0.0));
+        let img = if down { imageops::rotate90(&img) } else { img };
+        // A page tilted a little is read as it is, each line straightened in its picture.
+        let each = if slope.abs() < LITTLE_TILT {
+            slope.tan()
+        } else {
+            0.0
+        };
+        let (mut img, to_page) = match each == 0.0 {
+            true => straightened(img, slope),
+            false => (img, [1.0, each, 0.0, 1.0, 0.0, 0.0]),
+        };
+        let mut turns = down as u8;
+        let mut found = self.find_lines(&img, each)?;
+        let mut read = vec![None; found.pictures.len()];
+        // Too few letters to show the lines run across: lines running down can read better
+        // turned round than as they are.
+        let judged = match lies {
+            Some(_) => self.upside_down(&found)?,
+            None => Ok(Vec::new()),
+        };
+        match judged {
+            Ok(sampled) => (sampled.into_iter()).for_each(|(i, r)| read[i] = Some(r)),
+            Err(()) => {
+                // Turned round, the lines slope as they did.
+                img = imageops::rotate180(&img);
+                found = self.find_lines(&img, each)?;
+                read = vec![None; found.pictures.len()];
+                turns += 2;
+            }
+        }
+        let left: Vec<usize> = (0..read.len()).filter(|&i| read[i].is_none()).collect();
+        let pictures = found.pictures();
+        let more = self.read_pictures(&left.iter().map(|&i| pictures[i]).collect::<Vec<_>>())?;
+        for (i, r) in left.into_iter().zip(more) {
+            read[i] = Some(r);
+        }
+        let read = read.into_iter().map(|r| r.expect("each line read"));
+        let from_page = mx::inv(to_page).expect("a rotation or a shear");
+        Ok(Upright {
+            lines: found.lines(&img, read.collect()),
+            turns,
+            slope,
+            to_page,
+            from_shown: mx::mul(quarter_turns(turns, w, h), from_page),
+        })
+    }
+
+    /// Whether the lines `found` are upside down, `Err` if they are: the model is surer of
+    /// the widest of them turned round than as they are. Otherwise what it read in those, by
+    /// index. Pictures it reads next to nothing in, either way, such as rules, don't count.
+    fn upside_down(&self, found: &Found) -> Result<std::result::Result<Vec<(usize, Read)>, ()>> {
+        let mut widest: Vec<usize> = (0..found.pictures.len()).collect();
+        widest.sort_by_key(|&i| std::cmp::Reverse(found.pictures[i].image.width()));
+        widest.truncate(6);
+        let round: Vec<GrayImage> = (widest.iter())
+            .map(|&i| imageops::rotate180(&found.pictures[i].image))
+            .collect();
+        let pictures: Vec<&GrayImage> = (widest.iter())
+            .map(|&i| &found.pictures[i].image)
+            .chain(&round)
+            .collect();
+        let mut read = self.read_pictures(&pictures)?;
+        let round = read.split_off(widest.len());
+        let text = |r: &Read| r.0.iter().filter(|c| c.0.is_alphanumeric()).count() >= 2;
+        let counted: Vec<(f32, f32)> = (read.iter().zip(&round))
+            .filter(|(a, b)| text(a) || text(b))
+            .map(|(a, b)| (a.1, b.1))
+            .collect();
+        let n = counted.len().max(1) as f32;
+        let as_read = counted.iter().map(|c| c.0).sum::<f32>() / n;
+        let turned = counted.iter().map(|c| c.1).sum::<f32>() / n;
+        match turned > as_read + UPSIDE_DOWN {
+            true => Ok(Err(())),
+            false => Ok(Ok(widest.into_iter().zip(read).collect())),
+        }
+    }
+
+    /// The lines in `img`, in reading order, and their pictures for the model, each line
+    /// sloping by `slope` straightened in its picture.
+    fn find_lines(&self, img: &GrayImage, slope: f32) -> Result<Found> {
+        let (words, th) = find_words(img);
         if words.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Found::default());
         }
         // Line grouping looks only at the word boxes, not at the image it is given.
         let none = ImageSource::from_bytes(&[255], (1, 1))
@@ -223,74 +362,176 @@ impl Ocr {
                     })
             })
             .collect();
-        let slope = tilt(&lines);
         let pictures: Vec<LinePicture> = boxes
             .iter()
-            .map(|&b| LinePicture::new(&img, b, slope, th))
+            .map(|&b| LinePicture::new(img, b, slope, th))
             .collect();
-        // Lines of about the same width read together, so little of each batch is padding.
-        let mut order: Vec<usize> = (0..pictures.len()).collect();
-        order.sort_by_key(|&i| pictures[i].image.width());
-        let mut chars = vec![Vec::new(); pictures.len()];
-        for batch in order.chunks(BATCH) {
-            let widest = batch.iter().map(|&i| pictures[i].image.width()).max();
-            let wide = widest.unwrap_or(STEP).div_ceil(STEP) * STEP;
-            // White, (255 / 255 - 0.5) / 0.5, beyond each line's end.
-            let shape = [batch.len(), 3, LINE_HEIGHT as usize, wide as usize];
-            let mut t = NdTensor::full(shape, 1.0);
-            for (k, &i) in batch.iter().enumerate() {
-                for (x, y, px) in pictures[i].image.enumerate_pixels() {
-                    let v = px.0[0] as f32 / 127.5 - 1.0;
-                    for c in 0..3 {
-                        t[[k, c, y as usize, x as usize]] = v;
-                    }
-                }
-            }
-            let out = self.run(t)?;
-            for (k, &i) in batch.iter().enumerate() {
-                let steps = pictures[i].image.width().div_ceil(STEP) as usize;
-                chars[i] = self.decode(out.slice(k), steps);
-            }
-        }
-        Ok((boxes.iter().zip(&pictures).zip(&chars).zip(&lines))
-            .map(|(((&b, pic), chars), found)| OcrLine {
-                words: line_words(&img, b, pic, chars, &gaps(found)),
-            })
-            // Lines with fewer than two letters or digits are almost always marks that
-            // are not text (logos, texture, stray specks).
-            .filter(|l: &OcrLine| {
-                let alnum = l.words.iter().flat_map(|w| w.text.chars());
-                alnum.filter(|c| c.is_alphanumeric()).count() >= 2
-            })
-            .collect())
+        Ok(Found {
+            lines,
+            pictures,
+            slope,
+        })
     }
 }
 
-/// How much the lines of a page slope, down per across: the slope that best fits the
-/// middles of the words of each line, weighed by their width. A page scanned at a slight
-/// tilt is read with its lines straightened.
-fn tilt(lines: &[Vec<[f32; 4]>]) -> f32 {
-    let mid = |w: &[f32; 4]| ((w[0] + w[2]) / 2.0, (w[1] + w[3]) / 2.0, w[2] - w[0]);
-    let (mut num, mut den) = (0.0, 0.0);
-    for words in lines {
-        let (sx, sy, sk) = (words.iter().map(mid))
-            .fold((0.0, 0.0, 0.0), |(sx, sy, sk), (x, y, k)| {
-                (sx + k * x, sy + k * y, sk + k)
-            });
-        if sk <= 0.0 {
-            continue;
-        }
-        let (cx, cy) = (sx / sk, sy / sk);
-        for (x, y, k) in words.iter().map(mid) {
-            num += k * (x - cx) * (y - cy);
-            den += k * (x - cx) * (x - cx);
+/// What the model reads in a line's picture: [`Ocr::decode`].
+type Read = (Vec<(char, usize, usize)>, f32);
+
+/// The lines found in a picture, not yet read: [`Ocr::find_lines`].
+#[derive(Default)]
+struct Found {
+    /// Each line's words' boxes.
+    lines: Vec<Vec<[f32; 4]>>,
+    pictures: Vec<LinePicture>,
+    /// How much the lines slope in the picture, down per across.
+    slope: f32,
+}
+
+impl Found {
+    fn pictures(&self) -> Vec<&GrayImage> {
+        self.pictures.iter().map(|p| &p.image).collect()
+    }
+
+    /// The lines of `img`, with what was `read` in each picture, their words' boxes level
+    /// along them: in pixels of `img` sheared so its lines run level, y less the slope times x.
+    fn lines(self, img: &GrayImage, read: Vec<Read>) -> Vec<OcrLine> {
+        (self.pictures.iter().zip(&read).zip(&self.lines))
+            .map(|((pic, (chars, _)), found)| OcrLine {
+                words: line_words(img, level_box(found, self.slope), pic, chars, &gaps(found)),
+            })
+            // Lines with fewer than two letters or digits are almost always marks that
+            // are not text (logos, texture, stray specks).
+            .filter(|l| {
+                let alnum = l.words.iter().flat_map(|w| w.text.chars());
+                alnum.filter(|c| c.is_alphanumeric()).count() >= 2
+            })
+            .collect()
+    }
+}
+
+/// The box of a line sloping by `slope` whose words' boxes are `words`, in pixels sheared so
+/// it runs level (y less `slope` times x). A word's box is taller than the word by how far
+/// it drops across it.
+fn level_box(words: &[[f32; 4]], slope: f32) -> [f32; 4] {
+    (words.iter()).fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |l, w| {
+        let half = ((w[3] - w[1] - slope.abs() * (w[2] - w[0])) / 2.0).max(0.5);
+        let y = (w[1] + w[3]) / 2.0 - slope * (w[0] + w[2]) / 2.0;
+        [
+            l[0].min(w[0]),
+            l[1].min(y - half),
+            l[2].max(w[2]),
+            l[3].max(y + half),
+        ]
+    })
+}
+
+/// A page's lines read upright ([`Ocr::read_upright`]), their word boxes in pixels of the
+/// picture they were read in: the page turned and straightened, or, tilted a little,
+/// sheared so its lines run level.
+pub(crate) struct Upright {
+    pub lines: Vec<OcrLine>,
+    /// Quarter turns clockwise that made the page upright, 0 to 3.
+    pub turns: u8,
+    /// How much its lines slope, upright, in radians (y down): 0 when too little to matter.
+    pub slope: f32,
+    /// From the pixels of the boxes to those of the page turned upright by `turns`.
+    pub to_page: mx::M,
+    /// From the pixels of the page as it was given to those of the boxes.
+    pub from_shown: mx::M,
+}
+
+/// The most a page is tilted, in radians, to be read as it is, each line straightened in its
+/// picture: 1°. Tilted more, lines found on it run into each other, so the page is
+/// straightened first; less, straightening it changes which lines are found on a coarse
+/// scan, and loses some.
+const LITTLE_TILT: f32 = 0.01745;
+/// The least tilt a page is reported tilted by ([`OcrResult::Added`]), in radians: 2°. Its
+/// text is written level, at the height each line crosses the middle of the page's text, and
+/// from there a highlight at the side of a page sits most of a line off the print.
+const SHOWN_TILT: f32 = 0.0349;
+/// How much surer of the longest lines turned round than as they are the model must be for
+/// a page to be read upside down.
+const UPSIDE_DOWN: f32 = 0.1;
+/// Fewest letters a page is turned or straightened by: fewer don't show how it lies.
+const LIE_LETTERS: usize = 20;
+
+/// How the page `g` lies: whether its lines run down it rather than across, so it is upright
+/// turned a quarter clockwise, and then how much they slope, in radians (y down), or 0 when
+/// that is too little to matter. Measured on the middles of its letters: those of a line are
+/// in a row, close across it and spread along it. None for a page with few letters: they
+/// don't show how it lies.
+fn lie(g: &GrayImage) -> Option<(bool, f32)> {
+    let (w, h) = g.dimensions();
+    let comps = components(&binarise(g));
+    let big = |c: &Comp| c.w().max(c.h());
+    let most = 0.1 * w.min(h) as f32;
+    let fits = |&s: &u32| s >= 4 && (s as f32) < most;
+    let size = median(comps.iter().map(big).filter(fits).collect())?;
+    let letters: Vec<(f32, f32)> = (comps.iter())
+        .filter(|c| (0.5 * size..=2.0 * size).contains(&(big(c) as f32)))
+        .filter(|c| c.pixels as f32 >= 0.06 * (c.w() * c.h()) as f32)
+        .map(|c| ((c.x0 + c.x1) as f32 / 2.0, (c.y0 + c.y1) as f32 / 2.0))
+        .collect();
+    if letters.len() < LIE_LETTERS {
+        return None;
+    }
+    // The letters of the page turned a quarter clockwise.
+    let down: Vec<(f32, f32)> = letters.iter().map(|&(x, y)| (h as f32 - y, x)).collect();
+    let bin = 0.25 * size;
+    let across = |a| rows(&letters, w as f32, h as f32, bin, a);
+    let down = |a| rows(&down, h as f32, w as f32, bin, a);
+    let (a0, a1) = (best_angle(across), best_angle(down));
+    let (s0, s1) = (across(a0.to_radians()), down(a1.to_radians()));
+    let turned = s1 > 1.5 * s0;
+    let (a, score) = match turned {
+        true => (a1, s1 / down(0.0)),
+        false => (a0, s0 / across(0.0)),
+    };
+    // A clear gain over leaving the page level, as Optimise requires.
+    let clear = a.abs() >= 0.1 && score > 1.02;
+    let slope = if clear { a.to_radians() } else { 0.0 };
+    Some((turned, slope))
+}
+
+/// How closely `points`, on a picture `w` x `h`, gather in rows sloping by `a` (radians):
+/// the sum of the squares of how many are in each band of rows `bin` high.
+fn rows(points: &[(f32, f32)], w: f32, h: f32, bin: f32, a: f32) -> f64 {
+    let reach = (w * 5f32.to_radians().tan() / bin).ceil() + 1.0;
+    let mut count = vec![0u32; ((h / bin).ceil() + 2.0 * reach + 2.0) as usize];
+    let t = a.tan();
+    for &(x, y) in points {
+        let i = ((y - x * t) / bin + reach).floor() as usize;
+        if let Some(c) = count.get_mut(i) {
+            *c += 1;
         }
     }
-    // Lines grouped wrongly can't tilt a page more than a scan is.
-    if den > 0.0 {
-        (num / den).clamp(-0.1, 0.1)
-    } else {
-        0.0
+    count.iter().map(|&c| (c as f64).powi(2)).sum()
+}
+
+/// `img` turned so lines sloping by `slope` run level, onto a picture large enough for all
+/// of it, white around it, and the matrix from its pixels to those of `img`.
+fn straightened(img: GrayImage, slope: f32) -> (GrayImage, mx::M) {
+    if slope == 0.0 {
+        return (img, mx::ID);
+    }
+    let (s, c) = slope.sin_cos();
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    let (ow, oh) = (w * c + h * s.abs(), w * s.abs() + h * c);
+    let (ow, oh) = (ow.ceil() as u32, oh.ceil() as u32);
+    let level = rotate_onto(&img, slope, ow, oh);
+    let middle = mx::translate(-(ow as f32) / 2.0, -(oh as f32) / 2.0);
+    let (turn, back) = ([c, s, -s, c, 0.0, 0.0], mx::translate(w / 2.0, h / 2.0));
+    (level, mx::mul(mx::mul(middle, turn), back))
+}
+
+/// From the pixels of a picture `w` x `h` to those of it turned `turns` quarters clockwise.
+fn quarter_turns(turns: u8, w: u32, h: u32) -> mx::M {
+    let (w, h) = (w as f32, h as f32);
+    match turns % 4 {
+        1 => [0.0, 1.0, -1.0, 0.0, h, 0.0],
+        2 => [-1.0, 0.0, 0.0, -1.0, w, h],
+        3 => [0.0, -1.0, 1.0, 0.0, 0.0, w],
+        _ => mx::ID,
     }
 }
 
@@ -492,13 +733,13 @@ fn line_words(
 }
 
 /// `lines` without the words that land on the page's own words, `own`: words the page has
-/// as text already. `own` is in displayed-page points (y down), the words' boxes in pixels
-/// of the page drawn at `scale`. A line left without words goes.
-fn without_own(lines: Vec<OcrLine>, own: &[[f32; 4]], scale: f32) -> Vec<OcrLine> {
+/// as text already, their boxes in the same pixels as the words'. A line left without words
+/// goes.
+fn without_own(lines: Vec<OcrLine>, own: &[[f32; 4]]) -> Vec<OcrLine> {
     let area = |b: [f32; 4]| (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
     // Half the smaller box covered by the other.
     let on_own = |w: &OcrWord| {
-        let b = w.bbox.map(|v| v / scale);
+        let b = w.bbox;
         own.iter().any(|o| {
             let (x0, y0) = (b[0].max(o[0]), b[1].max(o[1]));
             let both = area([x0, y0, b[2].min(o[2]), b[3].min(o[3])]);
@@ -600,7 +841,7 @@ impl Pdf {
         let found: Vec<(usize, PageRead)> = todo
             .par_iter()
             .map(|&p| {
-                let read = || -> Result<(Vec<OcrLine>, f32)> {
+                let read = || -> Result<(Upright, f32)> {
                     let r = render::Renderer::new(&hp);
                     let (w, h) = r.page_size(p)?;
                     let scale = (OCR_DPI / 72.0).min(MAX_SIDE / w.max(h).max(1.0));
@@ -615,7 +856,9 @@ impl Pdf {
                                 as u8
                         })
                         .collect();
-                    Ok((ocr.read(&luma, b.width as u32, b.height as u32)?, scale))
+                    let img = GrayImage::from_raw(b.width as u32, b.height as u32, luma)
+                        .ok_or_else(|| anyhow!("the page's picture does not match its size"))?;
+                    Ok((ocr.read_upright(img)?, scale))
                 };
                 (p, read().map_err(|e| format!("{e:#}")))
             })
@@ -623,37 +866,51 @@ impl Pdf {
         let mut read = Vec::new();
         for (p, r) in found {
             let own = &targets[&p];
-            match r.map(|(lines, scale)| (without_own(lines, own, scale), scale)) {
+            let r = r.map(|(mut up, scale)| {
+                let to_boxes = mx::mul([scale, 0.0, 0.0, scale, 0.0, 0.0], up.from_shown);
+                let own: Vec<[f32; 4]> = (own.iter())
+                    .map(|&b| mx::transform_rect(to_boxes, b))
+                    .collect();
+                up.lines = without_own(std::mem::take(&mut up.lines), &own);
+                (up, scale)
+            });
+            match r {
                 Err(why) => out.push((p, OcrResult::Skipped(why))),
-                Ok((lines, _)) if lines.is_empty() => {
+                Ok((up, _)) if up.lines.is_empty() => {
                     let why = match own.is_empty() {
                         true => "no text found",
                         false => "no text found besides the page's own",
                     };
                     out.push((p, OcrResult::Skipped(why.into())))
                 }
-                Ok((lines, scale)) => read.push((p, lines, scale)),
+                Ok((up, scale)) => read.push((p, up, scale)),
             }
         }
         let layers: Vec<_> = (read.iter())
-            .map(|(p, lines, scale)| (ids[*p], &lines[..], *scale))
+            .map(|(p, up, scale)| (ids[*p], &up.lines[..], *scale, up.to_page))
             .collect();
         self.atomically(|pdf| {
             // The text read replaces the recognised text a page had.
-            for &(page, _, _) in layers.iter().filter(|_| again) {
+            for &(page, ..) in layers.iter().filter(|_| again) {
                 let parsed = pdf.parse_page_of(page)?;
                 let (objs, _) = recognised_objs(&parsed).map_err(|why| anyhow!(why))?;
                 if !objs.is_empty() {
                     pdf.strip_recognised(page, &parsed, &objs)?;
                 }
             }
+            // A page read turned is shown so, before its text is written as it reads.
+            for (p, up, _) in read.iter().filter(|(_, up, _)| up.turns != 0) {
+                pdf.rotate_pages(&[*p], 90 * up.turns as i64)?;
+            }
             pdf.add_text_layers(&layers)
         })?;
-        for (p, lines, _) in read {
-            let words = lines.iter().map(|l| l.words.len()).sum();
+        for (p, up, _) in read {
+            let words = up.lines.iter().map(|l| l.words.len()).sum();
             let added = OcrResult::Added {
-                lines: lines.len(),
+                lines: up.lines.len(),
                 words,
+                turned: 90 * up.turns as u16,
+                tilted: (up.slope.abs() >= SHOWN_TILT).then(|| up.slope.to_degrees()),
             };
             out.push((p, added));
         }
@@ -795,15 +1052,16 @@ impl Pdf {
     }
 
     /// Each page's recognised lines added on top of it as invisible text: (page, its
-    /// lines, the scale their word boxes are in). One pen writes them all, so its fonts hold
-    /// what every page needs: Helvetica itself when the text is all Western European,
-    /// Liberation Sans embedded when not.
-    fn add_text_layers(&mut self, layers: &[(ObjectId, &[OcrLine], f32)]) -> Result<()> {
+    /// lines, the scale their word boxes are in, the matrix from their pixels to those of the
+    /// displayed page at that scale). One pen writes them all, so its fonts hold what every
+    /// page needs: Helvetica itself when the text is all Western European, Liberation Sans
+    /// embedded when not.
+    fn add_text_layers(&mut self, layers: &[(ObjectId, &[OcrLine], f32, mx::M)]) -> Result<()> {
         if layers.is_empty() {
             return Ok(());
         }
         // Each word a line of the pen's, with the space after it but the last of a line's.
-        let words: Vec<String> = (layers.iter().flat_map(|(_, lines, _)| *lines))
+        let words: Vec<String> = (layers.iter().flat_map(|(_, lines, ..)| *lines))
             .flat_map(|line| {
                 let last = line.words.len().saturating_sub(1);
                 (line.words.iter().enumerate()).map(move |(i, w)| match i < last {
@@ -816,9 +1074,9 @@ impl Pdf {
         let setter = self.setter(FontChoice::default(), &words.concat());
         let pen = self.pen_with(&setter, &words)?;
         let mut shown = 0;
-        for &(page, lines, scale) in layers {
+        for &(page, lines, scale, to_page) in layers {
             let names = self.font_names(page, FONT_PREFIX, pen.fonts())?;
-            let layer = self.text_layer(page, lines, scale, &names[0], |text, size| {
+            let layer = self.text_layer(page, (lines, scale, to_page), &names[0], |text, size| {
                 let shows = pen.content(shown, size, &names);
                 shown += 1;
                 (setter.width(text, size), shows)
@@ -828,15 +1086,19 @@ impl Pdf {
         Ok(())
     }
 
-    /// Content stream drawing `lines` as invisible text. Word boxes are in pixels of
-    /// the displayed page rendered at `scale`; `font` is the page's name for the pen's
+    /// Content stream drawing `lines` as invisible text. Word boxes are in pixels that
+    /// `to_page` takes to those of the displayed page rendered at `scale`: the lines run
+    /// across them, and along the matrix on the page. Each line is written level, at the
+    /// height it crosses the middle of the page's text, each word over where it shows across
+    /// it: Poppler (Evince, Okular, `pdftotext`) reads text written sloping in pieces, and
+    /// each line across its own middle, a short line after a long one among the long one's
+    /// words and a table's rows a word to a line. `font` is the page's name for the pen's
     /// first font, and `word(text, size)` is how wide a word is at `size` and what shows it
     /// (the pen's next line).
     fn text_layer(
         &self,
         page: ObjectId,
-        lines: &[OcrLine],
-        scale: f32,
+        (lines, scale, to_page): (&[OcrLine], f32, mx::M),
         font: &str,
         mut word: impl FnMut(&str, f32) -> (f32, String),
     ) -> Vec<u8> {
@@ -845,7 +1107,15 @@ impl Pdf {
             "q {} {} {} {} {} {} cm\n",
             m[0], m[1], m[2], m[3], m[4], m[5]
         );
+        let (left, right) = (lines.iter().flat_map(|l| &l.words))
+            .fold((f32::MAX, f32::MIN), |(l, r), w| {
+                (l.min(w.bbox[0]), r.max(w.bbox[2]))
+            });
+        let middle = (left + right) / 2.0;
         for line in lines {
+            if line.words.is_empty() {
+                continue;
+            }
             let top = line
                 .words
                 .iter()
@@ -858,10 +1128,12 @@ impl Pdf {
                 .fold(f32::MIN, f32::max);
             // The line box runs from ascender to descender: about 1.15 em in Helvetica.
             let size = ((bottom - top) / scale / 1.15).max(1.0);
-            let baseline = vh - bottom / scale + 0.21 * size;
+            let baseline = bottom - 0.21 * size * scale;
+            let (_, y) = mx::apply(to_page, middle, baseline);
+            let y = vh - y / scale;
             let _ = writeln!(s, "BT 3 Tr /{font} {size:.2} Tf");
             for (i, w) in line.words.iter().enumerate() {
-                let x = w.bbox[0] / scale;
+                let x = mx::apply(to_page, w.bbox[0], baseline).0;
                 // A word ends about a space before the next: a box can reach the next where
                 // no gap shows in the ink (a rule under a form's line), and words without a
                 // gap between them read back as one. Boxes overlapping further are of lines
@@ -871,11 +1143,12 @@ impl Pdf {
                     Some(e) if e >= (w.bbox[0] + w.bbox[2]) / 2.0 => w.bbox[2].min(e),
                     _ => w.bbox[2],
                 };
-                let width = (end - w.bbox[0]) / scale;
+                let width = (mx::apply(to_page, end, baseline).0 - x) / scale;
                 let (natural, shows) = word(&w.text, size);
                 let tz = (100.0 * width / natural.max(0.1)).clamp(10.0, 1000.0);
                 let shows = shows.trim_end();
-                let _ = writeln!(s, "{tz:.1} Tz 1 0 0 1 {x:.2} {baseline:.2} Tm {shows}");
+                let x = x / scale;
+                let _ = writeln!(s, "{tz:.1} Tz 1 0 0 1 {x:.2} {y:.2} Tm {shows}");
             }
             s.push_str("ET\n");
         }
@@ -1256,25 +1529,51 @@ mod tests {
         .is_empty());
     }
 
-    /// The tilt of a page is the slope its lines' words follow.
+    /// A page's letters show how it lies: its lines level, sloping or running down it. A
+    /// few letters show nothing.
     #[test]
-    fn tilt_follows_the_words() {
-        let line = |y: f32| -> Vec<[f32; 4]> {
-            (0..5)
-                .map(|i| {
-                    let x = 20.0 + 60.0 * i as f32;
-                    let mid = y + 0.03 * (x + 20.0);
-                    [x, mid - 10.0, x + 40.0, mid + 10.0]
-                })
-                .collect()
+    fn letters_show_how_a_page_lies() {
+        // Lines 60 pixels apart of up to 30 letters 12 by 20, dropping `t` per pixel across.
+        let page = |t: f32, letters: u32| {
+            let mut img = GrayImage::from_pixel(800, 500, image::Luma([255]));
+            for i in 0..letters {
+                let x0 = 40 + 18 * (i % 30);
+                let top = 60 + 60 * (i / 30) + (t * x0 as f32).round() as u32;
+                for y in top..top + 20 {
+                    for x in x0..x0 + 12 {
+                        img.put_pixel(x, y, image::Luma([0]));
+                    }
+                }
+            }
+            img
         };
-        let slope = tilt(&[line(100.0), line(200.0), vec![[10.0, 5.0, 30.0, 25.0]]]);
-        assert!((slope - 0.03).abs() < 1e-4, "{slope}");
-        assert_eq!(tilt(&[vec![[10.0, 5.0, 30.0, 25.0]]]), 0.0);
+        assert_eq!(lie(&page(0.0, 180)), Some((false, 0.0)));
+        let (down, slope) = lie(&page(0.05, 180)).unwrap();
+        assert!(!down && (slope - 0.05f32.atan()).abs() < 0.002, "{slope}");
+        assert_eq!(lie(&imageops::rotate90(&page(0.0, 180))), Some((true, 0.0)));
+        assert_eq!(lie(&page(0.0, 12)), None);
     }
 
-    /// A line of a tilted page is read straightened, its neighbours left out: a picture
-    /// of its box was as tall as its drop across the page, its letters small.
+    /// A point of a picture goes where turning the picture a quarter at a time takes it.
+    #[test]
+    fn quarter_turns_follow_the_picture() {
+        let mut img = GrayImage::from_pixel(4, 3, image::Luma([255]));
+        img.put_pixel(1, 0, image::Luma([0]));
+        let turned = [
+            img.clone(),
+            imageops::rotate90(&img),
+            imageops::rotate180(&img),
+            imageops::rotate270(&img),
+        ];
+        for (turns, t) in turned.iter().enumerate() {
+            let (x, y) = mx::apply(quarter_turns(turns as u8, 4, 3), 1.5, 0.5);
+            assert_eq!(t.get_pixel(x as u32, y as u32).0[0], 0, "{turns}");
+        }
+    }
+
+    /// A line of a page tilted a little is read straightened, its neighbours left out: a
+    /// picture of its box was as tall as its drop across the page, its letters small. Its
+    /// words' boxes run level along it.
     #[test]
     fn tilted_lines_are_straightened() {
         let mut page = GrayImage::from_pixel(400, 300, image::Luma([255]));
@@ -1295,6 +1594,11 @@ mod tests {
                 "column {x}"
             );
         }
+        // Its top, 100 + 0.05 x down the page at x, sheared level, from its words' boxes.
+        let words = [[0.0, 100.0, 200.0, 150.0], [200.0, 110.0, 400.0, 160.0]];
+        let (level, want) = (level_box(&words, 0.05), [0.0, 100.0, 400.0, 140.0]);
+        let near = level.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3);
+        assert!(near, "{level:?}");
     }
 
     /// A blank page given `lines` as its text layer, as if recognised: words 8 points a
@@ -1321,7 +1625,7 @@ mod tests {
             })
             .collect();
         let page = p.page_ids()[0];
-        p.add_text_layers(&[(page, &lines, 1.0)]).unwrap();
+        p.add_text_layers(&[(page, &lines, 1.0, mx::ID)]).unwrap();
         p
     }
 
@@ -1366,7 +1670,7 @@ mod tests {
         };
         let words = vec![word("Saturday,", 20.0, 92.0), word("April", 92.0, 132.0)];
         let page = p.page_ids()[0];
-        p.add_text_layers(&[(page, &[OcrLine { words }], 1.0)])
+        p.add_text_layers(&[(page, &[OcrLine { words }], 1.0, mx::ID)])
             .unwrap();
         let first = p.find_text_matches(0, "Saturday,").unwrap();
         let second = p.find_text_matches(0, "April").unwrap();

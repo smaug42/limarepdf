@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """OCR accuracy measure (#221): runs LimarePDF's OCR over scans and scores the text it adds
-against the true text, read back with Poppler's pdftotext. The method behind the "Accuracy and
-speed" table in docs/scanning-and-ocr.md; testing.md's "Scanning and OCR" record says what ran.
+against the true text, read back with Poppler's pdftotext, as other apps read it, or with
+`--reader limarepdf` by LimarePDF's own `text`, as its search and copying read it. The method
+behind the "Accuracy and speed" table in docs/scanning-and-ocr.md; testing.md's "Scanning and
+OCR" record says what ran.
 
 A manifest (TOML) lists the cases, with paths relative to it:
 
@@ -35,7 +37,7 @@ hurts Tesseract more than LimarePDF; the measure notes it, and `images --dpi` wi
 resolution makes a fairer reference.
 
     python3 -I tools/ocr-accuracy.py MANIFEST --work DIR [--cli PATH] [--tesseract] [--tessdata DIR]
-                                     [--json OUT]
+                                     [--reader poppler|limarepdf] [--json OUT]
     python3 -I tools/ocr-accuracy.py --self-test
 """
 import argparse
@@ -156,6 +158,14 @@ def page_text(pdf, page):
     return run("pdftotext", "-enc", "UTF-8", "-f", page, "-l", page, pdf, "-")
 
 
+def read_back(cli, pdf, page, reader):
+    """The page's text as `reader` reads it: Poppler's pdftotext, or LimarePDF's `text`."""
+    if reader == "poppler":
+        return page_text(pdf, page)
+    out = run(cli, "text", "--pages", page, pdf)
+    return out.split("\n", 1)[1] if out.startswith("--- page") else out
+
+
 def page_size(pdf, page):
     m = re.search(r"size:\s+([\d.]+) x ([\d.]+) pts", run("pdfinfo", "-f", page, "-l", page, pdf))
     return float(m.group(1)), float(m.group(2))
@@ -233,7 +243,7 @@ def score(case, label, read, secs):
     return rows
 
 
-def measure(case, cli, work, tesseract, tessdata):
+def measure(case, cli, work, tesseract, tessdata, reader):
     """The case's score rows and notes; its outputs and read text left in a folder of `work`."""
     d = work / (re.sub(r"\W+", "-", case.name.lower()).strip("-") or "case")
     shutil.rmtree(d, ignore_errors=True)
@@ -259,7 +269,7 @@ def measure(case, cli, work, tesseract, tessdata):
         log = run(cli, "ocr", "-o", d / f"{stem}-ocr.pdf", src, "--pages", pages)
         secs = (time.perf_counter() - start) / len(case.pages)
         notes += [f"{label}: {ln}" for ln in log.splitlines() if "skipped" in ln]
-        read = [page_text(d / f"{stem}-ocr.pdf", p) for p in case.pages]
+        read = [read_back(cli, d / f"{stem}-ocr.pdf", p, reader) for p in case.pages]
         for p, text in zip(case.pages, read):
             (d / f"{stem}-page-{p}.txt").write_text(text, encoding="utf-8")
         rows += score(case, label, read, secs)
@@ -353,6 +363,7 @@ if __name__ == "__main__":
     ap.add_argument("--cli", type=pathlib.Path, default=CLI)
     ap.add_argument("--tesseract", action="store_true")
     ap.add_argument("--tessdata", type=pathlib.Path, help="Tesseract's models (*.traineddata), if not its own")
+    ap.add_argument("--reader", choices=["poppler", "limarepdf"], default="poppler", help="what reads the text back")
     ap.add_argument("--json", type=pathlib.Path, help="the scores and notes as JSON")
     args = ap.parse_args()
     manifest = args.manifest.resolve()
@@ -360,7 +371,7 @@ if __name__ == "__main__":
     results, failed = [], 0
     for case in parse_cases(tomllib.loads(manifest.read_text(encoding="utf-8")), manifest.parent):
         try:
-            rows, notes = measure(case, args.cli, args.work.resolve(), args.tesseract, tessdata)
+            rows, notes = measure(case, args.cli, args.work.resolve(), args.tesseract, tessdata, args.reader)
         except (RuntimeError, OSError) as e:
             rows, notes, failed = [], [f"failed: {e}"], failed + 1
         results.append({"case": case.name, "rows": rows, "notes": notes})

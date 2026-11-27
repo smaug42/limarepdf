@@ -27,13 +27,85 @@ fn text_image() -> GrayImage {
 
 /// A 4 x 3 inch page of LINES as text, in Helvetica.
 fn text_page() -> Pdf {
-    let mut p = Pdf::new();
-    p.insert_blank(0, 288.0, 216.0).unwrap();
     let mut content = String::from("BT /F1 12 Tf 16 190 Td 18 TL\n");
     for l in LINES {
         content.push_str(&format!("({l}) '\n"));
     }
     content.push_str("ET");
+    helvetica_page(288.0, 216.0, content)
+}
+
+/// Lines as long as a page's. Tilted a few degrees, each drops past the next across the page.
+const LONG: [&str; 6] = [
+    "The harbour office opens at seven, and the first ferry leaves for the island at eight.",
+    "Passengers with bicycles board first, then cars, then those travelling on foot alone.",
+    "Tickets bought on board cost two euros more than those bought at the office window.",
+    "In winter the last ferry back leaves at five, an hour earlier than it does in summer.",
+    "Dogs travel free if kept on a lead, but they must stay on the open deck at all times.",
+    "Lost property is kept at the office for a month, then given to the town's charities.",
+];
+
+/// An 8.5 x 4 inch page drawing `content`, which names Helvetica /F1, turned `deg` degrees
+/// anticlockwise about its middle, as a greyscale image at 300 dpi: a scan a little tilted.
+fn tilted(deg: f32, content: &str) -> GrayImage {
+    let (s, c) = deg.to_radians().sin_cos();
+    let (cx, cy) = (306.0, 144.0);
+    let (e, f) = (cx - c * cx + s * cy, cy - s * cx - c * cy);
+    let content = format!("q {c} {s} {} {c} {e} {f} cm {content} Q", -s);
+    gray(&mut helvetica_page(612.0, 288.0, content), 300.0 / 72.0)
+}
+
+/// LONG, 11 pt on 14 pt, [`tilted`] `deg` degrees.
+fn tilted_image(deg: f32) -> GrayImage {
+    let mut content = String::from("BT /F1 11 Tf 60 200 Td 14 TL\n");
+    for l in LONG {
+        content.push_str(&format!("({l}) '\n"));
+    }
+    content.push_str("ET");
+    tilted(deg, &content)
+}
+
+/// A long line, a short one and another long one.
+const SHORT_AFTER_LONG: [&str; 3] = [LONG[0], "Shut on all bank days.", LONG[1]];
+/// A table's rows, a cell in each of TABLE_AT.
+const TABLE: [[&str; 5]; 3] = [
+    ["Boat", "Leaves from", "Arrives", "Fare", "Deck"],
+    ["Osprey", "Harbour Street", "Island", "four", "open"],
+    ["Heron", "North Quay", "Mainland", "five", "shut"],
+];
+/// Where TABLE's columns start, as the OCR test sheet's do, in points.
+const TABLE_AT: [u32; 5] = [68, 125, 284, 363, 435];
+
+/// The lines of [`rows_image`]: SHORT_AFTER_LONG, then TABLE's rows.
+fn rows() -> Vec<String> {
+    let table = TABLE.iter().map(|r| r.join(" "));
+    (SHORT_AFTER_LONG.iter().map(|l| l.to_string()))
+        .chain(table)
+        .collect()
+}
+
+/// SHORT_AFTER_LONG, 11 pt on 14 pt, and TABLE a line below, its rows 22 pt apart,
+/// [`tilted`] `deg` degrees. Closer, LimarePDF reads its rows apart only just, and not with
+/// the page straightened a little off.
+fn rows_image(deg: f32) -> GrayImage {
+    let mut content = String::from("BT /F1 11 Tf\n");
+    for (i, l) in SHORT_AFTER_LONG.iter().enumerate() {
+        content.push_str(&format!("1 0 0 1 60 {} Tm ({l}) Tj\n", 220 - 14 * i));
+    }
+    for (i, row) in TABLE.iter().enumerate() {
+        let y = 164 - 22 * i;
+        for (x, cell) in TABLE_AT.iter().zip(row) {
+            content.push_str(&format!("1 0 0 1 {x} {y} Tm ({cell}) Tj\n"));
+        }
+    }
+    content.push_str("ET");
+    tilted(deg, &content)
+}
+
+/// A `w` x `h` point page drawing `content`, which names Helvetica /F1.
+fn helvetica_page(w: f32, h: f32, content: String) -> Pdf {
+    let mut p = Pdf::new();
+    p.insert_blank(0, w, h).unwrap();
     let page = p.page_ids()[0];
     let font = p.doc.add_object(dictionary! {
         "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding",
@@ -190,22 +262,53 @@ fn skipped(r: &[(usize, OcrResult)], why: &str) -> bool {
     matches!(r, [(_, OcrResult::Skipped(w))] if w.contains(why))
 }
 
-/// Whether page 1 alone was read, to six lines.
+/// Whether page 1 alone was read, to six lines, and left the way up it was.
 fn six_lines(r: &[(usize, OcrResult)]) -> bool {
-    matches!(r, [(0, OcrResult::Added { lines: 6, .. })])
+    matches!(r, [(0, OcrResult::Added { lines: 6, turned, .. })] if *turned == 0)
 }
 
 /// Share of the words in LINES found in `text`, ignoring end punctuation.
 fn recall(text: &str) -> f32 {
+    recall_of(&LINES, text)
+}
+
+/// Share of the words in `lines` found in `text`, ignoring end punctuation.
+fn recall_of(lines: &[&str], text: &str) -> f32 {
     let strip = |w: &str| w.trim_matches(|c: char| ".,;:".contains(c)).to_string();
     let got: Vec<String> = text.split_whitespace().map(strip).collect();
-    let want: Vec<String> = LINES
+    let want: Vec<String> = lines
         .iter()
         .flat_map(|l| l.split_whitespace())
         .map(strip)
         .collect();
     let hits = want.iter().filter(|w| got.contains(w)).count();
     hits as f32 / want.len() as f32
+}
+
+/// Page 1's turn on screen, clockwise (its `/Rotate`).
+fn rotation(p: &Pdf) -> i64 {
+    let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+    page.get(b"Rotate").and_then(Object::as_i64).unwrap_or(0)
+}
+
+/// Whether the lines of `text` are LONG's, in order, each with four in five of its words.
+fn long_lines_in_order(text: &str) -> bool {
+    let read: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    read.len() == LONG.len()
+        && (LONG.iter().zip(&read)).all(|(want, got)| recall_of(&[want], got) >= 0.8)
+}
+
+/// Whether the words of `text` are those of `lines`, in order, nine in ten in their place,
+/// however its lines are broken: neither LimarePDF nor Poppler reads a table's row as one
+/// line where its cells are far apart.
+fn words_in_order(text: &str, lines: &[String]) -> bool {
+    let strip = |w: &str| w.trim_matches(|c: char| ".,;:".contains(c)).to_string();
+    let got: Vec<String> = text.split_whitespace().map(strip).collect();
+    let want: Vec<String> = (lines.iter().flat_map(|l| l.split_whitespace()))
+        .map(strip)
+        .collect();
+    let placed = got.iter().zip(&want).filter(|(g, w)| g == w).count();
+    got.len() == want.len() && placed as f32 >= 0.9 * want.len() as f32
 }
 
 #[test]
@@ -323,12 +426,254 @@ fn rotated_page_is_read_upright() {
     let (w, h) = p.page_size(0).unwrap();
     assert!((w - 288.0).abs() < 1.0, "{w} x {h}");
     assert!((h - 216.0).abs() < 1.0, "{w} x {h}");
-    p.ocr_pages(&[0], &ocr).unwrap();
+    let r = p.ocr_pages(&[0], &ocr).unwrap();
+    assert!(six_lines(&r), "{r:?}");
+    assert_eq!(rotation(&p), 90);
     let text = p.page_text(0);
     assert!(recall(&text) > 0.9, "{text}");
     let b = first_line_box(&mut p);
     assert!((b[0] - 16.0).abs() < 4.0, "{b:?}");
     assert!(b[1] > 26.0 && b[1] < 38.0, "{b:?}");
+}
+
+/// A scan lying on its side or upside down is turned upright on screen, as Pages > Rotate
+/// turns a page, and read. The turn and the text are one undo step (#225).
+#[test]
+fn turned_scans_are_turned_upright() {
+    let ocr = Ocr::bundled().unwrap();
+    let img = text_image();
+    // Each scan, and the turn that puts it upright, clockwise.
+    let scans = [
+        (image::imageops::rotate90(&img), 270),
+        (image::imageops::rotate180(&img), 180),
+        (image::imageops::rotate270(&img), 90),
+    ];
+    for (scan, turn) in scans {
+        let mut p = scanned(scan);
+        let before = p.before();
+        let r = p.ocr_pages(&[0], &ocr).unwrap();
+        let added =
+            matches!(r[..], [(0, OcrResult::Added { lines: 6, turned, .. })] if turned == turn);
+        assert!(added, "{turn}: {r:?}");
+        assert_eq!(rotation(&p), turn as i64);
+        let (w, h) = p.page_size(0).unwrap();
+        let size = (w - 288.0).abs() < 1.0 && (h - 216.0).abs() < 1.0;
+        assert!(size, "{turn}: {w} x {h}");
+        let text = p.page_text(0);
+        assert!(recall(&text) > 0.9, "{turn}: {text}");
+        let b = first_line_box(&mut p);
+        assert!((b[0] - 16.0).abs() < 4.0, "{turn}: {b:?}");
+        assert!(b[1] > 26.0 && b[1] < 38.0, "{turn}: {b:?}");
+        // Upright now, it is read again as it is.
+        let mut again = p.clone();
+        let r = again.ocr_pages_again(&[0], &ocr).unwrap();
+        assert!(six_lines(&r), "{turn}: {r:?}");
+        assert_eq!(rotation(&again), turn as i64);
+        let saved = Saved::of(&mut p);
+        assert_eq!(saved.unreachable(), [], "{turn}");
+        let reopened = Pdf::from_bytes(&saved.bytes, None).unwrap();
+        assert_eq!(rotation(&reopened), turn as i64);
+        assert!(recall(&reopened.page_text(0)) > 0.9, "{turn}");
+        p.restore(before.undo(&p));
+        assert_eq!(rotation(&p), 0, "{turn}");
+        assert_eq!(p.page_text(0).trim(), "", "{turn}");
+    }
+}
+
+/// A page with a few words isn't turned, however it lies: there is too little to tell which
+/// way up it is. On its side, it was turned round as if upside down.
+#[test]
+fn a_page_of_a_few_words_is_not_turned() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut page = Pdf::new();
+    page.insert_blank(0, 288.0, 216.0).unwrap();
+    let font = FontChoice::default();
+    page.add_text(0, (40.0, 100.0), "Total 42.00", font, 12.0, [0.0; 3])
+        .unwrap();
+    let img = gray(&mut page, 300.0 / 72.0);
+    let turns = [
+        (img.clone(), 0),
+        (image::imageops::rotate90(&img), 90),
+        (image::imageops::rotate180(&img), 180),
+    ];
+    for (scan, turn) in turns {
+        let mut p = scanned(scan);
+        let r = p.ocr_pages(&[0], &ocr).unwrap();
+        let left = match r[..] {
+            [(0, OcrResult::Added { turned, .. })] => turned == 0,
+            [(0, OcrResult::Skipped(_))] => turn == 90,
+            _ => false,
+        };
+        assert!(left, "{turn}: {r:?}");
+        assert_eq!(rotation(&p), 0, "{turn}");
+        if turn == 0 {
+            assert!(p.page_text(0).contains("Total"), "{}", p.page_text(0));
+        }
+    }
+}
+
+/// A page scanned a little tilted is read line by line without optimising it first: its
+/// long lines were read two at once, letters of each in turn (#320). Tilted under 1°, the
+/// page is read as it is, each line straightened in its picture; more, it is straightened
+/// first. Each line's text is written level, at the height the printed line crosses the
+/// middle of the page's text: Poppler reads sloped text in pieces. Tilted 2° or more, where
+/// that shows, the report says how much.
+#[test]
+fn tilted_pages_are_read_line_by_line() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut level = scanned(tilted_image(0.0));
+    level.ocr_pages(&[0], &ocr).unwrap();
+    let level = hidden_lines(&level);
+    for deg in [2.5f32, -4.5, 0.7] {
+        let mut p = scanned(tilted_image(deg));
+        let looks = gray(&mut p, 1.0);
+        let r = p.ocr_pages(&[0], &ocr).unwrap();
+        assert!(six_lines(&r), "{deg}°: {r:?}");
+        // Turned anticlockwise, it is reported tilted the other way from 2°.
+        let tilted = match r[..] {
+            [(0, OcrResult::Added { tilted, .. })] => tilted,
+            _ => None,
+        };
+        let reported = match tilted {
+            Some(t) => (t + deg).abs() < 0.3,
+            None => deg.abs() < 2.0,
+        };
+        assert!(reported, "{deg}°: {r:?}");
+        let text = p.page_text(0);
+        assert!(long_lines_in_order(&text), "{deg}°: {text}");
+        let copied = limarepdf_core::words_text(&p.page_words(0).unwrap());
+        assert!(long_lines_in_order(&copied), "{deg}°: {copied}");
+        let middle = |word: &str| {
+            let b = p.find_text_boxes(0, word).unwrap();
+            assert_eq!(b.len(), 1, "{deg}°, {word}: {b:?}");
+            (b[0][1] + b[0][3]) / 2.0
+        };
+        let (y0, y1) = (middle("harbour"), middle("eight"));
+        assert!((y1 - y0).abs() < 0.5, "{deg}°: {y0} and {y1}");
+        // Where the middle of each line of the level page went, turned anticlockwise about
+        // the middle of the page (y down).
+        let (s, c) = deg.to_radians().sin_cos();
+        let lines = hidden_lines(&p);
+        assert_eq!(lines.len(), level.len(), "{deg}°");
+        let centre = |b: [f32; 4]| ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+        for (l, at) in lines.iter().zip(&level) {
+            let (x, y) = centre(at.bbox);
+            let (x, y) = (x - 306.0, y - 144.0);
+            let want = (306.0 + c * x + s * y, 144.0 - s * x + c * y);
+            let got = centre(l.bbox);
+            let near = (got.0 - want.0).abs() < 3.0 && (got.1 - want.1).abs() < 3.0;
+            assert!(near, "{deg}°: {got:?}, not {want:?}: {l:?}");
+            // As big as the 11 pt print, so lines 14 pt apart don't overlap.
+            let (size, (dx, dy)) = (l.font_size.unwrap(), l.dir.unwrap());
+            let fits = (9.0..13.0).contains(&size) && (dx - 1.0).abs() < 1e-3;
+            assert!(fits && dy.abs() < 1e-3, "{deg}°: {size} pt, {l:?}");
+        }
+        assert_eq!(looks.as_raw(), gray(&mut p, 1.0).as_raw(), "{deg}°");
+    }
+}
+
+/// Poppler reads the tilted page's text layer line by line, as LimarePDF does. Written
+/// sloping with the lines, its ends came out as lines of their own, and its words in pieces.
+/// `cargo test -p limarepdf-core --test ocr -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_tilted_text_layer_with_poppler() {
+    let ocr = Ocr::bundled().unwrap();
+    for deg in [2.5f32, -4.5, 0.7] {
+        let mut p = scanned(tilted_image(deg));
+        p.ocr_pages(&[0], &ocr).unwrap();
+        let poppler = tools::pdftotext(&p.to_bytes().unwrap());
+        assert!(long_lines_in_order(&poppler), "{deg}°: {poppler}");
+    }
+    for deg in [4.0f32, -4.0] {
+        let mut p = scanned(rows_image(deg));
+        p.ocr_pages(&[0], &ocr).unwrap();
+        let poppler = tools::pdftotext(&p.to_bytes().unwrap());
+        assert!(words_in_order(&poppler, &rows()), "{deg}°: {poppler}");
+    }
+}
+
+/// A tilted page's lines are written at the height each crosses the middle of its text, so
+/// they keep their order: each across its own middle, a short line after a long one came out
+/// among the long one's words, and a table a column at a time (#320).
+#[test]
+fn tilted_short_lines_and_tables_keep_their_order() {
+    let ocr = Ocr::bundled().unwrap();
+    for deg in [0.0f32, 4.0, -4.0] {
+        let mut p = scanned(rows_image(deg));
+        p.ocr_pages(&[0], &ocr).unwrap();
+        let text = p.page_text(0);
+        assert!(words_in_order(&text, &rows()), "{deg}°: {text}");
+        let copied = limarepdf_core::words_text(&p.page_words(0).unwrap());
+        assert!(words_in_order(&copied, &rows()), "{deg}°: {copied}");
+    }
+}
+
+/// Text another app wrote sloping with a tilted scan's lines, as Tesseract does, is read line
+/// by line: tilted, the end of each line drops past the start of the next (#320).
+#[test]
+fn sloped_text_is_read_line_by_line() {
+    for deg in [2.5f32, -4.5] {
+        let (s, c) = deg.to_radians().sin_cos();
+        let mut content = String::from("BT 3 Tr /F1 11 Tf\n");
+        for (i, l) in LONG.iter().enumerate() {
+            // Where tilted_image's line starts, turned anticlockwise about the page's middle.
+            let (x, y) = (60.0 - 306.0, 200.0 - 14.0 * i as f32 - 144.0);
+            let (x, y) = (306.0 + c * x - s * y, 144.0 + s * x + c * y);
+            content.push_str(&format!("{c} {s} {} {c} {x} {y} Tm ({l}) Tj\n", -s));
+        }
+        content.push_str("ET");
+        let p = helvetica_page(612.0, 288.0, content);
+        let text = p.page_text(0);
+        assert!(long_lines_in_order(&text), "{deg}°: {text}");
+        let copied = limarepdf_core::words_text(&p.page_words(0).unwrap());
+        assert!(long_lines_in_order(&copied), "{deg}°: {copied}");
+    }
+}
+
+/// A tilted page's lines are edited, read again, saved, removed and undone as a straight
+/// page's are (#320).
+#[test]
+fn tilted_text_is_edited_read_again_and_removed() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(tilted_image(2.5));
+    let looks = gray(&mut p, 1.0);
+    p.ocr_pages(&[0], &ocr).unwrap();
+    let line = hidden_lines(&p)
+        .into_iter()
+        .find(|o| o.text.as_deref().unwrap_or("").contains("harbour"))
+        .expect("no line with harbour");
+    let edit = TextEdit {
+        text: "The harbour office opens at nine.".into(),
+        font: None,
+        size: None,
+        color: None,
+        parts: Vec::new(),
+    };
+    p.edit_text(0, line.id, &edit).unwrap();
+    let edited = (hidden_lines(&p).into_iter())
+        .find(|o| o.text.as_deref() == Some(edit.text.as_str()))
+        .expect("no edited line");
+    assert_eq!(edited.dir, line.dir);
+    let r = p.ocr_pages_again(&[0], &ocr).unwrap();
+    assert!(six_lines(&r), "{r:?}");
+    let text = p.page_text(0);
+    assert!(long_lines_in_order(&text), "{text}");
+    let words = ["harbour", "Passengers", "bicycles", "charities"];
+    Saved::of(&mut p).assert_kept(&words);
+    let again = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    let again = again.page_text(0);
+    assert!(long_lines_in_order(&again), "{again}");
+    let before = p.before();
+    let r = p.remove_recognised_text(&[0]).unwrap();
+    assert_eq!(r, [(0, OcrResult::Removed { lines: 6 })]);
+    assert_eq!(p.page_text(0).trim(), "");
+    assert_eq!(looks.as_raw(), gray(&mut p, 1.0).as_raw());
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&words);
+    assert_eq!(saved.unreachable(), []);
+    p.restore(before.undo(&p));
+    assert!(long_lines_in_order(&p.page_text(0)), "{}", p.page_text(0));
 }
 
 #[test]

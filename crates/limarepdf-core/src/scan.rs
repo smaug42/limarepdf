@@ -740,6 +740,14 @@ fn estimate_skew(img: &Img) -> Option<f32> {
         }
         bins.iter().map(|&c| (c as f64).powi(2)).sum()
     };
+    let fine = best_angle(score);
+    // Require a clear gain over leaving the page as it is.
+    (fine.abs() >= 0.1 && score(fine.to_radians()) > score(0.0) * 1.02).then(|| fine.to_radians())
+}
+
+/// The angle within 5° of level, in degrees, where `score` (of an angle in radians) is
+/// highest: to a quarter of a degree, then to a fortieth.
+pub(crate) fn best_angle(score: impl Fn(f32) -> f64) -> f32 {
     let search = |lo: f32, hi: f32, step: f32| {
         let mut best = (0.0f32, f64::MIN);
         let mut a = lo;
@@ -753,66 +761,77 @@ fn estimate_skew(img: &Img) -> Option<f32> {
         best.0
     };
     let coarse = search(-5.0, 5.0, 0.25);
-    let fine = search(coarse - 0.25, coarse + 0.25, 0.025);
-    // Require a clear gain over leaving the page as it is.
-    (fine.abs() >= 0.1 && score(fine.to_radians()) > score(0.0) * 1.02).then(|| fine.to_radians())
+    search(coarse - 0.25, coarse + 0.25, 0.025)
+}
+
+/// [`rotate`] for a greyscale picture, onto one `w` x `h`, their middles together.
+pub(crate) fn rotate_onto(g: &GrayImage, a: f32, w: u32, h: u32) -> GrayImage {
+    let turned = turn(g.as_raw(), g.width(), g.height(), 1, a, false, (w, h));
+    GrayImage::from_raw(w, h, turned).unwrap()
+}
+
+/// The pixels of `src` (`w` x `h`, `ch` channels) turned so lines of slope `a` become level,
+/// onto a picture of size `to` with its middle on theirs. Uncovered corners are white.
+fn turn(src: &[u8], w: u32, h: u32, ch: usize, a: f32, nearest: bool, to: (u32, u32)) -> Vec<u8> {
+    let (s, c) = a.sin_cos();
+    let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
+    let (ox, oy) = (to.0 as f32 / 2.0, to.1 as f32 / 2.0);
+    let (wi, hi) = (w as usize, h as usize);
+    let mut out = vec![255u8; to.0 as usize * to.1 as usize * ch];
+    let rows = out.par_chunks_mut(to.0 as usize * ch).enumerate();
+    rows.for_each(|(y, row)| {
+        for x in 0..to.0 as usize {
+            let (dx, dy) = (x as f32 + 0.5 - ox, y as f32 + 0.5 - oy);
+            let sx = cx + c * dx - s * dy - 0.5;
+            let sy = cy + s * dx + c * dy - 0.5;
+            let px = &mut row[x * ch..x * ch + ch];
+            if nearest {
+                let (ix, iy) = (sx.round() as isize, sy.round() as isize);
+                if ix >= 0 && iy >= 0 && (ix as usize) < wi && (iy as usize) < hi {
+                    let i = (iy as usize * wi + ix as usize) * ch;
+                    px.copy_from_slice(&src[i..i + ch]);
+                }
+                continue;
+            }
+            let (x0, y0) = (sx.floor(), sy.floor());
+            let (fx, fy) = (sx - x0, sy - y0);
+            for k in 0..ch {
+                let at = |xx: f32, yy: f32| -> f32 {
+                    if xx < 0.0 || yy < 0.0 || xx >= w as f32 || yy >= h as f32 {
+                        255.0
+                    } else {
+                        src[(yy as usize * wi + xx as usize) * ch + k] as f32
+                    }
+                };
+                let v = at(x0, y0) * (1.0 - fx) * (1.0 - fy)
+                    + at(x0 + 1.0, y0) * fx * (1.0 - fy)
+                    + at(x0, y0 + 1.0) * (1.0 - fx) * fy
+                    + at(x0 + 1.0, y0 + 1.0) * fx * fy;
+                px[k] = v.round() as u8;
+            }
+        }
+    });
+    out
 }
 
 /// Turn the image so lines of slope `a` become level. The size stays the same; uncovered
 /// corners are white.
 fn rotate(img: Img, a: f32) -> Img {
-    fn turn(src: &[u8], w: u32, h: u32, ch: usize, a: f32, nearest: bool) -> Vec<u8> {
-        let (s, c) = a.sin_cos();
-        let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
-        let (wi, hi) = (w as usize, h as usize);
-        let mut out = vec![255u8; src.len()];
-        let rows = out.par_chunks_mut(wi * ch).enumerate();
-        rows.for_each(|(y, row)| {
-            for x in 0..wi {
-                let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
-                let sx = cx + c * dx - s * dy - 0.5;
-                let sy = cy + s * dx + c * dy - 0.5;
-                let px = &mut row[x * ch..x * ch + ch];
-                if nearest {
-                    let (ix, iy) = (sx.round() as isize, sy.round() as isize);
-                    if ix >= 0 && iy >= 0 && (ix as usize) < wi && (iy as usize) < hi {
-                        let i = (iy as usize * wi + ix as usize) * ch;
-                        px.copy_from_slice(&src[i..i + ch]);
-                    }
-                    continue;
-                }
-                let (x0, y0) = (sx.floor(), sy.floor());
-                let (fx, fy) = (sx - x0, sy - y0);
-                for k in 0..ch {
-                    let at = |xx: f32, yy: f32| -> f32 {
-                        if xx < 0.0 || yy < 0.0 || xx >= w as f32 || yy >= h as f32 {
-                            255.0
-                        } else {
-                            src[(yy as usize * wi + xx as usize) * ch + k] as f32
-                        }
-                    };
-                    let v = at(x0, y0) * (1.0 - fx) * (1.0 - fy)
-                        + at(x0 + 1.0, y0) * fx * (1.0 - fy)
-                        + at(x0, y0 + 1.0) * (1.0 - fx) * fy
-                        + at(x0 + 1.0, y0 + 1.0) * fx * fy;
-                    px[k] = v.round() as u8;
-                }
-            }
-        });
-        out
-    }
     match img {
         Img::Bits(b) => {
             let (w, h) = b.dimensions();
-            Img::Bits(GrayImage::from_raw(w, h, turn(b.as_raw(), w, h, 1, a, true)).unwrap())
+            let turned = turn(b.as_raw(), w, h, 1, a, true, (w, h));
+            Img::Bits(GrayImage::from_raw(w, h, turned).unwrap())
         }
         Img::Gray(g) => {
             let (w, h) = g.dimensions();
-            Img::Gray(GrayImage::from_raw(w, h, turn(g.as_raw(), w, h, 1, a, false)).unwrap())
+            let turned = turn(g.as_raw(), w, h, 1, a, false, (w, h));
+            Img::Gray(GrayImage::from_raw(w, h, turned).unwrap())
         }
         Img::Rgb(c) => {
             let (w, h) = c.dimensions();
-            Img::Rgb(RgbImage::from_raw(w, h, turn(c.as_raw(), w, h, 3, a, false)).unwrap())
+            let turned = turn(c.as_raw(), w, h, 3, a, false, (w, h));
+            Img::Rgb(RgbImage::from_raw(w, h, turned).unwrap())
         }
     }
 }
