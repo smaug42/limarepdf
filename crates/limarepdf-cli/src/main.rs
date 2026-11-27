@@ -196,7 +196,9 @@ enum Cmd {
         jpeg_quality: Option<u8>,
     },
     /// Recognise text on scans and pages without text and add it as an invisible,
-    /// searchable layer. Reads languages written in Latin letters, accents included
+    /// searchable layer. Reads languages written in Latin letters, accents included.
+    /// Pages on their side or upside down are turned upright; pages tilted 2° or more are
+    /// reported
     Ocr {
         #[command(flatten)]
         io: Io,
@@ -1627,13 +1629,37 @@ fn note_repaired(p: &Path, pdf: Pdf) -> Pdf {
 
 /// What recognising text, or removing recognised text, did to each page.
 fn print_ocr(done: &[(usize, OcrResult)]) -> Result<()> {
+    let mut any_tilted = false;
     for (i, r) in done {
         let page = i + 1;
         match r {
-            OcrResult::Added { lines, words } => out!("page {page}: {lines} lines, {words} words"),
+            OcrResult::Added {
+                lines,
+                words,
+                turned,
+                tilted,
+            } => {
+                let turned = match turned {
+                    0 => "",
+                    180 => "turned upright (it was upside down), ",
+                    _ => "turned upright (it was on its side), ",
+                };
+                let tilt = tilted
+                    .map(|a| format!("tilted {:.1}°, ", a.abs()))
+                    .unwrap_or_default();
+                any_tilted |= tilted.is_some();
+                out!("page {page}: {turned}{tilt}{lines} lines, {words} words")
+            }
             OcrResult::Removed { lines } => out!("page {page}: {lines} lines removed"),
             OcrResult::Skipped(why) => out!("page {page}: skipped: {why}"),
         }
+    }
+    if any_tilted {
+        eprintln!(
+            "note: a tilted page stays tilted, and its text is written level, so a word found \
+             near the side of the page is highlighted a little off it; to straighten the page, \
+             remove its text (remove-ocr), optimise it (optimize-scans), then recognise it again"
+        );
     }
     Ok(())
 }

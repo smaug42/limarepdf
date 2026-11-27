@@ -1255,7 +1255,14 @@ pub(crate) type SearchParts = (
 /// The words of a page's text lines in reading order (see [`Pdf::page_words`]), each with
 /// the index of the text line it came from and its first character there.
 pub(crate) fn ordered_words(lines: &[&TextData], to_vis: M) -> Vec<(PageWord, usize, usize)> {
+    // Lines that share a slope, as a tilted scan's recognised text does, are ordered as on
+    // the page turned level: tilted, a line's box reaches into the next line's.
+    let level = shared_slope(lines, to_vis).map(|a| {
+        let (s, c) = a.sin_cos();
+        mul(to_vis, [c, -s, s, c, 0.0, 0.0])
+    });
     let mut out = Vec::new();
+    let mut boxes = Vec::new();
     for (li, t) in lines.iter().enumerate() {
         let chars: Vec<char> = t.text.chars().collect();
         let mut i = 0;
@@ -1268,22 +1275,24 @@ pub(crate) fn ordered_words(lines: &[&TextData], to_vis: M) -> Vec<(PageWord, us
             while i < chars.len() && !chars[i].is_whitespace() {
                 i += 1;
             }
-            let boxes = span_boxes(&t.pieces, start, i);
-            if boxes.is_empty() {
+            let quads = span_quads(&t.pieces, start, i);
+            if quads.is_empty() {
                 continue;
             }
-            let bb = mx::aabb(boxes.iter().flat_map(|b| [(b[0], b[1]), (b[2], b[3])]));
             let word = PageWord {
                 text: chars[start..i].iter().collect(),
-                bbox: mx::transform_rect(to_vis, bb),
+                bbox: mx::transform_rect(to_vis, mx::aabb(quads.iter().flatten().copied())),
                 line: li,
                 object: None,
                 chars: (start, i),
             };
+            boxes.push(match level {
+                Some(m) => mx::aabb(quads.iter().flatten().map(|&(x, y)| apply(m, x, y))),
+                None => word.bbox,
+            });
             out.push(Some((word, li, start)));
         }
     }
-    let boxes: Vec<[f32; 4]> = out.iter().flatten().map(|w| w.0.bbox).collect();
     crate::reading::reading_order(&boxes)
         .into_iter()
         .filter_map(|(i, row)| {
@@ -1292,6 +1301,28 @@ pub(crate) fn ordered_words(lines: &[&TextData], to_vis: M) -> Vec<(PageWord, us
             Some(w)
         })
         .collect()
+}
+
+/// How far from level, either way, a line may slope to count towards a page's
+/// [`shared_slope`], in radians: 10°.
+const NEARLY_ACROSS: f32 = 0.1745;
+/// How far a page's [`shared_slope`] must be from level to count, in radians: 0.1°.
+const SLOPED: f32 = 0.00175;
+
+/// The slope of the lines that run nearly across the displayed page (radians, y down),
+/// the median of theirs, when it is clearly not level.
+fn shared_slope(lines: &[&TextData], to_vis: M) -> Option<f32> {
+    let mut slopes: Vec<f32> = lines
+        .iter()
+        .map(|t| {
+            let (x, y) = t.dir;
+            (x * to_vis[1] + y * to_vis[3]).atan2(x * to_vis[0] + y * to_vis[2])
+        })
+        .filter(|a| a.abs() <= NEARLY_ACROSS)
+        .collect();
+    slopes.sort_by(f32::total_cmp);
+    let a = *slopes.get(slopes.len() / 2)?;
+    (a.abs() >= SLOPED).then_some(a)
 }
 
 /// A word on a page: its text, its box in displayed-page points (y down), and the index
@@ -1326,6 +1357,11 @@ pub fn words_text(words: &[PageWord]) -> String {
 /// Within a piece, characters are placed by their glyph widths, or spread evenly when
 /// those are not known.
 pub(crate) fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> {
+    span_quads(pieces, a, b).into_iter().map(mx::aabb).collect()
+}
+
+/// The quadrilaterals (user space) that [`span_boxes`] bound.
+fn span_quads(pieces: &[Piece], a: usize, b: usize) -> Vec<[(f32, f32); 4]> {
     let lerp =
         |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
     let mut out = Vec::new();
@@ -1342,13 +1378,12 @@ pub(crate) fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> 
             ((lo - s) as f32 / n, (hi - s) as f32 / n)
         };
         let c = p.extent;
-        let pts = [
+        out.push([
             lerp(c[0], c[1], f0),
             lerp(c[0], c[1], f1),
             lerp(c[3], c[2], f1),
             lerp(c[3], c[2], f0),
-        ];
-        out.push(mx::aabb(pts));
+        ]);
     }
     out
 }

@@ -12,8 +12,8 @@ the pictures in LimarePDF.
 2. Choose **Make a PDF from images…** on the start screen (or **Insert > From images**, or ☰ > Make a PDF from
    images…) and pick the files. They open as a new document, one page per picture.
 3. Optional: choose **Pages > Optimise**, which opens **Optimise scanned pages** in the inspector, and press
-   **Optimise**, to make the file smaller and straighten tilted pages. Do this for tilted pages: text recognition
-   doesn't straighten them. See [Getting good results](#getting-good-results) for small print and faxes.
+   **Optimise**, to make the file smaller and straighten tilted pages. See
+   [Getting good results](#getting-good-results) for tilted pages, small print and faxes.
 4. Choose **Pages > Recognise text**, which opens **Recognise text (OCR)** in the inspector, and press
    **Recognise**. The pages look the same, but their text can now be searched, selected and copied.
 5. Close the tool with the × at the top of the inspector, and save.
@@ -21,9 +21,11 @@ the pictures in LimarePDF.
 A PDF that is already a scan works the same way: start at step 3. When a document's pages are scans without text,
 a notice above the pages says so, with a **Recognise text** button.
 
-Optimise before recognising text: pages with text over them, such as recognised text, aren't straightened. To
-straighten a page that was recognised already, remove its recognised text, optimise it, then recognise it again
-([Reading again and removing recognised text](#reading-again-and-removing-recognised-text)).
+To straighten tilted pages, optimise before recognising text: pages with text over them, such as recognised text,
+aren't straightened. To straighten a page that was recognised already, remove its recognised text, optimise it,
+then recognise it again ([Reading again and removing recognised text](#reading-again-and-removing-recognised-text)).
+Recognising text doesn't need straight pages: a tilted page is read as well as a straight one
+([Tilted pages](#tilted-pages)).
 
 ## Importing images
 
@@ -87,12 +89,44 @@ copied. The page looks the same.
   lighting in phone photos are handled.
 - **Text layer:** Helvetica for Western European text; a page with other letters (Polish, Czech or Hungarian ones,
   for example) gets Liberation Sans, embedded.
-- **Not handled:** text in pictures, handwriting, vertical text, tilted pages that weren't optimised first.
+- **Turned pages:** a page scanned on its side or upside down is turned upright, as **Pages > Rotate** turns it,
+  and read. The report says which pages were turned; the turn and the text are one undo step. A page with only a
+  few words is left as it is: they don't show which way up it is.
+- **Tilted pages:** a page scanned tilted by up to 5° is read as it is, as well as a straight one, and stays
+  tilted. From 2°, the report says so; see [Tilted pages](#tilted-pages).
+- **Not handled:** text in pictures, handwriting, vertical text.
 - **Reading order:** a table with wide gaps, or a form whose fields are far apart, can come out column by column, so
   copied text may not keep its rows together. Each word is still where it shows, so searching and selecting work.
 
 Where: **Pages > Recognise text**, which opens the Recognise text (OCR) tool in the inspector, for the selected
 pages or all. It runs in the background and can be undone. On the command line: `limarepdf-cli ocr`.
+
+### Tilted pages
+
+A page scanned a little crooked, tilted by up to 5°, is read line by line as it is, as well as a straight page. The
+page itself isn't straightened: it still shows as it was scanned.
+
+- **Its text is written level.** Each line's recognised text runs straight across the page, at the height where
+  the printed line crosses the middle of the page's text. The lines keep their order and spacing, as on a straight
+  page, so apps read them in order and a table row by row. Text written sloping with the print, as some other OCR
+  programs write it, is read out of order and with words in pieces by apps that read text with Poppler, such as
+  Evince, Okular and `pdftotext`.
+- **Highlights near the sides of the page sit a little off the print.** Over a sloping line, level text is on the
+  print in the middle of the page, a little above it towards one side and a little below it towards the other.
+  Searching and selecting highlight a word where its text is, so a word near the left or right of the page is
+  highlighted a little above or below it. Tilted 2°, the words at the sides of text 16.5 cm (6.5 inches) wide, as
+  on a letter or A4 page, are about 3 mm (8 points) off, most of the height of ordinary print; tilted 1°, about
+  1.5 mm.
+- **The report says so from 2°**, where that shows. In the app, the report after recognising text names each such
+  page ("Page 4: tilted 3.3°.") and says how to straighten it; on the command line, the page's line says
+  "page 4: tilted 3.3°, 46 lines, 312 words", and a note says how to straighten it.
+- **To straighten a page,** remove its recognised text (**Remove recognised text** in the Recognise text (OCR)
+  tool), optimise it with **Straighten tilted pages** on (**Pages > Optimise**), then recognise it again. On the
+  command line: `remove-ocr`, `optimize-scans`, then `ocr`. Optimising before recognising text does the same in
+  one go. The page and its text are then level, and highlights sit on the words. It hardly changes how well the
+  text is read: the test sheet tilted 1–5° read with 0.4–0.7% character errors as it was and 0.2–0.5% optimised
+  first, and scanned on a flatbed tilted about 3°, with 0.2–1.3% and 0.4–0.7%
+  ([Accuracy and speed](#accuracy-and-speed)).
 
 ### Reading again and removing recognised text
 
@@ -117,8 +151,10 @@ lists these lines as "(hidden)".
 
 ### Getting good results
 
-- **Tilted pages:** optimise them first, with Straighten tilted pages on. Recognising text doesn't straighten a
-  page, and a page tilted 2.5° lost about a third of its characters when it wasn't optimised first.
+- **Tilted pages:** optimising first isn't needed for the text: a tilted page is read as well as a straight one,
+  and other apps read its text in order too. Optimise first, with Straighten tilted pages on, for a straight page
+  and highlights exactly on the words, worth it from about 2°, where the report says a page is tilted
+  ([Tilted pages](#tilted-pages)).
 - **Small print:** scan at 300 dpi, and before optimising, set Optimise's **Image resolution** to 300 dpi
   (`--max-dpi 300` on the command line). At the 200 dpi default a page of small print lost about a tenth of its
   words.
@@ -160,8 +196,8 @@ Optimising first changed them by a point and a half at most, either way.
 
 | | Words found |
 | --- | --- |
-| Recognised as they are | 51–72% |
-| Optimised first, Automatic | 22–55% |
+| Recognised as they are | 51–69% |
+| Optimised first, Automatic | 28–57% |
 | Optimised first, Greyscale | 52–67% |
 | Tesseract | 56–76% |
 
@@ -181,26 +217,56 @@ not how right either is.
 Patterned backgrounds read worst. One phone scan of a photocopied card with textured bands was tried earlier: all
 its body text and headings were read, plus a few short junk lines from the texture.
 
-**Tilt:** the English page of the test sheet, turned.
+**Tilted and turned pages:** the English page of the test sheet, rendered at 300 dpi and tilted, or turned on its
+side or upside down. Its text was read back by LimarePDF, and by Poppler's `pdftotext` as the tables above were,
+and scored in character errors. Poppler reads the upright page's text with 5.1%, most of them two lines out of
+place, where LimarePDF reads it with 0.5%.
 
-| Tilt | Character errors | Optimised first |
-| --- | --- | --- |
-| 1° | 3.8% | 0.2% |
-| 2.5° | 33.8% | 4.8% |
-| 4° | 52.6% | 2.4% |
+| Page | Read by LimarePDF | Read by Poppler | Optimised first, read by Poppler |
+| --- | --- | --- | --- |
+| Tilted 0.5° or −0.5° | 0.5% | 3.2–5.3% | 0.2–3.6% |
+| Tilted 1° | 0.6% | 3.2% | 0.2% |
+| Tilted −1° | 0.5% | 4.8% | 3.5% |
+| Tilted 2.5° | 0.5% | 2.1% | 4.8% |
+| Tilted 4° | 0.4% | 4.7% | 2.4% |
+| Tilted 5° | 0.7% | 5.0% | 2.3% |
+| On its side or upside down | 0.5% | 5.1% | 4.4% |
+| On its side or upside down, and tilted 2.5° | 0.5–0.6% | 2.2–3.2% | 2.4–4.8% |
+
+Each way, 99% of the words or more were found.
+
+**Flatbed scans of the test sheet:** both pages printed on a laser printer and scanned on a flatbed scanner at
+300 dpi in greyscale, with the scanner's own straightening and turning off, scored as above.
+
+| Scan | Read by LimarePDF | Read by Poppler | Optimised first, read by Poppler |
+| --- | --- | --- | --- |
+| English page, straight | 0.4% | 3.4% | 3.5% |
+| English page, tilted 0.6° | 0.5% | 3.5% | 3.8% |
+| English page, tilted 3.3° or −3.5° | 0.2% | 2.9% | 2.6–2.7% |
+| English page, on its side or upside down | 0.2–0.4% | 2.4–2.9% | 2.3–3.0% |
+| English page, upside down and tilted 2.9° | 0.3% | 2.6% | 2.6% |
+| Other page, straight or upside down | 1.1–1.2% | 1.1–1.2% | 0.7–0.9% |
+| Other page, tilted 2.7° | 1.3% | 1.2% | 0.7% |
+
+Each way, 98% of the words or more were found.
+
+The old book pages and the faxes, turned on their side either way or upside down, were turned upright and read as
+they were upright: the book pages within 0.6 points of their character errors, the faxes within 2.3 points of their
+words found.
 
 On pages made with ImageMagick, an earlier measure found 0.4–1.7% character errors on clean 300 dpi text, 4–14% on
 blurred and noisy pages and 0–1.2% under strong shadows. Real scans read worse than those made-up pages.
 
-Speed: about 2 seconds a page, from 0.6 to 2.7, on a 6-core machine, start-up included, and 3.3 seconds for a
-large magazine page. Pages run in parallel.
+Speed: about 2.5 seconds a page, from 0.7 to 3.4, on a 6-core machine, start-up included, and 4 seconds for a
+large magazine page. A page upside down, or on its side with its top to the right, takes about a second more: it is
+read a second time, turned round. Pages run in parallel.
 
 ## How this was tested
 
 Importing, optimising and OCR have automated tests. OCR was measured with `tools/ocr-accuracy.py` on the test
-sheet, public scans with known text (old French, Spanish and German books, faxes) and real office, flatbed and phone
-scans, as above. The app's inspector tools for these weren't clicked through. The full record is in
-[Testing](developer/testing.md#scanning-and-ocr).
+sheet, also tilted and turned, rendered and scanned on a flatbed, public scans with known text (old French, Spanish
+and German books, faxes), also turned, and real office, flatbed and phone scans, as above. The app's inspector tools
+for these weren't clicked through. The full record is in [Testing](developer/testing.md#scanning-and-ocr).
 
 ## Licence of the OCR model
 
