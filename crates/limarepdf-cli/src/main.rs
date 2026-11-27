@@ -202,11 +202,16 @@ enum Cmd {
     Ocr {
         #[command(flatten)]
         io: Io,
-        #[arg(long, default_value = "all")]
+        #[arg(long, default_value = "all", conflicts_with = "areas")]
         pages: String,
         /// Read pages that have recognised text again, replacing it
-        #[arg(long)]
+        #[arg(long, conflicts_with = "areas")]
         again: bool,
+        /// Read only an area, as PAGE:X,Y,W,H in points from the page's top left as shown,
+        /// on any page: the page's own text is left out, and recognised lines inside the
+        /// area are replaced; repeat for more
+        #[arg(long = "area")]
+        areas: Vec<String>,
     },
     /// Remove recognised text (an invisible OCR layer) from pages; they look the same
     RemoveOcr {
@@ -1627,11 +1632,15 @@ fn note_repaired(p: &Path, pdf: Pdf) -> Pdf {
     pdf
 }
 
-/// What recognising text, or removing recognised text, did to each page.
-fn print_ocr(done: &[(usize, OcrResult)]) -> Result<()> {
+/// What recognising text, or removing recognised text, did to each page, or to each of the
+/// `areas` asked (as PAGE:X,Y,W,H) when there are any.
+fn print_ocr(done: &[(usize, OcrResult)], areas: &[String]) -> Result<()> {
     let mut any_tilted = false;
-    for (i, r) in done {
-        let page = i + 1;
+    for (n, (i, r)) in done.iter().enumerate() {
+        let page = match areas.get(n).and_then(|a| a.split_once(':')) {
+            Some((_, rect)) => format!("{}, area {}", i + 1, rect.trim()),
+            None => (i + 1).to_string(),
+        };
         match r {
             OcrResult::Added {
                 lines,
@@ -1758,6 +1767,24 @@ fn by_page(marks: &[(usize, [f32; 4])]) -> std::collections::BTreeMap<usize, Vec
     out
 }
 
+/// An `--area` given as PAGE:X,Y,W,H: its page's index and its box from the page's top left
+/// as shown, in points.
+fn parse_area(a: &str) -> Result<(usize, [f32; 4])> {
+    let bad = || format!("--area {a:?} should be PAGE:X,Y,W,H");
+    let (page, rect) = a.split_once(':').with_context(bad)?;
+    let page: usize = page.trim().parse().with_context(bad)?;
+    let v: Vec<f32> = rect
+        .split(',')
+        .map(|x| x.trim().parse())
+        .collect::<Result<_, _>>()
+        .with_context(bad)?;
+    let finite = v.iter().all(|x| x.is_finite());
+    if page == 0 || v.len() != 4 || !finite || v[2] <= 0.0 || v[3] <= 0.0 {
+        bail!("{}", bad());
+    }
+    Ok((page - 1, [v[0], v[1], v[0] + v[2], v[1] + v[3]]))
+}
+
 /// `limarepdf-cli redact`: the file is written only when the check afterwards finds nothing left
 /// under the marks.
 fn redact(
@@ -1769,21 +1796,10 @@ fn redact(
     json: bool,
 ) -> Result<()> {
     let (mut pdf, original) = open_io(io)?;
-    let mut marks = Vec::new();
-    for a in areas {
-        let bad = || format!("--area {a:?} should be PAGE:X,Y,W,H");
-        let (page, rect) = a.split_once(':').with_context(bad)?;
-        let page: usize = page.trim().parse().with_context(bad)?;
-        let v: Vec<f32> = rect
-            .split(',')
-            .map(|x| x.trim().parse())
-            .collect::<Result<_, _>>()
-            .with_context(bad)?;
-        if page == 0 || v.len() != 4 || v[2] <= 0.0 || v[3] <= 0.0 {
-            bail!("{}", bad());
-        }
-        marks.push((page - 1, [v[0], v[1], v[0] + v[2], v[1] + v[3]]));
-    }
+    let mut marks = areas
+        .iter()
+        .map(|a| parse_area(a))
+        .collect::<Result<Vec<_>>>()?;
     for t in texts {
         let found = pdf.find_redaction_marks(t)?;
         if found.is_empty() {
@@ -3426,18 +3442,30 @@ fn run(cmd: Cmd) -> Result<()> {
                 Err(_) => out!("wrote {}", io.output.display()),
             }
         }
-        Cmd::Ocr { io, pages, again } => run_edit(&io, |p| {
-            let idx = parse_page_range(&pages, p.page_count())?;
+        Cmd::Ocr {
+            io,
+            pages,
+            again,
+            areas,
+        } => run_edit(&io, |p| {
             let ocr = Ocr::bundled()?;
+            if !areas.is_empty() {
+                let boxes = areas
+                    .iter()
+                    .map(|a| parse_area(a))
+                    .collect::<Result<Vec<_>>>()?;
+                return print_ocr(&p.ocr_areas(&boxes, &ocr)?, &areas);
+            }
+            let idx = parse_page_range(&pages, p.page_count())?;
             let done = match again {
                 true => p.ocr_pages_again(&idx, &ocr)?,
                 false => p.ocr_pages(&idx, &ocr)?,
             };
-            print_ocr(&done)
+            print_ocr(&done, &[])
         })?,
         Cmd::RemoveOcr { io, pages } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;
-            print_ocr(&p.remove_recognised_text(&idx)?)
+            print_ocr(&p.remove_recognised_text(&idx)?, &[])
         })?,
         Cmd::InsertImages {
             io,

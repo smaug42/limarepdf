@@ -339,6 +339,20 @@ fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
     (pages > 0, text)
 }
 
+/// Summary of reading one area (#226) for the user, and whether it added text: a toast's
+/// when it did, else a message's saying why not.
+fn area_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
+    match report.first().map(|(_, r)| r) {
+        Some(OcrResult::Added { words, .. }) => {
+            let s = if *words == 1 { "" } else { "s" };
+            let text = format!("{words} word{s} recognised in the area, as invisible text");
+            (true, text)
+        }
+        Some(OcrResult::Skipped(why)) => (false, format!("Nothing was added: {why}.")),
+        _ => (false, "Nothing was added.".into()),
+    }
+}
+
 /// Summary of removing recognised text for the user, and whether any page changed.
 fn removal_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
     let (mut pages, mut lines) = (0, 0);
@@ -816,6 +830,9 @@ impl Excerpt {
 
 /// Title of the OCR background job, also used to recognise its result.
 const OCR_JOB: &str = "Recognise text";
+/// Title of an area's OCR job (#226), its own: the rest of a scan is still to recognise, so
+/// the scan banner stays.
+const OCR_AREA_JOB: &str = "Recognise text in an area";
 /// Title of the printing background job: quitting waits for it (PB-88).
 const PRINT_JOB: &str = "Print";
 /// Title of Reduce file size's background job (ENH-19).
@@ -2213,6 +2230,13 @@ impl App {
                             t.banners.retain(|b| b.kind != BannerKind::Scanned);
                         }
                     }
+                    // An area's text, added in the tab in front, is said in a toast with Undo,
+                    // as the tool stays for the next box.
+                    let i = self.tabs.iter().position(|t| t.id == tab);
+                    if changed && title == OCR_AREA_JOB && i == Some(self.active) {
+                        self.notify(ctx, self.active, text, true);
+                        continue;
+                    }
                     self.show(Dialog::Message(title.into(), text));
                 }
                 Loaded::ReplaceAll {
@@ -2527,6 +2551,23 @@ impl App {
         });
         self.busy = true;
         self.status = format!("{title}…");
+    }
+
+    /// Recognise the text in an area of the active tab's page (displayed-page points), a box
+    /// dragged with the area tool or a selected picture's (#226), in the background. While a
+    /// task runs the area isn't read, and a toast says to try again.
+    fn recognise_area(&mut self, ctx: &egui::Context, (page, rect): (usize, [f32; 4])) {
+        if self.busy {
+            let text = "The area wasn't read: wait for the task under way to finish, then try \
+                        again"
+                .into();
+            self.notify(ctx, self.active, text, false);
+            return;
+        }
+        self.spawn_job(ctx, OCR_AREA_JOB, Vec::new(), move |p| {
+            let ocr = limarepdf_core::Ocr::bundled()?;
+            Ok(area_summary(&p.ocr_areas(&[(page, rect)], &ocr)?))
+        });
     }
 
     /// Job `id` ended: its thread is joined (it has sent its result).
@@ -8831,7 +8872,7 @@ impl eframe::App for App {
 
         // Commands chosen from right-click menus on pages and thumbnails, and undoable
         // changes the editor reports.
-        let (mut notice, mut info) = (None, None);
+        let (mut notice, mut info, mut area) = (None, None, None);
         if let Some(t) = self.tabs.get_mut(self.active) {
             // The digital signature tool lists the empty signature fields, and opens the
             // signing window once its place is chosen.
@@ -8851,6 +8892,7 @@ impl eframe::App for App {
             }
             acts.append(&mut t.requested);
             (notice, info) = (t.notice.take(), t.info.take());
+            area = t.read_area.take();
         }
         if let Some(text) = notice {
             self.notify(&ctx, self.active, text, true);
@@ -8868,6 +8910,9 @@ impl eframe::App for App {
         self.shown = Some(c);
         for a in acts {
             self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
+        }
+        if let Some(a) = area {
+            self.run_command(&ctx, OCR_AREA_JOB, |app, ctx| app.recognise_area(ctx, a));
         }
         self.shown = None;
         // By its id, as a command above may have opened or closed tabs. The tab in front
@@ -9048,6 +9093,7 @@ mod tests {
     mod minimal;
     mod minimal_tasks;
     mod new_document;
+    mod ocr_area;
     mod organise;
     mod overflow;
     mod paragraphs;
@@ -9258,6 +9304,7 @@ mod tests {
             Tool::Redact,
             Tool::Sign,
             Tool::DigitalSign,
+            Tool::OcrArea,
         ] {
             // Not through the command, which asks for a picture for Image.
             app.tabs[0].ed.set_tool(tool);
@@ -12263,6 +12310,7 @@ mod tests {
             (Tool::Pen, "Pen"),
             (Tool::Note, "New note"),
             (Tool::Redact, "Mark for redaction"),
+            (Tool::OcrArea, "Recognise text in an area"),
         ] {
             // Set directly: the Image tool's command asks for a file.
             app.tabs[0].ed.set_tool(tool);

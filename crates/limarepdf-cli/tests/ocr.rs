@@ -1,6 +1,7 @@
 //! `ocr` and `remove-ocr` (#223, #224): pages with recognised text skipped unless read
 //! `--again`; recognised text taken out, the page's own text kept. Turned scans turned
-//! upright and reported (#225), tilted ones reported (#320).
+//! upright and reported (#225), tilted ones reported (#320). Areas read with `--area`
+//! (#226).
 
 use limarepdf_core::render::{self, encode, ImageFormat, Renderer};
 use limarepdf_core::{FontChoice, ImageImport, Pdf};
@@ -99,6 +100,51 @@ fn recognised_text_is_read_again_and_removed() {
     let out = ok(&dir, "remove-ocr removed.pdf -o none.pdf --pages 1");
     let none = "page 1: skipped: the page has no recognised text";
     assert!(out.contains(none), "{out}");
+}
+
+/// `--area` reads a box, and read again in a larger box its line is replaced, not doubled;
+/// a box that isn't one, or isn't on a page, is refused (#226).
+#[test]
+fn areas_are_read() {
+    let dir = folder("area");
+    scan_pdf(&dir);
+    let out = ok(&dir, "ocr in.pdf -o top.pdf --area 1:0,20,288,35");
+    assert!(out.contains("page 1, area 0,20,288,35: 1 lines, "), "{out}");
+    let top = text(&dir, "top.pdf");
+    assert!(
+        top.contains("Ottawa") && !top.contains("kilograms"),
+        "{top}"
+    );
+
+    let out = ok(&dir, "ocr top.pdf -o all.pdf --area 1:0,0,288,144");
+    assert!(out.contains("page 1, area 0,0,288,144: 2 lines, "), "{out}");
+    let all = text(&dir, "all.pdf");
+    assert_eq!(all.matches("Ottawa").count(), 1, "{all}");
+    assert!(
+        all.contains("kilograms") && all.contains("LIM-000123"),
+        "{all}"
+    );
+
+    for (args, why) in [
+        ("--area 1:0,0,288", "should be PAGE:X,Y,W,H"),
+        ("--area 0:0,0,288,144", "should be PAGE:X,Y,W,H"),
+        ("--area 1:0,0,inf,144", "should be PAGE:X,Y,W,H"),
+        ("--area 2:0,0,288,144", "no page 2"),
+        ("--area 1:0,0,288,144 --again", "cannot be used with"),
+        ("--area 1:0,0,288,144 --pages 1", "cannot be used with"),
+    ] {
+        let args: Vec<_> = ["ocr", "in.pdf", "-o", "bad.pdf"]
+            .into_iter()
+            .chain(args.split(' '))
+            .collect();
+        let res = run(&dir, &args);
+        let err = String::from_utf8_lossy(&res.stderr);
+        assert!(
+            !res.status.success() && err.contains(why),
+            "{args:?}: {err}"
+        );
+        assert!(!dir.join("bad.pdf").exists(), "{args:?}");
+    }
 }
 
 /// A page scanned upside down or on its side is turned upright, and the report says so

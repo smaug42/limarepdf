@@ -65,6 +65,7 @@ fn a_tool_chosen_again_goes_back_to_the_read_tool() {
         Tool::Stamp,
         Tool::Redact,
         Tool::Sign,
+        Tool::OcrArea,
     ] {
         app.act(&ctx, Act::Tool(t));
         assert_eq!(app.tabs[0].ed.tool, t);

@@ -76,7 +76,8 @@ copied. The page looks the same.
   number or a stamp: a page with text is read when a picture covers at least half of it. Words read where the page's
   own text is are left out, so nothing is doubled, and searching, selecting and copying take in both. Other pages
   with text are skipped, and so are pages with recognised text unless they are read again. The report gives each
-  skipped page's reason.
+  skipped page's reason. On any page, a picture of text or another part of it can be read as an area
+  ([Reading an area](#reading-an-area)).
 - **Recognised text:** invisible text, as OCR adds it: LimarePDF's own, and other apps' such as OCRmyPDF's, also
   when it is in a group of its own (a form XObject). A line counts when all of it is invisible. Invisible text that
   cuts out a shape for what is drawn after it (clipping) is the page's own.
@@ -94,7 +95,8 @@ copied. The page looks the same.
   few words is left as it is: they don't show which way up it is.
 - **Tilted pages:** a page scanned tilted by up to 5° is read as it is, as well as a straight one, and stays
   tilted. From 2°, the report says so; see [Tilted pages](#tilted-pages).
-- **Not handled:** text in pictures, handwriting, vertical text.
+- **Not handled:** handwriting, vertical text. Text in a picture on a page with text of its own is read only as
+  an area.
 - **Reading order:** a table with wide gaps, or a form whose fields are far apart, can come out column by column, so
   copied text may not keep its rows together. Each word is still where it shows, so searching and selecting work.
 
@@ -141,6 +143,33 @@ page itself isn't straightened: it still shows as it was scanned.
 
 Each runs in the background and is one undo step. On the command line: `limarepdf-cli ocr --again` and
 `limarepdf-cli remove-ocr`.
+
+### Reading an area
+
+Part of a page can be read on its own, such as a picture of text or a scanned table in an ordinary document,
+whether the page has text of its own or not.
+
+- **What is read:** the text inside the area, as the page shows it, at the same resolution as a whole page. Draw
+  the area round whole lines: a word its edge cuts through is read in part, or not at all. Words read where the
+  page's own text is are left out, as on a whole page.
+- **Recognised text in the area:** recognised lines wholly inside it are replaced with the new read, or kept when
+  the new read finds nothing. A recognised line crossing its edge is kept, and isn't read again.
+- **Several areas** given on the command line are read in one go and are one undo step. Where they overlap on a
+  page, the lines they share are read once. In the app, each box is read on its own, one undo step each.
+- **Turned and tilted text:** text in the area on its side or upside down isn't read, and the report says so:
+  turn the page so the text reads upright (**Pages > Rotate**), read the area, then turn the page back if wanted.
+  Tilted text is read as on a tilted page, and isn't reported.
+- **Left as it is,** with the reason given: an area off the page, a page with text whose place LimarePDF can't
+  tell, and a page with a picture written inside its content (an inline image) when the area holds recognised text
+  to replace.
+
+Where: **Pages > Recognise text ▾ > Recognise text in an area** (also in ☰ > Pages), or **Recognise an area** in
+the Recognise text (OCR) tool, turns on a tool: drag a box over the text, and it is read in the background.
+A note says how many words were read, with Undo; when none were, a message says why. The tool stays on for more
+boxes, until Esc, **Recognise an area** again or another tool. An area chosen while another task runs isn't read:
+try again once that ends. For a picture, select it and choose **Recognise text** in the inspector, which reads
+the picture's area. On the command line: `limarepdf-cli ocr --area PAGE:X,Y,W,H`, in points from the page's top
+left as shown, repeated for more areas.
 
 ### Seeing and correcting recognised text
 

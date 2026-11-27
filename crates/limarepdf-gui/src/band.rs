@@ -332,6 +332,12 @@ const ROTATE: Item = split(
     icon::ARROW_CLOCKWISE,
     &[Act::RotR, Act::RotL],
 );
+const RECOGNISE: Item = split(
+    Act::Ocr,
+    "Recognise text",
+    icon::SCAN,
+    &[Act::Ocr, Act::Tool(Tool::OcrArea)],
+);
 const INSERT_PAGES: Item = menu(
     "Insert pages",
     icon::FILE_PLUS,
@@ -475,10 +481,7 @@ static PAGES: &[Group] = &[
     ),
     group(
         "Scanned pages",
-        &[
-            b(Act::Ocr, "Recognise text", icon::SCAN),
-            b(Act::Scans, "Optimise", icon::MAGIC_WAND),
-        ],
+        &[RECOGNISE, b(Act::Scans, "Optimise", icon::MAGIC_WAND)],
     ),
 ];
 

@@ -69,6 +69,10 @@ pub enum Tool {
     /// Links (ENH-17): each outlined; drag a box for a new one, click one to select it,
     /// then move or resize it, change it or remove it. Stays on until turned off.
     Link,
+    /// Drag boxes over text to recognise it (#226), in a picture or a scan, even on a page
+    /// with text of its own: each box read in the background, one step to undo. Stays on
+    /// until Esc or another tool.
+    OcrArea,
 }
 
 impl Tool {
@@ -123,9 +127,13 @@ impl Tool {
             Tool::Stamp => "stamp",
             Tool::Redact => "redact",
             Tool::Sign => "fill_and_sign",
-            Tool::Read | Tool::Select | Tool::Pen | Tool::Note | Tool::DigitalSign | Tool::Link => {
-                ""
-            }
+            Tool::Read
+            | Tool::Select
+            | Tool::Pen
+            | Tool::Note
+            | Tool::DigitalSign
+            | Tool::Link
+            | Tool::OcrArea => "",
         }
     }
 
@@ -447,6 +455,9 @@ pub enum Action {
     AddStamp(usize, StampPlace),
     /// Mark an area (displayed-page points) for redaction.
     AddRedactMark(usize, [f32; 4]),
+    /// Recognise the text in an area (displayed-page points), a box dragged with the area
+    /// tool or a selected picture's (#226): the app reads it in the background.
+    RecogniseArea(usize, [f32; 4]),
     /// A box dragged with the Link tool (displayed-page points): a link there, once the
     /// Insert link window says where it goes (ENH-17).
     NewLink(usize, [f32; 4]),
@@ -4781,6 +4792,7 @@ impl Editor {
             | Tool::TextBox
             | Tool::Stamp
             | Tool::Redact
+            | Tool::OcrArea
             | Tool::Sign
             | Tool::DigitalSign => {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
@@ -4852,8 +4864,9 @@ impl Editor {
                         let at = StampPlace::Centre(p.x, p.y);
                         self.actions.push(Action::AddStamp(page, at));
                     }
-                } else if resp.clicked() && self.tool != Tool::Redact {
-                    // A click makes a default size; a redaction mark has none.
+                } else if resp.clicked() && !matches!(self.tool, Tool::Redact | Tool::OcrArea) {
+                    // A click makes a default size; a redaction mark and an area to read
+                    // have none.
                     if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
                         let (w, h) = match (self.tool, &self.pending_image) {
                             (Tool::Image, Some((_, aspect))) => (200.0, 200.0 / aspect.max(0.01)),
@@ -4886,6 +4899,7 @@ impl Editor {
                                 .actions
                                 .push(Action::AddStamp(page, StampPlace::Fill(n))),
                             Tool::Redact => self.actions.push(Action::AddRedactMark(page, n)),
+                            Tool::OcrArea => self.actions.push(Action::RecogniseArea(page, n)),
                             Tool::Sign => self.place_sign(page, StampPlace::Fill(n)),
                             Tool::DigitalSign => {
                                 if n[2] - n[0] >= MIN_SIGNATURE_BOX
@@ -5697,6 +5711,7 @@ impl Editor {
                 | Tool::Pen
                 | Tool::Stamp
                 | Tool::Redact
+                | Tool::OcrArea
                 | Tool::Sign
                 | Tool::DigitalSign
         ) || self.has_object()
@@ -5753,6 +5768,7 @@ impl Editor {
             Tool::DigitalSign if self.digital_certify => "Certify with a digital ID",
             Tool::DigitalSign => "Sign with a digital ID",
             Tool::Redact => "Mark for redaction",
+            Tool::OcrArea => "Recognise text in an area",
             Tool::TextBox => "New text box",
             // The Link tool has no options: the inspector shows a link selected with it.
             Tool::Select | Tool::Read | Tool::Link => return None,
@@ -7132,6 +7148,13 @@ impl Editor {
                 }
                 return;
             }
+            Tool::OcrArea => {
+                ui.label(
+                    "Drag a box over text to recognise it, in a picture or a scan, even on a \
+                     page with text of its own.",
+                );
+                return;
+            }
             Tool::TextBox => {
                 text_style_ui(ui, &mut self.box_style);
                 // Words Helvetica lacks in a new text box, which go to an installed font.
@@ -7248,13 +7271,20 @@ impl Editor {
             }
             ObjectKind::Image => {
                 ui.add_space(4.0);
-                if obj.inline {
-                    note(ui, "Inline image: can't be replaced.");
-                } else if theme::glyph_button(ui, icon::IMAGE, "Replace image…").clicked() {
-                    if let Some(bytes) = pick_image() {
-                        self.actions.push(Action::ReplaceImage(page, id, bytes));
+                ui.horizontal_wrapped(|ui| {
+                    if obj.inline {
+                        note(ui, "Inline image: can't be replaced.");
+                    } else if theme::glyph_button(ui, icon::IMAGE, "Replace image…").clicked() {
+                        if let Some(bytes) = pick_image() {
+                            self.actions.push(Action::ReplaceImage(page, id, bytes));
+                        }
                     }
-                }
+                    // Its text, even on a page with text of its own, which recognising
+                    // pages leaves alone (#226).
+                    if theme::glyph_button(ui, icon::SCAN, "Recognise text").clicked() {
+                        self.actions.push(Action::RecogniseArea(page, obj.bbox));
+                    }
+                });
             }
             ObjectKind::Form => {}
         }

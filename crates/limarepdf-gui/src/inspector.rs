@@ -19,6 +19,7 @@
 use crate::actions::{self, Act, Ctx};
 use crate::app::IMAGE_EXTS;
 use crate::dialogs::{set_name, slider};
+use crate::editor::Tool;
 use crate::fields::{self, FormUi};
 use crate::page_text;
 use crate::selection::Selection;
@@ -865,6 +866,15 @@ fn tool_ui(ui: &mut Ui, s: Section, f: &mut Forms, p: &Parts) -> Option<Apply> {
             let remove = egui::Button::new("Remove recognised text");
             if ui.add_enabled(!p.busy, remove).clicked() {
                 apply = Some(Apply::RemoveOcr);
+            }
+            // Text in a picture or a scan on any page, even one with text of its own (#226).
+            ui.add_space(4.0);
+            note(
+                ui,
+                "Or drag boxes over text on any page, even one with text.",
+            );
+            if ui.button("Recognise an area").clicked() {
+                apply = Some(Apply::Act(Act::Tool(Tool::OcrArea)));
             }
             apply
         }

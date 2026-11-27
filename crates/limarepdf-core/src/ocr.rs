@@ -24,7 +24,7 @@ use rten::Model;
 use rten_imageproc::{BoundingRect, RectF, RotatedRect};
 use rten_tensor::prelude::*;
 use rten_tensor::{NdTensor, NdTensorView};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
 /// Resolution pages are rendered at for recognition.
@@ -244,11 +244,22 @@ impl Ocr {
 
     /// The lines of `img` read upright: turned a quarter if they run down it, straightened,
     /// and turned round if they are upside down. A page with too little to tell how it lies
-    /// is read as it is.
-    pub(crate) fn read_upright(&self, img: GrayImage) -> Result<Upright> {
+    /// is read as it is. Not to `turn`, lines running down it or upside down aren't read:
+    /// none are given, and `turns` says how far they are from upright.
+    pub(crate) fn read_upright(&self, img: GrayImage, turn: bool) -> Result<Upright> {
         let (w, h) = img.dimensions();
         let lies = lie(&img);
         let (down, slope) = lies.unwrap_or((false, 0.0));
+        let unread = |turns| Upright {
+            lines: Vec::new(),
+            turns,
+            slope,
+            to_page: mx::ID,
+            from_shown: mx::ID,
+        };
+        if down && !turn {
+            return Ok(unread(1));
+        }
         let img = if down { imageops::rotate90(&img) } else { img };
         // A page tilted a little is read as it is, each line straightened in its picture.
         let each = if slope.abs() < LITTLE_TILT {
@@ -271,6 +282,7 @@ impl Ocr {
         };
         match judged {
             Ok(sampled) => (sampled.into_iter()).for_each(|(i, r)| read[i] = Some(r)),
+            Err(()) if !turn => return Ok(unread(2)),
             Err(()) => {
                 // Turned round, the lines slope as they did.
                 img = imageops::rotate180(&img);
@@ -778,10 +790,46 @@ fn recognised_objs(parsed: &Parsed) -> std::result::Result<(Vec<usize>, usize), 
             lines += 1;
         }
     }
-    if !objs.is_empty() && parsed.ops.iter().any(|o| o.operator == "BI") {
-        return Err("the page has an inline image that would be lost in rewriting it".into());
+    if !objs.is_empty() && has_inline_image(parsed) {
+        return Err(INLINE_IMAGE.into());
     }
     Ok((objs, lines))
+}
+
+/// Why a page's recognised text isn't taken out when it has an inline picture.
+const INLINE_IMAGE: &str = "the page has an inline image that would be lost in rewriting it";
+
+fn has_inline_image(parsed: &Parsed) -> bool {
+    parsed.ops.iter().any(|o| o.operator == "BI")
+}
+
+/// What a page, or a box on it, is read against: the boxes of the words the page has as
+/// text already, in displayed-page points (y down), and the recognised text that what is
+/// read replaces, as ids in the page's parsed `objs`.
+struct Target {
+    own: Vec<[f32; 4]>,
+    replaced: Vec<usize>,
+}
+
+/// Why a box isn't read when its text isn't upright, `turns` quarter turns clockwise from it.
+fn turned_area(turns: u8) -> String {
+    let lies = match turns {
+        2 => "is upside down",
+        _ => "lies on its side",
+    };
+    format!(
+        "the text in the area {lies}: turn the page so it reads upright, recognise the area, \
+         and turn the page back if wanted"
+    )
+}
+
+/// The picture `b` in grey.
+fn luma(b: render::Bitmap) -> Result<GrayImage> {
+    let luma: Vec<u8> = (b.rgba.as_chunks::<4>().0.iter())
+        .map(|px| ((px[0] as u32 * 299 + px[1] as u32 * 587 + px[2] as u32 * 114) / 1000) as u8)
+        .collect();
+    GrayImage::from_raw(b.width as u32, b.height as u32, luma)
+        .ok_or_else(|| anyhow!("the page's picture does not match its size"))
 }
 
 /// The name an operator names first: a font for `Tf`, a picture or a form for `Do`.
@@ -798,7 +846,8 @@ impl Pdf {
     /// that land on the page's own text are left out. Run [`Pdf::optimize_scans`] first if
     /// wanted: it does not straighten pages that have text.
     pub fn ocr_pages(&mut self, pages: &[usize], ocr: &Ocr) -> Result<Vec<(usize, OcrResult)>> {
-        self.ocr_with(pages, ocr, false)
+        let asked: Vec<_> = pages.iter().map(|&p| (p, None)).collect();
+        self.ocr_with(&asked, ocr, false)
     }
 
     /// [`Pdf::ocr_pages`], with pages that have recognised text read again: their recognised
@@ -810,62 +859,109 @@ impl Pdf {
         pages: &[usize],
         ocr: &Ocr,
     ) -> Result<Vec<(usize, OcrResult)>> {
-        self.ocr_with(pages, ocr, true)
+        let asked: Vec<_> = pages.iter().map(|&p| (p, None)).collect();
+        self.ocr_with(&asked, ocr, true)
     }
 
+    /// Recognise the text in boxes drawn on pages, each (page, 0-based; box, in
+    /// displayed-page points: left, top, right, bottom, y down), and add it as
+    /// [`Pdf::ocr_pages`] does, whatever text the pages have: a picture of text in an
+    /// ordinary page. Words that land on the page's own text are left out. The page's
+    /// recognised lines inside a box, as near its edge as a quarter of their height, are
+    /// replaced with what is read there, or kept when nothing is; a line crossing its edge is
+    /// kept, and what is read on it left out. Boxes on one page read the lines they share
+    /// once. A box isn't turned or straightened with its page: text lying on its side or
+    /// upside down in it is left, with the reason. One result a box, in the order asked.
+    pub fn ocr_areas(
+        &mut self,
+        areas: &[(usize, [f32; 4])],
+        ocr: &Ocr,
+    ) -> Result<Vec<(usize, OcrResult)>> {
+        let mut asked = Vec::with_capacity(areas.len());
+        for &(p, a) in areas {
+            if !a.iter().all(|v| v.is_finite()) {
+                bail!("the area {a:?} on page {} isn't a box", p + 1);
+            }
+            let a = [
+                a[0].min(a[2]),
+                a[1].min(a[3]),
+                a[0].max(a[2]),
+                a[1].max(a[3]),
+            ];
+            asked.push((p, Some(a)));
+        }
+        self.ocr_with(&asked, ocr, false)
+    }
+
+    /// Read what is `asked`, (page, 0-based; a box on it, or the whole page), as
+    /// [`Pdf::ocr_pages`] or [`Pdf::ocr_areas`], `again` as [`Pdf::ocr_pages_again`].
     fn ocr_with(
         &mut self,
-        pages: &[usize],
+        asked: &[(usize, Option<[f32; 4]>)],
         ocr: &Ocr,
         again: bool,
     ) -> Result<Vec<(usize, OcrResult)>> {
         let ids = self.page_ids();
-        if let Some(&bad) = pages.iter().find(|&&p| p >= ids.len()) {
+        if let Some(&(bad, _)) = asked.iter().find(|(p, _)| *p >= ids.len()) {
             bail!("no page {}", bad + 1);
         }
-        let mut todo = Vec::new();
-        let mut targets = HashMap::new();
+        // Each by its place in `asked`. A page asked twice is read once.
+        let mut todo: Vec<(usize, Target)> = Vec::new();
         let mut out: Vec<(usize, OcrResult)> = Vec::new();
-        let mut asked = HashSet::new();
-        // A page asked twice is read once.
-        for &p in pages.iter().filter(|&&p| asked.insert(p)) {
-            match self.ocr_target(ids[p], again) {
-                Ok(t) => {
-                    todo.push(p);
-                    targets.insert(p, t);
-                }
-                Err(why) => out.push((p, OcrResult::Skipped(why))),
+        let mut whole = HashSet::new();
+        for (i, &(p, area)) in asked.iter().enumerate() {
+            let target = match area {
+                None if !whole.insert(p) => continue,
+                None => self.ocr_target(ids[p], again),
+                Some(a) => self.area_target(ids[p], a),
+            };
+            match target {
+                Ok(t) => todo.push((i, t)),
+                Err(why) => out.push((i, OcrResult::Skipped(why))),
             }
         }
         let hp = render::load(self.drawing_snapshot()?, None)?;
-        let found: Vec<(usize, PageRead)> = todo
+        let found: Vec<PageRead> = todo
             .par_iter()
-            .map(|&p| {
+            .map(|&(i, _)| {
+                let (p, area) = asked[i];
                 let read = || -> Result<(Upright, f32)> {
                     let r = render::Renderer::new(&hp);
                     let (w, h) = r.page_size(p)?;
                     let scale = (OCR_DPI / 72.0).min(MAX_SIDE / w.max(h).max(1.0));
-                    let b = r.render(p, scale)?;
-                    let luma: Vec<u8> = b
-                        .rgba
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|px| {
-                            ((px[0] as u32 * 299 + px[1] as u32 * 587 + px[2] as u32 * 114) / 1000)
-                                as u8
-                        })
-                        .collect();
-                    let img = GrayImage::from_raw(b.width as u32, b.height as u32, luma)
-                        .ok_or_else(|| anyhow!("the page's picture does not match its size"))?;
-                    Ok((ocr.read_upright(img)?, scale))
+                    let Some(a) = area else {
+                        return Ok((ocr.read_upright(luma(r.render(p, scale)?)?, true)?, scale));
+                    };
+                    let a = [a[0].max(0.0), a[1].max(0.0), a[2].min(w), a[3].min(h)];
+                    if a[2] <= a[0] || a[3] <= a[1] {
+                        bail!("the area is outside the page");
+                    }
+                    let (x, y) = ((a[0] * scale).floor(), (a[1] * scale).floor());
+                    let region = render::Region {
+                        x: x as u32,
+                        y: y as u32,
+                        width: ((a[2] * scale).ceil() - x) as u32,
+                        height: ((a[3] * scale).ceil() - y) as u32,
+                    };
+                    // The box is read in the page's picture, white around it: what is too
+                    // large to be text, or at the scanner's edge, is so for the page.
+                    let (pw, ph) = ((w * scale) as u32, (h * scale) as u32);
+                    let mut img = GrayImage::from_pixel(pw, ph, Luma([255]));
+                    let part = luma(r.render_region(p, scale, region)?)?;
+                    imageops::replace(&mut img, &part, x as i64, y as i64);
+                    Ok((ocr.read_upright(img, false)?, scale))
                 };
-                (p, read().map_err(|e| format!("{e:#}")))
+                read().map_err(|e| format!("{e:#}"))
             })
             .collect();
+        // The words read in each page's boxes so far, in displayed-page points (y down): a
+        // later box over them leaves them out.
+        let mut boxed: HashMap<usize, Vec<[f32; 4]>> = HashMap::new();
         let mut read = Vec::new();
-        for (p, r) in found {
-            let own = &targets[&p];
+        for ((i, target), r) in todo.iter().zip(found) {
+            let (p, area) = asked[*i];
+            let earlier = boxed.get(&p).map(Vec::as_slice).unwrap_or_default();
+            let own: Vec<[f32; 4]> = target.own.iter().chain(earlier).copied().collect();
             let r = r.map(|(mut up, scale)| {
                 let to_boxes = mx::mul([scale, 0.0, 0.0, scale, 0.0, 0.0], up.from_shown);
                 let own: Vec<[f32; 4]> = (own.iter())
@@ -875,61 +971,70 @@ impl Pdf {
                 (up, scale)
             });
             match r {
-                Err(why) => out.push((p, OcrResult::Skipped(why))),
+                Err(why) => out.push((*i, OcrResult::Skipped(why))),
+                Ok((up, _)) if up.turns != 0 && area.is_some() => {
+                    out.push((*i, OcrResult::Skipped(turned_area(up.turns))))
+                }
                 Ok((up, _)) if up.lines.is_empty() => {
                     let why = match own.is_empty() {
                         true => "no text found",
                         false => "no text found besides the page's own",
                     };
-                    out.push((p, OcrResult::Skipped(why.into())))
+                    out.push((*i, OcrResult::Skipped(why.into())))
                 }
-                Ok((up, scale)) => read.push((p, up, scale)),
+                Ok((up, scale)) => {
+                    if area.is_some() {
+                        let down = 1.0 / scale;
+                        let to_points = mx::mul(up.to_page, [down, 0.0, 0.0, down, 0.0, 0.0]);
+                        let words = up.lines.iter().flat_map(|l| &l.words);
+                        (boxed.entry(p).or_default())
+                            .extend(words.map(|w| mx::transform_rect(to_points, w.bbox)));
+                    }
+                    read.push((*i, up, scale));
+                }
             }
         }
+        // The recognised text replaced, by page: what the boxes that read text replace.
+        let mut replaced: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        for (i, target) in todo.iter().filter(|(i, _)| read.iter().any(|r| r.0 == *i)) {
+            (replaced.entry(asked[*i].0).or_default()).extend(&target.replaced);
+        }
         let layers: Vec<_> = (read.iter())
-            .map(|(p, up, scale)| (ids[*p], &up.lines[..], *scale, up.to_page))
+            .map(|(i, up, scale)| (ids[asked[*i].0], &up.lines[..], *scale, up.to_page))
             .collect();
         self.atomically(|pdf| {
-            // The text read replaces the recognised text a page had.
-            for &(page, ..) in layers.iter().filter(|_| again) {
-                let parsed = pdf.parse_page_of(page)?;
-                let (objs, _) = recognised_objs(&parsed).map_err(|why| anyhow!(why))?;
-                if !objs.is_empty() {
-                    pdf.strip_recognised(page, &parsed, &objs)?;
-                }
+            // The text read replaces the recognised text it was read over.
+            for (&p, objs) in replaced.iter().filter(|(_, objs)| !objs.is_empty()) {
+                let parsed = pdf.parse_page_of(ids[p])?;
+                let objs: Vec<usize> = objs.iter().copied().collect();
+                pdf.strip_recognised(ids[p], &parsed, &objs)?;
             }
             // A page read turned is shown so, before its text is written as it reads.
-            for (p, up, _) in read.iter().filter(|(_, up, _)| up.turns != 0) {
-                pdf.rotate_pages(&[*p], 90 * up.turns as i64)?;
+            for (i, up, _) in read.iter().filter(|(_, up, _)| up.turns != 0) {
+                pdf.rotate_pages(&[asked[*i].0], 90 * up.turns as i64)?;
             }
             pdf.add_text_layers(&layers)
         })?;
-        for (p, up, _) in read {
+        for (i, up, _) in read {
             let words = up.lines.iter().map(|l| l.words.len()).sum();
+            // A box's text can't be straightened on its own, so its tilt isn't told.
+            let tilted = up.slope.abs() >= SHOWN_TILT && asked[i].1.is_none();
             let added = OcrResult::Added {
                 lines: up.lines.len(),
                 words,
                 turned: 90 * up.turns as u16,
-                tilted: (up.slope.abs() >= SHOWN_TILT).then(|| up.slope.to_degrees()),
+                tilted: tilted.then(|| up.slope.to_degrees()),
             };
-            out.push((p, added));
+            out.push((i, added));
         }
-        // In the order asked, a page asked twice where it was first.
-        let first: HashMap<usize, usize> = (pages.iter().enumerate().rev())
-            .map(|(i, &p)| (p, i))
-            .collect();
-        out.sort_by_key(|(p, _)| first.get(p).copied());
-        Ok(out)
+        out.sort_by_key(|(i, _)| *i);
+        Ok(out.into_iter().map(|(i, r)| (asked[i].0, r)).collect())
     }
 
-    /// The boxes of the words of the page's own text, if the page with object `page` is to
-    /// be read ([`Pdf::ocr_pages`]), in displayed-page points (y down); or why it isn't.
-    /// `again` reads pages with recognised text again.
-    fn ocr_target(
-        &self,
-        page: ObjectId,
-        again: bool,
-    ) -> std::result::Result<Vec<[f32; 4]>, String> {
+    /// What the page with object `page` is read against, if it is to be read
+    /// ([`Pdf::ocr_pages`]): the page's own text, and, `again`, its recognised text, which
+    /// is read again; or why it isn't read.
+    fn ocr_target(&self, page: ObjectId, again: bool) -> std::result::Result<Target, String> {
         let parsed =
             (self.parse_page_of(page)).map_err(|e| format!("cannot read the page: {e}"))?;
         let lines: Vec<&TextData> = parsed.text_lines().collect();
@@ -937,9 +1042,10 @@ impl Pdf {
         if recognised && !again {
             return Err("the page already has recognised text".into());
         }
-        if recognised {
-            recognised_objs(&parsed)?;
-        }
+        let replaced = match recognised {
+            true => recognised_objs(&parsed)?.0,
+            false => Vec::new(),
+        };
         let own: Vec<&TextData> = lines.into_iter().filter(|t| !t.recognised()).collect();
         // Text shown that isn't read as lines is the page's own, and where it is isn't known.
         let unread = own.is_empty() && !recognised && parsed.shows_text();
@@ -949,7 +1055,60 @@ impl Pdf {
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or("cannot read the page: degenerate page transform")?;
         let words = ordered_words(&own, to_vis);
-        Ok(words.into_iter().map(|(w, _, _)| w.bbox).collect())
+        Ok(Target {
+            own: words.into_iter().map(|(w, _, _)| w.bbox).collect(),
+            replaced,
+        })
+    }
+
+    /// What a box on the page with object `page` is read against ([`Pdf::ocr_areas`]),
+    /// `area` in displayed-page points (y down): the recognised lines of the page's content
+    /// inside it are replaced, and the rest of the page's text is its own. Or why it isn't
+    /// read.
+    fn area_target(&self, page: ObjectId, area: [f32; 4]) -> std::result::Result<Target, String> {
+        let parsed =
+            (self.parse_page_of(page)).map_err(|e| format!("cannot read the page: {e}"))?;
+        // The page's text lines, those of its content by their ids, then those in forms.
+        let lines: Vec<(Option<usize>, &TextData)> = (parsed.objs.iter().enumerate())
+            .filter_map(|(id, o)| Some((Some(id), o.text.as_ref()?)))
+            .chain(parsed.form_text.iter().map(|t| (None, t)))
+            .collect();
+        if lines.is_empty() && parsed.shows_text() {
+            return Err("the page has text whose place isn't known, which could be doubled".into());
+        }
+        let (vd, _, _) = self.vis_down(page);
+        let to_vis = mx::inv(vd).ok_or("cannot read the page: degenerate page transform")?;
+        let texts: Vec<&TextData> = lines.iter().map(|&(_, t)| t).collect();
+        let words = ordered_words(&texts, to_vis);
+        let mut boxes = vec![[f32::MAX, f32::MAX, f32::MIN, f32::MIN]; lines.len()];
+        for (w, li, _) in &words {
+            let (b, w) = (&mut boxes[*li], w.bbox);
+            *b = [
+                b[0].min(w[0]),
+                b[1].min(w[1]),
+                b[2].max(w[2]),
+                b[3].max(w[3]),
+            ];
+        }
+        let inside = |b: [f32; 4]| {
+            let near = 0.25 * (b[3] - b[1]);
+            b[0] >= area[0] - near
+                && b[1] >= area[1] - near
+                && b[2] <= area[2] + near
+                && b[3] <= area[3] + near
+        };
+        let replaced: Vec<usize> = (lines.iter().zip(&boxes))
+            .filter(|((_, t), &b)| t.recognised() && b[0] <= b[2] && inside(b))
+            .filter_map(|((id, _), _)| *id)
+            .collect();
+        if !replaced.is_empty() && has_inline_image(&parsed) {
+            return Err(INLINE_IMAGE.into());
+        }
+        let own = (words.into_iter())
+            .filter(|(_, li, _)| !lines[*li].0.is_some_and(|id| replaced.contains(&id)))
+            .map(|(w, _, _)| w.bbox)
+            .collect();
+        Ok(Target { own, replaced })
     }
 
     /// Take the recognised text off `pages` (0-based): invisible text as OCR adds it
@@ -1053,9 +1212,10 @@ impl Pdf {
 
     /// Each page's recognised lines added on top of it as invisible text: (page, its
     /// lines, the scale their word boxes are in, the matrix from their pixels to those of the
-    /// displayed page at that scale). One pen writes them all, so its fonts hold what every
-    /// page needs: Helvetica itself when the text is all Western European, Liberation Sans
-    /// embedded when not.
+    /// displayed page at that scale). A page given more than once, for boxes read on it, has
+    /// them in one layer. One pen writes them all, so its fonts hold what every page needs:
+    /// Helvetica itself when the text is all Western European, Liberation Sans embedded when
+    /// not.
     fn add_text_layers(&mut self, layers: &[(ObjectId, &[OcrLine], f32, mx::M)]) -> Result<()> {
         if layers.is_empty() {
             return Ok(());
@@ -1074,13 +1234,25 @@ impl Pdf {
         let setter = self.setter(FontChoice::default(), &words.concat());
         let pen = self.pen_with(&setter, &words)?;
         let mut shown = 0;
+        let mut pages: Vec<(ObjectId, Vec<String>, Vec<u8>)> = Vec::new();
         for &(page, lines, scale, to_page) in layers {
-            let names = self.font_names(page, FONT_PREFIX, pen.fonts())?;
+            let at = match pages.iter().position(|(p, ..)| *p == page) {
+                Some(at) => at,
+                None => {
+                    let names = self.font_names(page, FONT_PREFIX, pen.fonts())?;
+                    pages.push((page, names, Vec::new()));
+                    pages.len() - 1
+                }
+            };
+            let names = &pages[at].1;
             let layer = self.text_layer(page, (lines, scale, to_page), &names[0], |text, size| {
-                let shows = pen.content(shown, size, &names);
+                let shows = pen.content(shown, size, names);
                 shown += 1;
                 (setter.width(text, size), shows)
             });
+            pages[at].2.extend(layer);
+        }
+        for (page, _, layer) in pages {
             self.wrap_contents(page, None, Some(layer))?;
         }
         Ok(())
