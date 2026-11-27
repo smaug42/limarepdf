@@ -154,8 +154,8 @@ whether the page has text of its own or not.
   page's own text is are left out, as on a whole page.
 - **Recognised text in the area:** recognised lines wholly inside it are replaced with the new read, or kept when
   the new read finds nothing. A recognised line crossing its edge is kept, and isn't read again.
-- **Several areas** are read in one go and are one undo step. Where areas on a page overlap, the lines they share
-  are read once.
+- **Several areas** given on the command line are read in one go and are one undo step. Where they overlap on a
+  page, the lines they share are read once. In the app, each box is read on its own, one undo step each.
 - **Turned and tilted text:** text in the area on its side or upside down isn't read, and the report says so:
   turn the page so the text reads upright (**Pages > Rotate**), read the area, then turn the page back if wanted.
   Tilted text is read as on a tilted page, and isn't reported.
@@ -163,8 +163,13 @@ whether the page has text of its own or not.
   tell, and a page with a picture written inside its content (an inline image) when the area holds recognised text
   to replace.
 
-On the command line: `limarepdf-cli ocr --area PAGE:X,Y,W,H`, in points from the page's top left as shown, repeated
-for more areas.
+Where: **Pages > Recognise text ▾ > Recognise text in an area** (also in ☰ > Pages), or **Recognise an area** in
+the Recognise text (OCR) tool, turns on a tool: drag a box over the text, and it is read in the background.
+A note says how many words were read, with Undo; when none were, a message says why. The tool stays on for more
+boxes, until Esc, **Recognise an area** again or another tool. An area chosen while another task runs isn't read:
+try again once that ends. For a picture, select it and choose **Recognise text** in the inspector, which reads
+the picture's area. On the command line: `limarepdf-cli ocr --area PAGE:X,Y,W,H`, in points from the page's top
+left as shown, repeated for more areas.
 
 ### Seeing and correcting recognised text
 

@@ -410,6 +410,9 @@ pub struct Tab {
     stale: HashSet<usize>,
     /// Commands chosen from a right-click menu, run by the app after the frame.
     pub requested: Vec<Act>,
+    /// An area whose text is to be recognised (page, box in displayed-page points), read by
+    /// the app in the background after the frame (#226).
+    pub read_area: Option<(usize, [f32; 4])>,
     /// State of the inspector's page and document forms.
     pub forms: Forms,
     /// Something undoable just happened, for the undo toast.
@@ -576,6 +579,7 @@ impl Tab {
             broken: None,
             ed: Editor::for_tab(id),
             requested: Vec::new(),
+            read_area: None,
             forms: Forms::default(),
             notice: None,
             info: None,
@@ -1420,6 +1424,7 @@ impl Tab {
                         self.after_annot(p, new);
                     }
                 }
+                Action::RecogniseArea(p, rect) => self.read_area = Some((p, rect)),
                 Action::AddStamp(p, place) => {
                     let pick = self.ed.stamp.clone();
                     let picture = match &pick {

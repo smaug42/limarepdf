@@ -2147,6 +2147,14 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Tool(Tool::OcrArea),
+        label: "Recognise text in an area",
+        icon: icon::SCAN,
+        hint: "Drag boxes over text in a picture or a scan to recognise it, even on a page \
+               with text of its own.",
+        ..BASE
+    },
+    Action {
         act: Act::Merge,
         label: "Append PDFs…",
         icon: icon::STACK_PLUS,

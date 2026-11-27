@@ -232,6 +232,7 @@ static PAGES: &[Entry] = &[
     Cmd(Act::PageLabels),
     Sep,
     Cmd(Act::Ocr),
+    Cmd(Act::Tool(Tool::OcrArea)),
     Cmd(Act::Scans),
 ];
 
