@@ -419,7 +419,7 @@ fn lists_objects_in_visual_coordinates() {
 }
 
 #[test]
-fn text_lines_give_their_baseline_and_whether_they_are_upright() {
+fn text_lines_give_their_baseline_and_how_they_are_turned() {
     let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01;
     // User (60, 150) on a 200 high page is (60, 50) with y down; a rise moves it up.
     let p = make("BT /F1 24 Tf 60 150 Td (Hello) Tj ET\nBT /F1 10 Tf 4 Ts 20 30 Td (Up) Tj ET");
@@ -435,26 +435,36 @@ fn text_lines_give_their_baseline_and_whether_they_are_upright() {
         o[1].baseline
     );
     assert!(o[0].upright && o[1].upright);
-    // Scaled is still upright; turned, upside down or mirrored isn't.
-    for (tm, upright) in [
-        ("2 0 0 2 60 150", true),
-        ("0 1 -1 0 60 150", false),
-        ("-1 0 0 -1 60 150", false),
-        ("1 0 0 -1 60 150", false),
-        ("-1 0 0 1 60 150", false),
+    assert_eq!((o[0].quarter_turns, o[1].quarter_turns), (Some(0), Some(0)));
+    // Scaled is still upright; turned, upside down or mirrored isn't. A line reading down,
+    // back along or up the page is a quarter turn, two or three clockwise from upright; a
+    // tilted or mirrored one is none.
+    for (tm, upright, turns) in [
+        ("2 0 0 2 60 150", true, Some(0)),
+        ("0 -1 1 0 60 150", false, Some(1)),
+        ("-1 0 0 -1 60 150", false, Some(2)),
+        ("0 1 -1 0 60 150", false, Some(3)),
+        ("0.866 0.5 -0.5 0.866 60 150", false, None),
+        ("1 0 0 -1 60 150", false, None),
+        ("-1 0 0 1 60 150", false, None),
     ] {
         let p = make(&format!("BT /F1 12 Tf {tm} Tm (Hello) Tj ET"));
         let o = p.page_objects(0).unwrap();
         assert_eq!(o[0].upright, upright, "{tm}");
+        assert_eq!(o[0].quarter_turns, turns, "{tm}");
         assert!(near(o[0].baseline.unwrap(), (60.0, 50.0)), "{tm}");
     }
-    // On a turned page, upright text is turned on screen; a picture has neither.
+    // On a page turned clockwise, upright text reads down the screen; a picture has
+    // neither.
     let mut p = make("BT /F1 24 Tf 60 150 Td (Hello) Tj ET");
     p.rotate_pages(&[0], 90).unwrap();
-    assert!(!p.page_objects(0).unwrap()[0].upright);
+    let o = &p.page_objects(0).unwrap()[0];
+    assert!(!o.upright);
+    assert_eq!(o.quarter_turns, Some(1));
     let p = make(BASE);
     let o = p.page_objects(0).unwrap();
     assert!(o[0].baseline.is_none() && !o[0].upright);
+    assert_eq!(o[0].quarter_turns, None);
 }
 
 #[test]

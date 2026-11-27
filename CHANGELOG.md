@@ -26,6 +26,11 @@
   correct it there, drawn as it will be written; ↓ and ↑ go on to the line below or above. Each line is one undo
   step and stays invisible. Before, a line was outlined, its text shown on hover and corrected in a box
   ([Scans and OCR](docs/scanning-and-ocr.md#seeing-and-correcting-recognised-text)).
+- A line reading down, back along or up the page, printed or recognised, is edited along its line, drawn turned as
+  it will be written: its caret, selection, spelling marks and underlines turn with it, a click or drag goes by its
+  letters, the input method's window opens at its caret and a tag saying it runs past the page edge reads upright
+  beside it. Before, it opened level in a box over the line. A tilted line still does
+  ([Editing text](docs/content-editing.md#edit-a-line-of-text)).
 
 ### Fixed
 

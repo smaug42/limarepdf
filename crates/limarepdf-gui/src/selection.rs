@@ -401,6 +401,7 @@ mod tests {
             dir: None,
             stops: Vec::new(),
             upright: true,
+            quarter_turns: Some(0),
             vertical: false,
             spans: Vec::new(),
             decorations: Vec::new(),

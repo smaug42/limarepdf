@@ -183,8 +183,9 @@ written in, Helvetica, stretched along the line as it is written, so a word read
 - **↓ and ↑** keep the line and open the recognised line below or above, the caret where it was along the line.
 - **Enter, Esc, Tab or clicking away** keeps it, one undo step a line. The line stays invisible and in place,
   stretched over its print as before, and searching finds the new text at once. Clearing a line removes it.
-- **A line on its side, upside down or tilted,** as some other OCR programs write it over a tilted scan, opens in
-  a box over the line instead.
+- **A line on its side or upside down** is corrected along it in the same way, drawn turned as it is written; ↓
+  and ↑ go on to the lines below and above it as it reads. **A tilted line,** as some other OCR programs write it
+  over a tilted scan, opens in a box over the line instead.
 
 With Show recognised text off, recognised text isn't drawn, and a double-click selects a word, as on any page.
 `limarepdf-cli objects` lists these lines as "(hidden)".

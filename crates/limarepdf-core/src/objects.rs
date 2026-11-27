@@ -57,6 +57,11 @@ pub struct PageObject {
     /// For text: the line runs left to right across the displayed page, letters upright,
     /// and is not in vertical writing.
     pub upright: bool,
+    /// For text: how many quarter turns clockwise the line is from upright on the displayed
+    /// page, when it runs straight across, down, back along or up it, letters the right way
+    /// round, and is not in vertical writing: 0 for an upright line. None at another angle,
+    /// mirrored or in vertical writing.
+    pub quarter_turns: Option<u8>,
     /// For text: some of the line is in vertical writing (measured as if it ran across).
     pub vertical: bool,
     /// For text: the parts of the line in one style each, in order. `font_name`,
@@ -1082,6 +1087,7 @@ impl Pdf {
                     dir: None,
                     stops: Vec::new(),
                     upright: false,
+                    quarter_turns: None,
                     vertical: false,
                     spans: Vec::new(),
                     decorations: decorations.remove(&id).unwrap_or_default(),
@@ -1114,6 +1120,12 @@ impl Pdf {
                     let up = if t.flipped { (-up.0, -up.1) } else { up };
                     let level = across.0 > 0.0 && across.1.abs() <= 1e-3 * across.0;
                     po.upright = level && up.1 < 0.0 && !t.vertical;
+                    // Turned back a quarter at a time until it is upright, if it comes to be.
+                    let back = |(x, y): (f32, f32), q: u8| (0..q).fold((x, y), |(x, y), _| (y, -x));
+                    po.quarter_turns = (0..4u8).filter(|_| !t.vertical).find(|&q| {
+                        let (a, u) = (back(across, q), back(up, q));
+                        a.0 > 0.0 && a.1.abs() <= 1e-3 * a.0 && u.1 < 0.0
+                    });
                     let len = across.0.hypot(across.1);
                     if let (Some(at), true) = (po.baseline, len > 1e-6) {
                         let dir = (across.0 / len, across.1 / len);

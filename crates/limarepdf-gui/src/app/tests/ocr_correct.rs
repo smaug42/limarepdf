@@ -44,10 +44,15 @@ fn recognised() -> Pdf {
 /// An app with [`recognised`] open, the read tool on, the window settled with Helvetica's
 /// stand-in, Liberation Sans, in; recognised text shown when `shown`.
 fn recognised_tab(ctx: &egui::Context, shown: bool) -> App {
+    opened(ctx, recognised(), shown)
+}
+
+/// [`recognised_tab`] with `pdf` open.
+pub(super) fn opened(ctx: &egui::Context, pdf: Pdf, shown: bool) -> App {
     ctx.enable_accesskit();
     theme::install(ctx);
     let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
-    assert!(app.add_tab(ctx, recognised(), None, None, false));
+    assert!(app.add_tab(ctx, pdf, None, None, false));
     app.tabs[0].ed.show_hidden = shown;
     settle(&mut app, ctx);
     liberation_in(&mut app, ctx);
@@ -56,14 +61,14 @@ fn recognised_tab(ctx: &egui::Context, shown: bool) -> App {
 }
 
 /// The line reading `text` on page 1.
-fn line(app: &App, text: &str) -> limarepdf_core::PageObject {
+pub(super) fn line(app: &App, text: &str) -> limarepdf_core::PageObject {
     let objs = app.tabs[0].pdf.page_objects(0).unwrap();
     let o = objs.iter().find(|o| o.text.as_deref() == Some(text));
     o.unwrap_or_else(|| panic!("no line {text:?}")).clone()
 }
 
-/// What one frame, timed as `ty` times it, draws.
-fn drawn(app: &mut App, ty: &Typist) -> Vec<egui::epaint::ClippedShape> {
+/// One frame, timed as `ty` times it.
+pub(super) fn output(app: &mut App, ty: &Typist) -> egui::FullOutput {
     let now = ty.time.get().max(ty.ctx.input(|i| i.time)) + 0.05;
     ty.time.set(now);
     let raw = egui::RawInput {
@@ -77,11 +82,16 @@ fn drawn(app: &mut App, ty: &Typist) -> Vec<egui::epaint::ClippedShape> {
     let mut f = eframe::Frame::_new_kittest();
     let mut out = ty.ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut f));
     out.textures_delta.clear();
-    out.shapes
+    out
+}
+
+/// What one frame, timed as `ty` times it, draws.
+pub(super) fn drawn(app: &mut App, ty: &Typist) -> Vec<egui::epaint::ClippedShape> {
+    output(app, ty).shapes
 }
 
 /// The shapes `shapes` draw, groups opened.
-fn flat(shapes: &[egui::epaint::ClippedShape]) -> Vec<&egui::Shape> {
+pub(super) fn flat(shapes: &[egui::epaint::ClippedShape]) -> Vec<&egui::Shape> {
     fn walk<'a>(s: &'a egui::Shape, out: &mut Vec<&'a egui::Shape>) {
         match s {
             egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
@@ -96,7 +106,7 @@ fn flat(shapes: &[egui::epaint::ClippedShape]) -> Vec<&egui::Shape> {
 }
 
 /// The text drawn reading `text` in Liberation Sans, the font Helvetica is written in.
-fn in_helvetica<'a>(
+pub(super) fn in_helvetica<'a>(
     shapes: &'a [egui::epaint::ClippedShape],
     text: &str,
 ) -> Vec<&'a egui::epaint::TextShape> {
@@ -114,7 +124,7 @@ fn in_helvetica<'a>(
 }
 
 /// Line `o` on the screen, the page's top left at `min`, `k` pixels a point.
-fn on_screen(o: &limarepdf_core::PageObject, min: egui::Pos2, k: f32) -> egui::Rect {
+pub(super) fn on_screen(o: &limarepdf_core::PageObject, min: egui::Pos2, k: f32) -> egui::Rect {
     let b = o.bbox;
     egui::Rect::from_min_max(
         min + egui::vec2(b[0], b[1]) * k,
@@ -144,7 +154,7 @@ fn at_its_line(
 }
 
 /// A double-click at page point `at` on page 1, timed as `ty` times it.
-fn double_click(app: &mut App, ty: &Typist, at: (f32, f32)) {
+pub(super) fn double_click(app: &mut App, ty: &Typist, at: (f32, f32)) {
     let (min, k) = ty.page(app);
     let p = min + egui::vec2(at.0, at.1) * k;
     ty.frame(app, vec![egui::Event::PointerMoved(p)]);
@@ -156,7 +166,7 @@ fn double_click(app: &mut App, ty: &Typist, at: (f32, f32)) {
 }
 
 /// The line being edited, by the editor's name.
-fn editing(tree: &egui::accesskit::TreeUpdate) -> Option<String> {
+pub(super) fn editing(tree: &egui::accesskit::TreeUpdate) -> Option<String> {
     (tree.nodes.iter())
         .filter_map(|(_, n)| {
             n.label()?
@@ -167,7 +177,7 @@ fn editing(tree: &egui::accesskit::TreeUpdate) -> Option<String> {
 }
 
 /// How many steps Undo can take back.
-fn steps(app: &App) -> usize {
+pub(super) fn steps(app: &App) -> usize {
     app.tabs[app.active].history().1
 }
 

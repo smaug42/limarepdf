@@ -213,7 +213,7 @@ fn plan_page(
         // One line is edited alone unless it may open as its paragraph; the page's blocks
         // are read only then.
         let alone = lines.len() == 1
-            && !((job.paragraphs || PARAGRAPH_DEFAULT) && drawn_in_place(&objs[first]));
+            && !((job.paragraphs || PARAGRAPH_DEFAULT) && in_paragraph(&objs[first]));
         let of = if alone {
             Of::Line(first)
         } else {

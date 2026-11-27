@@ -9109,6 +9109,7 @@ mod tests {
     mod tabs;
     mod text_align;
     mod tools;
+    mod turned_lines;
     mod typing_box;
     mod typing_menus;
     mod underline;

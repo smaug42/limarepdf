@@ -1565,10 +1565,11 @@ pub(crate) fn font_of(name: &str) -> FontChoice {
         .unwrap_or_else(|| FontChoice::from_name(name))
 }
 
-/// Whether line `o` is edited on its line, drawn as it will be written: an upright one,
-/// visible or recognised (invisible); a turned line is edited in a plain box.
+/// Whether line `o` is edited on its line, drawn as it will be written: an upright one or
+/// one turned a quarter turn or more ([`PageObject::quarter_turns`]), visible or
+/// recognised (invisible); a tilted line is edited in a plain box.
 fn on_its_line(o: &PageObject) -> bool {
-    o.upright && o.baseline.is_some()
+    o.quarter_turns.is_some() && o.baseline.is_some()
 }
 
 /// Whether line `o` is edited on its line in place of what the page draws, which is
@@ -1576,6 +1577,12 @@ fn on_its_line(o: &PageObject) -> bool {
 /// which stays.
 fn drawn_in_place(o: &PageObject) -> bool {
     on_its_line(o) && !o.hidden
+}
+
+/// Whether line `o` may be edited as part of its paragraph: drawn in place and upright,
+/// as turned text edits a line at a time.
+fn in_paragraph(o: &PageObject) -> bool {
+    drawn_in_place(o) && o.upright
 }
 
 /// Recognised (invisible) line `o`'s `text` in the piece it is written in: the standard
@@ -1652,9 +1659,19 @@ fn on_line(o: &PageObject, pick: Pick) -> Pick {
 }
 
 /// What hides line `o` while it is edited: its box, with room for accents above and
-/// descenders below, in page points.
+/// descenders below, in page points, which face the way the line is turned.
 fn cover_box(o: &PageObject) -> [f32; 4] {
-    cover_round(o.bbox)
+    let q = o.quarter_turns.unwrap_or(0) as usize % 4;
+    if q == 0 {
+        return cover_round(o.bbox);
+    }
+    let b = o.bbox;
+    let t = if q % 2 == 1 { b[2] - b[0] } else { b[3] - b[1] };
+    // Left, top, right and bottom of the upright line; side `i` of the page takes the
+    // line's side that faces it once turned.
+    let pad = [0.05, 0.12, 0.05, 0.06].map(|f| f * t);
+    let p = |i: usize| pad[(i + 4 - q) % 4];
+    [b[0] - p(0), b[1] - p(1), b[2] + p(2), b[3] + p(3)]
 }
 
 /// [`cover_box`] for a line whose box is `b`.
@@ -3041,10 +3058,11 @@ impl Editor {
     /// The line of page text being edited on `page` (drawn at `r`, `k` pixels per point):
     /// drawn as it will be written, in the font core will write it in, over the line,
     /// which is hidden underneath; recognised (invisible) text in blue over the print it
-    /// was read from, stretched along the line as it is written; a turned line in a plain
-    /// box. Esc, Enter, Tab or clicking away keeps the change, and on recognised text ↓
-    /// and ↑ go on to the line below or above. Returns true when the page should not take
-    /// the pointer this frame: it is over the editor, or the editor just opened or closed.
+    /// was read from, stretched along the line as it is written; a line turned a quarter
+    /// turn or more along it, turned with it; a tilted line in a plain box. Esc, Enter, Tab
+    /// or clicking away keeps the change, and on recognised text ↓ and ↑ go on to the line
+    /// below or above. Returns true when the page should not take the pointer this frame:
+    /// it is over the editor, or the editor just opened or closed.
     fn line_edit_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
         if self.line_edit.as_ref().is_none_or(|l| l.page != page) {
             return false;
@@ -3063,7 +3081,6 @@ impl Editor {
         // What typing may run over (PB-35): the page's other visible things the line as it
         // was didn't overlap.
         let others = self.obstacles(page, r, k, |i, l| i == key.1 || meet(l.bbox, o.bbox));
-        let warn = |rows: &[Rect]| page_text::overflow(r, rows, &others);
         let hide = self.hiding(to_screen);
         if let Some(at) = self.next_recognised(ui.ctx(), page, key.1, &o) {
             // What was typed is kept, and the line there opens once it is in: the lines'
@@ -3116,7 +3133,15 @@ impl Editor {
             page_text::runs(&ctx, &drawn_pieces(&o, fonts, &text), k, color, lang)
         };
         let blue = recognised_blue(mode);
+        // Drawn on its line, turned as it is about its baseline's start.
+        let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
+        let turn = page_text::Turn(o.quarter_turns.unwrap_or(0));
+        let origin = to_screen(x, y);
         let (out, area) = if drawn {
+            // What it runs over, where it is laid out upright before it is turned.
+            let upright = |s: Rect| turn.back().rect(origin, s);
+            let others: Vec<_> = others.iter().map(|&(s, why)| (upright(s), why)).collect();
+            let warn = |rows: &[Rect]| page_text::overflow(upright(r), rows, &others);
             let runs = |t: &str| match o.hidden {
                 true => page_text::runs(&ctx, &recognised_pieces(&o, t), k, |_| blue, lang),
                 false => runs(t, k, &|c| page_text::shown(mode, c)),
@@ -3133,27 +3158,18 @@ impl Editor {
                 bands: &bands,
                 align: TextAlign::Left,
                 fit: o.hidden.then(|| extent(&o) * k),
+                turn,
             };
-            let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
             let c = cover_box(&o);
             let c = Rect::from_min_max(to_screen(c[0], c[1]), to_screen(c[2], c[3]));
             // The print under recognised text stays, faded ([`Self::overlay`]).
             let cover = hide.filter(|_| !o.hidden).map(|how| (c, how));
-            let f = page_text::field(
-                &ctx,
-                id,
-                &mut typed,
-                to_screen(x, y),
-                &style,
-                false,
-                cover,
-                false,
-            );
+            let f = page_text::field(&ctx, id, &mut typed, origin, &style, false, cover, false);
             // The floating bar keeps clear of the tag too.
             (f.out, f.tag.map_or(f.outline, |t| f.outline.union(t)))
         } else {
             let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3])).expand(2.0);
-            // A turned line shows its styles too, at its size on the page, in a box as long
+            // A tilted line shows its styles too, at its size on the page, in a box as long
             // as the line and one line high; invisible (OCR) text has no styles, and is
             // shown at its box's height.
             let parts = insp.text.drawn_parts();
@@ -3227,6 +3243,7 @@ impl Editor {
         // Where the caret is, for a switch to Paragraph.
         if let Some(c) = out.cursor_range.filter(|_| drawn) {
             let at = out.galley.pos_from_cursor(c.primary).center() + out.galley_pos.to_vec2();
+            let at = turn.pos(origin, at);
             let at = Pos2::new((at.x - r.min.x) / k, (at.y - r.min.y) / k);
             le.caret_at = Some((at, c.primary.index.0));
         }
@@ -3242,7 +3259,15 @@ impl Editor {
         le.area = area.union(edit.rect);
         let name = format!("Editing text: {}", o.text.as_deref().unwrap_or(""));
         dialogs::set_name(edit, &name);
-        le.refused.show(&ctx, &out, id);
+        if !drawn || turn == page_text::Turn::default() {
+            le.refused.show(&ctx, &out, id);
+        } else if let Some(c) = out.cursor_range {
+            // Beside the caret, clear of the line.
+            let caret = out.galley.pos_from_cursor(c.primary);
+            let caret = turn.rect(origin, caret.translate(out.galley_pos.to_vec2()));
+            let at = caret.right_bottom() + Vec2::splat(4.0);
+            le.refused.show_at(&ctx, at, id);
+        }
         if le.fresh {
             // The caret where clicked, or the word double-clicked selected, as in a word
             // processor: by the text as drawn, or along the plain box.
@@ -3250,7 +3275,7 @@ impl Editor {
                 Pick::Chars(a, b) => (a, b),
                 Pick::At(p, word) => {
                     let i = if drawn {
-                        let at = to_screen(p.x, p.y) - out.galley_pos;
+                        let at = turn.back().pos(origin, to_screen(p.x, p.y)) - out.galley_pos;
                         out.galley.cursor_from_pos(at).index.0
                     } else {
                         caret_along(&o, p, insp.text.text().chars().count())
@@ -8699,20 +8724,28 @@ mod tests {
             italic: true,
         };
         assert_eq!(font(&ed, &kept), format!("Standard({courier:?})"));
-        // Turned lines are edited in a plain box; recognised (invisible) ones on their line,
-        // over the print they were read from. Nothing hides either.
+        // Lines a quarter turn or two from upright are edited on their line too; tilted ones
+        // in a plain box; recognised (invisible) ones on their line, over the print they
+        // were read from. Nothing hides those last two.
         assert!(drawn_in_place(&o) && on_its_line(&o));
+        let down = PageObject {
+            upright: false,
+            quarter_turns: Some(1),
+            ..o.clone()
+        };
+        assert!(drawn_in_place(&down) && on_its_line(&down));
         let recognised = PageObject {
             hidden: true,
             ..o.clone()
         };
         assert!(on_its_line(&recognised));
-        let turned = PageObject {
+        let tilted = PageObject {
             upright: false,
+            quarter_turns: None,
             ..o.clone()
         };
-        assert!(!on_its_line(&turned));
-        for plain in [turned, recognised] {
+        assert!(!on_its_line(&tilted));
+        for plain in [tilted, recognised] {
             assert!(!drawn_in_place(&plain));
         }
         ed.start_line_edit(0, 2, Pick::Chars(0, 0));
@@ -8724,7 +8757,17 @@ mod tests {
             b[0] < ob[0] && b[1] < ob[1] && b[2] > ob[2] && b[3] > ob[3],
             "{b:?}"
         );
-        ed.objs.get_mut(&0).unwrap()[2].upright = false;
+        // A line reading down the page has its letters' tops to the right: the room for
+        // accents is there, for descenders to the left, across the line's thickness.
+        let line = &mut ed.objs.get_mut(&0).unwrap()[2];
+        (line.upright, line.quarter_turns) = (false, Some(1));
+        let (_, b) = ed.cover_wanted().expect("a box to hide");
+        let t = ob[2] - ob[0];
+        let pads = [ob[0] - b[0], ob[1] - b[1], b[2] - ob[2], b[3] - ob[3]];
+        let want = [0.06, 0.05, 0.12, 0.05].map(|f| f * t);
+        let near = pads.iter().zip(want).all(|(p, w)| (p - w).abs() < 0.01);
+        assert!(near, "{pads:?}, not {want:?}");
+        ed.objs.get_mut(&0).unwrap()[2].quarter_turns = None;
         assert_eq!(ed.cover_wanted(), None);
     }
 
