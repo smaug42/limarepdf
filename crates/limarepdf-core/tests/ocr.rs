@@ -716,6 +716,31 @@ fn scans_with_some_text_are_read() {
     assert_eq!(before.as_raw(), gray(&mut p, 1.0).as_raw());
 }
 
+/// A page of text above bar charts is read: the bars, solid and holding more of the ink
+/// than the letters, were taken for the page's letter size, and no text was found.
+#[test]
+fn text_beside_a_bar_chart_is_read() {
+    let mut content = String::from("BT /F1 12 Tf 16 400 Td 18 TL\n");
+    for l in LINES {
+        content.push_str(&format!("({l}) '\n"));
+    }
+    content.push_str("ET\n");
+    // Wide bars, and thin ones.
+    for (i, h) in [25, 40, 55, 35, 60].iter().enumerate() {
+        content.push_str(&format!("{} 40 40 {h} re f\n", 30 + 50 * i));
+    }
+    for i in 0..12 {
+        content.push_str(&format!("{} 130 8 {} re f\n", 30 + 20 * i, 20 + 4 * i));
+    }
+    let mut page = helvetica_page(288.0, 432.0, content);
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(gray(&mut page, 300.0 / 72.0));
+    let r = p.ocr_pages(&[0], &ocr).unwrap();
+    assert!(six_lines(&r), "{r:?}");
+    let text = p.page_text(0);
+    assert!(recall(&text) > 0.9, "recall {}: {text}", recall(&text));
+}
+
 /// Read again, a page's recognised text is replaced: a line corrected wrongly reads as the
 /// page shows it once more (#224).
 #[test]

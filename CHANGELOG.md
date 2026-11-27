@@ -36,6 +36,8 @@
   ([Install](docs/install.md#arch-linux)).
 - Recognised text no longer splits lines of old print and of large scans into pieces: a letter broken in two, or a
   word whose letters barely touch, made part of a line read as a line of its own.
+- OCR reads the text on a scan with a bar chart or filled boxes. Where the bars held more ink than the letters,
+  it found no text on the page.
 
 ### Changed
 
