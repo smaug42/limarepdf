@@ -61,8 +61,10 @@ While you type:
 - Going to another tab and back leaves the line open, ready to go on typing.
 
 A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
-its fonts, sizes and colours; invisible recognised (OCR) text is edited in a plain box. The caret goes by the
-character you clicked along the line, and a double-click selects the word you clicked, whichever way the line runs.
+its fonts, sizes and colours; turned invisible recognised (OCR) text is edited in a plain box. The caret goes by
+the character you clicked along the line, and a double-click selects the word you clicked, whichever way the line
+runs. Recognised text running left to right is corrected where it is shown, while **Show recognised text** is on
+([Scans and OCR](scanning-and-ocr.md#seeing-and-correcting-recognised-text)).
 
 ## Edit a paragraph
 

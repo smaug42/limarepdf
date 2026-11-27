@@ -21,6 +21,11 @@
   text in an area**, choose a selected picture's **Recognise text**, or run `limarepdf-cli ocr --area
   PAGE:X,Y,W,H`. Recognised lines wholly inside the area are replaced with the new read. Before, a page with text
   was read only when a picture covered at least half of it ([Scans and OCR](docs/scanning-and-ocr.md#reading-an-area)).
+- Recognised text is corrected where it is shown: **Show recognised text** draws each line's text in blue over the
+  print it was read from, the print faded under it, so a word read wrongly shows where it is. Double-click a line to
+  correct it there, drawn as it will be written; ↓ and ↑ go on to the line below or above. Each line is one undo
+  step and stays invisible. Before, a line was outlined, its text shown on hover and corrected in a box
+  ([Scans and OCR](docs/scanning-and-ocr.md#seeing-and-correcting-recognised-text)).
 
 ### Fixed
 

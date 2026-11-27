@@ -638,6 +638,7 @@ Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 | Ctrl+V (pages cut) | Move the pages cut to Organise's insertion bar, or after the selected pages (or the page you are on) |
 | Typing, Ctrl+V (words selected with the read tool, in one line or one paragraph) | Replace the words, in their line or paragraph opened for editing |
 | Enter, Shift+Enter (in a paragraph being edited) | Start a new paragraph within its frame; start a new line |
+| Down, Up (in recognised text being corrected) | Keep the line and open the recognised line below or above ([Scans and OCR](scanning-and-ocr.md#seeing-and-correcting-recognised-text)) |
 | Ctrl+A (arrow) | Select every object on the page |
 | Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
 | Shift+drag (arrow) | Add what a rectangle holds to the selection |

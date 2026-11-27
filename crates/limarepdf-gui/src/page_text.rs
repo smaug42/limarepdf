@@ -1521,6 +1521,10 @@ pub struct Style<'a> {
     /// How new text's lines are aligned among themselves ([`aligned_rows`]); left for a
     /// line of page text.
     pub align: TextAlign,
+    /// The width, in pixels, the text is stretched to, its letters with it, as recognised
+    /// (invisible) text is written over the line it was read from ([`stretched`]); `None`
+    /// for text as it is set.
+    pub fit: Option<f32>,
 }
 
 /// One frame of an on-page editor.
@@ -1575,6 +1579,40 @@ fn aligned_rows(g: Arc<Galley>, align: TextAlign) -> Arc<Galley> {
     let widest = widths.iter().copied().fold(0.0, f32::max);
     let by: Vec<f32> = widths.iter().map(|w| (widest - w) * share).collect();
     moved_rows(g, &by)
+}
+
+/// `g` stretched along its lines, letters and all, to `width` pixels wide, as recognised
+/// text is written to span the line it was read from (core scales it with `Tz`). Its rows
+/// and letters are where they are drawn, so the caret and selection follow them.
+pub fn stretched(g: Arc<Galley>, width: f32) -> Arc<Galley> {
+    let natural = g.rect.width();
+    if natural < 0.1 {
+        return g;
+    }
+    let s = (width / natural).clamp(0.01, 100.0);
+    let x = |r: Rect| {
+        Rect::from_min_max(
+            Pos2::new(r.min.x * s, r.min.y),
+            Pos2::new(r.max.x * s, r.max.y),
+        )
+    };
+    let mut g = (*g).clone();
+    for placed in &mut g.rows {
+        placed.pos.x *= s;
+        let row = Arc::make_mut(&mut placed.row);
+        row.size.x *= s;
+        for c in &mut row.glyphs {
+            c.pos.x *= s;
+            c.advance_width *= s;
+        }
+        for v in &mut row.visuals.mesh.vertices {
+            v.pos.x *= s;
+        }
+        row.visuals.mesh_bounds = x(row.visuals.mesh_bounds);
+    }
+    g.rect = x(g.rect);
+    g.mesh_bounds = x(g.mesh_bounds);
+    Arc::new(g)
 }
 
 /// `text` laid out as [`job`] lays it out in `runs`, its lines [`LEADING`] times their size
@@ -1817,6 +1855,10 @@ pub fn field(
     let line = LEADING * px;
     let laid = |text: &str| {
         let (g, ascent) = galley(ctx, text, &(style.runs)(text));
+        let g = match style.fit {
+            Some(w) => stretched(g, w),
+            None => g,
+        };
         (aligned_rows(g, style.align), ascent)
     };
     // The first row's baseline sits on the origin.
@@ -2006,6 +2048,7 @@ impl PageText {
             warn: &|rows| overflow(r, rows, others),
             bands: &bands,
             align: self.align,
+            fit: None,
         };
         let origin = Pos2::new(r.min.x + self.at.0 * k, r.min.y + self.at.1 * k);
         let mut typed = text.text().to_string();
@@ -2261,6 +2304,7 @@ mod tests {
                         warn: &|_| warn,
                         bands: &|_, _| Vec::new(),
                         align: TextAlign::Left,
+                        fit: None,
                     };
                     let (mut text, id) = ("Walrus".to_string(), ui.scope_id().with("typing"));
                     let at = Pos2::new(100.0, 100.0);
@@ -2444,6 +2488,7 @@ mod tests {
                     warn: &|_| None,
                     bands: &|_, _| Vec::new(),
                     align: TextAlign::Left,
+                    fit: None,
                 };
                 let at = Pos2::new(100.0, 100.0);
                 field(ui.ctx(), id, text, at, &style, true, None, false);
