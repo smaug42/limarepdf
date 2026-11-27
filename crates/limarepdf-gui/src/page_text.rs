@@ -1377,7 +1377,7 @@ pub fn paragraph_field(
                     how.paint(ui.painter(), *c);
                 }
             }
-            tag = outline_ui(ui, outline, style.accent, warning);
+            tag = outline_ui(ui, outline, style.accent, warning, Default::default());
             let mut layouter = |_: &egui::Ui, t: &dyn egui::TextBuffer, _: f32| {
                 let (g, at) = (style.laid)(t.as_str());
                 // Laid out with what this frame typed, it starts where the box does.
@@ -1472,15 +1472,18 @@ fn outline_colour(ui: &egui::Ui, accent: Color32, warning: Option<Overflow>) -> 
     .unwrap_or(accent)
 }
 
-/// The outline round text being typed on the page (ENH-22): the accent, or the caution
-/// colour when it runs over (`warning`, said on a tag just below the row where it happens,
-/// PB-35), and inside it a line that stands out against it, so it shows on paper of either
-/// colour. Returns where the tag is on the screen.
+/// The outline round text being typed on the page (ENH-22), `outline` on the screen: the
+/// accent, or the caution colour when it runs over (`warning`, said on a tag just below the
+/// row where it happens, PB-35, as the text is laid out upright before it is turned by
+/// `turn` about `origin`; the tag reads upright), and inside it a line that stands out
+/// against it, so it shows on paper of either colour. Returns where the tag is on the
+/// screen.
 fn outline_ui(
     ui: &mut egui::Ui,
     outline: Rect,
     accent: Color32,
     warning: Option<Overflow>,
+    (turn, origin): (Turn, Pos2),
 ) -> Option<Rect> {
     let edge = outline_colour(ui, accent, warning);
     let halo = Stroke::new(1.0, theme::halo(edge));
@@ -1493,15 +1496,83 @@ fn outline_ui(
         .color(theme::halo(edge));
     let g = painter.layout_no_wrap(w.why.into(), egui::FontId::proportional(11.0), edge);
     let size = g.size() + Vec2::new(8.0, 4.0);
+    // As laid out, turned back: on its side for text on its side.
+    let size = match turn.0 % 2 {
+        1 => Vec2::new(size.y, size.x),
+        _ => size,
+    };
     let at = match w.leftward {
         true => w.at - Vec2::new(size.x, 0.0),
         false => w.at,
     };
-    let tag = Rect::from_min_size(at, size);
+    let tag = turn.rect(origin, Rect::from_min_size(at, size));
     ui.expand_to_include_rect(tag);
     ui.painter().rect_filled(tag, 3.0, edge);
     ui.put(tag, egui::Label::new(text).selectable(false));
     Some(tag)
+}
+
+/// How far text typed on the page is turned from upright, in clockwise quarter turns on the
+/// screen ([`limarepdf_core::PageObject::quarter_turns`]): it is laid out upright, and
+/// turned about its first baseline's left end.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Turn(pub u8);
+
+impl Turn {
+    /// `v` turned.
+    pub fn vec(self, v: Vec2) -> Vec2 {
+        match self.0 % 4 {
+            1 => Vec2::new(-v.y, v.x),
+            2 => -v,
+            3 => Vec2::new(v.y, -v.x),
+            _ => v,
+        }
+    }
+
+    /// The turn that takes this one back.
+    pub fn back(self) -> Self {
+        Self((4 - self.0 % 4) % 4)
+    }
+
+    /// `p` turned about `origin`.
+    pub fn pos(self, origin: Pos2, p: Pos2) -> Pos2 {
+        origin + self.vec(p - origin)
+    }
+
+    /// `r` turned about `origin`.
+    pub fn rect(self, origin: Pos2, r: Rect) -> Rect {
+        Rect::from_two_pos(self.pos(origin, r.min), self.pos(origin, r.max))
+    }
+
+    /// How far it turns, clockwise on the screen, in radians.
+    pub fn angle(self) -> f32 {
+        f32::from(self.0 % 4) * std::f32::consts::FRAC_PI_2
+    }
+
+    /// `shape`, painted upright, turned about `origin`.
+    fn shape(self, origin: Pos2, shape: &mut egui::Shape) {
+        use egui::Shape;
+        let p = move |q: &mut Pos2| *q = self.pos(origin, *q);
+        match shape {
+            Shape::Vec(v) => v.iter_mut().for_each(|s| self.shape(origin, s)),
+            Shape::Text(t) => {
+                p(&mut t.pos);
+                t.angle += self.angle();
+            }
+            Shape::LineSegment { points, .. } => points.iter_mut().for_each(p),
+            Shape::Path(s) => s.points.iter_mut().for_each(p),
+            Shape::QuadraticBezier(s) => s.points.iter_mut().for_each(p),
+            Shape::CubicBezier(s) => s.points.iter_mut().for_each(p),
+            Shape::Mesh(m) => (Arc::make_mut(m).vertices.iter_mut()).for_each(|v| p(&mut v.pos)),
+            Shape::Circle(c) => p(&mut c.center),
+            Shape::Ellipse(e) => {
+                p(&mut e.center);
+                e.angle += self.angle();
+            }
+            Shape::Rect(r) => r.rect = self.rect(origin, r.rect),
+            Shape::Noop | Shape::Band(_) | Shape::Callback(_) => {}
+        }
+    }
 }
 
 /// How text being typed on the page is drawn this frame.
@@ -1521,6 +1592,12 @@ pub struct Style<'a> {
     /// How new text's lines are aligned among themselves ([`aligned_rows`]); left for a
     /// line of page text.
     pub align: TextAlign,
+    /// The width, in pixels, the text is stretched to, its letters with it, as recognised
+    /// (invisible) text is written over the line it was read from ([`stretched`]); `None`
+    /// for text as it is set.
+    pub fit: Option<f32>,
+    /// How the text is turned on the screen, as a turned line of the page is ([`field`]).
+    pub turn: Turn,
 }
 
 /// One frame of an on-page editor.
@@ -1575,6 +1652,40 @@ fn aligned_rows(g: Arc<Galley>, align: TextAlign) -> Arc<Galley> {
     let widest = widths.iter().copied().fold(0.0, f32::max);
     let by: Vec<f32> = widths.iter().map(|w| (widest - w) * share).collect();
     moved_rows(g, &by)
+}
+
+/// `g` stretched along its lines, letters and all, to `width` pixels wide, as recognised
+/// text is written to span the line it was read from (core scales it with `Tz`). Its rows
+/// and letters are where they are drawn, so the caret and selection follow them.
+pub fn stretched(g: Arc<Galley>, width: f32) -> Arc<Galley> {
+    let natural = g.rect.width();
+    if natural < 0.1 {
+        return g;
+    }
+    let s = (width / natural).clamp(0.01, 100.0);
+    let x = |r: Rect| {
+        Rect::from_min_max(
+            Pos2::new(r.min.x * s, r.min.y),
+            Pos2::new(r.max.x * s, r.max.y),
+        )
+    };
+    let mut g = (*g).clone();
+    for placed in &mut g.rows {
+        placed.pos.x *= s;
+        let row = Arc::make_mut(&mut placed.row);
+        row.size.x *= s;
+        for c in &mut row.glyphs {
+            c.pos.x *= s;
+            c.advance_width *= s;
+        }
+        for v in &mut row.visuals.mesh.vertices {
+            v.pos.x *= s;
+        }
+        row.visuals.mesh_bounds = x(row.visuals.mesh_bounds);
+    }
+    g.rect = x(g.rect);
+    g.mesh_bounds = x(g.mesh_bounds);
+    Arc::new(g)
 }
 
 /// `text` laid out as [`job`] lays it out in `runs`, its lines [`LEADING`] times their size
@@ -1791,10 +1902,10 @@ pub fn overflow(page: Rect, rows: &[Rect], others: &[(Rect, &'static str)]) -> O
 }
 
 /// Draw `text` for typing (the editor `id`) with its first baseline's left end at
-/// `origin` on screen: one line, or several 1.2 times the size apart. `cover`, a
-/// rectangle on screen and what hides it, is painted under it first: the line being
-/// edited, hidden so it doesn't show twice. A `movable` editor has a grip around its
-/// outline.
+/// `origin` on screen: one line, or several 1.2 times the size apart, turned about it as
+/// the style says ([`turned_ui`]). `cover`, a rectangle on screen and what hides it, is
+/// painted under it first: the line being edited, hidden so it doesn't show twice. A
+/// `movable` editor has a grip around its outline.
 #[allow(clippy::too_many_arguments)]
 pub fn field(
     ctx: &egui::Context,
@@ -1817,6 +1928,10 @@ pub fn field(
     let line = LEADING * px;
     let laid = |text: &str| {
         let (g, ascent) = galley(ctx, text, &(style.runs)(text));
+        let g = match style.fit {
+            Some(w) => stretched(g, w),
+            None => g,
+        };
         (aligned_rows(g, style.align), ascent)
     };
     // The first row's baseline sits on the origin.
@@ -1830,7 +1945,8 @@ pub fn field(
         .map(|r| r.rect().translate(inner.min.to_vec2()))
         .collect();
     let warning = (style.warn)(&rows);
-    let outline = inner.expand(3.0);
+    let turn = style.turn;
+    let outline = turn.rect(origin, inner.expand(3.0));
     let grip = outline.expand(3.0);
     let top_left = cover.map_or(grip.min, |(c, _)| grip.min.min(c.min));
     let mut tag = None;
@@ -1858,7 +1974,7 @@ pub fn field(
                 dialogs::set_name(&r, "Move the text");
                 r
             });
-            tag = outline_ui(ui, outline, style.accent, warning);
+            tag = outline_ui(ui, outline, style.accent, warning, (turn, origin));
             let mut layouter =
                 |_: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| laid(text.as_str()).0;
             let mut buffer = Clusters(text);
@@ -1879,17 +1995,40 @@ pub fn field(
                 .clip_text(false)
                 .layouter(&mut layouter);
             let held = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range());
+            // Its underlines and strike-throughs where they are written (egui's own sit at
+            // the bottom and middle of each run's line box).
+            let bands = |out: &egui::text_edit::TextEditOutput| {
+                let now = out.galley.text().to_string();
+                (style.bands)(&now, &(style.runs)(&now))
+            };
+            if turn != Turn::default() {
+                // Typed into out of sight, and drawn turned; never under the pointer there,
+                // it gives up the keyboard by where it is drawn ([`turned_ui`]).
+                let mut hidden = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                hidden.set_clip_rect(Rect::NOTHING);
+                let away = ctx.options(|o| o.input_options.surrender_focus_on);
+                let never = egui::SurrenderFocusOn::Never;
+                ctx.options_mut(|o| o.input_options.surrender_focus_on = never);
+                let mut out = te.show(&mut hidden);
+                ctx.options_mut(|o| o.input_options.surrender_focus_on = away);
+                let bands = bands(&out);
+                let at = Turned {
+                    turn,
+                    origin,
+                    inner,
+                    font: &font,
+                    color,
+                };
+                turned_ui(ui, id, &mut out, buffer.0, held, &at, &bands);
+                return (grab, out);
+            }
             let mut out = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| te.show(ui))
                 .inner;
             keep_on_right_click(ctx, id, &mut out, held);
             snap_drawn(ctx, id, &mut out, buffer.0, held);
             crate::spell::marks(ui, id, &out, buffer.0);
-            // Its underlines and strike-throughs where they are written (egui's own sit at
-            // the bottom and middle of each run's line box).
-            let now = out.galley.text().to_string();
-            let bands = (style.bands)(&now, &(style.runs)(&now));
-            paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands, &[]);
+            paint_bands(ui.painter(), &out.galley, out.galley_pos, &bands(&out), &[]);
             (grab, out)
         })
         .inner;
@@ -1900,6 +2039,140 @@ pub fn field(
         tag,
         edges: None,
     }
+}
+
+/// Where a typing box is turned to, and how its text is drawn ([`turned_ui`]).
+struct Turned<'a> {
+    turn: Turn,
+    /// What it is turned about, on the screen.
+    origin: Pos2,
+    /// Where it is laid out, upright.
+    inner: Rect,
+    font: &'a egui::FontId,
+    color: Color32,
+}
+
+/// The typing box `id`, drawn as `out` holding `text`, turned as `at` says. egui types into
+/// it out of sight, laid out upright; here it takes the pointer where it is turned to, by
+/// its letters measured back upright (a right-click on what is selected keeps it, as
+/// [`keep_on_right_click`] does), and is drawn turned with its selection, caret, spelling
+/// marks and `bands`; the input method and screen readers are told where it is. `held` is
+/// what was selected before it was drawn this frame.
+fn turned_ui(
+    ui: &egui::Ui,
+    id: egui::Id,
+    out: &mut egui::text_edit::TextEditOutput,
+    text: &str,
+    held: Option<CCursorRange>,
+    at: &Turned,
+    bands: &Bands,
+) {
+    let (ctx, turn, origin) = (ui.ctx().clone(), at.turn, at.origin);
+    let back = |p: Pos2| turn.back().pos(origin, p);
+    let screen = turn.rect(origin, at.inner);
+    let icon = match turn.0 % 2 {
+        1 => egui::CursorIcon::VerticalText,
+        _ => egui::CursorIcon::Text,
+    };
+    let turned =
+        (ui.interact(screen, id.with("turned"), Sense::click_and_drag())).on_hover_cursor(icon);
+    // A click away from it takes the keyboard, by egui's rule for its boxes.
+    let away = match ctx.options(|o| o.input_options.surrender_focus_on) {
+        egui::SurrenderFocusOn::Presses => ctx.input(|i| i.pointer.any_pressed()),
+        egui::SurrenderFocusOn::Clicks => ctx.input(|i| i.pointer.any_click()),
+        egui::SurrenderFocusOn::Never => false,
+    };
+    if away && !turned.hovered() && ctx.memory(|m| m.has_focus(id)) {
+        ctx.memory_mut(|m| m.surrender_focus(id));
+    }
+    if let Some(p) = turned.interact_pointer_pos() {
+        let on = out.galley.cursor_from_pos(back(p) - out.galley_pos);
+        let right = ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+        let kept = held.filter(|r| right && !r.is_empty()).filter(|r| {
+            let [from, to] = r.sorted_cursors();
+            (from.index.0..=to.index.0).contains(&on.index.0)
+        });
+        let dragged = ctx.is_being_dragged(turned.id);
+        let moved = kept.is_none()
+            && (out.state.cursor).pointer_interaction(ui, &turned, on, &out.galley, dragged);
+        if kept.is_some() {
+            out.state.cursor.set_char_range(kept);
+        }
+        if moved || kept.is_some() || turned.clicked() {
+            // A click anywhere takes the keyboard from a box it isn't over.
+            if !ctx.memory(|m| m.has_focus(id)) {
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
+            out.state.clone().store(&ctx, id);
+            out.cursor_range = out.state.cursor.char_range();
+        }
+    }
+    snap_drawn(&ctx, id, out, text, held);
+    let mut edit = out.response.response.union(turned.clone());
+    edit.rect = turned.rect;
+    edit.interact_rect = turned.interact_rect;
+    out.response.response = edit;
+    // Painted upright, then turned.
+    let layer = ui.layer_id();
+    let first = ctx.graphics_mut(|g| g.entry(layer).next_idx());
+    let painter = ui.painter();
+    let focused = ctx.memory(|m| m.has_focus(id));
+    let range = (out.state.cursor.range(&out.galley)).filter(|_| focused);
+    let mut galley = out.galley.clone();
+    if let Some(r) = range {
+        // What an input method composes shows selected: egui's own marks for it aren't
+        // drawn out of sight.
+        egui::text_selection::visuals::paint_text_selection(&mut galley, ui.visuals(), &r, None);
+    }
+    let shift = out.galley_pos.to_vec2() - Vec2::new(galley.rect.left(), 0.0);
+    painter.galley(shift.to_pos2(), Arc::clone(&galley), at.color);
+    if let Some(r) = range {
+        let row_height = ui.fonts_mut(|f| f.row_height(at.font));
+        let caret =
+            egui::text_selection::text_cursor_state::cursor_rect(&galley, &r.primary, row_height)
+                .translate(shift);
+        // The caret blinks from when it last moved or the text changed, as egui's does.
+        let now = ctx.input(|i| i.time);
+        let since = id.with("turned-since");
+        if out.response.response.changed() || held != out.state.cursor.char_range() {
+            ctx.data_mut(|d| d.insert_temp(since, now));
+        }
+        let since = ctx.data(|d| d.get_temp::<f64>(since)).unwrap_or(now);
+        if ctx.input(|i| i.focused) {
+            egui::text_selection::visuals::paint_text_cursor(ui, painter, caret, now - since);
+        }
+        if ctx.memory(|m| m.owns_ime_events(id)) {
+            let to_global = ctx.layer_transform_to_global(layer).unwrap_or_default();
+            ctx.output_mut(|o| {
+                o.ime = Some(egui::output::IMEOutput {
+                    purpose: egui::IMEPurpose::Normal,
+                    rect: to_global * screen,
+                    cursor_rect: to_global * turn.rect(origin, caret),
+                    should_interrupt_composition: false,
+                });
+            });
+        }
+    }
+    // The spelling marks, and the word under a right-click, by where it is upright.
+    let pointer = out.response.response.interact_pointer_pos_or_nan;
+    out.response.response.interact_pointer_pos_or_nan =
+        (turned.interact_pointer_pos()).map_or(Pos2::NAN, back);
+    crate::spell::marks(ui, id, out, text);
+    out.response.response.interact_pointer_pos_or_nan = pointer;
+    paint_bands(ui.painter(), &out.galley, out.galley_pos, bands, &[]);
+    ctx.graphics_mut(|g| {
+        let list = g.entry(layer);
+        for i in first.0..list.next_idx().0 {
+            list.mutate_shape(egui::layers::ShapeIdx(i), |s| {
+                turn.shape(origin, &mut s.shape)
+            });
+        }
+    });
+    // Screen readers find its letters turned too: (x, y) goes to (ax + cy + e, bx + dy + f).
+    let (ex, ey) = (turn.vec(Vec2::X), turn.vec(Vec2::Y));
+    let t = origin - ex * origin.x - ey * origin.y;
+    let m = [ex.x, ex.y, ey.x, ey.y, t.x, t.y].map(f64::from);
+    ctx.accesskit_node_builder(id, |n| n.set_transform(egui::accesskit::Affine::new(m)));
 }
 
 impl PageText {
@@ -2006,6 +2279,8 @@ impl PageText {
             warn: &|rows| overflow(r, rows, others),
             bands: &bands,
             align: self.align,
+            fit: None,
+            turn: Turn::default(),
         };
         let origin = Pos2::new(r.min.x + self.at.0 * k, r.min.y + self.at.1 * k);
         let mut typed = text.text().to_string();
@@ -2261,6 +2536,8 @@ mod tests {
                         warn: &|_| warn,
                         bands: &|_, _| Vec::new(),
                         align: TextAlign::Left,
+                        fit: None,
+                        turn: Turn::default(),
                     };
                     let (mut text, id) = ("Walrus".to_string(), ui.scope_id().with("typing"));
                     let at = Pos2::new(100.0, 100.0);
@@ -2444,6 +2721,8 @@ mod tests {
                     warn: &|_| None,
                     bands: &|_, _| Vec::new(),
                     align: TextAlign::Left,
+                    fit: None,
+                    turn: Turn::default(),
                 };
                 let at = Pos2::new(100.0, 100.0);
                 field(ui.ctx(), id, text, at, &style, true, None, false);

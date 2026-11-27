@@ -60,9 +60,14 @@ While you type:
   styles where the text takes them.
 - Going to another tab and back leaves the line open, ready to go on typing.
 
-A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
-its fonts, sizes and colours; invisible recognised (OCR) text is edited in a plain box. The caret goes by the
-character you clicked along the line, and a double-click selects the word you clicked, whichever way the line runs.
+A line reading down, back along or up the page (turned a quarter turn, half a turn or three quarters) is edited
+along its line in the same way: its text, caret, selection, spelling marks and underlines are drawn turned with
+it, and a click or drag goes by its letters. A tag saying it runs past the page edge or over other text reads
+upright beside it. A tilted line, at any other angle, is edited in a box over the line instead, showing its fonts,
+sizes and colours; tilted invisible recognised (OCR) text is edited in a plain box. The caret goes by the
+character you clicked along the line, and a double-click selects the word you clicked, whichever way the line
+runs. Recognised text is corrected where it is shown, while **Show recognised text** is on
+([Scans and OCR](scanning-and-ocr.md#seeing-and-correcting-recognised-text)).
 
 ## Edit a paragraph
 
@@ -568,8 +573,8 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   look-alike of the Helvetica, Times or Courier LimarePDF's pages show it in (Chinese, Japanese and Korean in the
   installed font they show it in), and the letters of a ligature in the Liberation look-alike, so the line can look
   slightly different until you finish. A part raised high above the line (a large
-  superscript) is drawn lower while you type, within the line, and is written where it was. Turned lines are
-  edited in a box over the line, and invisible text in a plain box.
+  superscript) is drawn lower while you type, within the line, and is written where it was. Tilted lines are
+  edited in a box over the line, and tilted invisible text in a plain box.
 - A word written in another font (a letter its font lacks, or another font chosen) loses its own character and
   word spacing and horizontal scaling, and words moved by cut and paste lose the fine spacing between their
   letters; letters left as they were keep theirs.

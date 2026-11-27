@@ -5,7 +5,8 @@
 #   tools/docshots/docshots.sh OUT try FILE STEP...   one run, to find click points: OUT/try.png
 #
 # Build first (`cargo build --release`); B and C name other app and command-line binaries. Needs Xvfb
-# (xvfb-run), xdotool and ImageMagick 7. The made-up report and form (mkreport.py) go into OUT/fix. Each
+# (xvfb-run), xdotool, ImageMagick 7 and the DejaVu Serif font. The made-up report and form (mkreport.py),
+# and the field notes scanned and recognised for the Recognised text picture, go into OUT/fix. Each
 # run starts its own display, and the app with settings and recovery folders of its own (OUT/cfg-*,
 # removed after): the light theme, LimarePDF's teal, "Pat Example" as the name for comments, and Sam
 # Lee's typed signatures and initials saved. Only the Digital signatures picture has digital IDs
@@ -18,7 +19,8 @@
 # Steps (window pixels; the window is at 0,0):
 #   k:KEYS     keys, as xdotool names them     t:TEXT     type TEXT
 #   c:X,Y      click                           m:MOD,X,Y  click with MOD held (shift, ctrl)
-#   d:X1,Y1,X2,Y2  drag                        h:X,Y      move the pointer only
+#   2:X,Y      double-click                    h:X,Y      move the pointer only
+#   d:X1,Y1,X2,Y2  drag
 #   w:X,Y,N    wheel down N notches            u:X,Y,N    wheel up N notches
 #   p:SECONDS  wait                            s:NAME     a picture now, OUT/try-NAME.png (try only)
 set -eu
@@ -74,6 +76,34 @@ signed() {
   ) >/dev/null
 }
 
+# scanned: made-up typed field notes drawn as a soft 150 dpi scan (its specks seeded, so it comes out the
+# same each time), made a PDF and recognised, as OUT/fix/field-notes.pdf. The OCR reads the date's "12" as
+# "1".
+scanned() {
+  local lines=(
+    "Visited on 12 November 2026 with four visitors from the"
+    "Riverside Field Studies Centre. The river was high and"
+    "brown after two days of rain, and the gauge read 1.42 m."
+    "Samples were taken at the bank and from the footbridge."
+    "Turbidity was well above the autumn average; nitrate"
+    "was close to last month's reading. The new fence by the"
+    "outfall is finished, and the path is open again."
+    ""
+    "Next visit: 26 November, weather permitting."
+  )
+  local args=(-font DejaVu-Serif-Bold -pointsize 20 -annotate +150+240 "Northern Water Survey"
+    -font DejaVu-Serif -pointsize 13 -annotate +150+300 "Field notes, Station 7 (below the weir)" -pointsize 12)
+  local l y=800
+  for l in "${lines[@]}"; do
+    [ -z "$l" ] || args+=(-annotate +150+$((y / 2)) "$l")
+    y=$((y + 75))
+  done
+  magick -seed 2 -size 1275x1650 -units PixelsPerInch -density 150 xc:gray95 -fill gray20 "${args[@]}" \
+    -blur 0x1.4 -attenuate 0.5 +noise Gaussian -colorspace Gray -depth 8 "$OUT/fix/field-notes.png"
+  "$C" images "$OUT/fix/field-notes.png" -o "$OUT/fix/field-notes-scan.pdf" >/dev/null
+  "$C" ocr "$OUT/fix/field-notes-scan.pdf" -o "$OUT/fix/field-notes.pdf" >/dev/null
+}
+
 # shot PICTURE FILE STEP...: runs the app on FILE, takes the steps, and saves the window as PICTURE. The
 # app's settings are a copy of SETTINGS (default OUT/cfg).
 shot() {
@@ -110,6 +140,8 @@ shot() {
         k:*) xdotool key --clearmodifiers "${step#k:}"; sleep 0.4 ;;
         t:*) xdotool type --delay 30 "${step#t:}"; sleep 0.4 ;;
         c:*) IFS=, read x y <<< "${step#c:}"; xdotool mousemove $x $y; sleep 0.2; xdotool click 1; sleep 0.5 ;;
+        2:*) IFS=, read x y <<< "${step#2:}"; xdotool mousemove $x $y; sleep 0.2
+             xdotool click --repeat 2 --delay 80 1; sleep 0.5 ;;
         m:*) IFS=, read mod x y <<< "${step#m:}"; xdotool mousemove $x $y; sleep 0.2; xdotool keydown $mod
              sleep 0.2; xdotool click 1; sleep 0.2; xdotool keyup $mod; sleep 0.5 ;;
         d:*) IFS=, read x1 y1 x2 y2 <<< "${step#d:}"; xdotool mousemove $x1 $y1; sleep 0.2; xdotool mousedown 1
@@ -182,6 +214,13 @@ take() {
       shot "$OUT/raw/organise.png" "$OUT/fix/organise.pdf" p:2 c:1450,1290 p:1.5 k:ctrl+minus p:1 c:477,794 \
         p:0.5 c:1173,794 p:0.5 h:1000,40 p:0.5
       crop organise 1532x970+58+280 ;;
+    # The scanned field notes; View > Appearance > Show > Show recognised text, then a double-click on the
+    # date's misread "1", which opens its line with the "1" selected.
+    recognised-text)
+      scanned
+      shot "$OUT/raw/recognised-text.png" "$OUT/fix/field-notes.pdf" p:2 c:1392,118 p:0.6 c:1448,216 p:0.6 \
+        c:1470,282 p:0.6 c:1100,278 p:0.8 2:645,642 p:0.8 h:1000,40 p:0.6
+      crop recognised-text 920x550+330+430 ;;
     # Protect; "twelve monitoring stations" selected and Mark redaction > Mark for redaction; then Mark
     # redaction and a box dragged over the header's "Northern Water Survey" (left selected); the toast
     # left to go.
@@ -199,7 +238,7 @@ take() {
   esac
 }
 
-ALL="comments fill-and-sign forms inspector organise redaction signatures-panel"
+ALL="comments fill-and-sign forms inspector organise recognised-text redaction signatures-panel"
 for name in ${@:-$ALL}; do
   take "$name"
   echo "$OUT/$name.png"

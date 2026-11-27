@@ -21,6 +21,16 @@
   text in an area**, choose a selected picture's **Recognise text**, or run `limarepdf-cli ocr --area
   PAGE:X,Y,W,H`. Recognised lines wholly inside the area are replaced with the new read. Before, a page with text
   was read only when a picture covered at least half of it ([Scans and OCR](docs/scanning-and-ocr.md#reading-an-area)).
+- Recognised text is corrected where it is shown: **Show recognised text** draws each line's text in blue over the
+  print it was read from, the print faded under it, so a word read wrongly shows where it is. Double-click a line to
+  correct it there, drawn as it will be written; ↓ and ↑ go on to the line below or above. Each line is one undo
+  step and stays invisible. Before, a line was outlined, its text shown on hover and corrected in a box
+  ([Scans and OCR](docs/scanning-and-ocr.md#seeing-and-correcting-recognised-text)).
+- A line reading down, back along or up the page, printed or recognised, is edited along its line, drawn turned as
+  it will be written: its caret, selection, spelling marks and underlines turn with it, a click or drag goes by its
+  letters, the input method's window opens at its caret and a tag saying it runs past the page edge reads upright
+  beside it. Before, it opened level in a box over the line. A tilted line still does
+  ([Editing text](docs/content-editing.md#edit-a-line-of-text)).
 
 ### Fixed
 
@@ -31,6 +41,8 @@
   ([Install](docs/install.md#arch-linux)).
 - Recognised text no longer splits lines of old print and of large scans into pieces: a letter broken in two, or a
   word whose letters barely touch, made part of a line read as a line of its own.
+- OCR reads the text on a scan with a bar chart or filled boxes. Where the bars held more ink than the letters,
+  it found no text on the page.
 
 ### Changed
 

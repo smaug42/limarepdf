@@ -771,6 +771,14 @@ group = "G6"
 needs = ["gs", "pdffonts", "pdftotext"]
 
 [[test]]
+name = "app::tests::ocr_correct::cross_check_corrected_recognised_text_with_poppler"
+crate = "limarepdf-gui"
+target = "--bin limarepdf"
+file = "crates/limarepdf-gui/src/app/tests/ocr_correct.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
 name = "app::tests::organise::cross_check_typing_moved_with_its_page_with_poppler"
 crate = "limarepdf-gui"
 target = "--bin limarepdf"

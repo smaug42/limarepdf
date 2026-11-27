@@ -1675,8 +1675,8 @@ pub static ACTIONS: &[Action] = &[
         act: Act::ToggleHidden,
         label: "Show recognised text",
         checked: Some(|c| c.hidden_text),
-        hint: "Outline the invisible text added by OCR. Hover to read it; select it with \
-               the arrow tool to correct it.",
+        hint: "Show the invisible text added by OCR in blue over the page. Double-click a \
+               line to correct it.",
         ..BASE
     },
     Action {

@@ -1565,10 +1565,57 @@ pub(crate) fn font_of(name: &str) -> FontChoice {
         .unwrap_or_else(|| FontChoice::from_name(name))
 }
 
-/// Whether line `o` is edited drawn as it will be written; turned lines and invisible
-/// (OCR) ones are edited in a plain box.
+/// Whether line `o` is edited on its line, drawn as it will be written: an upright one or
+/// one turned a quarter turn or more ([`PageObject::quarter_turns`]), visible or
+/// recognised (invisible); a tilted line is edited in a plain box.
+fn on_its_line(o: &PageObject) -> bool {
+    o.quarter_turns.is_some() && o.baseline.is_some()
+}
+
+/// Whether line `o` is edited on its line in place of what the page draws, which is
+/// covered ([`on_its_line`]); recognised text is drawn over the print it was read from,
+/// which stays.
 fn drawn_in_place(o: &PageObject) -> bool {
-    o.upright && !o.hidden && o.baseline.is_some()
+    on_its_line(o) && !o.hidden
+}
+
+/// Whether line `o` may be edited as part of its paragraph: drawn in place and upright,
+/// as turned text edits a line at a time.
+fn in_paragraph(o: &PageObject) -> bool {
+    drawn_in_place(o) && o.upright
+}
+
+/// Recognised (invisible) line `o`'s `text` in the piece it is written in: the standard
+/// font core writes such text in, at the line's size.
+fn recognised_pieces(o: &PageObject, text: &str) -> Vec<(TextPart, Wanted<'static>)> {
+    let part = TextPart {
+        text: text.to_string(),
+        font: PartFont::Choice(FontChoice::default()),
+        size: o.font_size.unwrap_or(12.0).max(1.0),
+        color: [0.0; 3],
+        rise: 0.0,
+        from: None,
+        origins: Vec::new(),
+    };
+    vec![(part, Wanted::Standard(FontChoice::default()))]
+}
+
+/// How long line `o` runs along its direction, in points: recognised text is written
+/// stretched to it, whatever it says.
+fn extent(o: &PageObject) -> f32 {
+    match (o.stops.first(), o.stops.last()) {
+        (Some(&a), Some(&b)) if b > a => b - a,
+        _ => o.bbox[2] - o.bbox[0],
+    }
+}
+
+/// The colour recognised text is shown in over the page, in page colour `mode`: a blue
+/// that reads on the paper.
+fn recognised_blue(mode: PageColours) -> Color32 {
+    match mode {
+        PageColours::Normal | PageColours::Sepia => Color32::from_rgb(40, 110, 230),
+        PageColours::Dark | PageColours::HighContrast => Color32::from_rgb(110, 170, 255),
+    }
 }
 
 /// The place between characters of line `o` nearest `p` (page points), for a line edited
@@ -1612,9 +1659,19 @@ fn on_line(o: &PageObject, pick: Pick) -> Pick {
 }
 
 /// What hides line `o` while it is edited: its box, with room for accents above and
-/// descenders below, in page points.
+/// descenders below, in page points, which face the way the line is turned.
 fn cover_box(o: &PageObject) -> [f32; 4] {
-    cover_round(o.bbox)
+    let q = o.quarter_turns.unwrap_or(0) as usize % 4;
+    if q == 0 {
+        return cover_round(o.bbox);
+    }
+    let b = o.bbox;
+    let t = if q % 2 == 1 { b[2] - b[0] } else { b[3] - b[1] };
+    // Left, top, right and bottom of the upright line; side `i` of the page takes the
+    // line's side that faces it once turned.
+    let pad = [0.05, 0.12, 0.05, 0.06].map(|f| f * t);
+    let p = |i: usize| pad[(i + 4 - q) % 4];
+    [b[0] - p(0), b[1] - p(1), b[2] + p(2), b[3] + p(3)]
 }
 
 /// [`cover_box`] for a line whose box is `b`.
@@ -2919,11 +2976,93 @@ impl Editor {
         shown.over
     }
 
+    /// Where ↓ or ↑, pressed in recognised (invisible) line `o`, number `id` on `page`,
+    /// being edited, goes on to, as in a word processor: the nearest recognised line below
+    /// or above that runs alongside it, at the caret's place along it (page points). The
+    /// key is taken. `None` when neither is pressed there, or there is no such line, and
+    /// the editor has the key.
+    fn next_recognised(
+        &mut self,
+        ctx: &egui::Context,
+        page: usize,
+        id: usize,
+        o: &PageObject,
+    ) -> Option<Pos2> {
+        let le = self.line_edit.as_ref()?;
+        let focused = ctx.memory(|m| m.has_focus(line_edit_id(self.scope, page)));
+        if !o.hidden || le.fresh || le.composing.is_some() || !le.typed.is_empty() || !focused {
+            return None;
+        }
+        let (down, up) = ctx.input(|i| {
+            let plain = i.modifiers.is_none();
+            let pressed = |k| plain && i.key_pressed(k);
+            (pressed(egui::Key::ArrowDown), pressed(egui::Key::ArrowUp))
+        });
+        let (key, sign) = match (down, up) {
+            (true, false) => (egui::Key::ArrowDown, 1.0),
+            (false, true) => (egui::Key::ArrowUp, -1.0),
+            _ => return None,
+        };
+        // Along the line and across it, down the page for an upright line.
+        let (dx, dy) = o.dir.unwrap_or((1.0, 0.0));
+        let along = |x: f32, y: f32| x * dx + y * dy;
+        let across = |x: f32, y: f32| y * dx - x * dy;
+        let span = |b: [f32; 4], f: &dyn Fn(f32, f32) -> f32| {
+            let v = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| f(x, y));
+            let lo = v.iter().copied().fold(f32::MAX, f32::min);
+            (lo, v.iter().copied().fold(f32::MIN, f32::max))
+        };
+        let (a0, a1) = span(o.bbox, &along);
+        let (c0, c1) = span(o.bbox, &across);
+        let (mid, half) = ((c0 + c1) / 2.0, (c1 - c0) / 2.0);
+        // The caret's place along the line, where it was last drawn.
+        let caret = le.caret_at.map(|(p, _)| along(p.x, p.y)).or_else(|| {
+            let (x, y) = o.baseline?;
+            let i = page_text::selection(ctx, line_edit_id(self.scope, page))?.1;
+            Some(along(x, y) + o.stops.get(i)?)
+        });
+        let objs = self.objs.get(&page)?;
+        let lines: Vec<_> = (objs.iter().enumerate())
+            .filter(|&(i, l)| i != id && l.hidden && l.kind == ObjectKind::Text)
+            .filter(|(_, l)| l.text.as_deref().is_some_and(|t| !t.is_empty()))
+            .filter(|(_, l)| {
+                let (ex, ey) = l.dir.unwrap_or((1.0, 0.0));
+                ex * dx + ey * dy > 0.99
+            })
+            .filter_map(|(_, l)| {
+                let (b0, b1) = span(l.bbox, &along);
+                let (d0, d1) = span(l.bbox, &across);
+                let gap = sign * ((d0 + d1) / 2.0 - mid);
+                (gap > half && b0 < a1 && b1 > a0).then_some((gap, l))
+            })
+            .collect();
+        let nearest = lines.iter().map(|l| l.0).fold(f32::MAX, f32::min);
+        // Of the lines in the nearest row, the one nearest the caret.
+        let off = |l: &PageObject| {
+            let (b0, b1) = span(l.bbox, &along);
+            caret.map_or(0.0, |t| (b0 - t).max(t - b1).max(0.0))
+        };
+        let (_, l) = (lines.iter())
+            .filter(|(gap, _)| *gap < nearest + half)
+            .min_by(|a, b| off(a.1).total_cmp(&off(b.1)))?;
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+        let b = l.bbox;
+        let centre = Pos2::new((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+        let (b0, b1) = span(b, &along);
+        let inset = ((b1 - b0) / 2.0).min(0.5);
+        let t = caret.map_or(b0, |t| t.clamp(b0 + inset, b1 - inset));
+        let by = t - along(centre.x, centre.y);
+        Some(centre + Vec2::new(dx, dy) * by)
+    }
+
     /// The line of page text being edited on `page` (drawn at `r`, `k` pixels per point):
     /// drawn as it will be written, in the font core will write it in, over the line,
-    /// which is hidden underneath; a turned or invisible line in a plain box. Esc, Enter,
-    /// Tab or clicking away keeps the change. Returns true when the page should not take
-    /// the pointer this frame: it is over the editor, or the editor just opened or closed.
+    /// which is hidden underneath; recognised (invisible) text in blue over the print it
+    /// was read from, stretched along the line as it is written; a line turned a quarter
+    /// turn or more along it, turned with it; a tilted line in a plain box. Esc, Enter, Tab
+    /// or clicking away keeps the change, and on recognised text ↓ and ↑ go on to the line
+    /// below or above. Returns true when the page should not take the pointer this frame:
+    /// it is over the editor, or the editor just opened or closed.
     fn line_edit_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
         if self.line_edit.as_ref().is_none_or(|l| l.page != page) {
             return false;
@@ -2942,14 +3081,20 @@ impl Editor {
         // What typing may run over (PB-35): the page's other visible things the line as it
         // was didn't overlap.
         let others = self.obstacles(page, r, k, |i, l| i == key.1 || meet(l.bbox, o.bbox));
-        let warn = |rows: &[Rect]| page_text::overflow(r, rows, &others);
         let hide = self.hiding(to_screen);
+        if let Some(at) = self.next_recognised(ui.ctx(), page, key.1, &o) {
+            // What was typed is kept, and the line there opens once it is in: the lines'
+            // numbers change as it is written.
+            self.then = Some(Then::Line(page, at, None));
+            self.end_line_edit();
+            return true;
+        }
         let (Some(le), Some(insp)) = (self.line_edit.as_mut(), self.insp.as_mut()) else {
             return false;
         };
         let ctx = ui.ctx().clone();
         let id = line_edit_id(self.scope, page);
-        let drawn = drawn_in_place(&o);
+        let drawn = on_its_line(&o);
         let typed_over = ctx.memory(|m| m.has_focus(id)) && !le.typed.is_empty();
         if typed_over {
             // Typed as it opened, over what it selected: before the keys since, as typed.
@@ -2987,8 +3132,20 @@ impl Editor {
             let text = insp.text.preview(t);
             page_text::runs(&ctx, &drawn_pieces(&o, fonts, &text), k, color, lang)
         };
+        let blue = recognised_blue(mode);
+        // Drawn on its line, turned as it is about its baseline's start.
+        let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
+        let turn = page_text::Turn(o.quarter_turns.unwrap_or(0));
+        let origin = to_screen(x, y);
         let (out, area) = if drawn {
-            let runs = |t: &str| runs(t, k, &|c| page_text::shown(mode, c));
+            // What it runs over, where it is laid out upright before it is turned.
+            let upright = |s: Rect| turn.back().rect(origin, s);
+            let others: Vec<_> = others.iter().map(|&(s, why)| (upright(s), why)).collect();
+            let warn = |rows: &[Rect]| page_text::overflow(upright(r), rows, &others);
+            let runs = |t: &str| match o.hidden {
+                true => page_text::runs(&ctx, &recognised_pieces(&o, t), k, |_| blue, lang),
+                false => runs(t, k, &|c| page_text::shown(mode, c)),
+            };
             let decos = |t: &str| insp.text.preview(t).drawn_decos();
             let bands = |t: &str, runs: &[page_text::Run]| {
                 page_text::char_bands(runs, &decos(t), &|c| page_text::shown(mode, c))
@@ -3000,26 +3157,19 @@ impl Editor {
                 warn: &warn,
                 bands: &bands,
                 align: TextAlign::Left,
+                fit: o.hidden.then(|| extent(&o) * k),
+                turn,
             };
-            let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
             let c = cover_box(&o);
             let c = Rect::from_min_max(to_screen(c[0], c[1]), to_screen(c[2], c[3]));
-            let cover = hide.map(|how| (c, how));
-            let f = page_text::field(
-                &ctx,
-                id,
-                &mut typed,
-                to_screen(x, y),
-                &style,
-                false,
-                cover,
-                false,
-            );
+            // The print under recognised text stays, faded ([`Self::overlay`]).
+            let cover = hide.filter(|_| !o.hidden).map(|how| (c, how));
+            let f = page_text::field(&ctx, id, &mut typed, origin, &style, false, cover, false);
             // The floating bar keeps clear of the tag too.
             (f.out, f.tag.map_or(f.outline, |t| f.outline.union(t)))
         } else {
             let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3])).expand(2.0);
-            // A turned line shows its styles too, at its size on the page, in a box as long
+            // A tilted line shows its styles too, at its size on the page, in a box as long
             // as the line and one line high; invisible (OCR) text has no styles, and is
             // shown at its box's height.
             let parts = insp.text.drawn_parts();
@@ -3093,6 +3243,7 @@ impl Editor {
         // Where the caret is, for a switch to Paragraph.
         if let Some(c) = out.cursor_range.filter(|_| drawn) {
             let at = out.galley.pos_from_cursor(c.primary).center() + out.galley_pos.to_vec2();
+            let at = turn.pos(origin, at);
             let at = Pos2::new((at.x - r.min.x) / k, (at.y - r.min.y) / k);
             le.caret_at = Some((at, c.primary.index.0));
         }
@@ -3108,7 +3259,15 @@ impl Editor {
         le.area = area.union(edit.rect);
         let name = format!("Editing text: {}", o.text.as_deref().unwrap_or(""));
         dialogs::set_name(edit, &name);
-        le.refused.show(&ctx, &out, id);
+        if !drawn || turn == page_text::Turn::default() {
+            le.refused.show(&ctx, &out, id);
+        } else if let Some(c) = out.cursor_range {
+            // Beside the caret, clear of the line.
+            let caret = out.galley.pos_from_cursor(c.primary);
+            let caret = turn.rect(origin, caret.translate(out.galley_pos.to_vec2()));
+            let at = caret.right_bottom() + Vec2::splat(4.0);
+            le.refused.show_at(&ctx, at, id);
+        }
         if le.fresh {
             // The caret where clicked, or the word double-clicked selected, as in a word
             // processor: by the text as drawn, or along the plain box.
@@ -3116,7 +3275,7 @@ impl Editor {
                 Pick::Chars(a, b) => (a, b),
                 Pick::At(p, word) => {
                     let i = if drawn {
-                        let at = to_screen(p.x, p.y) - out.galley_pos;
+                        let at = turn.back().pos(origin, to_screen(p.x, p.y)) - out.galley_pos;
                         out.galley.cursor_from_pos(at).index.0
                     } else {
                         caret_along(&o, p, insp.text.text().chars().count())
@@ -4014,9 +4173,10 @@ impl Editor {
         self.hit_where(page, p, tol, |_| true)
     }
 
-    /// The visible line of page text under `p`, for editing it.
+    /// The line of page text under `p`, for editing it: recognised (invisible) text too
+    /// while it is shown.
     fn text_hit(&self, page: usize, p: Pos2, tol: f32) -> Option<usize> {
-        self.hit_where(page, p, tol, |o| o.kind == ObjectKind::Text && !o.hidden)
+        self.hit_where(page, p, tol, |o| o.kind == ObjectKind::Text)
     }
 
     /// The picture or shape under `p` that a click with the read tool selects: not page
@@ -4128,8 +4288,9 @@ impl Editor {
     }
 
     /// Overlays drawn whatever the tool: search matches (`current` is outlined) and, when
-    /// switched on, outlines of recognised (invisible) text, with the text of the line under
-    /// the pointer shown above it. `r` and `k` as for [`Editor::page_ui`].
+    /// switched on, recognised (invisible) text, each line in blue over the print it was
+    /// read from, which is faded under it, in the font it is written in, stretched along
+    /// the line as it is written. `r` and `k` as for [`Editor::page_ui`].
     #[allow(clippy::too_many_arguments)]
     pub fn overlay(
         &mut self,
@@ -4155,6 +4316,9 @@ impl Editor {
                 Pos2::new(r.min.x + b[2] * k, r.min.y + b[3] * k),
             )
         };
+        if self.show_hidden {
+            self.paint_recognised(ui, pdf, page, r, k);
+        }
         // A match broken across lines has a box on each; `current` is the current match's
         // hit, which may go on from the page before.
         for (hit, boxes) in matches {
@@ -4168,36 +4332,49 @@ impl Editor {
             }
         }
         self.show_match_note(ui.ctx(), page, r, k);
-        if !self.show_hidden {
-            return;
-        }
-        let lines: Vec<(Rect, String)> = self
-            .objects(pdf, page)
-            .iter()
-            .filter(|o| o.hidden)
-            .map(|o| (screen_rect(o.bbox), o.text.clone().unwrap_or_default()))
-            .collect();
-        let blue = Color32::from_rgb(40, 110, 230);
-        let hover = ui
-            .input(|i| i.pointer.hover_pos())
-            .filter(|p| r.contains(*p));
-        let mut tip = None;
-        for (sr, text) in &lines {
-            painter.rect_filled(*sr, 0.0, blue.gamma_multiply(0.08));
-            let edge = Stroke::new(1.0, blue.gamma_multiply(0.8));
-            painter.rect_stroke(*sr, 0.0, edge, StrokeKind::Outside);
-            if hover.is_some_and(|p| sr.contains(p)) {
-                tip = Some((*sr, text.clone()));
+    }
+
+    /// The recognised (invisible) text on `page`, drawn at `r`, `k` pixels per point: each
+    /// line's print faded under it and its text in blue over it, as it is written (the
+    /// line being edited is drawn by its editor), along the line whichever way it runs.
+    fn paint_recognised(
+        &mut self,
+        ui: &egui::Ui,
+        pdf: &limarepdf_core::Pdf,
+        page: usize,
+        r: Rect,
+        k: f32,
+    ) {
+        let (mode, lang) = (self.page_colours, self.lang.clone());
+        let editing = (self.line_edit.as_ref())
+            .filter(|le| le.page == page)
+            .map(|le| le.id);
+        let (painter, ctx) = (ui.painter(), ui.ctx());
+        let paper = page_text::shown(mode, [1.0; 3]).gamma_multiply(0.7);
+        let blue = recognised_blue(mode);
+        let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
+        let lines = (self.objects(pdf, page).iter().enumerate())
+            .filter(|(_, o)| o.hidden && o.kind == ObjectKind::Text);
+        for (i, o) in lines {
+            let c = cover_round(o.bbox);
+            let veil = Rect::from_min_max(to_screen(c[0], c[1]), to_screen(c[2], c[3]));
+            painter.rect_filled(veil, 0.0, paper);
+            let (Some(text), Some((x, y))) = (o.text.as_deref(), o.baseline) else {
+                continue;
+            };
+            if editing == Some(i) || text.is_empty() {
+                continue;
             }
-        }
-        if let Some((sr, text)) = tip {
-            let font = egui::FontId::proportional(14.0);
-            let galley = painter.layout_no_wrap(text, font, ui.visuals().strong_text_color());
-            let pos = sr.left_top() - Vec2::new(0.0, galley.size().y + 6.0);
-            let bg = Rect::from_min_size(pos, galley.size()).expand(3.0);
-            painter.rect_filled(bg, 3.0, ui.visuals().extreme_bg_color);
-            painter.rect_stroke(bg, 3.0, Stroke::new(1.0, blue), StrokeKind::Inside);
-            painter.galley(pos, galley, Color32::PLACEHOLDER);
+            let pieces = recognised_pieces(o, text);
+            let runs = page_text::runs(ctx, &pieces, k, |_| blue, lang.as_deref());
+            let (g, ascent) = page_text::galley(ctx, text, &runs);
+            let g = page_text::stretched(g, extent(o) * k);
+            let (dx, dy) = o.dir.unwrap_or((1.0, 0.0));
+            let angle = dy.atan2(dx);
+            let turn = egui::emath::Rot2::from_angle(angle);
+            // The first baseline on the line's.
+            let pos = to_screen(x, y) - turn * Vec2::new(0.0, ascent);
+            painter.add(egui::epaint::TextShape::new(pos, g, blue).with_angle(angle));
         }
     }
 
@@ -8547,18 +8724,28 @@ mod tests {
             italic: true,
         };
         assert_eq!(font(&ed, &kept), format!("Standard({courier:?})"));
-        // Turned and invisible lines are edited in a plain box, and nothing hides them.
-        assert!(drawn_in_place(&o));
-        for plain in [
-            PageObject {
-                upright: false,
-                ..o.clone()
-            },
-            PageObject {
-                hidden: true,
-                ..o.clone()
-            },
-        ] {
+        // Lines a quarter turn or two from upright are edited on their line too; tilted ones
+        // in a plain box; recognised (invisible) ones on their line, over the print they
+        // were read from. Nothing hides those last two.
+        assert!(drawn_in_place(&o) && on_its_line(&o));
+        let down = PageObject {
+            upright: false,
+            quarter_turns: Some(1),
+            ..o.clone()
+        };
+        assert!(drawn_in_place(&down) && on_its_line(&down));
+        let recognised = PageObject {
+            hidden: true,
+            ..o.clone()
+        };
+        assert!(on_its_line(&recognised));
+        let tilted = PageObject {
+            upright: false,
+            quarter_turns: None,
+            ..o.clone()
+        };
+        assert!(!on_its_line(&tilted));
+        for plain in [tilted, recognised] {
             assert!(!drawn_in_place(&plain));
         }
         ed.start_line_edit(0, 2, Pick::Chars(0, 0));
@@ -8570,7 +8757,17 @@ mod tests {
             b[0] < ob[0] && b[1] < ob[1] && b[2] > ob[2] && b[3] > ob[3],
             "{b:?}"
         );
-        ed.objs.get_mut(&0).unwrap()[2].upright = false;
+        // A line reading down the page has its letters' tops to the right: the room for
+        // accents is there, for descenders to the left, across the line's thickness.
+        let line = &mut ed.objs.get_mut(&0).unwrap()[2];
+        (line.upright, line.quarter_turns) = (false, Some(1));
+        let (_, b) = ed.cover_wanted().expect("a box to hide");
+        let t = ob[2] - ob[0];
+        let pads = [ob[0] - b[0], ob[1] - b[1], b[2] - ob[2], b[3] - ob[3]];
+        let want = [0.06, 0.05, 0.12, 0.05].map(|f| f * t);
+        let near = pads.iter().zip(want).all(|(p, w)| (p - w).abs() < 0.01);
+        assert!(near, "{pads:?}, not {want:?}");
+        ed.objs.get_mut(&0).unwrap()[2].quarter_turns = None;
         assert_eq!(ed.cover_wanted(), None);
     }
 

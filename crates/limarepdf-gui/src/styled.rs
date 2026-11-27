@@ -1582,6 +1582,7 @@ mod tests {
             dir: None,
             stops: Vec::new(),
             upright: true,
+            quarter_turns: Some(0),
             vertical: false,
             spans: vec![
                 span((0, 4), "Helvetica", 12.0),
@@ -1639,6 +1640,7 @@ mod tests {
             dir: None,
             stops: Vec::new(),
             upright: true,
+            quarter_turns: Some(0),
             vertical: false,
             spans: vec![TextSpan {
                 chars: (0, text.chars().count()),

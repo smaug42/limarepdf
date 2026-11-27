@@ -173,10 +173,24 @@ left as shown, repeated for more areas.
 
 ### Seeing and correcting recognised text
 
-**View > Show > Show recognised text** (or ☰ > View > Show > Show recognised text) outlines each recognised
-line and shows its text on hover. With the arrow tool, select a line and choose **Edit > Edit text** to correct
-its text on the page; it stays invisible and in place, and clearing it removes the line. `limarepdf-cli objects`
-lists these lines as "(hidden)".
+**View > Show > Show recognised text** (or ☰ > View > Show > Show recognised text) draws each recognised line's
+text in blue over the print it was read from, the print faded under it. The text is drawn in the font it is
+written in, Helvetica, stretched along the line as it is written, so a word read wrongly shows where it is.
+
+<img src="images/recognised-text.png" width="460" alt="Scanned field notes with Show recognised text on: each line's recognised text in blue over the faded print. The first line, read as “Visited on 1” where the print says “Visited on 12”, is opened for correction in a box along it, its “1” selected and the printed 2 showing beside it, with the text toolbar above">
+
+- **To correct a line,** double-click it. It opens where it is shown, drawn as it will be written, with the caret
+  where you clicked and the word selected. With the arrow tool, selecting a line and choosing **Edit > Edit text**
+  opens it too, the caret at its end.
+- **↓ and ↑** keep the line and open the recognised line below or above, the caret where it was along the line.
+- **Enter, Esc, Tab or clicking away** keeps it, one undo step a line. The line stays invisible and in place,
+  stretched over its print as before, and searching finds the new text at once. Clearing a line removes it.
+- **A line on its side or upside down** is corrected along it in the same way, drawn turned as it is written; ↓
+  and ↑ go on to the lines below and above it as it reads. **A tilted line,** as some other OCR programs write it
+  over a tilted scan, opens in a box over the line instead.
+
+With Show recognised text off, recognised text isn't drawn, and a double-click selects a word, as on any page.
+`limarepdf-cli objects` lists these lines as "(hidden)".
 
 ### Getting good results
 

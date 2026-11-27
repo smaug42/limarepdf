@@ -9094,6 +9094,7 @@ mod tests {
     mod minimal_tasks;
     mod new_document;
     mod ocr_area;
+    mod ocr_correct;
     mod organise;
     mod overflow;
     mod paragraphs;
@@ -9108,6 +9109,7 @@ mod tests {
     mod tabs;
     mod text_align;
     mod tools;
+    mod turned_lines;
     mod typing_box;
     mod typing_menus;
     mod underline;

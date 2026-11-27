@@ -469,7 +469,7 @@ impl Editor {
         id: usize,
     ) -> bool {
         let o = self.objs.get(&page).and_then(|v| v.get(id));
-        if !o.is_some_and(drawn_in_place) {
+        if !o.is_some_and(in_paragraph) {
             return false;
         }
         let Some(b) = self.block_of(pdf, page, id) else {
@@ -501,7 +501,7 @@ impl Editor {
         if !o.is_some_and(|o| o.kind == ObjectKind::Text) {
             return none;
         }
-        let why = match (o.is_some_and(drawn_in_place), self.read_block_of(page, id)) {
+        let why = match (o.is_some_and(in_paragraph), self.read_block_of(page, id)) {
             (false, _) if o.is_some_and(|o| o.hidden) => {
                 Some("Invisible text edits a line at a time.")
             }
@@ -591,7 +591,7 @@ impl Editor {
         }
         let mut aligns = (self.lines_to_align().into_iter()).filter_map(|(page, id)| {
             let o = self.objs.get(&page)?.get(id)?;
-            let b = self.read_block_of(page, id).filter(|_| drawn_in_place(o))?;
+            let b = self.read_block_of(page, id).filter(|_| in_paragraph(o))?;
             refused(b).is_none().then_some(b.frame.align)
         });
         let first = aligns.next()?;
@@ -755,7 +755,7 @@ impl Editor {
             left.left.vertical += 1;
             return None;
         }
-        if !drawn_in_place(o) {
+        if !in_paragraph(o) {
             left.turned += 1;
             return None;
         }

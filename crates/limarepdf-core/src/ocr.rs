@@ -1435,11 +1435,17 @@ fn find_words(g: &GrayImage) -> (Vec<[f32; 4]>, f32) {
     // Typical letter height, in two steps. First the ink-weighted median height, which
     // many specks (dust, photocopy texture) cannot drag down; then the plain median of the
     // groups at least a quarter of that, so that large bold headings, which hold much of
-    // the ink, do not make body text look like specks.
+    // the ink, do not make body text look like specks. Solid groups, a chart's bars or
+    // filled boxes, are left out while there are letters: they can hold most of the ink,
+    // and their height says nothing of the letters'.
     let mut sized: Vec<&Comp> = comps
         .iter()
         .filter(|c| c.h() >= 4 && not_page_sized(c))
         .collect();
+    let solid = |c: &&Comp| c.pixels as f32 >= 0.9 * (c.w() * c.h()) as f32;
+    if sized.iter().any(|c| !solid(c)) {
+        sized.retain(|c| !solid(c));
+    }
     sized.sort_unstable_by_key(|c| c.h());
     let ink: usize = sized.iter().map(|c| c.pixels).sum();
     let mut acc = 0;
