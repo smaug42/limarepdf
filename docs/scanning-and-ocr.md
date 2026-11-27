@@ -177,6 +177,8 @@ left as shown, repeated for more areas.
 text in blue over the print it was read from, the print faded under it. The text is drawn in the font it is
 written in, Helvetica, stretched along the line as it is written, so a word read wrongly shows where it is.
 
+<img src="images/recognised-text.png" width="460" alt="Scanned field notes with Show recognised text on: each line's recognised text in blue over the faded print. The first line, read as “Visited on 1” where the print says “Visited on 12”, is opened for correction in a box along it, its “1” selected and the printed 2 showing beside it, with the text toolbar above">
+
 - **To correct a line,** double-click it. It opens where it is shown, drawn as it will be written, with the caret
   where you clicked and the word selected. With the arrow tool, selecting a line and choosing **Edit > Edit text**
   opens it too, the caret at its end.
