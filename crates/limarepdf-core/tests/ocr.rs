@@ -942,3 +942,226 @@ fn correcting_recognised_text_keeps_it_invisible_and_in_place() {
     let same_row = (new[1] + new[3] - old[1] - old[3]).abs() < 6.0;
     assert!(same_row, "{old:?} {new:?}");
 }
+
+/// Where [`page_with_a_picture`] shows LINES' picture: displayed-page points, y down.
+const PICTURE_AT: [f32; 4] = [72.0, 144.0, 360.0, 360.0];
+
+/// A letter-size page of a line of its own text and, under it, LINES' picture (4 x 3 inches,
+/// at 300 dpi) at PICTURE_AT: a picture of text in an ordinary document.
+fn page_with_a_picture() -> Pdf {
+    let own = "BT /F1 14 Tf 72 720 Td (Quarterly report for the harbour board) Tj ET";
+    let mut p = helvetica_page(612.0, 792.0, own.into());
+    let mut png = Cursor::new(Vec::new());
+    DynamicImage::ImageLuma8(text_image())
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    p.add_image(0, PICTURE_AT, &png.into_inner()).unwrap();
+    p
+}
+
+/// A picture of text in an ordinary page, which isn't read with the whole page, is read in a
+/// box drawn over it (#226): its lines are added as a page's are, in one undo step, and the
+/// page's own text stays as it was.
+#[test]
+fn an_area_over_a_picture_of_text_is_read() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = page_with_a_picture();
+    let r = p.ocr_pages(&[0], &ocr).unwrap();
+    assert!(skipped(&r, "already has text"), "{r:?}");
+    let look = gray(&mut p, 1.0);
+    let before = p.before();
+    let r = p.ocr_areas(&[(0, PICTURE_AT)], &ocr).unwrap();
+    assert!(six_lines(&r), "{r:?}");
+    let text = p.page_text(0);
+    assert!(recall(&text) > 0.9, "recall {}: {text}", recall(&text));
+    assert!(text.starts_with("Quarterly report"), "{text}");
+    assert_eq!(p.find_text_boxes(0, "harbour").unwrap().len(), 1, "{text}");
+    // As in search_boxes_cover_recognised_words, the picture's top left at (72, 144).
+    let b = p.find_text_boxes(0, "COMMITTEE").unwrap();
+    assert_eq!(b.len(), 1, "{b:?}");
+    let b = b[0];
+    assert!((b[0] - 110.0).abs() < 6.0, "{b:?}");
+    assert!(b[1] > 208.0 && b[1] < 220.0, "{b:?}");
+    assert!(b[3] > 222.0 && b[3] < 232.0, "{b:?}");
+    assert_eq!(look.as_raw(), gray(&mut p, 1.0).as_raw());
+    let reopened = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    assert!(recall(&reopened.page_text(0)) > 0.9);
+    p.restore(before.undo(&p));
+    let own = "Quarterly report for the harbour board";
+    assert_eq!(p.page_text(0).trim(), own);
+}
+
+/// A box over the page's own text adds nothing: the words are there already.
+#[test]
+fn an_area_over_the_pages_own_text_adds_nothing() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = page_with_a_picture();
+    let r = p
+        .ocr_areas(&[(0, [60.0, 50.0, 400.0, 100.0])], &ocr)
+        .unwrap();
+    assert!(skipped(&r, "no text found besides the page's own"), "{r:?}");
+    let own = "Quarterly report for the harbour board";
+    assert_eq!(p.page_text(0).trim(), own);
+}
+
+/// LINES' third and fourth lines on [`text_image`]'s page, and the left of them: their
+/// baselines are 80 and 98 pt from the top.
+const LINES_3_4: [f32; 4] = [8.0, 68.0, 280.0, 104.0];
+const LEFT_OF_3_4: [f32; 4] = [8.0, 68.0, 100.0, 104.0];
+
+/// [`text_image`] scanned and recognised, its third line corrected wrongly: Tuesday to
+/// Wednesday.
+fn misread_tuesday(ocr: &Ocr) -> Pdf {
+    let mut p = scanned(text_image());
+    p.ocr_pages(&[0], ocr).unwrap();
+    let line = hidden_lines(&p)
+        .into_iter()
+        .find(|o| o.text.as_deref().unwrap_or("").contains("Tuesday"))
+        .expect("no line with Tuesday");
+    let edit = TextEdit {
+        text: "The committee met on Wednesday morning.".into(),
+        font: None,
+        size: None,
+        color: None,
+        parts: Vec::new(),
+    };
+    p.edit_text(0, line.id, &edit).unwrap();
+    p
+}
+
+/// Read in a box, a page's recognised lines wholly inside it are replaced; lines crossing its
+/// edge are kept, and what is read on them isn't added again (#226, the user's B). The
+/// saved file holds the replaced line no more.
+#[test]
+fn an_area_replaces_the_recognised_lines_inside_it() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = misread_tuesday(&ocr);
+    let look = gray(&mut p, 1.0);
+    let r = p.ocr_areas(&[(0, LEFT_OF_3_4)], &ocr).unwrap();
+    assert!(skipped(&r, "no text found besides the page's own"), "{r:?}");
+    assert!(p.page_text(0).contains("Wednesday"));
+    let r = p.ocr_areas(&[(0, LINES_3_4)], &ocr).unwrap();
+    let two = matches!(r[..], [(0, OcrResult::Added { lines: 2, .. })]);
+    assert!(two, "{r:?}");
+    let text = p.page_text(0);
+    assert!(
+        text.contains("Tuesday") && !text.contains("Wednesday"),
+        "{text}"
+    );
+    assert!(recall(&text) > 0.9, "recall {}: {text}", recall(&text));
+    assert_eq!(hidden_lines(&p).len(), 6);
+    assert_eq!(look.as_raw(), gray(&mut p, 1.0).as_raw());
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["Wednesday"]);
+    saved.assert_kept(&["Tuesday", "committee"]);
+    assert_eq!(saved.unreachable(), []);
+}
+
+/// Poppler reads a line replaced in a box as LimarePDF does.
+/// `cargo test -p limarepdf-core --test ocr -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_area_text_with_poppler() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = misread_tuesday(&ocr);
+    p.ocr_areas(&[(0, LINES_3_4)], &ocr).unwrap();
+    let ours: Vec<String> = p.page_text(0).split_whitespace().map(Into::into).collect();
+    let poppler = tools::pdftotext(&p.to_bytes().unwrap());
+    let theirs: Vec<&str> = poppler.split_whitespace().collect();
+    assert_eq!(theirs, ours, "{poppler}");
+    assert!(
+        poppler.contains("Tuesday") && !poppler.contains("Wednesday"),
+        "{poppler}"
+    );
+}
+
+/// Boxes on one page that overlap read the lines they share once, and read again, a box
+/// replaces what they read.
+#[test]
+fn overlapping_areas_read_their_lines_once() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(text_image());
+    let top = [8.0, 30.0, 280.0, 104.0];
+    let bottom = [8.0, 68.0, 280.0, 140.0];
+    let r = p.ocr_areas(&[(0, top), (0, bottom)], &ocr).unwrap();
+    let read = matches!(
+        r[..],
+        [
+            (0, OcrResult::Added { lines: 4, .. }),
+            (0, OcrResult::Added { lines: 2, .. })
+        ]
+    );
+    assert!(read, "{r:?}");
+    let once = |p: &Pdf, w: &str| p.find_text_boxes(0, w).unwrap().len() == 1;
+    assert!(
+        once(&p, "committee") && once(&p, "Contact"),
+        "{}",
+        p.page_text(0)
+    );
+    assert_eq!(hidden_lines(&p).len(), 6);
+    assert!(recall(&p.page_text(0)) > 0.9, "{}", p.page_text(0));
+    let r = p.ocr_areas(&[(0, bottom)], &ocr).unwrap();
+    let four = matches!(r[..], [(0, OcrResult::Added { lines: 4, .. })]);
+    assert!(four, "{r:?}");
+    assert!(
+        once(&p, "committee") && once(&p, "Contact"),
+        "{}",
+        p.page_text(0)
+    );
+    assert_eq!(hidden_lines(&p).len(), 6);
+}
+
+/// A box is read on the page as shown: here a scan stored sideways and shown upright.
+#[test]
+fn an_area_on_a_rotated_page_is_read_as_shown() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(image::imageops::rotate270(&text_image()));
+    let page = p.page_ids()[0];
+    p.doc.get_dictionary_mut(page).unwrap().set("Rotate", 90);
+    let r = p.ocr_areas(&[(0, LINES_3_4)], &ocr).unwrap();
+    let two = matches!(r[..], [(0, OcrResult::Added { lines: 2, .. })]);
+    assert!(two, "{r:?}");
+    let b = p.find_text_boxes(0, "COMMITTEE").unwrap();
+    assert_eq!(b.len(), 1, "{b:?}");
+    let b = b[0];
+    assert!((b[0] - 38.0).abs() < 6.0, "{b:?}");
+    assert!(b[1] > 64.0 && b[1] < 76.0, "{b:?}");
+    assert!(b[3] > 78.0 && b[3] < 88.0, "{b:?}");
+    assert_eq!(rotation(&p), 90);
+}
+
+/// Text lying on its side or upside down in a box isn't read: a box can't be turned upright
+/// without its page. The page is left as it was, and the reason says how to read it.
+#[test]
+fn turned_text_in_an_area_is_left() {
+    let ocr = Ocr::bundled().unwrap();
+    let img = text_image();
+    let turned = [
+        (image::imageops::rotate90(&img), "on its side"),
+        (image::imageops::rotate180(&img), "upside down"),
+    ];
+    for (scan, way) in turned {
+        let mut p = scanned(scan);
+        let (w, h) = p.page_size(0).unwrap();
+        let r = p.ocr_areas(&[(0, [0.0, 0.0, w, h])], &ocr).unwrap();
+        assert!(
+            skipped(&r, way) && skipped(&r, "turn the page"),
+            "{way}: {r:?}"
+        );
+        assert_eq!(rotation(&p), 0, "{way}");
+        assert_eq!(p.page_text(0).trim(), "", "{way}");
+    }
+}
+
+/// A box off the page reads nothing; a page that isn't there is an error.
+#[test]
+fn areas_off_the_page_read_nothing() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(text_image());
+    let r = p
+        .ocr_areas(&[(0, [300.0, 0.0, 400.0, 50.0])], &ocr)
+        .unwrap();
+    assert!(skipped(&r, "outside the page"), "{r:?}");
+    assert!(p.ocr_areas(&[(1, [0.0, 0.0, 10.0, 10.0])], &ocr).is_err());
+    assert_eq!(p.page_text(0).trim(), "");
+}

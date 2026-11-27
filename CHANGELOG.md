@@ -16,6 +16,10 @@
   reads it; the report says which pages were turned, and the turn and the text are one undo step. Before, such a
   page was read as it lay, and 7–19% of the test sheet's words were found; now 99% are. A page of only
   a few words is left as it lies ([Scans and OCR](docs/scanning-and-ocr.md#recognising-text-ocr)).
+- Text recognition reads an area of a page on its own, such as a picture of text or a scanned table in an ordinary
+  document, whether the page has text of its own or not: `limarepdf-cli ocr --area PAGE:X,Y,W,H`. Recognised
+  lines wholly inside the area are replaced with the new read. Before, a page with text was read only when a
+  picture covered at least half of it ([Scans and OCR](docs/scanning-and-ocr.md#reading-an-area)).
 
 ### Fixed
 

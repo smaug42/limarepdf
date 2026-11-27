@@ -476,6 +476,14 @@ group = "G6"
 needs = ["pdftotext"]
 
 [[test]]
+name = "cross_check_area_text_with_poppler"
+crate = "limarepdf-core"
+target = "--test ocr"
+file = "crates/limarepdf-core/tests/ocr.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
 name = "cross_check_tilted_text_layer_with_poppler"
 crate = "limarepdf-core"
 target = "--test ocr"
