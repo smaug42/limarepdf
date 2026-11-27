@@ -5,7 +5,7 @@
 // lopdf's page list, of files made here (clippy.toml).
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use common::saved::{tools, Saved};
 use limarepdf_core::render::{self, Renderer};
@@ -1057,7 +1057,7 @@ fn a_drawing_that_cant_be_read_listing_what_only_the_pages_that_went_drew_is_ref
 }
 
 /// Poppler and Ghostscript read only the kept pages' text:
-/// `cargo test -p limarepdf-core --test pages_removed -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored pages_removed::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_extracted_pages_with_poppler_and_ghostscript() {

@@ -292,8 +292,8 @@ What they show:
 ## Redaction
 
 Measured with the opt-in test `redaction_timings_in_long_documents` (in `crates/limarepdf-core/tests/redact.rs`;
-`cargo test -p limarepdf-core --release --test redact -- --ignored --nocapture --exact
-redaction_timings_in_long_documents`): made-up documents, every page a line of Helvetica text under one page-tree
+`cargo test -p limarepdf-core --release --test all -- --ignored --nocapture --exact
+redact::redaction_timings_in_long_documents`): made-up documents, every page a line of Helvetica text under one page-tree
 node, the middle page holding "Secret". Each step is timed on its own, the median of three runs, release build.
 
 The baseline (PB-44), on 11 November 2026 on the machine above, at d02070d with the changes that became S1-24. The
@@ -632,7 +632,7 @@ What they show:
   frame, not the layout (REL-07's rows below).
 - Typing never waits for the list of installed fonts for text its font has: the fonts kept for each word are
   checked against the count of families found so far (`typefaces::typeface_count`), which doesn't start reading
-  the list, and `tests/font_scan.rs` (a test binary of its own, so nothing has read the list before it) fails if
+  the list, and `tests/font_scan.rs` (in a child process, so nothing has read the list before it) fails if
   that changes. Text its font lacks needs the list and the fallback face's file: the app reads the list on its
   start-up thread (`font_list::warm`) and then `warm_fallbacks` sets 漢 (and あ or 한) on a Chinese, Japanese or
   Korean system, and 😀 everywhere, in Helvetica, Times and Courier, so the first such character typed doesn't

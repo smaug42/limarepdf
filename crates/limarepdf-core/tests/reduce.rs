@@ -2,7 +2,7 @@
 //! is drawn largest, masks following their pictures, shared pictures left, kinds that can't
 //! be redone left, and nothing else on the page changed.
 
-mod common;
+use crate::common;
 
 use limarepdf_core::{render, KeptWhy, Pdf, PictureQuality, ReduceOptions, Reduced};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
@@ -524,7 +524,8 @@ fn colour_spaces_naming_themselves_are_left() {
     use common::apart::{self, Ran};
     let env = [("ALIAS_CHILD", "1".to_string())];
     let limit = std::time::Duration::from_secs(30);
-    let ran = apart::run("colour_spaces_naming_themselves_child", &env, limit);
+    let child = "colour_spaces_naming_themselves_child";
+    let ran = apart::run(module_path!(), child, &env, limit);
     let Ran::Ended(text, status) = ran else {
         panic!("not done within 30 s");
     };

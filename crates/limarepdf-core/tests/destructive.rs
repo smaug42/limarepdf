@@ -17,7 +17,7 @@
 //! Each test runs a bounded number of cases, seeded 0, 1, 2…; a failure names its seed.
 //! `DESTRUCTIVE_CASES=<n>` runs n cases instead, `DESTRUCTIVE_SEED=<seed>` only that one.
 
-mod common;
+use crate::common;
 
 use common::saved::Saved;
 use limarepdf_core::{Hidden, Pdf};

@@ -1,7 +1,7 @@
 # Paragraph answer sets
 
 The answers the opt-in paragraph check judges paragraph detection by (`tests/paragraph_check.rs`, NEW-01; run with
-`cargo test -p limarepdf-core --test paragraph_check -- --ignored paragraph_check`, or asserted by its
+`cargo test -p limarepdf-core --test all -- --ignored --exact paragraph_check::paragraph_check`, or asserted by its
 `paragraph_gate`, the top of that file). Made in batch 44 and written
 here in batch 45; the scripts that made them are outside the repository (they need LibreOffice, Chromium and
 groff).

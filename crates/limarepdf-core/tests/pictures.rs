@@ -4,7 +4,7 @@
 //! once. A picture's pixels as it shows, for the system's clipboard (NEW-09's stage 3), and
 //! pixels pasted from it put on a page as a lossless picture.
 
-mod common;
+use crate::common;
 
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, GenericImageView, ImageFormat};

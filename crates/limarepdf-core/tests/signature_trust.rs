@@ -3,10 +3,8 @@
 //! (`sh tools/make-signature-keys.sh trust`); shapes OpenSSL won't make are built by hand.
 //! Signatures are made on 2026-06-01; the chains are valid 2026 to 2036 unless noted.
 
-mod sigkit;
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
+use crate::sigkit;
 
 use limarepdf_core::{
     read_certificates, verify_signatures, Added, SigKind, SigStatus, SigWarning, SignatureReport,
@@ -1571,7 +1569,7 @@ fn reading_certificate_files() {
 }
 
 /// LimarePDF's chain verdicts against `openssl verify` at the signing time, where OpenSSL judges
-/// the same thing: `cargo test -p limarepdf-core --test signature_trust -- --ignored`.
+/// the same thing: `cargo test -p limarepdf-core --test all -- --ignored signature_trust::`.
 #[test]
 #[ignore]
 fn cross_check_with_openssl() {

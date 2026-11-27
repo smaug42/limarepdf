@@ -1,6 +1,6 @@
 //! Importing PNG, JPEG and TIFF files as pages.
 
-mod common;
+use crate::common;
 
 use common::saved::{self, Saved};
 use common::{seeds, tool};

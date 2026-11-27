@@ -17,11 +17,21 @@ pub enum Ran {
     NotStarted(String),
 }
 
-/// Runs the ignored test `test` of this test program again, alone, with `env` set, for at most
-/// `limit`.
-pub fn run(test: &str, env: &[(&str, String)], limit: Duration) -> Ran {
+/// The test `test` of the file whose `module_path!()` is `module`, named as the test program
+/// lists it: the file's module, then the test (`harness::harness_child`).
+pub fn name(module: &str, test: &str) -> String {
+    match module.split_once("::") {
+        Some((_, file)) => format!("{file}::{test}"),
+        None => test.to_string(),
+    }
+}
+
+/// Runs the ignored test `test` of the calling file (`module`, its `module_path!()`) again,
+/// alone, with `env` set, for at most `limit`.
+pub fn run(module: &str, test: &str, env: &[(&str, String)], limit: Duration) -> Ran {
+    let test = name(module, test);
     let mut cmd = Command::new(std::env::current_exe().unwrap());
-    cmd.args(["--exact", test, "--ignored"])
+    cmd.args(["--exact", &test, "--ignored"])
         .args(["--nocapture", "--test-threads", "1"])
         .envs(env.iter().map(|(k, v)| (k, v)));
     // Stopped at `limit` with whatever it started, its output read as it comes (core's
@@ -38,10 +48,13 @@ pub fn run(test: &str, env: &[(&str, String)], limit: Duration) -> Ran {
         "{test} wrote more output than the {} MiB kept",
         child_seam::CAP >> 20
     );
-    Ran::Ended(
-        String::from_utf8_lossy(&ran.stdout).into_owned(),
-        ran.status,
-    )
+    let text = String::from_utf8_lossy(&ran.stdout).into_owned();
+    // A name the program doesn't have runs nothing, and passes.
+    assert!(
+        text.contains("running 1 test"),
+        "{test} isn't a test of this program: {text}"
+    );
+    Ran::Ended(text, ran.status)
 }
 
 /// The lines after `marker` in a child's output (the first may follow the test harness's

@@ -1,6 +1,6 @@
 //! Filling in made-up forms: values, appearances, fonts, checks and resets.
 
-mod common;
+use crate::common;
 
 use common::saved::Saved;
 use common::tool;

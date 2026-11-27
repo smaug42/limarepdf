@@ -1,7 +1,7 @@
 //! The test helpers themselves, on small made-up cases: an outside program that hangs, one
 //! that writes a lot, and the folders tests work in.
 
-mod common;
+use crate::common;
 
 use common::apart::{self, Ran};
 use common::tool::{self, Scratch};
@@ -137,7 +137,14 @@ fn a_program_leaving_a_process_running_fails_at_the_deadline() {
 #[test]
 fn repeated_timeouts_leave_nothing_open() {
     let env = [("HARNESS_CHILD", "timeouts".to_string())];
-    let ran = watched(move || apart::run("harness_child", &env, Duration::from_secs(8)));
+    let ran = watched(move || {
+        apart::run(
+            module_path!(),
+            "harness_child",
+            &env,
+            Duration::from_secs(8),
+        )
+    });
     let Ran::Ended(text, status) = ran else {
         panic!("the child didn't end by itself");
     };
@@ -215,12 +222,37 @@ fn harness_child() {
 #[test]
 fn a_child_reports() {
     let env = [("HARNESS_CHILD", "report".to_string())];
-    let Ran::Ended(text, status) = apart::run("harness_child", &env, Duration::from_secs(60))
-    else {
+    let Ran::Ended(text, status) = apart::run(
+        module_path!(),
+        "harness_child",
+        &env,
+        Duration::from_secs(60),
+    ) else {
         panic!("the child didn't end by itself");
     };
     assert!(status.success());
     assert_eq!(apart::reports(&text, "harness|"), ["one|a", "done"]);
+}
+
+/// A child named wrongly fails its test, rather than running nothing and passing: in a test
+/// program of many files, a test is named by its file, then its name.
+#[test]
+fn a_child_the_program_lacks_fails() {
+    let unnamed = std::panic::catch_unwind(|| {
+        apart::run("all", "harness_child", &[], Duration::from_secs(60))
+    });
+    let why = unnamed
+        .err()
+        .and_then(|e| e.downcast_ref::<String>().cloned());
+    assert!(
+        why.as_deref()
+            .is_some_and(|w| w.starts_with("harness_child isn't a test of this program")),
+        "{why:?}"
+    );
+    assert_eq!(
+        apart::name(module_path!(), "harness_child"),
+        "harness::harness_child"
+    );
 }
 
 /// A child that hangs is stopped at its time, and the parent goes on.
@@ -228,7 +260,12 @@ fn a_child_reports() {
 fn a_hanging_child_is_stopped() {
     let start = Instant::now();
     let env = [("HARNESS_CHILD", "hang".to_string())];
-    let ran = apart::run("harness_child", &env, Duration::from_millis(500));
+    let ran = apart::run(
+        module_path!(),
+        "harness_child",
+        &env,
+        Duration::from_millis(500),
+    );
     assert!(matches!(ran, Ran::TimedOut));
     assert!(
         start.elapsed() < Duration::from_secs(10),
@@ -241,8 +278,12 @@ fn a_hanging_child_is_stopped() {
 #[test]
 fn a_child_ending_early_says_how() {
     let env = [("HARNESS_CHILD", "die".to_string())];
-    let Ran::Ended(text, status) = apart::run("harness_child", &env, Duration::from_secs(60))
-    else {
+    let Ran::Ended(text, status) = apart::run(
+        module_path!(),
+        "harness_child",
+        &env,
+        Duration::from_secs(60),
+    ) else {
         panic!("the child didn't end by itself");
     };
     assert!(apart::reports(&text, "harness|").is_empty());

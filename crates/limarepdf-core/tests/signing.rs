@@ -7,10 +7,8 @@
 // lopdf's page list, of files made here (clippy.toml).
 #![allow(clippy::disallowed_methods)]
 
-mod sigkit;
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
+use crate::sigkit;
 
 use limarepdf_core::{
     append_edits, sign_document, verify_signatures, AnnotKind, AppendedEdits, ChangeKind, Cipher,
@@ -1719,7 +1717,7 @@ fn signatures_past_what_is_read_of_a_form_are_refused() {
 // ------------------------------------------------------------------ cross-checks
 
 /// LimarePDF's signatures as poppler's pdfsig and OpenSSL judge them:
-/// `cargo test -p limarepdf-core --test signing -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored signing::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_with_pdfsig_and_openssl() {
@@ -1813,7 +1811,7 @@ fn cross_check_with_pdfsig_and_openssl() {
 }
 
 /// The [`Hide`] files as poppler reads them, before and after LimarePDF signs them:
-/// `cargo test -p limarepdf-core --test signing -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored signing::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_hidden_content_with_poppler() {

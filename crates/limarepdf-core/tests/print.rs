@@ -3,9 +3,8 @@
 //! on sheets of the paper by LimarePDF (ENH-14), so the sheets are checked against the
 //! placements the model gives.
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+#[cfg(unix)]
+use crate::common::tool;
 
 // Linux and macOS only: Windows prints through the print spooler.
 #[cfg(not(windows))]

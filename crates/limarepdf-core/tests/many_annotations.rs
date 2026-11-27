@@ -5,7 +5,7 @@
 // lopdf's page list, of files made here (clippy.toml).
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use common::saved::{tools, Saved};
 use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
@@ -732,7 +732,7 @@ fn pictures_draw_a_text_box_past_those_shown() {
 }
 
 /// Ghostscript, reading the redacted output on its own:
-/// `cargo test -p limarepdf-core --test many_annotations -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored many_annotations::cross_check`.
 /// Poppler can't: it refuses a page listing 10,000 annotations or more as malformed.
 #[test]
 #[ignore]

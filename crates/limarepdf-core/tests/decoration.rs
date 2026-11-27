@@ -3,7 +3,7 @@
 //! and drawings that look like them left alone; carried with their words through edits,
 //! moves and deletion; LimarePDF's own written at the font's place.
 
-mod common;
+use crate::common;
 
 use common::apart::{self, Ran};
 use common::saved::tools;
@@ -461,7 +461,12 @@ fn huge_text_child() {
 fn huge_text_beside_a_line_is_read_at_once() {
     let start = Instant::now();
     let env = [("HUGE_TEXT_CHILD", "1".to_string())];
-    let ran = apart::run("huge_text_child", &env, Duration::from_secs(30));
+    let ran = apart::run(
+        module_path!(),
+        "huge_text_child",
+        &env,
+        Duration::from_secs(30),
+    );
     let Ran::Ended(text, status) = ran else {
         panic!("not read within 30 s");
     };

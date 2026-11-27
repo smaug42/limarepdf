@@ -2,7 +2,8 @@
 //!
 //! Opt-in. Fetch the files first (`sh tools/fetch-render-samples.sh` in crates/limarepdf-core),
 //! then, under a memory cap as docs/developer/testing.md describes:
-//! `cargo test --release -p limarepdf-core --test save_reopen -- --ignored --nocapture`.
+//! `cargo test --release -p limarepdf-core --test all -- --ignored --nocapture
+//! save_reopen::`.
 //!
 //! Each file is opened as the app opens it (form fields without a drawing get one, unless the
 //! file is signed) and checked twice:
@@ -37,7 +38,7 @@
 //! [`MIN_FILES`] files, more than a tenth of them are skipped or have no page compared.
 //! `SAVE_REOPEN_ONLY` limits the run to files whose name contains it.
 
-mod common;
+use crate::common;
 
 use common::apart;
 use common::compare::{differences, side_by_side, Facts, Image};
@@ -429,7 +430,8 @@ fn check_apart(s: &Sample, dpi: u32) -> Outcome {
         ("SAVE_REOPEN_FILE", s.name.clone()),
         ("SAVE_REOPEN_DPI", dpi.to_string()),
     ];
-    let (text, status) = match apart::run("save_and_reopen_the_corpus", &env, TIMEOUT) {
+    let test = "save_and_reopen_the_corpus";
+    let (text, status) = match apart::run(module_path!(), test, &env, TIMEOUT) {
         apart::Ran::Ended(text, status) => (text, status),
         apart::Ran::TimedOut => {
             return Outcome::Skipped(format!("timed out after {} s", TIMEOUT.as_secs()))

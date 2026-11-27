@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::compare::{differences, Image};
 use common::saved::{tools, Saved};
@@ -2030,7 +2030,7 @@ fn marks_survive_saving_and_are_not_flattened() {
 }
 
 /// Poppler and Ghostscript, reading the redacted output on their own:
-/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored redact::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_redacted_output_with_poppler_and_ghostscript() {
@@ -2175,7 +2175,7 @@ fn inked(img: &Image, rows: [usize; 2]) -> Vec<[usize; 2]> {
 /// PB-100 read back by poppler: each letter of [`starts_a_mapped_pair`]'s strings marked
 /// in turn, where LimarePDF reads it and where poppler does, and nothing poppler reads left
 /// under the mark. Prints where each reads and draws the letters, before and after:
-/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check_a_code --nocapture`.
+/// `cargo test -p limarepdf-core --test all -- --ignored redact::cross_check_a_code --nocapture`.
 #[test]
 #[ignore]
 fn cross_check_a_code_that_starts_a_mapped_pair_with_poppler() {
@@ -2240,7 +2240,7 @@ fn cross_check_a_code_that_starts_a_mapped_pair_with_poppler() {
 /// Poppler reading a redacted form's copy that a kept form inside draws with: the kept
 /// form's text is still read on every page (as its alternative text, which poppler reads in
 /// its place, so the property is still found too), and the first page looks the same
-/// outside the mark: `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+/// outside the mark: `cargo test -p limarepdf-core --test all -- --ignored redact::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_a_redacted_form_s_copy_with_poppler() {
@@ -2277,7 +2277,7 @@ fn cross_check_a_redacted_form_s_copy_with_poppler() {
 
 /// PB-78 read back by poppler: "Secret" found and redacted leaves no t, whether its show
 /// takes back its width or more:
-/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored redact::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_a_letter_whose_width_is_taken_back_with_poppler() {
@@ -2294,7 +2294,7 @@ fn cross_check_a_letter_whose_width_is_taken_back_with_poppler() {
 }
 
 /// [`blacks_out_part_of_a_fax_picture_whichever_way_its_black_is_stored`] read back by
-/// poppler: `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+/// poppler: `cargo test -p limarepdf-core --test all -- --ignored redact::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_a_fax_picture_redacted_either_way_with_poppler() {
@@ -2314,7 +2314,7 @@ const TUTORIAL: &str = concat!(
 
 /// Redacting text through the whole tutorial and half of page 14's picture, read back by
 /// poppler and Ghostscript:
-/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored redact::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_a_redacted_public_pdf_with_poppler_and_ghostscript() {
@@ -3213,7 +3213,7 @@ fn a_redacted_form_a_drawing_that_can_t_be_read_lists_is_refused() {
 
 /// Poppler drawing every page of the files above, redacted, as before outside the marks,
 /// and no longer reading on page 1 what was removed there:
-/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored redact::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_what_redaction_keeps_for_drawings_left_as_they_are_with_poppler() {
@@ -3914,8 +3914,8 @@ fn a_blacked_out_picture_s_metadata_goes() {
 /// The time each step of redacting one word in a long document takes, the median of three
 /// runs, for PB-44's baseline (WP-04 makes it faster): every page has a line of text sharing
 /// one font, and the middle page has "Secret" in it too. Run on a release build:
-/// `cargo test -p limarepdf-core --release --test redact -- --ignored --nocapture
-/// redaction_timings_in_long_documents`.
+/// `cargo test -p limarepdf-core --release --test all -- --ignored --nocapture
+/// redact::redaction_timings_in_long_documents`.
 #[test]
 #[ignore]
 fn redaction_timings_in_long_documents() {

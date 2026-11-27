@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+# The integration tests are one test program, `tests/all.rs`, with the other files in `tests/`
+# its modules: one program builds and links far faster than one a file. Those setting their own
+# allocator, to measure memory, stay programs of their own (the `[[test]]`s below).
+autotests = false
 
 [features]
 # Tests only: `sync_seam` (REL-10), which makes folder syncs fail so the app's and the CLI's
@@ -102,6 +106,28 @@ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] 
 # tests have them; `cargo test -p limarepdf-core` alone then builds them too.
 [dev-dependencies]
 limarepdf-core = { path = ".", features = ["test-seams"] }
+
+# `autotests = false` above: a test file is a module of `all` or listed here, or it never runs
+# (tools/check-test-programs.py, in CI's lint job, fails then).
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+[[test]]
+name = "glyph_cache_memory"
+path = "tests/glyph_cache_memory.rs"
+
+[[test]]
+name = "history_size"
+path = "tests/history_size.rs"
+
+[[test]]
+name = "mesh_fill_memory"
+path = "tests/mesh_fill_memory.rs"
+
+[[test]]
+name = "shared_kids_memory"
+path = "tests/shared_kids_memory.rs"
 
 # Printing through the Windows print spooler and GDI (system DLLs; no C code is built), and
 # a disk's free space for crash recovery copies (disk.rs). A printer's paper sizes are read in

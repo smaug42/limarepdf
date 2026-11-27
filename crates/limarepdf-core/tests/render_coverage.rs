@@ -2,7 +2,7 @@
 //!
 //! Each test asserts what ISO 32000 says should appear, not what hayro happens
 //! to do. Cases hayro gets wrong are `#[ignore]`d with the reason; run
-//! `cargo test -p limarepdf-core --test render_coverage -- --ignored` after a hayro
+//! `cargo test -p limarepdf-core --test all -- --ignored render_coverage::` after a hayro
 //! upgrade to see whether any gap has closed.
 
 use limarepdf_core::{render, Cipher, Encryption, Pdf, Restrictions};

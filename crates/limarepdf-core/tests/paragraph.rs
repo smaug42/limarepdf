@@ -8,7 +8,7 @@
 //! Text in a Type 3 font whose matrix flips its glyphs back upright, as TeX's bitmap fonts
 //! are drawn (PB-56), reads upright, at the size it is drawn, in whole lines.
 
-mod common;
+use crate::common;
 
 use common::saved::tools;
 use limarepdf_core::{
@@ -2410,7 +2410,7 @@ fn plain(text: &str) -> String {
 }
 
 /// Every kind of paragraph written, read by Poppler (`pdftotext`) as typed. Opt-in: `cargo
-/// test -p limarepdf-core --test paragraph -- --ignored cross_check`.
+/// test -p limarepdf-core --test all -- --ignored paragraph::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_written_paragraphs_with_pdftotext() {

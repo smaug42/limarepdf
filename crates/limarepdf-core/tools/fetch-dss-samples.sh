@@ -1,7 +1,7 @@
 #!/bin/sh
 # Downloads signed sample PDFs from the EU's DSS project (github.com/esig/dss) into
-# tests/data/signatures/dss, for the opt-in test `cargo test -p limarepdf-core --test signatures
-# -- --ignored dss`. They are not committed: they are LGPL-2.1, and many hold real
+# tests/data/signatures/dss, for the opt-in test `cargo test -p limarepdf-core --test all
+# -- --ignored signatures::dss`. They are not committed: they are LGPL-2.1, and many hold real
 # people's names and certificates. The folder is git-ignored.
 #
 # Usage, from crates/limarepdf-core: sh tools/fetch-dss-samples.sh

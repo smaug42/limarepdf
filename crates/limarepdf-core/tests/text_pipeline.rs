@@ -6,7 +6,7 @@
 //! the tests mean the same on every machine: Limare Han Test for Chinese, Japanese and
 //! Korean, Limare Emoji Test for 😀.
 
-mod common;
+use crate::common;
 
 use common::saved::tools;
 use limarepdf_core::{
@@ -234,7 +234,7 @@ fn every_writer_s_text_reads_back_as_typed() {
 }
 
 /// Every writer's text, read by Poppler (`pdftotext`). Opt-in: `cargo test -p limarepdf-core
-/// --test text_pipeline -- --ignored cross_check`.
+/// --test all -- --ignored text_pipeline::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_every_writer_with_pdftotext() {
@@ -569,7 +569,7 @@ fn concat(lines: &[(f32, Vec<TextPart>, Vec<limarepdf_core::Decorated>)]) -> Str
 
 /// New text aligned among its lines reads so in Poppler too: `pdftotext -bbox-layout`'s
 /// lines centred under the widest, or ending where it ends. Opt-in: `cargo test -p
-/// limarepdf-core --test text_pipeline -- --ignored cross_check`.
+/// limarepdf-core --test all -- --ignored text_pipeline::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_aligned_new_text_with_poppler() {

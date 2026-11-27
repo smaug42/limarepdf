@@ -1,12 +1,7 @@
 //! Drawing part of a page (`Renderer::render_region`), as the app does in tiles at high
 //! zoom: a region must match the same pixels of the whole page drawn at that scale.
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
-
-#[path = "common/seeds.rs"]
-mod seeds;
+use crate::common::{seeds, tool};
 
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::render::{self, Bitmap, Region};

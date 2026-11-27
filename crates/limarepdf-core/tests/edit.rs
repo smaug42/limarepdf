@@ -1077,7 +1077,7 @@ fn mx_id() -> [f32; 6] {
 /// them one at a time gives: a page of text and shapes, and a scanned page with invisible
 /// OCR text over its picture. Opt-in: fetch the files first (`sh
 /// tools/fetch-render-samples.sh` in crates/limarepdf-core), then
-/// `cargo test --release -p limarepdf-core --test edit -- --ignored several_objects_on_real`.
+/// `cargo test --release -p limarepdf-core --test all -- --ignored edit::several_objects_on_real`.
 #[test]
 #[ignore = "needs the fetched samples: sh tools/fetch-render-samples.sh"]
 fn several_objects_on_real_pages_change_as_one_at_a_time() {

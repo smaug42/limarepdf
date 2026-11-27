@@ -4,7 +4,8 @@
 //! `sh tools/render-compare.sh`, which fetches the files listed in
 //! `tools/render-samples.txt` (the pdf.js and PDFBox test files hayro is tested on) and
 //! then runs this test:
-//! `cargo test --release -p limarepdf-core --test render_compare -- --ignored --nocapture`.
+//! `cargo test --release -p limarepdf-core --test all -- --ignored --nocapture
+//! render_compare::`.
 //!
 //! Each listed page is drawn as the app and `limarepdf-cli render` draw it, and by
 //! `pdftoppm`, at `RENDER_COMPARE_DPI` (96 by default). A pixel counts as different only
@@ -23,7 +24,7 @@
 //!
 //! The test fails only when it can't run at all; the differences are for a person to judge.
 
-mod common;
+use crate::common;
 
 use common::apart;
 use common::compare::{differences, side_by_side, Image};
@@ -250,7 +251,7 @@ fn compare_apart(s: &Sample, dpi: u32) -> Vec<Row> {
         ("RENDER_COMPARE_FILE", s.name.clone()),
         ("RENDER_COMPARE_DPI", dpi.to_string()),
     ];
-    let (text, status) = match apart::run("render_compare", &env, TIMEOUT) {
+    let (text, status) = match apart::run(module_path!(), "render_compare", &env, TIMEOUT) {
         apart::Ran::Ended(text, status) => (text, status),
         apart::Ran::TimedOut => return stopped(format!("timed out after {} s", TIMEOUT.as_secs())),
         apart::Ran::NotStarted(e) => return stopped(format!("no child process: {e}")),

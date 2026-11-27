@@ -922,7 +922,7 @@ goes with them. An installed font is asked through its character map first (`cou
 run, so looking through every installed font keeps none of them), and only then read whole (`covers`). Each word's
 font is kept for the run (`UNITS`, by font asked, whether it is written as itself, the CJK language and the word)
 until `typefaces::typeface_count` changes; that count doesn't start the scan of installed fonts, so text the asked
-font has never reads them (`tests/font_scan.rs`, its own test binary, keeps it so: new code that runs as text is
+font has never reads them (`tests/font_scan.rs`, in a child process of its own, keeps it so: new code that runs as text is
 typed reads coverage only through `maps_all` and must not start the scan). A word it lacks needs the list (`typefaces::family_named`,
 `every_typeface`) and the fallback faces' files, so the app reads the list on its start-up thread
 (`font_list::warm`), then calls `warm_fallbacks`, which sets the words 漢 (and あ and 한 for Japanese and Korean)

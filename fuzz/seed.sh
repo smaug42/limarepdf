@@ -143,9 +143,9 @@ EOF
 # (PB-169).
 corpus=$PWD/corpus
 if ! (cd .. && LIMAREPDF_FUZZ_SEEDS="$corpus" cargo test -q --locked -p limarepdf-core \
-    --test signatures --test signature_trust --test signature_changes --test signing \
-    --test too_complex --test redact --test sanitise --test compact --test form_fill \
-    --test many_annotations --test blank --test import --test pictures --test render_region)
+    --test all -- signatures:: signature_trust:: signature_changes:: signing:: too_complex:: \
+    redact:: sanitise:: compact:: form_fill:: many_annotations:: blank:: import:: pictures:: \
+    render_region::)
 then
     warning="the regression tests that build seeds failed, so some of their seeds may be missing"
     if [ "${GITHUB_ACTIONS:-}" = true ]; then

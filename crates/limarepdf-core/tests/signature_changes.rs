@@ -5,7 +5,7 @@
 // lopdf's page list, of files made here (clippy.toml).
 #![allow(clippy::disallowed_methods)]
 
-mod sigkit;
+use crate::sigkit;
 
 use limarepdf_core::{
     verify_signatures, Change, ChangeKind, DigitalSignature, Pdf, Permissions, Refusal, SigStatus,

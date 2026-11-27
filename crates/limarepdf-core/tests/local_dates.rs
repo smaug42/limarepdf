@@ -11,6 +11,8 @@ use limarepdf_core::{
 };
 use std::process::Command;
 
+use crate::common::apart;
+
 const CHILD: &str = "LIMAREPDF_LOCAL_DATES_CHILD";
 
 /// Every visible date LimarePDF writes, made now.
@@ -119,7 +121,11 @@ fn visible_dates_are_local() {
         let before = day();
         let out = child_seam::output(
             Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "print_dates_made_now", "--ignored"])
+                .args([
+                    "--exact",
+                    &apart::name(module_path!(), "print_dates_made_now"),
+                ])
+                .arg("--ignored")
                 .args(["--nocapture", "--test-threads", "1"])
                 .env("TZ", tz)
                 .env(CHILD, "1"),
@@ -201,7 +207,11 @@ fn comment_dates_are_shown_in_local_time() {
     ] {
         let out = child_seam::output(
             Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "print_comment_dates", "--ignored"])
+                .args([
+                    "--exact",
+                    &apart::name(module_path!(), "print_comment_dates"),
+                ])
+                .arg("--ignored")
                 .args(["--nocapture", "--test-threads", "1"])
                 .env("TZ", tz)
                 .env(CHILD, "1"),

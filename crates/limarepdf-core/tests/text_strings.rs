@@ -4,9 +4,7 @@
 //! descriptions, comments and page labels), edited and saved. And emoji in text strings
 //! LimarePDF writes, sequences included.
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
 
 use limarepdf_core::{BookmarkPlace, FieldValue, Info, Pdf};
 use lopdf::{dictionary, Object, StringFormat};

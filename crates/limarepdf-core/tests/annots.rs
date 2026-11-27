@@ -1,9 +1,7 @@
 //! Annotations on made-up pages: reading them, drawing those without a drawing,
 //! removing and flattening them.
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
 
 use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
 use limarepdf_core::render::{self, Renderer};

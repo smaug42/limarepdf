@@ -5,9 +5,7 @@
 //! nothing. Emoji are written where a font has them, and refused with a message where
 //! not (BUG-24).
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
 
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
@@ -463,7 +461,7 @@ fn run_tool(name: &str, args: &[&str], bytes: &[u8]) -> (String, String) {
 
 /// Every writer's text in one file, read by poppler (`pdftotext`, `pdffonts`) and
 /// Ghostscript, which draws it without a message. Opt-in: `cargo test -p limarepdf-core
-/// --test unicode_text -- --ignored cross_check`.
+/// --test all -- --ignored unicode_text::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_every_writer_with_poppler_and_ghostscript() {
@@ -886,7 +884,7 @@ fn poppler_ink(bytes: &[u8]) -> usize {
 /// Single emoji in fonts that draw them with outlines, as Poppler reads and draws them: the
 /// made-up font, and Symbola and DejaVu Sans where installed (each has the Latin letters and
 /// outline emoji). A colour emoji font isn't offered. Opt-in: `cargo test -p limarepdf-core
-/// --test unicode_text -- --ignored cross_check`.
+/// --test all -- --ignored unicode_text::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_emoji_with_poppler() {
