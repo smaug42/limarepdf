@@ -6,10 +6,8 @@
 // lopdf's page list, of files made here (clippy.toml).
 #![allow(clippy::disallowed_methods)]
 
-mod sigkit;
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
+use crate::sigkit;
 
 use limarepdf_core::{
     verify_signatures, DigitalSignature, LockAction, Permissions, SigKind, SigStatus, SigWarning,
@@ -1710,7 +1708,7 @@ fn pyhanko_and_node_signpdf_samples() {
 }
 
 /// The EU DSS samples: `sh tools/fetch-dss-samples.sh`, then
-/// `cargo test -p limarepdf-core --test signatures -- --ignored dss`.
+/// `cargo test -p limarepdf-core --test all -- --ignored signatures::dss`.
 #[test]
 #[ignore]
 fn dss_samples() {
@@ -2011,7 +2009,7 @@ fn der_len(b: &[u8]) -> usize {
 }
 
 /// LimarePDF's verdicts on its test files against poppler's pdfsig and OpenSSL, where they can
-/// judge: `cargo test -p limarepdf-core --test signatures -- --ignored cross_check`.
+/// judge: `cargo test -p limarepdf-core --test all -- --ignored signatures::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_with_pdfsig_and_openssl() {
@@ -2102,7 +2100,8 @@ fn cross_check_with_pdfsig_and_openssl() {
 
 /// What pdfsig and OpenSSL make of signatures made with another digest than they name, beside
 /// LimarePDF's verdict. Only reported, as the standards decide these, not the other tools:
-/// `cargo test -p limarepdf-core --test signatures -- --ignored mixed_digests --nocapture`.
+/// `cargo test -p limarepdf-core --test all -- --ignored --nocapture
+/// signatures::cross_check_mixed`.
 #[test]
 #[ignore]
 fn cross_check_mixed_digests_with_pdfsig_and_openssl() {
@@ -2218,7 +2217,7 @@ fn openssl_accepts(dir: &std::path::Path, bytes: &[u8]) -> bool {
 }
 
 /// The RSA-PSS-only key cases against OpenSSL's check of the same CMS, which applies the
-/// key's limits: `cargo test -p limarepdf-core --test signatures -- --ignored cross_check`.
+/// key's limits: `cargo test -p limarepdf-core --test all -- --ignored signatures::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_rsa_pss_keys_with_openssl() {

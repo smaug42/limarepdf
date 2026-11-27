@@ -1,8 +1,6 @@
 //! Saving replaces files safely.
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
 
 use limarepdf_core::Pdf;
 use tool::Scratch;

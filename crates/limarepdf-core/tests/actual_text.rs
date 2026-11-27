@@ -6,9 +6,9 @@
 //!
 //! The core text reader doesn't read attached text, so the oracle here is the content:
 //! which letters sit inside which tag after the edit. Opt-in, Poppler reads it as other apps
-//! would: `cargo test -p limarepdf-core --test actual_text -- --ignored cross_check`.
+//! would: `cargo test -p limarepdf-core --test all -- --ignored actual_text::cross_check`.
 
-mod common;
+use crate::common;
 
 use common::saved::tools;
 use limarepdf_core::{FontChoice, ObjectKind, PartFont, Pdf, TextEdit, TextPart, TextSpan};
@@ -582,7 +582,7 @@ fn paragraph_typed(para: &limarepdf_core::Paragraph, new: &str) -> Vec<TextPart>
 
 /// What Poppler reads after the edits, as other apps would: the kept stretch's text in
 /// place of its letters, the changed one's letters as typed.
-/// `cargo test -p limarepdf-core --test actual_text -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored actual_text::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_attached_text_after_edits_with_poppler() {

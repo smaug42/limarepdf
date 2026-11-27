@@ -3,11 +3,14 @@
 //! that is the page count squared. Each operation is counted ([`pages_seam`]) on a made-up
 //! long document and may read the tree a few times over, not once a page.
 //!
-//! The seam counts entries read on any thread, so this file has one test, and everything it
-//! does is counted one operation at a time.
+//! The seam counts entries read on any thread, so the operations are counted in a child
+//! process, where no other test runs, one operation at a time.
 
-mod common;
+use std::time::Duration;
 
+use crate::common;
+
+use common::apart::{self, Ran};
 use common::tool::Scratch;
 use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
 use limarepdf_core::{
@@ -26,6 +29,9 @@ const LINKS: usize = 100;
 /// redactions takes 15, each step finding the pages once). Finding each page by its number
 /// reads about half the tree a page, here a thousand times over.
 const WALKS: u64 = 20;
+
+/// The child's time to count every operation, which takes 10 s in a dev build.
+const LIMIT: Duration = Duration::from_secs(120);
 
 /// `PAGES` pages, each with a line of text ending "Secret", a redaction mark over it and a
 /// text field of its own; the last page has `LINKS` links written inside its `/Annots`.
@@ -117,6 +123,39 @@ fn as_is() -> PageSetup {
 
 #[test]
 fn operations_on_every_page_read_the_page_tree_a_few_times_not_once_a_page() {
+    let env = [("PAGE_WALKS_CHILD", "1".to_string())];
+    let ran = apart::run(module_path!(), "page_walks_child", &env, LIMIT);
+    let Ran::Ended(text, status) = ran else {
+        panic!("not done within {} s", LIMIT.as_secs());
+    };
+    let said = apart::reports(&text, "walks|");
+    let Some((&"done", counted)) = said.split_last() else {
+        panic!("{}", apart::why_stopped(status));
+    };
+    let mut over = Vec::new();
+    for l in counted {
+        let (what, read) = l.rsplit_once('|').unwrap();
+        let read: u64 = read.parse().unwrap();
+        let times = read as f64 / PAGES as f64;
+        println!("{what}: {read} entries, {times:.1} times the pages");
+        if read > WALKS * PAGES as u64 {
+            over.push(format!("{what}: {read}"));
+        }
+    }
+    assert!(
+        over.is_empty(),
+        "read the page tree more than {WALKS} times over ({} entries): {over:?}",
+        WALKS * PAGES as u64
+    );
+}
+
+/// The child process of the test above: each operation's page-tree entries read, on a line.
+#[test]
+#[ignore = "started by operations_on_every_page_read_the_page_tree_a_few_times_not_once_a_page"]
+fn page_walks_child() {
+    if std::env::var("PAGE_WALKS_CHILD").is_err() {
+        return;
+    }
     let bytes = long_document();
     let open = || Pdf::from_bytes(&bytes, None).unwrap();
     let all: Vec<usize> = (0..PAGES).collect();
@@ -138,15 +177,10 @@ fn operations_on_every_page_read_the_page_tree_a_few_times_not_once_a_page() {
     let ocr = Ocr::bundled().unwrap();
 
     // Each operation on a document of its own, opened before counting.
-    let mut over = Vec::new();
-    let mut check = |what: &str, op: &dyn Fn(&mut Pdf)| {
+    let check = |what: &str, op: &dyn Fn(&mut Pdf)| {
         let mut p = open();
         let ((), read) = pages_seam::count(|| op(&mut p));
-        let times = read as f64 / PAGES as f64;
-        println!("{what}: {read} entries, {times:.1} times the pages");
-        if read > WALKS * PAGES as u64 {
-            over.push(format!("{what}: {read}"));
-        }
+        println!("walks|{what}|{read}");
     };
     check("finding redaction marks", &|p| {
         assert_eq!(p.find_redaction_marks("Secret").unwrap().len(), PAGES);
@@ -246,9 +280,5 @@ fn operations_on_every_page_read_the_page_tree_a_few_times_not_once_a_page() {
         };
         sign_document(&bytes, None, &req).unwrap();
     });
-    assert!(
-        over.is_empty(),
-        "read the page tree more than {WALKS} times over ({} entries): {over:?}",
-        WALKS * PAGES as u64
-    );
+    println!("walks|done");
 }

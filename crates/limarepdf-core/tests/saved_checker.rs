@@ -1,7 +1,7 @@
 //! The saved-output checker itself (`tests/common/saved.rs`): a marker written into page
 //! content in any way a reader still reads it is found.
 
-mod common;
+use crate::common;
 
 use common::saved::{tools, Saved};
 use limarepdf_core::Pdf;

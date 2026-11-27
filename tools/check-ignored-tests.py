@@ -6,7 +6,8 @@ Fails, for the repository's tracked `*.rs` files (comments and strings ignored),
 - an ignored test isn't listed, so a new one must be given a group;
 - a test is listed twice, or is listed but no longer ignored (or gone);
 - an entry lacks a field, names a group the list doesn't describe, gives a test target cargo can't
-  select (`--lib`, `--bin NAME`, `--test NAME`), or is a cross-check (G6) without the programs it needs.
+  select (`--lib`, `--bin NAME`, `--test NAME`; a crate naming its test programs itself has only
+  those), gives a file the test can't be in, or is a cross-check (G6) without the programs it needs.
 
 The list also drives tools/run-cross-checks.sh, which runs group G6 by these exact names:
 
@@ -58,8 +59,20 @@ def ignored_in(path, text, blank=code_only):
     return found
 
 
-def findings(sources, listed, blank=code_only):
-    """What's wrong, given `sources` (path → text) and the parsed list."""
+def test_file(t):
+    """The file of a test in a `--test` target: the program's own (`--test t`: tests/t.rs), or in a
+    crate's one program, `all` (tools/check-test-programs.py), the module its name starts with
+    (`redact::cross_check`: tests/redact.rs)."""
+    program = t["target"][7:]
+    if program == "all":
+        program = t["name"].split("::", 1)[0]
+    return f"crates/{t['crate']}/tests/{program}.rs"
+
+
+def findings(sources, listed, blank=code_only, programs=None):
+    """What's wrong, given `sources` (path → text), the parsed list, and the test programs of each
+    crate naming its own (`programs`: crate → names)."""
+    programs = programs or {}
     found = []
     groups = listed.get("groups", {})
     tests = listed.get("test", [])
@@ -73,9 +86,12 @@ def findings(sources, listed, blank=code_only):
             found.append(f"{where}: unknown {', '.join(sorted(t.keys() - FIELDS))}")
         if t["group"] not in groups:
             found.append(f"{where}: group {t['group']} isn't described under [groups]")
+        program = t["target"][7:] if t["target"].startswith("--test ") else None
         if not TARGET.fullmatch(t["target"]):
             found.append(f"{where}: target `{t['target']}` isn't --lib, --bin NAME or --test NAME")
-        elif t["target"].startswith("--test ") and t["file"] != f"crates/{t['crate']}/tests/{t['target'][7:]}.rs":
+        elif program and program not in programs.get(t["crate"], {program}):
+            found.append(f"{where}: {t['crate']} has no test program `{program}`")
+        elif program and t["file"] != test_file(t):
             found.append(f"{where}: {t['file']} isn't the file of `{t['target']}` in {t['crate']}")
         if not t["file"].startswith(f"crates/{t['crate']}/"):
             found.append(f"{where}: {t['file']} isn't in {t['crate']}")
@@ -107,6 +123,17 @@ def tracked_sources(root):
     return {p: (root / p).read_text(encoding="utf-8", errors="replace") for p in paths}
 
 
+def test_programs(root):
+    """Each crate that names its test programs itself (`autotests = false`): crate → their names."""
+    programs = {}
+    for manifest in root.glob("crates/*/Cargo.toml"):
+        with open(manifest, "rb") as f:
+            package = tomllib.load(f)
+        if package.get("package", {}).get("autotests", True) is False:
+            programs[package["package"]["name"]] = {t["name"] for t in package.get("test", [])}
+    return programs
+
+
 def read_list(root):
     """The parsed list; with no list, an empty one, so every ignored test is reported."""
     if not (root / LIST).exists():
@@ -128,8 +155,15 @@ fn unlisted() {}
 mod a { #[test] #[ignore] fn twice_named() {} }
 mod b { #[test] #[ignore] fn twice_named() {} }
 """
-    sources = {"crates/c/tests/t.rs": source}
+    sources = {
+        "crates/c/tests/t.rs": source,
+        "crates/c/tests/u.rs": "#[test]\n#[ignore]\nfn in_all() {}\n",
+    }
     entry = {"crate": "c", "target": "--test t", "file": "crates/c/tests/t.rs", "group": "G6"}
+    in_all = {
+        **entry, "target": "--test all", "name": "u::in_all", "group": "G2",
+        "file": "crates/c/tests/u.rs",
+    }
     listed = {
         "groups": {"G6": "cross-checks", "G2": "children"},
         "test": [
@@ -142,8 +176,12 @@ mod b { #[test] #[ignore] fn twice_named() {} }
             {**entry, "name": "odd", "group": "G9", "target": "--tests t"},
             {**entry, "name": "elsewhere", "group": "G2", "file": "crates/c/tests/u.rs"},
             {"name": "short"},
+            in_all,
+            {**entry, "target": "--test all", "name": "in_t", "group": "G2"},
+            {**entry, "target": "--test gone", "name": "in_gone", "group": "G2"},
         ],
     }
+    programs = {"c": {"t", "all"}}
     want = [
         "test 9 (short): no crate, file, group, target",
         "test 6 (no_needs): a cross-check (G6) needs `needs`",
@@ -156,12 +194,17 @@ mod b { #[test] #[ignore] fn twice_named() {} }
         "`no_needs` in crates/c/tests/t.rs is listed but isn't",
         "`odd` in crates/c/tests/t.rs is listed but isn't",
         "`elsewhere` in crates/c/tests/u.rs is listed but isn't",
+        "test 11 (in_t): crates/c/tests/t.rs isn't the file of `--test all`",
+        "`in_t` in crates/c/tests/t.rs is listed but isn't",
+        "test 12 (in_gone): c has no test program `gone`",
+        "`in_gone` in crates/c/tests/t.rs is listed but isn't",
     ]
-    got = findings(sources, listed)
+    got = findings(sources, listed, programs=programs)
     failures = [f"not found: {w}" for w in want if not any(w in g for g in got)]
     failures += [f"unexpected: {g}" for g in got if not any(w in g for w in want)]
-    ok = {"groups": listed["groups"], "test": listed["test"][:3] + [{**entry, "name": "unlisted", "group": "G2"}]}
-    failures += [f"a complete list: {g}" for g in findings(sources, ok)]
+    unlisted = {**entry, "name": "unlisted", "group": "G2"}
+    ok = {"groups": listed["groups"], "test": listed["test"][:3] + [unlisted, in_all]}
+    failures += [f"a complete list: {g}" for g in findings(sources, ok, programs=programs)]
     for f in failures:
         print(f"self-test: {f}")
     print(f"self-test: {len(want)} findings and a complete list, {len(failures)} failed")
@@ -180,7 +223,7 @@ def main(args):
             print("\n".join(sorted({n for t in tests for n in t.get("needs", [])})))
         return 0
     root = pathlib.Path(args[0] if args else ".").resolve()
-    found = findings(tracked_sources(root), read_list(root))
+    found = findings(tracked_sources(root), read_list(root), programs=test_programs(root))
     for f in found:
         print(f)
     print(f"{len(found)} found")

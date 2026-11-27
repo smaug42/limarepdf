@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::compare::{differences, Image};
 use common::saved::{tools, Saved};
@@ -1536,7 +1536,7 @@ fn hidden_layers_whose_removal_would_change_what_shows_are_refused() {
 }
 
 /// Poppler draws what shows the same before and after hidden layers are removed:
-/// `cargo test -p limarepdf-core --test sanitise -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored sanitise::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_what_shows_after_removing_hidden_layers_with_poppler() {
@@ -1556,7 +1556,7 @@ fn cross_check_what_shows_after_removing_hidden_layers_with_poppler() {
 }
 
 /// Poppler and Ghostscript, reading the output on their own:
-/// `cargo test -p limarepdf-core --test sanitise -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored sanitise::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_removed_information_with_poppler_and_ghostscript() {
@@ -2343,7 +2343,7 @@ fn a_shared_stored_expression_is_rewritten_once_in_place() {
 }
 
 /// Poppler shows and hides the content of a rewritten rule by the layer left in it:
-/// `cargo test -p limarepdf-core --test sanitise -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored sanitise::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_rewritten_and_expression_rules_with_poppler() {

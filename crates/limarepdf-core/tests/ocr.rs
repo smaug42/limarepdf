@@ -1,7 +1,7 @@
 //! OCR text layers, with the bundled recognition model. Opt-in, Poppler reads the layer as
-//! LimarePDF does: `cargo test -p limarepdf-core --test ocr -- --ignored cross_check`.
+//! LimarePDF does: `cargo test -p limarepdf-core --test all -- --ignored ocr::cross_check`.
 
-mod common;
+use crate::common;
 
 use common::saved::{tools, Saved};
 use image::{DynamicImage, GrayImage, Luma};
@@ -358,7 +358,7 @@ fn accented_letters_reach_the_text_layer() {
 }
 
 /// Poppler reads the accented page's text layer as LimarePDF does.
-/// `cargo test -p limarepdf-core --test ocr -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored ocr::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_accented_text_layer_with_poppler() {
@@ -574,7 +574,7 @@ fn tilted_pages_are_read_line_by_line() {
 
 /// Poppler reads the tilted page's text layer line by line, as LimarePDF does. Written
 /// sloping with the lines, its ends came out as lines of their own, and its words in pieces.
-/// `cargo test -p limarepdf-core --test ocr -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored ocr::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_tilted_text_layer_with_poppler() {
@@ -819,7 +819,7 @@ fn other_apps_recognised_text_is_removed() {
 }
 
 /// Poppler reads only the page's own text once the recognised text is removed.
-/// `cargo test -p limarepdf-core --test ocr -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored ocr::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_removed_text_with_poppler() {
@@ -1058,7 +1058,7 @@ fn an_area_replaces_the_recognised_lines_inside_it() {
 }
 
 /// Poppler reads a line replaced in a box as LimarePDF does.
-/// `cargo test -p limarepdf-core --test ocr -- --ignored cross_check`.
+/// `cargo test -p limarepdf-core --test all -- --ignored ocr::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_area_text_with_poppler() {

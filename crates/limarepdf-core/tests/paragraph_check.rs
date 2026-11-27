@@ -2,7 +2,7 @@
 //! the two answer sets in `tests/data/paragraphs` (its README). Opt-in, as it takes a while
 //! and needs the render corpus for its first set:
 //!
-//! `cargo test -p limarepdf-core --release --test paragraph_check -- --ignored paragraph_check --nocapture`
+//! `cargo test -p limarepdf-core --release --test all -- --ignored --exact paragraph_check::paragraph_check --nocapture`
 //!
 //! The threshold (batch 44's Q3): on each set's test half, at most 1% of confident blocks join
 //! lines of two answer parts (over-merge), at most 3% stop short of their part (under-merge),
@@ -17,7 +17,7 @@
 //! default: run at release preparation and when detection changes, never in CI, and recorded
 //! in testing.md, "Finding paragraphs":
 //!
-//! `cargo test -p limarepdf-core --test paragraph_check -- --ignored --exact paragraph_gate --nocapture`
+//! `cargo test -p limarepdf-core --test all -- --ignored --exact paragraph_check::paragraph_gate --nocapture`
 //!
 //! `PARAGRAPH_CHECK_HALF=tune` shows the tuning halves alone, for tuning the detector's
 //! constants without looking at the halves that judge them; `PARAGRAPH_CHECK_FILES=1` adds

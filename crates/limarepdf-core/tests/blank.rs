@@ -4,8 +4,7 @@ use image::{DynamicImage, GrayImage, Luma};
 use limarepdf_core::{FontChoice, ImageImport, Pdf, BLANK_TOLERANCE};
 use lopdf::{dictionary, Dictionary, ObjectId, Stream};
 
-#[path = "common/seeds.rs"]
-mod seeds;
+use crate::common::seeds;
 
 fn png(img: GrayImage) -> Vec<u8> {
     let mut out = Vec::new();

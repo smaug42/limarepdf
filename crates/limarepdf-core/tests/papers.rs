@@ -3,9 +3,7 @@
 //! `ipptool`, and asks the printing service, never the printer itself.
 #![cfg(not(windows))]
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
 
 use limarepdf_core::print;
 use std::process::Command;

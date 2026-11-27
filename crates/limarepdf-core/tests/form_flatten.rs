@@ -1,6 +1,6 @@
 //! Flattening made-up forms: the drawing stays where it was, and the fields go.
 
-mod common;
+use crate::common;
 
 use common::saved::Saved;
 use common::tool;

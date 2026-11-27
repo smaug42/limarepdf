@@ -9,7 +9,7 @@
 //! is refused past the points it is drawn with rather than write them back cut. Reading a
 //! form's fields has a budget too, and what relies on reading them all is refused past it.
 
-mod common;
+use crate::common;
 
 use common::apart::{self, Ran};
 use limarepdf_core::{render, FontChoice, Pdf, Query, TextIndex};
@@ -363,7 +363,12 @@ fn too_complex_child() {
 fn a_page_drawing_itself_is_read_at_once() {
     let start = Instant::now();
     let env = [("TOO_COMPLEX_CHILD", "1".to_string())];
-    let ran = apart::run("too_complex_child", &env, Duration::from_secs(30));
+    let ran = apart::run(
+        module_path!(),
+        "too_complex_child",
+        &env,
+        Duration::from_secs(30),
+    );
     let Ran::Ended(text, status) = ran else {
         panic!("not read within 30 s");
     };
@@ -514,7 +519,12 @@ fn too_complex_pictures_child() {
 #[test]
 fn pictures_of_a_page_drawing_forms_over_and_over_are_refused_at_once() {
     let env = [("TOO_COMPLEX_PICTURES_CHILD", "1".to_string())];
-    let ran = apart::run("too_complex_pictures_child", &env, Duration::from_secs(30));
+    let ran = apart::run(
+        module_path!(),
+        "too_complex_pictures_child",
+        &env,
+        Duration::from_secs(30),
+    );
     let Ran::Ended(text, status) = ran else {
         panic!("not named within 30 s");
     };

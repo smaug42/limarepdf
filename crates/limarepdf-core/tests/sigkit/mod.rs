@@ -10,10 +10,9 @@ use limarepdf_core::Pdf;
 use lopdf::{dictionary, Dictionary, Document, IncrementalDocument, Object, StringFormat};
 use std::path::PathBuf;
 
-/// Every document made here is kept as a seed for the `verify` target, and its signature value
-/// for the `signature` target, when seeds are asked for (`common/seeds.rs`).
-#[path = "../common/seeds.rs"]
-pub mod seeds;
+// Every document made here is kept as a seed for the `verify` target, and its signature value
+// for the `signature` target, when seeds are asked for (`common/seeds.rs`).
+use crate::common::seeds;
 
 pub fn data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/signatures")

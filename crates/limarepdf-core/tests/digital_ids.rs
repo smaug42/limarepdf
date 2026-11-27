@@ -3,10 +3,8 @@
 //! `sh tools/make-signature-keys.sh ids`), exporting, and the ID folder. The test files'
 //! password is "mpe-test-password" unless noted.
 
-mod sigkit;
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
+use crate::sigkit;
 
 use limarepdf_core::{
     password_problem, verify_signatures, DigitalId, IdStore, NewId, SigStatus, Trust, TrustList,
@@ -395,7 +393,7 @@ fn export_and_import_elsewhere() {
 // ------------------------------------------------------------------ cross-checks
 
 /// LimarePDF's files read by OpenSSL, and an LimarePDF-made ID's key signing a PDF that LimarePDF then
-/// checks and trusts: `cargo test -p limarepdf-core --test digital_ids -- --ignored`.
+/// checks and trusts: `cargo test -p limarepdf-core --test all -- --ignored digital_ids::`.
 #[test]
 #[ignore]
 fn cross_check_with_openssl() {

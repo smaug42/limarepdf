@@ -9,12 +9,10 @@
 //! letters left as they were with their own codes and the spacing numbers between them, a
 //! word with a character the font can't write sent alone to another font, a line in one part
 //! rewritten in place as one `TJ`, and a line that wouldn't read back as its words written
-//! again in another font. Opt-in: `cargo test -p limarepdf-core --test own_font -- --ignored
-//! cross_check` has Poppler read and draw edited lines.
+//! again in another font. Opt-in: `cargo test -p limarepdf-core --test all -- --ignored
+//! own_font::cross_check` has Poppler read and draw edited lines.
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
 
 use limarepdf_core::CharRefusal::{Ambiguous, Contradicted, Encoding, NoCode, NoGlyph, Width};
 use limarepdf_core::{
@@ -2192,7 +2190,7 @@ fn poppler_sees(why: &str, mut p: Pdf, o: &PageObject, part: TextPart, reference
 }
 
 /// Poppler reads and draws a typo fixed in each kind of font, and a word sent to another
-/// font. Opt-in: `cargo test -p limarepdf-core --test own_font -- --ignored cross_check`.
+/// font. Opt-in: `cargo test -p limarepdf-core --test all -- --ignored own_font::cross_check`.
 #[test]
 #[ignore]
 fn cross_check_edited_lines_with_poppler() {

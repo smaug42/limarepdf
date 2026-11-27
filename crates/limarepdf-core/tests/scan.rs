@@ -1,6 +1,6 @@
 //! Optimising scanned pages.
 
-mod common;
+use crate::common;
 
 use image::{DynamicImage, GrayImage, Luma, Rgb, RgbImage};
 use limarepdf_core::{render, ImageImport, OcrResult, Pdf, ScanMode, ScanOptions, ScanResult};

@@ -14,5 +14,5 @@ command -v pdftoppm >/dev/null 2>&1 || {
 }
 # Files that couldn't be downloaded (status 2) are named and counted; the rest are compared.
 sh tools/fetch-render-samples.sh || [ $? -eq 2 ]
-RENDER_COMPARE_ONLY=${1:-} cargo test --release -p limarepdf-core --test render_compare \
-    -- --ignored --nocapture
+RENDER_COMPARE_ONLY=${1:-} cargo test --release -p limarepdf-core --test all \
+    -- --ignored --nocapture render_compare::

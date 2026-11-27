@@ -1,9 +1,7 @@
 //! Reading link annotations from made-up pages, including the broken shapes real files
 //! have, and making and changing links (ENH-17).
 
-#[allow(dead_code)]
-#[path = "common/tool.rs"]
-mod tool;
+use crate::common::tool;
 
 use limarepdf_core::{email_link, web_link, Link, LinkId, LinkTarget, Pdf, Unfollowed};
 use lopdf::{dictionary, Dictionary, Object, StringFormat};

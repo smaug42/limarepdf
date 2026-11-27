@@ -2,7 +2,7 @@
 //! cross-reference stream and keeps identical streams once, changing nothing on the page;
 //! encrypted documents and those claiming PDF/A-1 keep the classic layout.
 
-mod common;
+use crate::common;
 
 use common::saved::Saved;
 use limarepdf_core::{render, Cipher, Encryption, Pdf, Restrictions};
