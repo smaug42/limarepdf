@@ -5,6 +5,7 @@
 #
 # Run from the repository root after building both targets:
 #   cargo build --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+# (CI's macos-dmg job puts the two Mac build jobs' programs there instead.)
 # It needs cargo-about, for the crates' licences (packaging/package-notices.sh says which version).
 # The app is signed ad hoc only (no Apple Developer ID), so Gatekeeper asks once.
 set -euo pipefail
