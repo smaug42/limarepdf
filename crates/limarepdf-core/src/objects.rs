@@ -11,6 +11,7 @@ use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,18 +263,19 @@ pub(crate) struct Parsed {
     /// The page's own lines' decorations, each with its line's index in `objs`
     /// ([`decorate::read`]); none for a form's content.
     pub decorations: Vec<(usize, Decoration)>,
-    /// The forms the content draws that hold recognised text ([`TextData::recognised`]).
-    pub recognised_forms: Vec<RecognisedForm>,
+    /// The forms the content draws whose text was read, in the order drawn.
+    pub forms_read: Vec<FormRead>,
 }
 
-/// A form holding recognised text, as ocrmypdf adds it to a page.
-pub(crate) struct RecognisedForm {
+/// A form drawn by the content, read for its text.
+pub(crate) struct FormRead {
     /// Its `Do`'s index in `ops`.
     pub op: usize,
-    /// Its recognised lines, those of forms inside it too.
-    pub lines: usize,
-    /// It draws more than recognised text: text of its own, a picture, a path or a form.
-    pub other: bool,
+    /// The transform its content was read with: its own `/Matrix` in the one it is drawn
+    /// with.
+    pub ctm: M,
+    /// Its lines in `form_text`, those of forms inside it too.
+    pub lines: Range<usize>,
 }
 
 impl Parsed {
@@ -293,15 +295,6 @@ impl Parsed {
             .filter_map(|o| o.text.as_ref())
             .chain(&self.form_text)
     }
-}
-
-/// The form drawn by the `Do` at `op`, its content `p`, if it holds recognised text.
-fn recognised_form(op: usize, p: &Parsed) -> Option<RecognisedForm> {
-    let lines = p.text_lines().filter(|t| t.recognised()).count();
-    let other = (p.objs.iter()).any(|o| !o.text.as_ref().is_some_and(TextData::recognised))
-        || p.form_text.iter().any(|t| !t.recognised())
-        || p.ops.iter().any(|o| o.operator == "sh");
-    (lines > 0).then_some(RecognisedForm { op, lines, other })
 }
 
 /// What reading a page is called when its budget refuses it.
@@ -491,7 +484,7 @@ impl Pdf {
     /// Parse a content stream drawn with `resources`, starting from the transform `ctm`,
     /// charging `work`. `forms` are the form XObjects it is inside of, outermost first (`None`
     /// for one held in place rather than by reference).
-    fn parse_content(
+    pub(crate) fn parse_content(
         &self,
         data: &[u8],
         resources: Option<&Object>,
@@ -523,7 +516,7 @@ impl Pdf {
         };
         let mut font_cache: HashMap<Vec<u8>, Option<FontCtx>> = HashMap::new();
         let mut form_text: Vec<TextData> = Vec::new();
-        let mut recognised_forms = Vec::new();
+        let mut forms_read = Vec::new();
 
         let mut stack: Vec<Gs> = Vec::new();
         let mut gs = Gs {
@@ -952,13 +945,16 @@ impl Pdf {
                                             forms.pop();
                                             match inner {
                                                 Ok(p) => {
-                                                    if let Some(f) = recognised_form(i, &p) {
-                                                        recognised_forms.push(f);
-                                                    }
+                                                    let start = form_text.len();
                                                     form_text.extend(
                                                         p.objs.into_iter().filter_map(|o| o.text),
                                                     );
                                                     form_text.extend(p.form_text);
+                                                    forms_read.push(FormRead {
+                                                        op: i,
+                                                        ctm,
+                                                        lines: start..form_text.len(),
+                                                    });
                                                 }
                                                 Err(e) if refused(&e) => return Err(e),
                                                 Err(_) => {}
@@ -1008,7 +1004,7 @@ impl Pdf {
             inline,
             form_text,
             decorations,
-            recognised_forms,
+            forms_read,
         })
     }
 

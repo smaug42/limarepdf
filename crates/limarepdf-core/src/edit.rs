@@ -1066,6 +1066,45 @@ pub enum Shape {
 pub(crate) fn op(name: &str, operands: Vec<Object>) -> Operation {
     Operation::new(name, operands)
 }
+
+/// Content `ops` written, its `depth_left` open `q` operators closed and its `inline`
+/// images put back. Refused when it doesn't read back as as many operators.
+pub(crate) fn encoded(
+    mut ops: Vec<Operation>,
+    depth_left: usize,
+    inline: &Inline,
+) -> Result<Vec<u8>> {
+    for _ in 0..depth_left {
+        ops.push(op("Q", vec![]));
+    }
+    let expect = ops.len();
+    let bytes = inline
+        .encode(ops)
+        .map_err(|e| anyhow!("cannot encode the page content: {e}"))?;
+    // Read back as the page will be read next time, inline images lifted out first.
+    let (plain, _) = crate::inline::extract(&bytes)
+        .map_err(|e| anyhow!("edited content does not parse: {e}"))?;
+    let back =
+        Content::decode(&plain).map_err(|e| anyhow!("edited content does not parse: {e}"))?;
+    if back.operations.len() != expect {
+        bail!("the edited page content did not round-trip safely; nothing was changed");
+    }
+    Ok(bytes)
+}
+
+/// A copy of form `s` drawing `bytes`, with resources `res` in place of its own when given.
+pub(crate) fn form_copy(s: &Stream, res: Option<Dictionary>, bytes: Vec<u8>) -> Stream {
+    let mut dict = s.dict.clone();
+    for k in [&b"Filter"[..], b"DecodeParms", b"Length"] {
+        dict.remove(k);
+    }
+    if let Some(res) = res {
+        dict.set("Resources", res);
+    }
+    let mut stream = Stream::new(dict, bytes);
+    let _ = stream.compress();
+    stream
+}
 pub(crate) fn r(x: f32) -> Object {
     Object::Real(x)
 }
@@ -1259,25 +1298,11 @@ impl Pdf {
     pub(crate) fn commit(
         &mut self,
         page: ObjectId,
-        mut ops: Vec<Operation>,
+        ops: Vec<Operation>,
         depth_left: usize,
         inline: &Inline,
     ) -> Result<()> {
-        for _ in 0..depth_left {
-            ops.push(op("Q", vec![]));
-        }
-        let expect = ops.len();
-        let bytes = inline
-            .encode(ops)
-            .map_err(|e| anyhow!("cannot encode the page content: {e}"))?;
-        // Read back as the page will be read next time, inline images lifted out first.
-        let (plain, _) = crate::inline::extract(&bytes)
-            .map_err(|e| anyhow!("edited content does not parse: {e}"))?;
-        let back =
-            Content::decode(&plain).map_err(|e| anyhow!("edited content does not parse: {e}"))?;
-        if back.operations.len() != expect {
-            bail!("the edited page content did not round-trip safely; nothing was changed");
-        }
+        let bytes = encoded(ops, depth_left, inline)?;
         let id = self.doc.add_object(Stream::new(Dictionary::new(), bytes));
         self.doc
             .get_dictionary_mut(page)?

@@ -15,7 +15,7 @@ use crate::budget::{self, TooComplex, Work};
 use crate::unfillable::inherited_at;
 use crate::Pdf;
 use lopdf::content::{Content, Operation};
-use lopdf::{Dictionary, Object, ObjectId};
+use lopdf::{Dictionary, Object, ObjectId, Stream};
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, DefaultHasher, Hash, Hasher, RandomState};
 use std::rc::Rc;
@@ -475,6 +475,95 @@ impl Pdf {
                 Uses::of_data(&data).map(Rc::new)
             })
             .clone()
+    }
+
+    /// The names of `res` that the drawings drawn with `res` use, at any depth, besides
+    /// content `own` itself: the forms it draws without resources of their own, and its
+    /// Type 3 fonts', patterns' and soft masks' drawings without, what they use kept in
+    /// `cache`. `None` when one of those drawings can't be read.
+    pub(crate) fn borrowed_uses(
+        &self,
+        res: &Dictionary,
+        own: &Uses,
+        cache: &mut Decoded,
+    ) -> Option<Uses> {
+        let entries = |key: &[u8]| self.resolved_dict(res.get(key).ok());
+        let (xobjs, fonts) = (entries(b"XObject"), entries(b"Font"));
+        let (patterns, states) = (entries(b"Pattern"), entries(b"ExtGState"));
+        let stream = |o: Option<&Object>| -> Option<(ObjectId, &Stream)> {
+            let id = o?.as_reference().ok()?;
+            let s = self.doc.get_object(id).ok()?.as_stream().ok()?;
+            Some((id, s))
+        };
+        let inherits = |s: &Stream| !s.dict.has(b"Resources");
+        // The drawings drawn with `res` that `u` names.
+        let inheriting = |u: &Uses| -> Vec<ObjectId> {
+            let mut ids = Vec::new();
+            for nm in &u.xobjects {
+                if let Some((id, s)) = stream(xobjs.get(nm).ok()) {
+                    if inherits(s) && is_form(self, id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            for nm in &u.patterns {
+                ids.extend(
+                    stream(patterns.get(nm).ok())
+                        .filter(|(_, s)| inherits(s))
+                        .map(|(id, _)| id),
+                );
+            }
+            for nm in &u.states {
+                let gs = self.resolved_dict(states.get(nm).ok());
+                let mask = self.resolved_dict(gs.get(b"SMask").ok());
+                ids.extend(
+                    stream(mask.get(b"G").ok())
+                        .filter(|(_, s)| inherits(s))
+                        .map(|(id, _)| id),
+                );
+            }
+            for nm in &u.fonts {
+                let font = self.resolved_dict(fonts.get(nm).ok());
+                if font.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Type3")
+                    || font.has(b"Resources")
+                {
+                    continue;
+                }
+                let procs = self.resolved_dict(font.get(b"CharProcs").ok());
+                ids.extend(procs.iter().filter_map(|(_, g)| g.as_reference().ok()));
+            }
+            ids
+        };
+        let mut all = Uses::default();
+        let mut seen = HashSet::new();
+        let mut todo = inheriting(own);
+        while let Some(id) = todo.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let u = self.uses_of(id, cache)?;
+            for (to, from) in [
+                (&mut all.xobjects, &u.xobjects),
+                (&mut all.properties, &u.properties),
+                (&mut all.fonts, &u.fonts),
+                (&mut all.patterns, &u.patterns),
+                (&mut all.states, &u.states),
+            ] {
+                to.extend(from.iter().cloned());
+            }
+            todo.extend(inheriting(&u));
+        }
+        for v in [
+            &mut all.xobjects,
+            &mut all.properties,
+            &mut all.fonts,
+            &mut all.patterns,
+            &mut all.states,
+        ] {
+            v.sort();
+            v.dedup();
+        }
+        Some(all)
     }
 
     /// The appearances of annotation `annot`, a drawing for each of `/AP`'s looks and

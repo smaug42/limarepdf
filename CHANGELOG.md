@@ -10,7 +10,8 @@
 - Recognised text can be read again or removed: **Read recognised pages again** and **Remove recognised text** in
   the Recognise text (OCR) tool, and `limarepdf-cli ocr --again` and `limarepdf-cli remove-ocr`. Pages keep their
   look and their own text. Remove, optimise and recognise again to straighten a page recognised before it was
-  optimised. Recognised text is invisible text, LimarePDF's own or another app's, such as OCRmyPDF's
+  optimised. Recognised text is invisible text, LimarePDF's own or another app's, such as OCRmyPDF's, also in a
+  form XObject drawing the rest of a page, as apps printing pages two to a sheet write it
   ([Scans and OCR](docs/scanning-and-ocr.md#reading-again-and-removing-recognised-text)).
 - Text recognition turns a page scanned on its side or upside down upright, as **Pages > Rotate** turns it, and
   reads it; the report says which pages were turned, and the turn and the text are one undo step. Before, such a

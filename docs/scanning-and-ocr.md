@@ -79,7 +79,8 @@ copied. The page looks the same.
   skipped page's reason. On any page, a picture of text or another part of it can be read as an area
   ([Reading an area](#reading-an-area)).
 - **Recognised text:** invisible text, as OCR adds it: LimarePDF's own, and other apps' such as OCRmyPDF's, also
-  when it is in a group of its own (a form XObject). A line counts when all of it is invisible. Invisible text that
+  in a group (a form XObject), of its own or with the rest of a page, as an app arranging pages, such as one
+  printing two to a sheet, puts a whole page in one. A line counts when all of it is invisible. Invisible text that
   cuts out a shape for what is drawn after it (clipping) is the page's own.
 - **Languages:** those written in Latin letters, accents included: English, French, Spanish, German, Polish,
   Czech, Hungarian and others, with signs such as €, £, °, © and ¿. A few come out as something like them: curly
@@ -137,9 +138,12 @@ page itself isn't straightened: it still shows as it was scanned.
   text when the new read finds none.
 - **Remove recognised text,** a button in the same tool, takes the recognised text off the chosen pages. They look
   the same, and their own text stays.
+- **In a group:** a group (a form XObject) holding recognised text and more is drawn as a copy without the text.
+  The group itself stays for anything else drawing it, such as another page, and goes when the file is saved if
+  nothing does. A group holding only recognised text goes.
 - **To straighten a recognised page:** remove its recognised text, optimise it, then recognise it.
-- **Left as it is,** with the reason given: recognised text in a group (a form XObject) that draws other content
-  too. Reading again skips those pages.
+- **Left as it is,** with the reason given: a page whose recognised text would be rewritten with a picture written
+  inside its content (an inline image), which would be lost.
 
 Each runs in the background and is one undo step. On the command line: `limarepdf-cli ocr --again` and
 `limarepdf-cli remove-ocr`.
@@ -160,8 +164,8 @@ whether the page has text of its own or not.
   turn the page so the text reads upright (**Pages > Rotate**), read the area, then turn the page back if wanted.
   Tilted text is read as on a tilted page, and isn't reported.
 - **Left as it is,** with the reason given: an area off the page, a page with text whose place LimarePDF can't
-  tell, and a page with a picture written inside its content (an inline image) when the area holds recognised text
-  to replace.
+  tell, an area holding recognised text in a group (a form XObject), and a page with a picture written inside its
+  content (an inline image) when the area holds recognised text to replace.
 
 Where: **Pages > Recognise text ▾ > Recognise text in an area** (also in ☰ > Pages), or **Recognise an area** in
 the Recognise text (OCR) tool, turns on a tool: drag a box over the text, and it is read in the background.

@@ -30,6 +30,7 @@
 use crate::annot_ap::{self, Place};
 use crate::annots::with_replies;
 use crate::budget::{self, Work};
+use crate::edit::form_copy;
 use crate::fonts::FontCtx;
 use crate::forms;
 use crate::matrix::{self as mx, apply, mul, M};
@@ -786,13 +787,7 @@ impl<'a> Redactor<'a> {
         let Ok(bytes) = inner.inline.encode(ops) else {
             return Ok(None);
         };
-        let mut dict = s.dict.clone();
-        for k in [&b"Filter"[..], b"DecodeParms", b"Length"] {
-            dict.remove(k);
-        }
-        dict.set("Resources", inner.res);
-        let mut stream = Stream::new(dict, bytes);
-        let _ = stream.compress();
+        let stream = form_copy(s, Some(inner.res), bytes);
         let id = self.alloc();
         self.added.push((id, Object::Stream(stream)));
         Ok(Some(Some(id)))
@@ -803,67 +798,11 @@ impl<'a> Redactor<'a> {
     /// resources of their own, and its Type 3 fonts', patterns' and soft masks' drawings
     /// without. `None` when one of those drawings can't be read.
     fn needs(&mut self, res: &Dictionary, own: &Uses) -> Option<(Names, Names)> {
-        let pdf = self.pdf;
-        let entries = |key: &[u8]| pdf.resolved_dict(res.get(key).ok());
-        let (xobjs, fonts) = (entries(b"XObject"), entries(b"Font"));
-        let (patterns, states) = (entries(b"Pattern"), entries(b"ExtGState"));
-        let stream = |o: Option<&Object>| -> Option<(ObjectId, &Stream)> {
-            let id = o?.as_reference().ok()?;
-            let s = pdf.doc.get_object(id).ok()?.as_stream().ok()?;
-            Some((id, s))
-        };
-        let inherits = |s: &Stream| !s.dict.has(b"Resources");
-        // The drawings drawn with `res` that `u` names.
-        let inheriting = |u: &Uses| -> Vec<ObjectId> {
-            let mut ids = Vec::new();
-            for nm in &u.xobjects {
-                if let Some((id, s)) = stream(xobjs.get(nm).ok()) {
-                    if inherits(s) && reach::is_form(pdf, id) {
-                        ids.push(id);
-                    }
-                }
-            }
-            for nm in &u.patterns {
-                ids.extend(
-                    stream(patterns.get(nm).ok())
-                        .filter(|(_, s)| inherits(s))
-                        .map(|(id, _)| id),
-                );
-            }
-            for nm in &u.states {
-                let gs = pdf.resolved_dict(states.get(nm).ok());
-                let mask = pdf.resolved_dict(gs.get(b"SMask").ok());
-                ids.extend(
-                    stream(mask.get(b"G").ok())
-                        .filter(|(_, s)| inherits(s))
-                        .map(|(id, _)| id),
-                );
-            }
-            for nm in &u.fonts {
-                let font = pdf.resolved_dict(fonts.get(nm).ok());
-                if font.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Type3")
-                    || font.has(b"Resources")
-                {
-                    continue;
-                }
-                let procs = pdf.resolved_dict(font.get(b"CharProcs").ok());
-                ids.extend(procs.iter().filter_map(|(_, g)| g.as_reference().ok()));
-            }
-            ids
-        };
-        let (mut xs, mut ps) = (HashSet::new(), HashSet::new());
-        let mut seen = HashSet::new();
-        let mut todo = inheriting(own);
-        while let Some(id) = todo.pop() {
-            if !seen.insert(id) {
-                continue;
-            }
-            let u = pdf.uses_of(id, &mut self.uses)?;
-            xs.extend(u.xobjects.iter().cloned());
-            ps.extend(u.properties.iter().cloned());
-            todo.extend(inheriting(&u));
-        }
-        Some((xs, ps))
+        let u = self.pdf.borrowed_uses(res, own, &mut self.uses)?;
+        Some((
+            u.xobjects.into_iter().collect(),
+            u.properties.into_iter().collect(),
+        ))
     }
 
     /// Redact one painted path (`path` then `paint`). Returns whether anything changed.

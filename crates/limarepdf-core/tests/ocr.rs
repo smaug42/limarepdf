@@ -5,6 +5,7 @@ use crate::common;
 
 use common::saved::{tools, Saved};
 use image::{DynamicImage, GrayImage, Luma};
+use limarepdf_core::print::{Orientation, PageSetup, Paper, PerSheet, Scale};
 use limarepdf_core::{
     render, FontChoice, ImageImport, ObjectKind, Ocr, OcrResult, PageObject, Pdf, TextEdit,
 };
@@ -174,15 +175,25 @@ fn gray(p: &mut Pdf, scale: f32) -> GrayImage {
 
 /// A scanned page: the image as the page's only content.
 fn scanned(img: GrayImage) -> Pdf {
-    let mut png = Cursor::new(Vec::new());
-    DynamicImage::ImageLuma8(img)
-        .write_to(&mut png, image::ImageFormat::Png)
-        .unwrap();
+    scans(vec![img])
+}
+
+/// Scanned pages, each image a page's only content.
+fn scans(imgs: Vec<GrayImage>) -> Pdf {
+    let pngs: Vec<Vec<u8>> = (imgs.into_iter())
+        .map(|img| {
+            let mut png = Cursor::new(Vec::new());
+            DynamicImage::ImageLuma8(img)
+                .write_to(&mut png, image::ImageFormat::Png)
+                .unwrap();
+            png.into_inner()
+        })
+        .collect();
     let opts = ImageImport {
         dpi: Some(300.0),
         ..Default::default()
     };
-    Pdf::from_images(&[png.into_inner()], &opts).unwrap()
+    Pdf::from_images(&pngs, &opts).unwrap()
 }
 
 /// A white page, scanned.
@@ -794,9 +805,7 @@ fn recognised_text_can_be_removed() {
     p.ocr_pages(&[0], &ocr).unwrap();
     let before = gray(&mut p, 1.0);
     let text = p.page_text(0);
-    let words: Vec<&str> = (text.split_whitespace())
-        .filter(|w| w.len() >= 6 && w.chars().all(char::is_alphabetic))
-        .collect();
+    let words = long_words(&text);
     assert!(words.len() >= 8, "{words:?}");
     Saved::of(&mut p).assert_kept(&words);
     let r = p.remove_recognised_text(&[0]).unwrap();
@@ -858,34 +867,292 @@ fn cross_check_removed_text_with_poppler() {
     assert_eq!(words, ["LIM-000123"], "{poppler}");
 }
 
+/// Paper `size` points large with no margins, `pages` a sheet: one page as large prints as
+/// it is.
+fn paper(size: (f32, f32), pages: u8) -> PageSetup {
+    PageSetup {
+        paper: Paper {
+            id: "page".into(),
+            label: "page".into(),
+            size,
+            margins: Some([0.0; 4]),
+        },
+        orientation: Orientation::Automatic,
+        scale: Scale::ShrinkOversized,
+        per_sheet: PerSheet {
+            pages,
+            ..PerSheet::default()
+        },
+        booklet: None,
+    }
+}
+
+/// `p`'s first page printed as it is, as an app arranging pages puts it: the sheet draws the
+/// page, its scan and its recognised text, as a form.
+fn printed(p: &Pdf) -> Pdf {
+    p.print_sheets(&[0], &paper((288.0, 216.0), 1)).unwrap()
+}
+
+/// The words of six letters or more in `text`: what recognised text holds, to look for in a
+/// saved file.
+fn long_words(text: &str) -> Vec<&str> {
+    (text.split_whitespace())
+        .filter(|w| w.len() >= 6 && w.chars().all(char::is_alphabetic))
+        .collect()
+}
+
 /// Recognised text inside a form that draws more, such as a whole page put in a form by an
-/// app arranging pages, is left, and the page isn't read again: its text would be doubled.
+/// app arranging pages, is removed (#327): the page draws a copy of the form without it. The
+/// page looks as it did, and the saved file holds none of the words read, the form itself
+/// gone with nothing else drawing it.
 #[test]
-fn recognised_text_in_a_form_drawing_more_is_left() {
+fn recognised_text_in_a_form_drawing_more_is_removed() {
     let ocr = Ocr::bundled().unwrap();
     let mut p = scanned(text_image());
+    p.ocr_pages(&[0], &ocr).unwrap();
+    let mut p = printed(&p);
+    let before = gray(&mut p, 1.0);
+    let text = p.page_text(0);
+    let words = long_words(&text);
+    assert!(words.len() >= 8, "{words:?}");
+    let r = p.remove_recognised_text(&[0]).unwrap();
+    assert_eq!(r, [(0, OcrResult::Removed { lines: 6 })]);
+    assert_eq!(p.page_text(0).trim(), "");
+    assert_eq!(before.as_raw(), gray(&mut p, 1.0).as_raw());
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&words);
+    assert_eq!(saved.unreachable(), []);
+    let r = p.ocr_pages(&[0], &ocr).unwrap();
+    assert!(six_lines(&r), "{r:?}");
+}
+
+/// Poppler reads no words on a printed page once its recognised text is removed.
+/// `cargo test -p limarepdf-core --test all -- --ignored ocr::cross_check`.
+#[test]
+#[ignore]
+fn cross_check_text_removed_from_a_form_with_poppler() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(text_image());
+    p.ocr_pages(&[0], &ocr).unwrap();
+    let mut p = printed(&p);
+    p.remove_recognised_text(&[0]).unwrap();
+    let poppler = tools::pdftotext(&p.to_bytes().unwrap());
+    assert_eq!(poppler.trim(), "", "{poppler}");
+}
+
+/// Read again, recognised text inside a form that draws more is replaced, not doubled: a
+/// line corrected wrongly reads as the scan shows it once more (#327).
+#[test]
+fn recognised_text_in_a_form_drawing_more_is_read_again() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = printed(&misread_tuesday(&ocr));
+    let before = gray(&mut p, 1.0);
+    let r = p.ocr_pages(&[0], &ocr).unwrap();
+    assert!(skipped(&r, "already has recognised text"), "{r:?}");
+    let r = p.ocr_pages_again(&[0], &ocr).unwrap();
+    assert!(six_lines(&r), "{r:?}");
+    let text = p.page_text(0);
+    assert!(
+        text.contains("Tuesday") && !text.contains("Wednesday"),
+        "{text}"
+    );
+    let committee = p.find_text_boxes(0, "committee").unwrap();
+    assert_eq!(committee.len(), 1, "{text}");
+    assert!(recall(&text) > 0.9, "recall {}: {text}", recall(&text));
+    assert_eq!(before.as_raw(), gray(&mut p, 1.0).as_raw());
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["Wednesday"]);
+    assert_eq!(saved.unreachable(), []);
+}
+
+/// Pages printed two to a sheet, each drawn as a form of its own, lose the recognised text
+/// of both.
+#[test]
+fn pages_printed_two_to_a_sheet_lose_their_recognised_text() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scans(vec![text_image(), text_image()]);
+    p.ocr_pages(&[0, 1], &ocr).unwrap();
+    let mut p = p.print_sheets(&[0, 1], &paper((576.0, 216.0), 2)).unwrap();
+    assert_eq!(p.page_count(), 1);
+    let before = gray(&mut p, 1.0);
+    let text = p.page_text(0);
+    let words = long_words(&text);
+    assert!(words.len() >= 16, "{words:?}");
+    let r = p.remove_recognised_text(&[0]).unwrap();
+    assert_eq!(r, [(0, OcrResult::Removed { lines: 12 })]);
+    assert_eq!(p.page_text(0).trim(), "");
+    assert_eq!(before.as_raw(), gray(&mut p, 1.0).as_raw());
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&words);
+    assert_eq!(saved.unreachable(), []);
+}
+
+/// Page `i`'s name for picture or form `name`.
+fn drawn(p: &Pdf, i: usize, name: &str) -> Option<ObjectId> {
+    let page = p.doc.get_dictionary(p.page_ids()[i]).ok()?;
+    let res = page.get_deref(b"Resources", &p.doc).ok()?.as_dict().ok()?;
+    let xobjects = res.get_deref(b"XObject", &p.doc).ok()?.as_dict().ok()?;
+    xobjects.get(name.as_bytes()).ok()?.as_reference().ok()
+}
+
+/// A form drawing page 1, [`text_image`]'s scan, and recognised text of its own: "Hidden
+/// words".
+fn scan_and_words(p: &mut Pdf) -> ObjectId {
     let page = p.page_ids()[0];
     let content = String::from_utf8(p.doc.get_page_content(page)).unwrap();
     let content = format!("{content}\nBT 3 Tr /LF1 12 Tf 20 100 Td (Hidden words) Tj ET");
-    let xobjects = resources(&p, "XObject");
-    let whole = form(&mut p, &content, xobjects);
-    let drawing = Stream::new(Dictionary::new(), b"q /Page1 Do Q".to_vec());
-    let drawing = p.doc.add_object(drawing);
+    let xobjects = resources(p, "XObject");
+    form(p, &content, xobjects)
+}
+
+/// `content` as page `i`'s, drawing `forms` by their names.
+fn draw_forms(p: &mut Pdf, i: usize, content: &str, forms: &[(&str, ObjectId)]) {
+    let page = p.page_ids()[i];
+    let content = Stream::new(Dictionary::new(), content.as_bytes().to_vec());
+    let content = p.doc.add_object(content);
+    let mut xobjects = Dictionary::new();
+    for &(name, id) in forms {
+        xobjects.set(name, id);
+    }
     let d = p.doc.get_dictionary_mut(page).unwrap();
-    d.set("Contents", drawing);
-    d.set(
-        "Resources",
-        dictionary! { "XObject" => dictionary! { "Page1" => whole } },
-    );
-    let before = p.doc.get_dictionary(page).unwrap().clone();
+    d.set("Contents", content);
+    d.set("Resources", dictionary! { "XObject" => xobjects });
+}
+
+/// A form is copied only for the page its recognised text is taken off: drawn twice there,
+/// both draw the copy, and another page drawing it keeps it as it was, text and all.
+#[test]
+fn a_form_drawn_elsewhere_too_keeps_its_recognised_text_there() {
+    let mut p = scanned(text_image());
+    let whole = scan_and_words(&mut p);
+    let (w, h) = p.page_size(0).unwrap();
+    p.insert_blank(1, w, h).unwrap();
+    let twice = "q /Page1 Do Q q 0.5 0 0 0.5 0 0 cm /Page1 Do Q";
+    draw_forms(&mut p, 0, twice, &[("Page1", whole)]);
+    draw_forms(&mut p, 1, "q /Page1 Do Q", &[("Page1", whole)]);
+    let original = p.doc.get_object(whole).unwrap().clone();
+    let before = gray(&mut p, 1.0);
     let r = p.remove_recognised_text(&[0]).unwrap();
-    assert!(skipped(&r, "other content"), "{r:?}");
-    let r = p.ocr_pages_again(&[0], &ocr).unwrap();
-    assert!(skipped(&r, "other content"), "{r:?}");
-    let r = p.ocr_pages(&[0], &ocr).unwrap();
-    assert!(skipped(&r, "already has recognised text"), "{r:?}");
-    assert_eq!(p.doc.get_dictionary(page).unwrap(), &before);
-    assert_eq!(p.page_text(0).trim(), "Hidden words");
+    assert_eq!(r, [(0, OcrResult::Removed { lines: 2 })]);
+    assert_eq!(p.page_text(0).trim(), "");
+    assert_eq!(p.page_text(1).trim(), "Hidden words");
+    assert_eq!(before.as_raw(), gray(&mut p, 1.0).as_raw());
+    assert_eq!(drawn(&p, 1, "Page1"), Some(whole));
+    assert_eq!(p.doc.get_object(whole).unwrap(), &original);
+    let saved = Saved::of(&mut p);
+    saved.assert_kept(&["Hidden"]);
+    assert_eq!(saved.unreachable(), []);
+    let r = p.remove_recognised_text(&[1]).unwrap();
+    assert_eq!(r, [(1, OcrResult::Removed { lines: 1 })]);
+    assert_eq!(p.page_text(1).trim(), "");
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["Hidden"]);
+    assert_eq!(saved.unreachable(), []);
+}
+
+/// Form `id`'s resources.
+fn form_res(p: &Pdf, id: ObjectId) -> &Dictionary {
+    let s = p.doc.get_object(id).and_then(Object::as_stream).unwrap();
+    let res = s.dict.get_deref(b"Resources", &p.doc);
+    res.and_then(Object::as_dict).unwrap()
+}
+
+/// The names in form `id`'s resources of category `cat` (`Font`, `XObject`).
+fn form_names(p: &Pdf, id: ObjectId, cat: &str) -> Vec<String> {
+    let res = form_res(p, id);
+    let d = (res.get_deref(cat.as_bytes(), &p.doc).ok()).and_then(|o| o.as_dict().ok());
+    (d.into_iter().flat_map(|d| d.iter()))
+        .map(|(k, _)| String::from_utf8_lossy(k).into_owned())
+        .collect()
+}
+
+/// A blue square, drawn in a form beside its recognised text.
+const SQUARE: &str = "0 0 1 rg 10 10 20 20 re f";
+
+/// Recognised text is taken out of forms inside forms too: a form drawing nothing else isn't
+/// drawn, and one drawing more is drawn as a copy, by the copy of the form drawing it. Each
+/// copy keeps only the fonts and forms it still uses.
+#[test]
+fn recognised_text_in_forms_inside_forms_is_removed() {
+    let mut p = scanned(text_image());
+    let only = "BT 3 Tr /LF1 12 Tf 20 40 Td (Nested words) Tj ET";
+    let only = form(&mut p, only, Dictionary::new());
+    let more = format!("{SQUARE} BT 3 Tr /LF1 12 Tf 20 60 Td (Inner words) Tj ET");
+    let more = form(&mut p, &more, Dictionary::new());
+    let outer = "BT /LF1 12 Tf 20 120 Td (Visible words) Tj ET \
+                 BT 3 Tr /LF2 12 Tf 20 100 Td (Hidden words) Tj ET q /Only Do Q q /More Do Q";
+    let forms = dictionary! { "Only" => only, "More" => more };
+    let outer = form(&mut p, outer, forms);
+    let hidden = helvetica(&mut p);
+    let s = p.doc.get_object_mut(outer).and_then(Object::as_stream_mut);
+    let res = (s.unwrap().dict.get_mut(b"Resources").unwrap()).as_dict_mut();
+    let res = res.unwrap();
+    (res.get_mut(b"Font").unwrap().as_dict_mut().unwrap()).set("LF2", hidden);
+    set_resource(&mut p, "XObject", "Outer", outer);
+    draw(&mut p, "q /Outer Do Q");
+    let before = gray(&mut p, 1.0);
+    let r = p.remove_recognised_text(&[0]).unwrap();
+    assert_eq!(r, [(0, OcrResult::Removed { lines: 3 })]);
+    assert_eq!(p.page_text(0).trim(), "Visible words");
+    assert_eq!(before.as_raw(), gray(&mut p, 1.0).as_raw());
+    assert!(!names(&p, "XObject").contains(&"Outer".into()));
+    let copy = (resources(&p, "XObject").iter())
+        .filter_map(|(_, o)| o.as_reference().ok())
+        .find(|&id| {
+            let s = p.doc.get_object(id).and_then(Object::as_stream);
+            s.unwrap().dict.has(b"Resources")
+        })
+        .expect("no copy of the outer form");
+    assert_eq!(form_names(&p, copy, "Font"), ["LF1"]);
+    let inner = form_names(&p, copy, "XObject");
+    let renamed = matches!(&inner[..], [n] if n != "Only" && n != "More");
+    assert!(renamed, "{inner:?}");
+    let inner = drawn_by(&p, copy, &inner[0]);
+    assert_eq!(form_names(&p, inner, "Font"), Vec::<String>::new());
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["Hidden", "Nested", "Inner"]);
+    saved.assert_kept(&["Visible"]);
+    assert_eq!(saved.unreachable(), []);
+}
+
+/// Form `id`'s name for picture or form `name`.
+fn drawn_by(p: &Pdf, id: ObjectId, name: &str) -> ObjectId {
+    let xobjects = (form_res(p, id).get_deref(b"XObject", &p.doc)).and_then(Object::as_dict);
+    let id = xobjects.unwrap().get(name.as_bytes());
+    id.and_then(Object::as_reference).unwrap()
+}
+
+/// A form with no resources of its own, which draws with its page's, keeps drawing with them
+/// copied without its recognised text.
+#[test]
+fn a_form_using_its_pages_resources_still_does_when_copied() {
+    let mut p = scanned(text_image());
+    let content = format!("{SQUARE} BT 3 Tr /LF1 12 Tf 20 80 Td (Borrowed words) Tj ET");
+    let dict = dictionary! {
+        "Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 1000.into(), 1000.into()],
+    };
+    let borrowing = p.doc.add_object(Stream::new(dict, content.into_bytes()));
+    set_resource(&mut p, "XObject", "Borrowing", borrowing);
+    draw(&mut p, "q /Borrowing Do Q");
+    let before = gray(&mut p, 1.0);
+    let r = p.remove_recognised_text(&[0]).unwrap();
+    assert_eq!(r, [(0, OcrResult::Removed { lines: 1 })]);
+    assert_eq!(p.page_text(0).trim(), "");
+    assert_eq!(before.as_raw(), gray(&mut p, 1.0).as_raw());
+    let copies: Vec<ObjectId> = (resources(&p, "XObject").iter())
+        .filter_map(|(_, o)| o.as_reference().ok())
+        .filter(|&id| id != borrowing && p.doc.get_object(id).unwrap().as_stream().is_ok())
+        .filter(|&id| {
+            let s = p.doc.get_object(id).unwrap().as_stream().unwrap();
+            s.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Form")
+        })
+        .collect();
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    let copy = p.doc.get_object(copies[0]).unwrap().as_stream().unwrap();
+    assert!(!copy.dict.has(b"Resources"));
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["Borrowed"]);
+    assert_eq!(saved.unreachable(), []);
 }
 
 #[test]
