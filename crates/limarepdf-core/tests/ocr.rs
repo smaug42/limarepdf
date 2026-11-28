@@ -752,6 +752,95 @@ fn text_beside_a_bar_chart_is_read() {
     assert!(recall(&text) > 0.9, "recall {}: {text}", recall(&text));
 }
 
+/// Words in `text` that LINES hasn't, ignoring end punctuation and words read in two
+/// pieces: marks read as text.
+fn junk(text: &str) -> Vec<String> {
+    let strip = |w: &str| w.trim_matches(|c: char| ".,;:".contains(c)).to_string();
+    let want: Vec<String> = (LINES.iter())
+        .flat_map(|l| l.split_whitespace())
+        .map(strip)
+        .collect();
+    let read: Vec<String> = text.split_whitespace().map(strip).collect();
+    let mut junk = Vec::new();
+    let mut i = 0;
+    while i < read.len() {
+        if want.contains(&read[i]) {
+            i += 1;
+        } else if read
+            .get(i + 1)
+            .is_some_and(|n| want.contains(&(read[i].clone() + n)))
+        {
+            i += 2;
+        } else {
+            junk.push(read[i].clone());
+            i += 1;
+        }
+    }
+    junk
+}
+
+/// LINES printed over a background, as security printing lays text on cheques and
+/// certificates: `background` draws it first, in grey.
+fn over_background(background: &str) -> GrayImage {
+    let mut content = format!("q {background} Q\nBT /F1 12 Tf 16 190 Td 18 TL\n");
+    for l in LINES {
+        content.push_str(&format!("({l}) '\n"));
+    }
+    content.push_str("ET");
+    gray(&mut helvetica_page(288.0, 216.0, content), 300.0 / 72.0)
+}
+
+/// LINES are read over `background`, and it isn't read as text.
+fn read_over(background: &str) {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(over_background(background));
+    let r = p.ocr_pages(&[0], &ocr).unwrap();
+    let text = p.page_text(0);
+    assert!(six_lines(&r), "{r:?}: {text}");
+    assert!(recall(&text) > 0.9, "recall {}: {text}", recall(&text));
+    let junk = junk(&text);
+    assert!(junk.len() <= 1, "junk {junk:?}: {text}");
+}
+
+/// Text printed over crossing grey waves, a guilloche lattice, is read: joined to the
+/// letters, the waves made one group the size of the page, dropped with every letter in it
+/// (#322).
+#[test]
+fn text_over_a_wave_lattice_is_read() {
+    let mut waves = String::from("0.55 G 0.5 w\n");
+    for sign in [1.0, -1.0] {
+        for k in -2..76 {
+            for i in 0..=144 {
+                let x = i as f32 * 2.0;
+                let a = x / 34.0 * std::f32::consts::TAU + k as f32 * 0.6;
+                let y = k as f32 * 3.0 + sign * 2.0 * a.sin();
+                let op = if i == 0 { "m" } else { "l" };
+                waves.push_str(&format!("{x} {y:.2} {op}\n"));
+            }
+            waves.push_str("S\n");
+        }
+    }
+    read_over(&waves);
+}
+
+/// Text printed over a grey dot screen is read: filling the gaps along rows joined the dots
+/// into rules that tied the letters together (#322).
+#[test]
+fn text_over_a_dot_screen_is_read() {
+    let mut dots = String::from("0.5 g\n");
+    for j in 0..144 {
+        for i in 0..192 {
+            dots.push_str(&format!(
+                "{} {} 0.5 0.5 re\n",
+                i as f32 * 1.5,
+                j as f32 * 1.5
+            ));
+        }
+    }
+    dots.push('f');
+    read_over(&dots);
+}
+
 /// Read again, a page's recognised text is replaced: a line corrected wrongly reads as the
 /// page shows it once more (#224).
 #[test]

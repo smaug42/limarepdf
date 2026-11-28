@@ -211,6 +211,8 @@ With Show recognised text off, recognised text isn't drawn, and a double-click s
   optimise them. Made black and white at that resolution, as Automatic does with text, they lost about a third of
   the words read, and up to more than half.
 - **Ordinary print:** 150 dpi is enough. A clean page read as well at 100 and 150 dpi as at 300.
+- **Forms on patterned backgrounds:** recognise them without optimising first. Optimised, twenty phone scans of such
+  forms lost three points of words found on average.
 
 ### Accuracy and speed
 
@@ -261,10 +263,33 @@ not how right either is.
 | A flatbed scanner at 300 dpi | 59–99% |
 | A flatbed scanner, greyscale at 150 dpi | 37–46% |
 | A phone's scanning app, a plain printed page | 90% |
-| A phone's scanning app, forms on patterned security backgrounds | 25–64% |
+| A phone's scanning app, forms on patterned security backgrounds | 18–89% |
 
-Patterned backgrounds read worst. One phone scan of a photocopied card with textured bands was tried earlier: all
-its body text and headings were read, plus a few short junk lines from the texture.
+Patterned backgrounds read worst: of twenty such forms, half agreed on 53% of the words or more. Tesseract, the
+yardstick here, reads such backgrounds no better (below). One phone scan of a photocopied card with textured bands
+was tried earlier: all its body text and headings were read, plus a few short junk lines from the texture.
+
+**Patterned backgrounds:** both pages of the test sheet printed over made-up security backgrounds
+(`tools/ocr-sheet/patterns.py`): crossing waves, light, dense and dark; a guilloche rosette; a dot screen with VOID
+in larger dots; waves over a colour gradient; microprint, text under a point high; and grey fine print, 3-point text
+over the whole page. Each was rendered at 300 dpi, made to look like a phone scan (a little blur, uneven light, noise
+and JPEG), and given a phone app's document look (its contrast pushed), and recognised as it was.
+
+| Background | Rendered | Phone scan | Document look | Tesseract, rendered |
+| --- | --- | --- | --- | --- |
+| None, to compare | 99% | 99% | 99% | 87–95% |
+| Light or dense waves, waves over a gradient, the rosette, the dot screen, microprint | 99–100% | 99% | 99–100% | 87–95% |
+| Dark waves | 99% | 94–99% | 94–95% | 0% |
+| Grey fine print | 57–72% | 99% | 99% | 87–95% |
+
+Optimised first, the dark waves read 96–100% as phone scans and with the document look. Words read that aren't on
+the page stayed at two in a hundred or fewer, one on the plain page, except with the fine print: rendered sharp, it
+is read as text, six to eight times as many words again as the page has, and the page's own lines with it. Blurred a
+little, as in a phone scan, it isn't ([#335](https://github.com/smaug42/limarepdf/issues/335)).
+
+**Engraved certificates:** three stock certificates of 1918 and 1921 from Wikimedia Commons, pictures at 200 and
+300 dpi with guilloche borders, underprints and small italic script, against their text typed out from the
+pictures: 18–32% of the words found, Tesseract 7–12%.
 
 **Tilted and turned pages:** the English page of the test sheet, rendered at 300 dpi and tilted, or turned on its
 side or upside down. Its text was read back by LimarePDF, and by Poppler's `pdftotext` as the tables above were,
@@ -308,14 +333,16 @@ blurred and noisy pages and 0–1.2% under strong shadows. Real scans read worse
 
 Speed: about 2.5 seconds a page, from 0.7 to 3.4, on a 6-core machine, start-up included, and 4 seconds for a
 large magazine page. A page upside down, or on its side with its top to the right, takes about a second more: it is
-read a second time, turned round. Pages run in parallel.
+read a second time, turned round. A phone scan of a patterned form takes about 2.8 seconds, the pattern taken off
+first, and a sharp page under grey fine print up to 20 seconds, the fine print read too. Pages run in parallel.
 
 ## How this was tested
 
 Importing, optimising and OCR have automated tests. OCR was measured with `tools/ocr-accuracy.py` on the test
-sheet, also tilted and turned, rendered and scanned on a flatbed, public scans with known text (old French, Spanish
-and German books, faxes), also turned, and real office, flatbed and phone scans, as above. The app's inspector tools
-for these weren't clicked through. The full record is in [Testing](developer/testing.md#scanning-and-ocr).
+sheet, also tilted and turned, rendered, scanned on a flatbed and printed over made-up patterned backgrounds, public
+scans with known text (old French, Spanish and German books and faxes, also turned, and engraved certificates), and
+real office, flatbed and phone scans, as above. The app's inspector tools for these weren't clicked through. The
+full record is in [Testing](developer/testing.md#scanning-and-ocr).
 
 ## Licence of the OCR model
 

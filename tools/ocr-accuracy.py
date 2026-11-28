@@ -18,6 +18,8 @@ A manifest (TOML) lists the cases, with paths relative to it:
 tools/ocr-sheet/ holds a two-page test sheet with the true text of each page (page-1.txt, page-2.txt):
 print sheet.pdf, scan or photograph it, and list the scans with that truth. sheet.pdf is made from
 sheet.fodt with `soffice --headless --convert-to pdf --outdir tools/ocr-sheet tools/ocr-sheet/sheet.fodt`.
+tools/ocr-sheet/patterns.py makes a set of the sheet printed over security backgrounds, with its
+manifest (#322).
 
 Each case is measured as it is and after optimize-scans, the guide's order. The OCR skips a PDF
 that already carries text (phone scanner apps add their own), so that text is scored as "own
@@ -29,6 +31,9 @@ Scores, per page:
   CER(f)    the same with accents and typographic signs folded to ASCII: what's misread beyond
             accents and signs such as curly quotes (signs with no ASCII form still count)
   words     the share of the true words found, in any order, ignoring case; (f) folded
+  junk      the words read beyond the true ones, as a share of the true words, ignoring case and
+            folded: a pattern read as text shows here (a misread word counts here as well as
+            among the words not found)
   s/page    the OCR command's time over its pages, start-up included
 With --tesseract, Tesseract reads the same pages rendered as the OCR renders them, in the case's
 language, its models from --tessdata DIR if given. A page whose pictures are marked at a lower
@@ -124,6 +129,12 @@ def words_found(truth, read):
     """The share of `truth`'s words that `read` has, in any order, ignoring case."""
     t, r = (collections.Counter(re.findall(r"\w+", s.casefold())) for s in (truth, read))
     return sum((t & r).values()) / max(sum(t.values()), 1)
+
+
+def junk(truth, read):
+    """The words `read` has beyond `truth`'s, as a share of `truth`'s words, ignoring case."""
+    t, r = (collections.Counter(re.findall(r"\w+", s.casefold())) for s in (truth, read))
+    return sum((r - t).values()) / max(sum(t.values()), 1)
 
 
 def parse_cases(data, base):
@@ -237,6 +248,7 @@ def score(case, label, read, secs):
                 "cer_folded": None if case.words_only else cer(ft, fr),
                 "words": words_found(nt, nr),
                 "words_folded": words_found(ft, fr),
+                "junk": junk(ft, fr),
                 "seconds": secs,
             }
         )
@@ -282,12 +294,15 @@ def measure(case, cli, work, tesseract, tessdata, reader):
 
 def report(results):
     pct = lambda x: "     -" if x is None else f"{x * 100:5.1f}%"
-    print(f"{'case':<28} {'variant':<10} {'page':>4} {'CER':>6} {'CER(f)':>6} {'words':>6} {'(f)':>6} {'s/page':>6}")
+    print(
+        f"{'case':<28} {'variant':<10} {'page':>4} {'CER':>6} {'CER(f)':>6} {'words':>6} {'(f)':>6} {'junk':>6}"
+        f" {'s/page':>6}"
+    )
     for r in (r for res in results for r in res["rows"]):
         secs = "     -" if r["seconds"] is None else f"{r['seconds']:6.2f}"
         print(
             f"{r['case'][:28]:<28} {r['variant']:<10} {r['page']:>4} {pct(r['cer'])} "
-            f"{pct(r['cer_folded'])} {pct(r['words'])} {pct(r['words_folded'])} {secs}"
+            f"{pct(r['cer_folded'])} {pct(r['words'])} {pct(r['words_folded'])} {pct(r['junk'])} {secs}"
         )
     for res in results:
         for n in res["notes"]:
@@ -325,6 +340,9 @@ def self_test():
         'Zazolc gesla jazn. Grosse, coeur " oui " - "ok" ...',
     )
     check("words found", words_found("the cat the dog", "The dog, cat!"), 0.75)
+    check("junk", junk("the cat the dog", "The dog, cat! VOID void"), 0.5)
+    check("no junk", junk("the cat the dog", "the dog"), 0.0)
+    check("a misread word is junk", junk("the cat", "the cot"), 0.5)
     check("cer", cer("abcd", "abed"), 0.25)
     check("render dpi, letter", render_dpi(612, 792), 300)
     check("render dpi, a 29 x 37 in phone scan", round(render_dpi(29 * 72, 37 * 72), 1), 189.2)
