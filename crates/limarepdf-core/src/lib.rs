@@ -68,6 +68,7 @@ mod print_win;
 mod radicals;
 mod reach;
 mod reading;
+mod recognised;
 mod redact;
 mod redact_img;
 mod reduce;

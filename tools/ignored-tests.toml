@@ -491,6 +491,14 @@ group = "G6"
 needs = ["pdftotext"]
 
 [[test]]
+name = "ocr::cross_check_text_removed_from_a_form_with_poppler"
+crate = "limarepdf-core"
+target = "--test all"
+file = "crates/limarepdf-core/tests/ocr.rs"
+group = "G6"
+needs = ["pdftotext"]
+
+[[test]]
 name = "ocr::cross_check_area_text_with_poppler"
 crate = "limarepdf-core"
 target = "--test all"

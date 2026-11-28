@@ -10,21 +10,21 @@
 use crate::embed::Face;
 use crate::fonts::winansi_byte;
 use crate::matrix as mx;
-use crate::objects::{ordered_words, Parsed, TextData};
+use crate::objects::{ordered_words, TextData};
 use crate::overlay::FONT_PREFIX;
 use crate::scan::{best_angle, binarise, rotate_onto};
-use crate::{render, FontChoice, ObjectKind, Pdf, Result};
+use crate::{render, FontChoice, Pdf, Result};
 use anyhow::{anyhow, bail};
 use image::imageops::{self, FilterType};
 use image::{GrayImage, Luma};
-use lopdf::{Object, ObjectId};
+use lopdf::ObjectId;
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
 use rayon::prelude::*;
 use rten::Model;
 use rten_imageproc::{BoundingRect, RectF, RotatedRect};
 use rten_tensor::prelude::*;
 use rten_tensor::{NdTensor, NdTensorView};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
 
 /// Resolution pages are rendered at for recognition.
@@ -767,48 +767,47 @@ fn without_own(lines: Vec<OcrLine>, own: &[[f32; 4]]) -> Vec<OcrLine> {
         .collect()
 }
 
-/// The page's recognised text, as ids in `parsed.objs`: its recognised lines and the forms
-/// drawing only recognised text, with how many lines they hold. Or why it can't be taken
-/// out: a form drawing other content too holds some, or an inline picture would be lost.
-fn recognised_objs(parsed: &Parsed) -> std::result::Result<(Vec<usize>, usize), String> {
-    let other = "the recognised text is in a form that draws other content too, so it is left";
-    let mut objs = Vec::new();
-    let mut lines = 0;
-    for f in &parsed.recognised_forms {
-        let form = (parsed.objs.iter()).position(|o| o.kind == ObjectKind::Form && o.first == f.op);
-        match form {
-            Some(id) if !f.other => {
-                objs.push(id);
-                lines += f.lines;
-            }
-            _ => return Err(other.into()),
-        }
-    }
-    for (id, o) in parsed.objs.iter().enumerate() {
-        if o.text.as_ref().is_some_and(TextData::recognised) {
-            objs.push(id);
-            lines += 1;
-        }
-    }
-    if !objs.is_empty() && has_inline_image(parsed) {
-        return Err(INLINE_IMAGE.into());
-    }
-    Ok((objs, lines))
-}
-
-/// Why a page's recognised text isn't taken out when it has an inline picture.
-const INLINE_IMAGE: &str = "the page has an inline image that would be lost in rewriting it";
-
-fn has_inline_image(parsed: &Parsed) -> bool {
-    parsed.ops.iter().any(|o| o.operator == "BI")
-}
-
 /// What a page, or a box on it, is read against: the boxes of the words the page has as
 /// text already, in displayed-page points (y down), and the recognised text that what is
-/// read replaces, as ids in the page's parsed `objs`.
+/// read replaces.
 struct Target {
     own: Vec<[f32; 4]>,
-    replaced: Vec<usize>,
+    replaces: Replaces,
+}
+
+/// The recognised text on a page that what is read on it replaces.
+#[derive(Clone, Copy)]
+enum Replaces {
+    Nothing,
+    /// All of it.
+    Page,
+    /// The lines inside a box, in displayed-page points (y down), as [`within`] tells.
+    Area([f32; 4]),
+}
+
+/// The box of line `t`'s words in displayed-page points (y down), `to_vis` taking its
+/// page's space there: `None` when it has no words.
+fn line_box(t: &TextData, to_vis: mx::M) -> Option<[f32; 4]> {
+    (ordered_words(&[t], to_vis).into_iter())
+        .map(|(w, _, _)| w.bbox)
+        .reduce(|b, w| {
+            [
+                b[0].min(w[0]),
+                b[1].min(w[1]),
+                b[2].max(w[2]),
+                b[3].max(w[3]),
+            ]
+        })
+}
+
+/// Whether a line's box `b` is inside box `area`, as near its edge as a quarter of the
+/// line's height.
+fn within(b: [f32; 4], area: [f32; 4]) -> bool {
+    let near = 0.25 * (b[3] - b[1]);
+    b[0] >= area[0] - near
+        && b[1] >= area[1] - near
+        && b[2] <= area[2] + near
+        && b[3] <= area[3] + near
 }
 
 /// Why a box isn't read when its text isn't upright, `turns` quarter turns clockwise from it.
@@ -832,11 +831,6 @@ fn luma(b: render::Bitmap) -> Result<GrayImage> {
         .ok_or_else(|| anyhow!("the page's picture does not match its size"))
 }
 
-/// The name an operator names first: a font for `Tf`, a picture or a form for `Do`.
-fn name_operand(o: &lopdf::content::Operation) -> Option<Vec<u8>> {
-    Some(o.operands.first()?.as_name().ok()?.to_vec())
-}
-
 impl Pdf {
     /// Recognise the text on `pages` (0-based) and add it as an invisible, searchable,
     /// selectable text layer. Pages with recognised text ([`TextData::recognised`]) are
@@ -851,9 +845,8 @@ impl Pdf {
     }
 
     /// [`Pdf::ocr_pages`], with pages that have recognised text read again: their recognised
-    /// text is replaced with what is read, or kept when nothing is. A page whose recognised
-    /// text is in a form drawing other content too is skipped, as
-    /// [`Pdf::remove_recognised_text`] leaves it.
+    /// text is replaced with what is read, or kept when nothing is, in forms the page draws
+    /// too, as [`Pdf::remove_recognised_text`] takes it off.
     pub fn ocr_pages_again(
         &mut self,
         pages: &[usize],
@@ -868,8 +861,9 @@ impl Pdf {
     /// [`Pdf::ocr_pages`] does, whatever text the pages have: a picture of text in an
     /// ordinary page. Words that land on the page's own text are left out. The page's
     /// recognised lines inside a box, as near its edge as a quarter of their height, are
-    /// replaced with what is read there, or kept when nothing is; a line crossing its edge is
-    /// kept, and what is read on it left out. Boxes on one page read the lines they share
+    /// replaced with what is read there, or kept when nothing is, in forms the page draws too,
+    /// as [`Pdf::remove_recognised_text`] takes them off; a line crossing its edge is kept,
+    /// and what is read on it left out. Boxes on one page read the lines they share
     /// once. A box isn't turned or straightened with its page: text lying on its side or
     /// upside down in it is left, with the reason. One result a box, in the order asked.
     pub fn ocr_areas(
@@ -994,20 +988,31 @@ impl Pdf {
                 }
             }
         }
-        // The recognised text replaced, by page: what the boxes that read text replace.
-        let mut replaced: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        // The recognised text replaced, by page: what the reads that found text replace.
+        let mut replaced: BTreeMap<usize, Vec<Replaces>> = BTreeMap::new();
         for (i, target) in todo.iter().filter(|(i, _)| read.iter().any(|r| r.0 == *i)) {
-            (replaced.entry(asked[*i].0).or_default()).extend(&target.replaced);
+            (replaced.entry(asked[*i].0).or_default()).push(target.replaces);
         }
+        replaced.retain(|_, r| r.iter().any(|r| !matches!(r, Replaces::Nothing)));
         let layers: Vec<_> = (read.iter())
             .map(|(i, up, scale)| (ids[asked[*i].0], &up.lines[..], *scale, up.to_page))
             .collect();
         self.atomically(|pdf| {
             // The text read replaces the recognised text it was read over.
-            for (&p, objs) in replaced.iter().filter(|(_, objs)| !objs.is_empty()) {
-                let parsed = pdf.parse_page_of(ids[p])?;
-                let objs: Vec<usize> = objs.iter().copied().collect();
-                pdf.strip_recognised(ids[p], &parsed, &objs)?;
+            for (&p, replaces) in &replaced {
+                let to_vis = pdf.to_shown(ids[p]).map_err(|why| anyhow!(why))?;
+                let choose = |t: &TextData| {
+                    replaces.iter().any(|r| match r {
+                        Replaces::Nothing => false,
+                        Replaces::Page => true,
+                        Replaces::Area(a) => line_box(t, to_vis).is_some_and(|b| within(b, *a)),
+                    })
+                };
+                match pdf.stripped(ids[p], &choose) {
+                    Ok(Some(s)) => pdf.put_stripped(ids[p], s)?,
+                    Ok(None) => {}
+                    Err(why) => bail!(why),
+                }
             }
             // A page read turned is shown so, before its text is written as it reads.
             for (i, up, _) in read.iter().filter(|(_, up, _)| up.turns != 0) {
@@ -1042,9 +1047,10 @@ impl Pdf {
         if recognised && !again {
             return Err("the page already has recognised text".into());
         }
-        let replaced = match recognised {
-            true => recognised_objs(&parsed)?.0,
-            false => Vec::new(),
+        // Planned now, so a page whose recognised text can't be taken off isn't read.
+        let replaces = match recognised {
+            true => self.stripped(page, &|_| true).map(|_| Replaces::Page)?,
+            false => Replaces::Nothing,
         };
         let own: Vec<&TextData> = lines.into_iter().filter(|t| !t.recognised()).collect();
         // Text shown that isn't read as lines is the page's own, and where it is isn't known.
@@ -1052,71 +1058,53 @@ impl Pdf {
         if unread || !(own.is_empty() || recognised || self.large_picture(page, &parsed)) {
             return Err("the page already has text".into());
         }
-        let (vd, _, _) = self.vis_down(page);
-        let to_vis = mx::inv(vd).ok_or("cannot read the page: degenerate page transform")?;
-        let words = ordered_words(&own, to_vis);
+        let words = ordered_words(&own, self.to_shown(page)?);
         Ok(Target {
             own: words.into_iter().map(|(w, _, _)| w.bbox).collect(),
-            replaced,
+            replaces,
         })
     }
 
+    /// The transform from the space of the page with object `page` to displayed-page points
+    /// (y down).
+    fn to_shown(&self, page: ObjectId) -> std::result::Result<mx::M, String> {
+        let (vd, _, _) = self.vis_down(page);
+        mx::inv(vd).ok_or_else(|| "cannot read the page: degenerate page transform".into())
+    }
+
     /// What a box on the page with object `page` is read against ([`Pdf::ocr_areas`]),
-    /// `area` in displayed-page points (y down): the recognised lines of the page's content
-    /// inside it are replaced, and the rest of the page's text is its own. Or why it isn't
-    /// read.
+    /// `area` in displayed-page points (y down): the page's recognised lines inside it, in its
+    /// content and in the forms it draws, are replaced, and the rest of the page's text is its
+    /// own. Or why it isn't read.
     fn area_target(&self, page: ObjectId, area: [f32; 4]) -> std::result::Result<Target, String> {
         let parsed =
             (self.parse_page_of(page)).map_err(|e| format!("cannot read the page: {e}"))?;
-        // The page's text lines, those of its content by their ids, then those in forms.
-        let lines: Vec<(Option<usize>, &TextData)> = (parsed.objs.iter().enumerate())
-            .filter_map(|(id, o)| Some((Some(id), o.text.as_ref()?)))
-            .chain(parsed.form_text.iter().map(|t| (None, t)))
-            .collect();
+        // The page's text lines, those of its content, then those in forms.
+        let lines: Vec<&TextData> = parsed.text_lines().collect();
         if lines.is_empty() && parsed.shows_text() {
             return Err("the page has text whose place isn't known, which could be doubled".into());
         }
-        let (vd, _, _) = self.vis_down(page);
-        let to_vis = mx::inv(vd).ok_or("cannot read the page: degenerate page transform")?;
-        let texts: Vec<&TextData> = lines.iter().map(|&(_, t)| t).collect();
-        let words = ordered_words(&texts, to_vis);
-        let mut boxes = vec![[f32::MAX, f32::MAX, f32::MIN, f32::MIN]; lines.len()];
-        for (w, li, _) in &words {
-            let (b, w) = (&mut boxes[*li], w.bbox);
-            *b = [
-                b[0].min(w[0]),
-                b[1].min(w[1]),
-                b[2].max(w[2]),
-                b[3].max(w[3]),
-            ];
-        }
-        let inside = |b: [f32; 4]| {
-            let near = 0.25 * (b[3] - b[1]);
-            b[0] >= area[0] - near
-                && b[1] >= area[1] - near
-                && b[2] <= area[2] + near
-                && b[3] <= area[3] + near
+        let to_vis = self.to_shown(page)?;
+        let inside = |t: &TextData| line_box(t, to_vis).is_some_and(|b| within(b, area));
+        let replaced: Vec<bool> = lines.iter().map(|t| t.recognised() && inside(t)).collect();
+        let replaces = match replaced.contains(&true) {
+            // Planned now, so an area whose recognised text can't be taken off isn't read.
+            true => self.stripped(page, &inside).map(|_| Replaces::Area(area))?,
+            false => Replaces::Nothing,
         };
-        let replaced: Vec<usize> = (lines.iter().zip(&boxes))
-            .filter(|((_, t), &b)| t.recognised() && b[0] <= b[2] && inside(b))
-            .filter_map(|((id, _), _)| *id)
-            .collect();
-        if !replaced.is_empty() && has_inline_image(&parsed) {
-            return Err(INLINE_IMAGE.into());
-        }
-        let own = (words.into_iter())
-            .filter(|(_, li, _)| !lines[*li].0.is_some_and(|id| replaced.contains(&id)))
+        let own = (ordered_words(&lines, to_vis).into_iter())
+            .filter(|(_, li, _)| !replaced[*li])
             .map(|(w, _, _)| w.bbox)
             .collect();
-        Ok(Target { own, replaced })
+        Ok(Target { own, replaces })
     }
 
     /// Take the recognised text off `pages` (0-based): invisible text as OCR adds it
-    /// ([`TextData::recognised`]), in a page's content or in a form drawing nothing else (as
-    /// ocrmypdf adds it). The pages look as they did, and keep their own text, invisible text
-    /// that clips too. The fonts and forms only the recognised text used leave the pages'
-    /// resources. A page whose recognised text is in a form drawing other content too is
-    /// left as it is.
+    /// ([`TextData::recognised`]), in a page's content or in the forms it draws, as ocrmypdf
+    /// adds it or an app arranging pages puts a whole page in one. The pages look as they
+    /// did, and keep their own text, invisible text that clips too. A form drawing more is
+    /// drawn as a copy without its recognised text, and the fonts and forms only the
+    /// recognised text used leave the resources that held them.
     pub fn remove_recognised_text(&mut self, pages: &[usize]) -> Result<Vec<(usize, OcrResult)>> {
         let ids = self.page_ids();
         if let Some(&bad) = pages.iter().find(|&&p| p >= ids.len()) {
@@ -1126,88 +1114,19 @@ impl Pdf {
         self.atomically(|pdf| {
             let mut out = Vec::new();
             for &p in pages.iter().filter(|&&p| asked.insert(p)) {
-                let parsed = match pdf.parse_page_of(ids[p]) {
-                    Ok(parsed) => parsed,
-                    Err(e) => {
-                        let why = format!("cannot read the page: {e}");
-                        out.push((p, OcrResult::Skipped(why)));
-                        continue;
+                let r = match pdf.stripped(ids[p], &|_| true) {
+                    Ok(None) => OcrResult::Skipped("the page has no recognised text".into()),
+                    Ok(Some(s)) => {
+                        let lines = s.lines;
+                        pdf.put_stripped(ids[p], s)?;
+                        OcrResult::Removed { lines }
                     }
-                };
-                let r = match recognised_objs(&parsed) {
                     Err(why) => OcrResult::Skipped(why),
-                    Ok((objs, _)) if objs.is_empty() => {
-                        OcrResult::Skipped("the page has no recognised text".into())
-                    }
-                    // Nothing is changed when it fails.
-                    Ok((objs, lines)) => match pdf.strip_recognised(ids[p], &parsed, &objs) {
-                        Ok(()) => OcrResult::Removed { lines },
-                        Err(e) => OcrResult::Skipped(format!("{e:#}")),
-                    },
                 };
                 out.push((p, r));
             }
             Ok(out)
         })
-    }
-
-    /// Take `objs` out of the page with object `page`, its content `parsed`: its
-    /// recognised text ([`recognised_objs`]). The fonts and forms only they used leave the
-    /// page's resources, unless a form the page still draws has no resources of its own and
-    /// may use them too.
-    fn strip_recognised(&mut self, page: ObjectId, parsed: &Parsed, objs: &[usize]) -> Result<()> {
-        let mut ops = Pdf::without_objects(parsed, objs)?;
-        let mut res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-        let xobjects = self.resolved_dict(res.get(b"XObject").ok());
-        let drawn: Vec<Vec<u8>> = (ops.iter().filter(|o| o.operator == "Do"))
-            .filter_map(name_operand)
-            .collect();
-        let borrows = drawn.iter().any(|n| {
-            let s = xobjects
-                .get(n)
-                .ok()
-                .and_then(|o| self.doc.dereference(o).ok());
-            s.and_then(|(_, s)| s.as_stream().ok()).is_some_and(|s| {
-                s.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Form")
-                    && !s.dict.has(b"Resources")
-            })
-        });
-        if borrows {
-            return self.commit(page, ops, parsed.depth_left, &parsed.inline);
-        }
-        // The fonts no line left is in, and the forms nothing draws now.
-        let (mut fonts, mut forms) = (HashSet::new(), HashSet::new());
-        for o in objs.iter().map(|&id| &parsed.objs[id]) {
-            match &o.text {
-                Some(t) => fonts.extend(t.spans.iter().map(|s| s.font.clone())),
-                None => forms.extend(name_operand(&parsed.ops[o.first])),
-            }
-        }
-        let kept = (parsed.objs.iter().enumerate()).filter(|(id, _)| !objs.contains(id));
-        for t in kept.filter_map(|(_, o)| o.text.as_ref()) {
-            for s in &t.spans {
-                fonts.remove(&s.font);
-            }
-        }
-        for n in &drawn {
-            forms.remove(n);
-        }
-        // Nothing shown is in those fonts now, so what chooses them goes too.
-        ops.retain(|o| o.operator != "Tf" || !name_operand(o).is_some_and(|n| fonts.contains(&n)));
-        self.commit(page, ops, parsed.depth_left, &parsed.inline)?;
-        let unused = [("Font", fonts), ("XObject", forms)];
-        if unused.iter().all(|(_, u)| u.is_empty()) {
-            return Ok(());
-        }
-        for (cat, unused) in unused.iter().filter(|(_, u)| !u.is_empty()) {
-            let mut d = self.resolved_dict(res.get(cat.as_bytes()).ok());
-            for n in unused {
-                d.remove(n);
-            }
-            res.set(*cat, d);
-        }
-        self.doc.get_dictionary_mut(page)?.set("Resources", res);
-        Ok(())
     }
 
     /// Each page's recognised lines added on top of it as invisible text: (page, its
