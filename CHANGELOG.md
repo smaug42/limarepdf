@@ -45,6 +45,9 @@
   word whose letters barely touch, made part of a line read as a line of its own.
 - OCR reads the text on a scan with a bar chart or filled boxes. Where the bars held more ink than the letters,
   it found no text on the page.
+- OCR reads text printed over patterned backgrounds, as on security-printed forms. Over a pattern as dark as the
+  letters, or one joined in a single shape across the page, it found little or none of the text. Grey fine print
+  over a whole page is still read along with the text on a sharp scan (#335).
 
 ### Changed
 
