@@ -157,15 +157,17 @@ whether the page has text of its own or not.
   the area round whole lines: a word its edge cuts through is read in part, or not at all. Words read where the
   page's own text is are left out, as on a whole page.
 - **Recognised text in the area:** recognised lines wholly inside it are replaced with the new read, or kept when
-  the new read finds nothing. A recognised line crossing its edge is kept, and isn't read again.
+  the new read finds nothing. A recognised line crossing its edge is kept, and isn't read again. Lines in a group (a
+  form XObject) are replaced too, the group drawn as a copy without them where the area is, as
+  [removing](#reading-again-and-removing-recognised-text) does.
 - **Several areas** given on the command line are read in one go and are one undo step. Where they overlap on a
   page, the lines they share are read once. In the app, each box is read on its own, one undo step each.
 - **Turned and tilted text:** text in the area on its side or upside down isn't read, and the report says so:
   turn the page so the text reads upright (**Pages > Rotate**), read the area, then turn the page back if wanted.
   Tilted text is read as on a tilted page, and isn't reported.
 - **Left as it is,** with the reason given: an area off the page, a page with text whose place LimarePDF can't
-  tell, an area holding recognised text in a group (a form XObject), and a page with a picture written inside its
-  content (an inline image) when the area holds recognised text to replace.
+  tell, and a page with a picture written inside its content (an inline image) when the area holds recognised text
+  to replace.
 
 Where: **Pages > Recognise text ▾ > Recognise text in an area** (also in ☰ > Pages), or **Recognise an area** in
 the Recognise text (OCR) tool, turns on a tool: drag a box over the text, and it is read in the background.

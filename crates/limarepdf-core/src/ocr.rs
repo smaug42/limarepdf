@@ -861,8 +861,9 @@ impl Pdf {
     /// [`Pdf::ocr_pages`] does, whatever text the pages have: a picture of text in an
     /// ordinary page. Words that land on the page's own text are left out. The page's
     /// recognised lines inside a box, as near its edge as a quarter of their height, are
-    /// replaced with what is read there, or kept when nothing is; a line crossing its edge is
-    /// kept, and what is read on it left out. Boxes on one page read the lines they share
+    /// replaced with what is read there, or kept when nothing is, in forms the page draws too,
+    /// as [`Pdf::remove_recognised_text`] takes them off; a line crossing its edge is kept,
+    /// and what is read on it left out. Boxes on one page read the lines they share
     /// once. A box isn't turned or straightened with its page: text lying on its side or
     /// upside down in it is left, with the reason. One result a box, in the order asked.
     pub fn ocr_areas(
@@ -1072,9 +1073,9 @@ impl Pdf {
     }
 
     /// What a box on the page with object `page` is read against ([`Pdf::ocr_areas`]),
-    /// `area` in displayed-page points (y down): the recognised lines of the page's content
-    /// inside it are replaced, and the rest of the page's text is its own. Or why it isn't
-    /// read.
+    /// `area` in displayed-page points (y down): the page's recognised lines inside it, in its
+    /// content and in the forms it draws, are replaced, and the rest of the page's text is its
+    /// own. Or why it isn't read.
     fn area_target(&self, page: ObjectId, area: [f32; 4]) -> std::result::Result<Target, String> {
         let parsed =
             (self.parse_page_of(page)).map_err(|e| format!("cannot read the page: {e}"))?;
@@ -1086,10 +1087,6 @@ impl Pdf {
         let to_vis = self.to_shown(page)?;
         let inside = |t: &TextData| line_box(t, to_vis).is_some_and(|b| within(b, area));
         let replaced: Vec<bool> = lines.iter().map(|t| t.recognised() && inside(t)).collect();
-        let content = parsed.objs.iter().filter(|o| o.text.is_some()).count();
-        if replaced[content..].contains(&true) {
-            return Err("the recognised text in the area is in a form, so it is left".into());
-        }
         let replaces = match replaced.contains(&true) {
             // Planned now, so an area whose recognised text can't be taken off isn't read.
             true => self.stripped(page, &inside).map(|_| Replaces::Area(area))?,

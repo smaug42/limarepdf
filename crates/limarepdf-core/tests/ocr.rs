@@ -1367,6 +1367,66 @@ fn cross_check_area_text_with_poppler() {
     );
 }
 
+/// Read in a box, recognised lines inside a form that draws more are replaced as a page's
+/// are (#327): the page draws a copy of the form holding the rest of its lines.
+#[test]
+fn an_area_replaces_the_recognised_lines_inside_a_form() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = printed(&misread_tuesday(&ocr));
+    let look = gray(&mut p, 1.0);
+    let r = p.ocr_areas(&[(0, LINES_3_4)], &ocr).unwrap();
+    let two = matches!(r[..], [(0, OcrResult::Added { lines: 2, .. })]);
+    assert!(two, "{r:?}");
+    let text = p.page_text(0);
+    assert!(
+        text.contains("Tuesday") && !text.contains("Wednesday"),
+        "{text}"
+    );
+    let once = |w: &str| p.find_text_boxes(0, w).unwrap().len() == 1;
+    assert!(once("committee") && once("Contact"), "{text}");
+    assert!(recall(&text) > 0.9, "recall {}: {text}", recall(&text));
+    assert_eq!(look.as_raw(), gray(&mut p, 1.0).as_raw());
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["Wednesday"]);
+    saved.assert_kept(&["Tuesday", "committee"]);
+    assert_eq!(saved.unreachable(), []);
+}
+
+/// A form drawn twice side by side, read in a box over one drawing, has its lines replaced
+/// there alone: that drawing draws a copy, and the other the form as it was.
+#[test]
+fn an_area_over_one_drawing_of_a_form_replaces_its_lines_there() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = printed(&misread_tuesday(&ocr));
+    let whole = (resources(&p, "XObject").iter())
+        .find_map(|(_, o)| o.as_reference().ok())
+        .expect("the sheet draws no form");
+    let twice = "q /Page Do Q q 1 0 0 1 288 0 cm /Page Do Q";
+    draw_forms(&mut p, 0, twice, &[("Page", whole)]);
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    for b in ["MediaBox", "CropBox"] {
+        d.set(b, vec![0.into(), 0.into(), 576.into(), 216.into()]);
+    }
+    let original = p.doc.get_object(whole).unwrap().clone();
+    let look = gray(&mut p, 1.0);
+    let r = p.ocr_areas(&[(0, LINES_3_4)], &ocr).unwrap();
+    let two = matches!(r[..], [(0, OcrResult::Added { lines: 2, .. })]);
+    assert!(two, "{r:?}");
+    let text = p.page_text(0);
+    let at = |w: &str| p.find_text_boxes(0, w).unwrap();
+    let left = matches!(at("Tuesday")[..], [b] if b[2] < 288.0);
+    let right = matches!(at("Wednesday")[..], [b] if b[0] > 288.0);
+    assert!(left && right, "{text}");
+    assert_eq!(at("committee").len(), 2, "{text}");
+    assert_eq!(look.as_raw(), gray(&mut p, 1.0).as_raw());
+    assert_eq!(drawn(&p, 0, "Page"), Some(whole));
+    assert_eq!(p.doc.get_object(whole).unwrap(), &original);
+    let saved = Saved::of(&mut p);
+    saved.assert_kept(&["Tuesday", "Wednesday"]);
+    assert_eq!(saved.unreachable(), []);
+}
+
 /// Boxes on one page that overlap read the lines they share once, and read again, a box
 /// replaces what they read.
 #[test]

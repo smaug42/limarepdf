@@ -1079,6 +1079,18 @@ blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed 
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
 `sanitise.rs`. See [Redaction](../redaction.md).
 
+Recognised text is taken off a page (`recognised.rs`; #224, #327) for Remove recognised text, reading again and
+areas, through the parser's objects, not a pass of its own: the chosen lines go (`Pdf::without_objects`), and a form
+holding some is read again with the transform it is drawn with, at any depth a page's text is read, and drawn as a
+copy without them by a new name (`LimareOcr1`…), or not drawn when it holds nothing else. The form stays for
+whatever else draws it, and saving drops it when nothing does. A form with resources of its own is copied once for
+each set of its lines taken off, and the copy's resources lose the fonts and forms only those lines used; one
+without draws with those of where it is drawn, which keep what it, or a Type 3 font, pattern or soft mask drawing
+with them, still uses (`Pdf::borrowed_uses`, which redaction uses too). The change is planned first
+(`Pdf::stripped`, the document as it was) and put after (`Pdf::put_stripped`), so a page whose text can't be taken
+off (content to rewrite with an inline image) is skipped before it is read. Reading the forms again has a budget
+of `objects::STEPS`, as reading a page has.
+
 What is still drawn after a redaction or Remove hidden information is found by `reach.rs` (S1-01: H-01, H-02,
 PB-84), one walk over every page, annotation appearance, form, pattern, soft-mask group and Type 3 glyph, each
 visited once per `(id, fingerprint of the resources it inherits)`, so drawings that draw themselves end. It gives

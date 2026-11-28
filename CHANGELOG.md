@@ -20,8 +20,9 @@
 - Text recognition reads an area of a page on its own, such as a picture of text or a scanned table in an ordinary
   document, whether the page has text of its own or not: drag boxes with **Pages > Recognise text ▾ > Recognise
   text in an area**, choose a selected picture's **Recognise text**, or run `limarepdf-cli ocr --area
-  PAGE:X,Y,W,H`. Recognised lines wholly inside the area are replaced with the new read. Before, a page with text
-  was read only when a picture covered at least half of it ([Scans and OCR](docs/scanning-and-ocr.md#reading-an-area)).
+  PAGE:X,Y,W,H`. Recognised lines wholly inside the area are replaced with the new read, also in a form XObject.
+  Before, a page with text was read only when a picture covered at least half of it
+  ([Scans and OCR](docs/scanning-and-ocr.md#reading-an-area)).
 - Recognised text is corrected where it is shown: **Show recognised text** draws each line's text in blue over the
   print it was read from, the print faded under it, so a word read wrongly shows where it is. Double-click a line to
   correct it there, drawn as it will be written; ↓ and ↑ go on to the line below or above. Each line is one undo
