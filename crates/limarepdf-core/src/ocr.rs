@@ -1,7 +1,8 @@
 //! Text recognition for scanned pages.
 //!
-//! Words are found with classical image processing (threshold, closing of small gaps
-//! along rows, connected components) and grouped into lines by ocrs' layout analysis.
+//! Words are found with classical image processing (threshold, text lifted off a patterned
+//! background by its darker grey, closing of small gaps along rows, connected components)
+//! and grouped into lines by ocrs' layout analysis.
 //! Each line is read by a PaddleOCR text recognition model (Apache-2.0; see
 //! `models/README.md`), run by rten: given the line's picture, the model gives for each
 //! step of it (8 pixels across) how likely each character is there, read out as CTC
@@ -474,7 +475,7 @@ const LIE_LETTERS: usize = 20;
 /// don't show how it lies.
 fn lie(g: &GrayImage) -> Option<(bool, f32)> {
     let (w, h) = g.dimensions();
-    let comps = components(&binarise(g));
+    let comps = components(&binarise(g), g);
     let big = |c: &Comp| c.w().max(c.h());
     let most = 0.1 * w.min(h) as f32;
     let fits = |&s: &u32| s >= 4 && (s as f32) < most;
@@ -1256,6 +1257,8 @@ struct Comp {
     x1: u32,
     y1: u32,
     pixels: usize,
+    /// How dark its pixels are in all: the sum of how far each is from white.
+    dark: u64,
     /// Index of one of its pixels.
     seed: usize,
 }
@@ -1269,10 +1272,11 @@ impl Comp {
     }
 }
 
-/// Groups of touching black (0) pixels, 8-connected.
-fn components(b: &GrayImage) -> Vec<Comp> {
+/// Groups of touching black (0) pixels, 8-connected, with their darkness in the grey page
+/// `g` they were found on.
+fn components(b: &GrayImage, g: &GrayImage) -> Vec<Comp> {
     let (w, h) = (b.width() as usize, b.height() as usize);
-    let raw = b.as_raw();
+    let (raw, grey) = (b.as_raw(), g.as_raw());
     let mut seen = vec![false; w * h];
     let mut stack = Vec::new();
     let mut out = Vec::new();
@@ -1289,11 +1293,13 @@ fn components(b: &GrayImage) -> Vec<Comp> {
             x1: sx + 1,
             y1: sy + 1,
             pixels: 0,
+            dark: 0,
             seed: start,
         };
         while let Some(i) = stack.pop() {
             let (x, y) = (i % w, i / w);
             c.pixels += 1;
+            c.dark += 255 - grey[i] as u64;
             c.x0 = c.x0.min(x as u32);
             c.y0 = c.y0.min(y as u32);
             c.x1 = c.x1.max(x as u32 + 1);
@@ -1313,14 +1319,15 @@ fn components(b: &GrayImage) -> Vec<Comp> {
     out
 }
 
-/// Whiten the group of touching black pixels that contains pixel `seed`.
-fn erase(b: &mut GrayImage, seed: usize, stack: &mut Vec<usize>) {
+/// Paint the group of touching black (0) pixels that contains pixel `seed` with `value`:
+/// 255 erases it.
+fn paint(b: &mut GrayImage, seed: usize, value: u8, stack: &mut Vec<usize>) {
     let (w, h) = (b.width() as usize, b.height() as usize);
     let raw: &mut [u8] = b;
-    if raw[seed] != 0 {
+    if raw[seed] != 0 || value == 0 {
         return;
     }
-    raw[seed] = 255;
+    raw[seed] = value;
     stack.push(seed);
     while let Some(i) = stack.pop() {
         let (x, y) = (i % w, i / w);
@@ -1328,12 +1335,104 @@ fn erase(b: &mut GrayImage, seed: usize, stack: &mut Vec<usize>) {
             for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
                 let j = ny * w + nx;
                 if raw[j] == 0 {
-                    raw[j] = 255;
+                    raw[j] = value;
                     stack.push(j);
                 }
             }
         }
     }
+}
+
+/// The grey that best parts the pixels counted in `hist` into a darker group (up to and
+/// including it) and a lighter one, by Otsu's method, and the two groups' mean greys.
+fn two_greys(hist: &[u64; 256]) -> (u8, f32, f32) {
+    let total: u64 = hist.iter().sum();
+    let sum: f64 = (hist.iter().enumerate())
+        .map(|(v, &n)| v as f64 * n as f64)
+        .sum();
+    let (mut n0, mut s0) = (0u64, 0f64);
+    let mut best = (0u8, 0f32, 0f32, 0f64);
+    for (v, &n) in hist.iter().enumerate().take(255) {
+        n0 += n;
+        s0 += v as f64 * n as f64;
+        let n1 = total - n0;
+        if n0 == 0 || n1 == 0 {
+            continue;
+        }
+        let (m0, m1) = (s0 / n0 as f64, (sum - s0) / n1 as f64);
+        let between = n0 as f64 * n1 as f64 * (m1 - m0) * (m1 - m0);
+        if between > best.3 {
+            best = (v as u8, m0 as f32, m1 as f32, between);
+        }
+    }
+    (best.0, best.1, best.2)
+}
+
+/// Text printed over a pattern, as security printing lays it on cheques and certificates,
+/// joins up with the pattern into groups: these of `groups`, in `b`. Where a group's greys
+/// in `g` fall into two clearly different groups, the text is the darker: whiten the
+/// lighter pixels, and in the group's box any others as pale as the pattern, pieces of it
+/// left alone or touching a letter. Whether any group was lifted.
+fn lift_patterns<'a>(
+    g: &GrayImage,
+    b: &mut GrayImage,
+    groups: impl Iterator<Item = &'a Comp>,
+    stack: &mut Vec<usize>,
+) -> bool {
+    // A quarter of the grey range apart: blurred letters joined by their grey edges part
+    // too, which only helps.
+    const APART: f32 = 64.0;
+    let w = b.width() as usize;
+    let in_box = move |c: &Comp| {
+        let (x0, x1) = (c.x0 as usize, c.x1 as usize);
+        (c.y0 as usize..c.y1 as usize).flat_map(move |y| (y * w + x0)..(y * w + x1))
+    };
+    let grey: &[u8] = g;
+    let mut lifted = false;
+    let mut boxes = Vec::new();
+    for c in groups {
+        // Marked 1 to tell the group's pixels from other groups' in its box.
+        paint(b, c.seed, 1, stack);
+        let raw: &mut [u8] = b;
+        let mut hist = [0u64; 256];
+        for i in in_box(c) {
+            if raw[i] == 1 {
+                hist[grey[i] as usize] += 1;
+            }
+        }
+        let (t, dark, light) = two_greys(&hist);
+        let apart = light - dark >= APART;
+        // Half-way from the split to the pattern's mean: only the pattern is this pale.
+        let pale = (t as f32 + light) / 2.0;
+        let (mut others, mut pale_others) = (0usize, 0usize);
+        for i in in_box(c) {
+            match raw[i] {
+                1 => raw[i] = if apart && grey[i] > t { 255 } else { 0 },
+                0 => {
+                    others += 1;
+                    pale_others += usize::from(grey[i] as f32 >= pale);
+                }
+                _ => {}
+            }
+        }
+        lifted |= apart;
+        // The others in the box as pale as the pattern go too, unless they're over three
+        // quarters of them: then the page's own print is that pale, as engraved certificates'
+        // is, and the group's darker pixels something else, such as a scan's black edge.
+        if apart && 4 * pale_others <= 3 * others {
+            boxes.push((c, pale));
+        }
+    }
+    // Only now: whitened sooner, a later group's first pixel would no longer start it.
+    let raw: &mut [u8] = b;
+    for &(c, pale) in &boxes {
+        for i in in_box(c) {
+            if grey[i] as f32 >= pale {
+                raw[i] = 255;
+            }
+        }
+    }
+    lifted
 }
 
 /// Median of `heights`.
@@ -1342,53 +1441,72 @@ fn median(mut heights: Vec<u32>) -> Option<f32> {
     heights.get(heights.len() / 2).map(|&h| h as f32)
 }
 
+/// Typical letter height of `comps`, of those that `fits`, in two steps. First the median
+/// height weighted by ink, each pixel by how dark it is, which many specks (dust,
+/// photocopy texture) cannot drag down, nor a pale pattern tying lines together; then the
+/// plain median of the groups at least a quarter of that, so that large bold headings,
+/// which hold much of the ink, do not make body text look like specks. Solid groups, a
+/// chart's bars or filled boxes, are left out while there are letters: they can hold most
+/// of the ink, and their height says nothing of the letters'.
+fn letter_height(comps: &[Comp], fits: impl Fn(&Comp) -> bool) -> Option<f32> {
+    let mut sized: Vec<&Comp> = comps.iter().filter(|c| c.h() >= 4 && fits(c)).collect();
+    let solid = |c: &&Comp| c.pixels as f32 >= 0.9 * (c.w() * c.h()) as f32;
+    if sized.iter().any(|c| !solid(c)) {
+        sized.retain(|c| !solid(c));
+    }
+    sized.sort_unstable_by_key(|c| c.h());
+    let ink: u64 = sized.iter().map(|c| c.dark).sum();
+    let mut acc = 0;
+    let heavy = sized.iter().find(|c| {
+        acc += c.dark;
+        acc * 2 >= ink
+    })?;
+    let floor = 0.25 * heavy.h() as f32;
+    median(
+        sized
+            .iter()
+            .map(|c| c.h())
+            .filter(|&ch| ch as f32 >= floor)
+            .collect(),
+    )
+}
+
 /// Word boxes (left, top, right, bottom, in pixels), padded for recognition, and the
 /// typical letter height (about the x-height) they were found with.
 fn find_words(g: &GrayImage) -> (Vec<[f32; 4]>, f32) {
     let none = (Vec::new(), 0.0);
     let (w, h) = g.dimensions();
     let mut bits = binarise(g);
-    let comps: Vec<Comp> = components(&bits);
+    let mut comps: Vec<Comp> = components(&bits, g);
     let not_page_sized =
         |c: &Comp| (c.h() as f32) < 0.15 * h as f32 && (c.w() as f32) < 0.6 * w as f32;
-    // Typical letter height, in two steps. First the ink-weighted median height, which
-    // many specks (dust, photocopy texture) cannot drag down; then the plain median of the
-    // groups at least a quarter of that, so that large bold headings, which hold much of
-    // the ink, do not make body text look like specks. Solid groups, a chart's bars or
-    // filled boxes, are left out while there are letters: they can hold most of the ink,
-    // and their height says nothing of the letters'.
-    let mut sized: Vec<&Comp> = comps
-        .iter()
-        .filter(|c| c.h() >= 4 && not_page_sized(c))
-        .collect();
-    let solid = |c: &&Comp| c.pixels as f32 >= 0.9 * (c.w() * c.h()) as f32;
-    if sized.iter().any(|c| !solid(c)) {
-        sized.retain(|c| !solid(c));
+    // Groups the size of the page are dropped below with every letter in them: take any
+    // pattern printed under the letters out of them first (#322).
+    let mut stack = Vec::new();
+    let page_sized = comps.iter().filter(|c| !not_page_sized(c));
+    if lift_patterns(g, &mut bits, page_sized, &mut stack) {
+        comps = components(&bits, g);
     }
-    sized.sort_unstable_by_key(|c| c.h());
-    let ink: usize = sized.iter().map(|c| c.pixels).sum();
-    let mut acc = 0;
-    let Some(heavy) = sized.iter().find(|c| {
-        acc += c.pixels;
-        acc * 2 >= ink
-    }) else {
+    let Some(mut th) = letter_height(&comps, not_page_sized) else {
         return none;
     };
-    let floor = 0.25 * heavy.h() as f32;
-    let Some(th) = median(
-        sized
-            .iter()
-            .map(|c| c.h())
-            .filter(|&ch| ch as f32 >= floor)
-            .collect(),
-    ) else {
-        return none;
-    };
+    // A pattern can tie lines of letters together in smaller groups too, taller than any
+    // letter of a line.
+    let lines_tall = comps
+        .iter()
+        .filter(|c| not_page_sized(c) && c.h() as f32 > 3.0 * th);
+    if lift_patterns(g, &mut bits, lines_tall, &mut stack) {
+        comps = components(&bits, g);
+        let Some(again) = letter_height(&comps, not_page_sized) else {
+            return none;
+        };
+        th = again;
+    }
     // Erase frames and outlines: groups whose box is nearly empty. Size alone is not a
     // reason, since blurred letters on neighbouring lines can touch and form big groups.
     // Small marks stay: they are punctuation, dots, accents and pieces of broken letters.
-    let mut stack = Vec::new();
     let mut letters = 0;
+    let speck = |c: &Comp| (c.h() as f32) < 0.4 * th && (c.w() as f32) < 0.6 * th;
     for c in &comps {
         let (cw, ch) = (c.w() as f32, c.h() as f32);
         if ch < 0.4 * th {
@@ -1398,40 +1516,43 @@ fn find_words(g: &GrayImage) -> (Vec<[f32; 4]>, f32) {
         if fill >= 0.06 {
             letters += 1;
         } else {
-            erase(&mut bits, c.seed, &mut stack);
+            paint(&mut bits, c.seed, 255, &mut stack);
         }
     }
     if letters < 3 {
         return none;
     }
     // Join the letters of a word: fill gaps along each row up to this width. Letter gaps
-    // are around a fifth of the median letter height, word spaces about half of it.
+    // are around a fifth of the median letter height, word spaces about half of it. Not
+    // between two specks, marked 1 meanwhile: a dot screen printed under the text would
+    // join into rules that tie its letters together (#322).
+    for c in comps.iter().filter(|c| speck(c)) {
+        paint(&mut bits, c.seed, 1, &mut stack);
+    }
     let gap = (0.4 * th).round().max(1.0) as usize;
     for row in bits.chunks_mut(w as usize) {
-        let mut last_black: Option<usize> = None;
+        let mut last_black: Option<(usize, bool)> = None;
         for x in 0..row.len() {
-            if row[x] == 0 {
-                if let Some(l) = last_black {
-                    if x - l > 1 && x - l <= gap + 1 {
+            if row[x] <= 1 {
+                let on_speck = row[x] == 1;
+                if let Some((l, after_speck)) = last_black {
+                    if x - l > 1 && x - l <= gap + 1 && !(on_speck && after_speck) {
                         row[l + 1..x].fill(0);
                     }
                 }
-                last_black = Some(x);
+                last_black = Some((x, on_speck));
             }
         }
     }
+    bits.iter_mut().filter(|p| **p == 1).for_each(|p| *p = 0);
     // Words, without page-sized things. `th` is effectively the x-height (most letters are
     // lower case), so any word is at least about that tall; flatter groups are dotted rules
     // and specks.
     // Very wide groups are texture or rules, not words: even long words are well under 15
     // x-heights across.
-    let joined_up = components(&bits);
+    let joined_up = components(&bits, g);
     // Small marks left after joining: dots and accents to join to the word below.
-    let small: Vec<Comp> = joined_up
-        .iter()
-        .filter(|c| (c.h() as f32) < 0.4 * th && (c.w() as f32) < 0.6 * th)
-        .copied()
-        .collect();
+    let small: Vec<Comp> = joined_up.iter().filter(|c| speck(c)).copied().collect();
     let mut words: Vec<Comp> = joined_up
         .into_iter()
         .filter(|c| not_page_sized(c) && c.h() as f32 >= 0.7 * th)
